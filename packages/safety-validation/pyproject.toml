@@ -1,0 +1,13 @@
+[project]
+name = "kp-safety-validation"
+version = "0.1.0"
+description = "Deterministic safety validation outside the AI model"
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kp_safety_validation"]

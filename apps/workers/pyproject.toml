@@ -1,0 +1,31 @@
+[project]
+name = "kp-workers"
+version = "0.1.0"
+description = "Background workers: ingestion, generation, delivery, retention, mailbox-reader, reminder"
+requires-python = ">=3.13"
+dependencies = [
+    "redis>=5.0",
+    "httpx>=0.27",
+    "cryptography>=42.0",
+    "pydantic-settings>=2.4",
+    "kp-domain-models",
+    "kp-database",
+    "kp-contracts",
+    "kp-telemetry",
+    "kp-auditing",
+    "kp-sanitization",
+    "kp-source-adapters",
+    "kp-campaign-patterns",
+    "kp-safety-validation",
+    "kp-templating",
+]
+
+[project.scripts]
+kp-worker = "kp_workers.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kp_workers"]

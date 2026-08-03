@@ -1,0 +1,3 @@
+# Python / Node toolchain pinned for the whole workspace.
+python 3.13
+node 22

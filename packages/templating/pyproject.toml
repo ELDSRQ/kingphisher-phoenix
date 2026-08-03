@@ -1,0 +1,16 @@
+[project]
+name = "kp-templating"
+version = "0.1.0"
+description = "Safe Jinja2 message templating, calendar-invite (ICS) generation, and SPF pre-flight checks"
+requires-python = ">=3.13"
+dependencies = [
+    "jinja2>=3.1",
+    "dnspython>=2.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kp_templating"]

@@ -1,0 +1,18 @@
+# Multi-stage build for the tracking API image.
+# Build context is the repository root.
+FROM ghcr.io/astral-sh/uv:0.11.28 AS uvbin
+FROM python:3.13-slim AS builder
+COPY --from=uvbin /uv /uvx /usr/local/bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+COPY packages ./packages
+COPY apps ./apps
+RUN uv sync --frozen --no-dev --package kp-tracking-api
+
+FROM python:3.13-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+COPY --from=builder /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+EXPOSE 8001
+CMD ["kp-tracking-api"]

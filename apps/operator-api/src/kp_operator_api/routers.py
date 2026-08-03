@@ -1,0 +1,628 @@
+"""Operator API routers: campaign lifecycle, sources, recipients, approvals,
+patterns, templates, audit.
+
+Every mutating endpoint records a hash-chained audit event and enforces
+RBAC. Deterministic checks (safety validation, approval requirements,
+self-approval block, manifest hashing) happen here, in-process, so they cannot
+be bypassed by the client.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import uuid
+from datetime import UTC, datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from kp_authorization.rbac import Capability, Principal, Role
+from kp_database.audit_store import AuditStore
+from kp_database.campaign_service import prepare_campaign
+from kp_database.models import (
+    AlertSubscription,
+    Campaign,
+    CampaignApproval,
+    CampaignPattern,
+    Recipient,
+    RecipientExclusion,
+    TemplateVersion,
+)
+from kp_domain_models import models as dm
+from kp_telemetry.errors import (
+    ConflictError,
+    NotFoundError,
+    PermissionDeniedError,
+    SafetyRejectionError,
+)
+from kp_templating.render import MessageRenderer
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from kp_operator_api.auth import require_capability
+from kp_operator_api.deps import get_audit_store, get_session
+
+router = APIRouter(prefix="/api/v1")
+_renderer = MessageRenderer()
+
+
+class CampaignCreate(BaseModel):
+    pattern_id: str
+    title: str = Field(min_length=1, max_length=255)
+    sender_mailbox: str
+    training_domain: str
+    schedule_start: datetime
+    schedule_end: datetime
+    timezone: str = "UTC"
+    max_recipients: int = Field(gt=0, le=100_000)
+    template_version_id: str
+
+
+class ApprovalSubmit(BaseModel):
+    decision: dm.ApprovalDecision
+    rationale: str | None = None
+
+
+class ExclusionCreate(BaseModel):
+    exclusion_type: dm.ExclusionType
+    campaign_id: str | None = None
+    reason: str | None = None
+    expires_at: datetime | None = None
+
+
+class SourceCreate(BaseModel):
+    name: str
+    source_type: dm.SourceType
+    base_domain: str
+    license_state_id: str | None = None
+
+
+@router.post("/campaigns", status_code=status.HTTP_201_CREATED)
+def create_campaign(
+    body: CampaignCreate,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, Any]:
+    pattern = session.get(CampaignPattern, uuid.UUID(body.pattern_id))
+    if pattern is None or pattern.approval_state != dm.PatternApprovalState.APPROVED:
+        raise HTTPException(status_code=422, detail="campaign requires an approved pattern")
+
+    template = session.get(TemplateVersion, uuid.UUID(body.template_version_id))
+    if template is None or template.approval_state != dm.TemplateApprovalState.APPROVED:
+        raise HTTPException(status_code=422, detail="campaign requires an approved template")
+
+    validator = session.info.get("safety_validator")
+    if validator is not None:
+        verdict = validator.validate(template.subject, template.plain_text or "", template.safe_html)
+        if not verdict.allowed:
+            raise SafetyRejectionError("template fails deterministic safety validation")
+
+    if body.schedule_end <= body.schedule_start:
+        raise HTTPException(status_code=422, detail="schedule_end must be after schedule_start")
+
+    campaign = Campaign(
+        campaign_id=uuid.uuid4(),
+        pattern_id=uuid.UUID(body.pattern_id),
+        current_template_id=uuid.UUID(body.template_version_id),
+        title=body.title,
+        state=dm.CampaignState.DRAFT,
+        sender_mailbox=body.sender_mailbox,
+        training_domain=body.training_domain,
+        schedule_start=body.schedule_start,
+        schedule_end=body.schedule_end,
+        timezone=body.timezone,
+        max_recipients=body.max_recipients,
+        created_by=uuid.UUID(principal.principal_id) if principal.principal_id != "anonymous" else None,
+        expires_at=body.schedule_end,
+    )
+    manifest = hashlib.sha256(
+        f"{campaign.campaign_id}|{pattern.campaign_pattern_id}|{template.template_version_id}".encode()
+    ).hexdigest()
+    campaign.manifest_hash = manifest
+    session.add(campaign)
+    session.commit()
+
+    audit.record(
+        actor=principal.principal_id,
+        action="campaign.create",
+        object_type="campaign",
+        object_id=str(campaign.campaign_id),
+        detail={"title": body.title, "manifest_hash": manifest},
+    )
+    return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
+
+
+@router.post("/campaigns/{campaign_id}/submit", status_code=status.HTTP_200_OK)
+def submit_campaign(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.SCHEDULE_CAMPAIGN)),
+) -> dict[str, Any]:
+    campaign = _get_campaign(session, campaign_id)
+    if campaign.state != dm.CampaignState.DRAFT:
+        raise ConflictError("only drafts can be submitted for approval")
+    campaign.state = dm.CampaignState.PENDING_APPROVAL
+    session.commit()
+    audit.record(actor=principal.principal_id, action="campaign.submit", object_type="campaign",
+                 object_id=str(campaign.campaign_id))
+    return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
+
+
+@router.post("/campaigns/{campaign_id}/approvals/{approval_type}", status_code=status.HTTP_200_OK)
+def approve_campaign(
+    campaign_id: str,
+    approval_type: dm.ApprovalType,
+    body: ApprovalSubmit,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.APPROVE_CAMPAIGN)),
+) -> dict[str, Any]:
+    campaign = _get_campaign(session, campaign_id)
+    if campaign.state != dm.CampaignState.PENDING_APPROVAL:
+        raise ConflictError("campaign is not awaiting approval")
+
+    required: dict[dm.ApprovalType, Role] = {
+        dm.ApprovalType.SECURITY: Role.SECURITY_APPROVER,
+        dm.ApprovalType.PRIVACY: Role.PRIVACY_APPROVER,
+    }
+    if approval_type not in required:
+        raise HTTPException(status_code=422, detail=f"unsupported approval type {approval_type}")
+    if required[approval_type] not in principal.roles:
+        raise PermissionDeniedError(f"requires role {required[approval_type].value}")
+
+    if str(campaign.created_by) == principal.principal_id:
+        raise PermissionDeniedError("self-approval of your own campaign is prohibited")
+
+    approval = CampaignApproval(
+        campaign_approval_id=uuid.uuid4(),
+        campaign_id=campaign.campaign_id,
+        approval_type=approval_type,
+        approver_id=uuid.UUID(principal.principal_id) if principal.principal_id != "anonymous" else uuid.uuid4(),
+        decision=body.decision,
+        rationale=body.rationale,
+        decided_at=datetime.now(UTC),
+        template_version_id=campaign.current_template_id,
+    )
+    session.add(approval)
+
+    if body.decision == dm.ApprovalDecision.APPROVED:
+        existing = session.execute(
+            select(CampaignApproval).where(
+                CampaignApproval.campaign_id == campaign.campaign_id,
+                CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+            )
+        ).scalars().all()
+        types_approved = {a.approval_type for a in existing}
+        types_approved.add(approval_type)
+        if types_approved >= {dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY}:
+            campaign.state = dm.CampaignState.APPROVED
+    else:
+        campaign.state = dm.CampaignState.REJECTED
+    session.commit()
+
+    audit.record(actor=principal.principal_id, action=f"campaign.approve.{approval_type.value}",
+                 object_type="campaign", object_id=str(campaign.campaign_id),
+                 detail={"decision": body.decision.value})
+    return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
+
+
+@router.post("/campaigns/{campaign_id}/schedule", status_code=status.HTTP_200_OK)
+def schedule_campaign(
+    campaign_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.SCHEDULE_CAMPAIGN)),
+) -> dict[str, Any]:
+    campaign = _get_campaign(session, campaign_id)
+    if campaign.state != dm.CampaignState.APPROVED:
+        raise ConflictError("campaign must be APPROVED before scheduling")
+    prepared = prepare_campaign(
+        session, campaign, tracking_base_url=request.app.state.settings.tracking_base_url
+    )
+    assignment_ids = [p.assignment_id for p in prepared]
+    request.app.state.queue.publish(
+        "deliver",
+        {
+            "campaign_id": campaign_id,
+            "recipient_assignment_ids": assignment_ids,
+            "template_hash": campaign.manifest_hash,
+        },
+        idempotency_key=f"deliver:{campaign_id}",
+    )
+    campaign.state = dm.CampaignState.SCHEDULED
+    session.commit()
+    audit.record(actor=principal.principal_id, action="campaign.schedule", object_type="campaign",
+                 object_id=str(campaign.campaign_id), detail={"prepared": len(assignment_ids)})
+    return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value,
+            "prepared": len(assignment_ids)}
+
+
+@router.post("/campaigns/{campaign_id}/test-send", status_code=status.HTTP_200_OK)
+def test_send_campaign(
+    campaign_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.SEND_CAMPAIGN)),
+) -> dict[str, Any]:
+    campaign = _get_campaign(session, campaign_id)
+    prepared = prepare_campaign(
+        session, campaign, tracking_base_url=request.app.state.settings.tracking_base_url,
+        include_test_accounts=True, test_only=True,
+    )
+    assignment_ids = [p.assignment_id for p in prepared]
+    request.app.state.queue.publish(
+        "deliver",
+        {
+            "campaign_id": campaign_id,
+            "recipient_assignment_ids": assignment_ids,
+            "template_hash": campaign.manifest_hash,
+        },
+        idempotency_key=f"deliver:test:{campaign_id}",
+    )
+    audit.record(actor=principal.principal_id, action="campaign.test-send", object_type="campaign",
+                 object_id=str(campaign.campaign_id), detail={"prepared": len(assignment_ids)})
+    return {"campaign_id": str(campaign.campaign_id), "prepared": len(assignment_ids)}
+
+
+@router.post("/campaigns/{campaign_id}/recall", status_code=status.HTTP_200_OK)
+def recall_campaign(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.STOP_CAMPAIGN)),
+) -> dict[str, Any]:
+    campaign = _get_campaign(session, campaign_id)
+    if campaign.state in (dm.CampaignState.RECALLED, dm.CampaignState.RECALL_IN_PROGRESS, dm.CampaignState.EXPIRED):
+        raise ConflictError(f"campaign already {campaign.state.value}")
+    campaign.state = dm.CampaignState.RECALL_IN_PROGRESS
+    session.commit()
+    audit.record(actor=principal.principal_id, action="campaign.recall", object_type="campaign",
+                 object_id=str(campaign.campaign_id))
+    return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
+
+
+@router.get("/campaigns")
+def list_campaigns(
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.VIEW_AGGREGATE)),
+) -> list[dict[str, Any]]:
+    rows = session.execute(select(Campaign)).scalars().all()
+    return [
+        {"campaign_id": str(c.campaign_id), "title": c.title, "state": c.state.value,
+         "schedule_start": c.schedule_start, "schedule_end": c.schedule_end}
+        for c in rows
+    ]
+
+
+@router.post("/sources", status_code=status.HTTP_201_CREATED)
+def create_source(
+    body: SourceCreate,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_SOURCES)),
+) -> dict[str, Any]:
+    from kp_database.models import Source as SourceRow
+
+    source = SourceRow(
+        source_id=uuid.uuid4(),
+        source_key=str(uuid.uuid4())[:8],
+        name=body.name,
+        source_type=body.source_type,
+        base_domain=body.base_domain,
+        enabled=False,
+    )
+    session.add(source)
+    session.commit()
+    audit.record(actor=principal.principal_id, action="source.create", object_type="source",
+                 object_id=str(source.source_id), detail={"base_domain": body.base_domain})
+    return {"source_id": str(source.source_id), "enabled": source.enabled}
+
+
+@router.get("/recipients")
+def list_recipients(
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.VIEW_NAMED_RESULTS)),
+) -> list[dict[str, Any]]:
+    rows = session.execute(select(Recipient)).scalars().all()
+    return [
+        {"recipient_id": str(r.recipient_id), "department": r.department, "status": r.status.value}
+        for r in rows
+    ]
+
+
+@router.post("/recipients/{recipient_id}/exclusions", status_code=status.HTTP_201_CREATED)
+def add_exclusion(
+    recipient_id: str,
+    body: ExclusionCreate,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_EXCLUSIONS)),
+) -> dict[str, Any]:
+    recipient = session.get(Recipient, uuid.UUID(recipient_id))
+    if recipient is None:
+        raise NotFoundError("recipient not found")
+    exclusion = RecipientExclusion(
+        recipient_exclusion_id=uuid.uuid4(),
+        recipient_id=recipient.recipient_id,
+        exclusion_type=body.exclusion_type,
+        campaign_id=uuid.UUID(body.campaign_id) if body.campaign_id else None,
+        reason=body.reason,
+        created_by=uuid.UUID(principal.principal_id) if principal.principal_id != "anonymous" else None,
+        expires_at=body.expires_at,
+    )
+    session.add(exclusion)
+    session.commit()
+    audit.record(actor=principal.principal_id, action="recipient.exclude", object_type="recipient",
+                 object_id=recipient_id, detail={"exclusion_type": body.exclusion_type.value})
+    return {"recipient_exclusion_id": str(exclusion.recipient_exclusion_id)}
+
+
+class RecipientsImport(BaseModel):
+    csv_text: str = Field(min_length=1)
+    department: str = ""
+
+
+@router.post("/recipients/import", status_code=status.HTTP_201_CREATED)
+def import_recipients_csv(
+    body: RecipientsImport,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_RECIPIENTS)),
+) -> dict[str, Any]:
+    import csv
+    import io
+
+    created = 0
+    skipped = 0
+    errors: list[str] = []
+    for idx, row in enumerate(csv.reader(io.StringIO(body.csv_text)), start=1):
+        if not row or all(cell.strip() == "" for cell in row):
+            continue
+        if len(row) < 1:
+            errors.append(f"row {idx}: expected at least one column")
+            continue
+        mailbox = row[0].strip()
+        if "@" not in mailbox:
+            errors.append(f"row {idx}: invalid mailbox {mailbox!r}")
+            continue
+        mailbox_key = hashlib.sha256(mailbox.lower().encode("utf-8")).hexdigest()
+        existing = session.scalar(
+            select(Recipient).where(Recipient.mailbox_sha256 == mailbox_key)
+        )
+        if existing is not None:
+            skipped += 1
+            continue
+        display_name = row[1].strip() if len(row) > 1 and row[1].strip() else mailbox
+        department = row[2].strip() if len(row) > 2 and row[2].strip() else body.department
+        recipient = Recipient(
+            recipient_id=uuid.uuid4(),
+            employee_key=mailbox.lower(),
+            mailbox=mailbox,
+            mailbox_sha256=mailbox_key,
+            display_name=display_name,
+            department=department,
+            is_test_account=mailbox.lower().endswith("+test@example.com"),
+            status=dm.RecipientStatus.ACTIVE,
+        )
+        session.add(recipient)
+        created += 1
+    session.commit()
+    audit.record(actor=principal.principal_id, action="recipient.import", object_type="recipients",
+                 object_id="csv", detail={"created": created, "skipped": skipped, "errors": len(errors)})
+    return {"created": created, "skipped": skipped, "errors": errors[:20]}
+
+
+class AlertSubscribe(BaseModel):
+    campaign_id: str
+    channel: str = "web"
+
+
+@router.post("/alerts/subscriptions", status_code=status.HTTP_201_CREATED)
+def subscribe_alerts(
+    body: AlertSubscribe,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.SUBSCRIBE_ALERTS)),
+) -> dict[str, Any]:
+    campaign = _get_campaign(session, body.campaign_id)
+    existing = session.scalar(
+        select(AlertSubscription).where(
+            AlertSubscription.user_id == uuid.UUID(principal.principal_id),
+            AlertSubscription.campaign_id == campaign.campaign_id,
+            AlertSubscription.channel == body.channel,
+        )
+    )
+    if existing is not None:
+        existing.active = True
+        sub = existing
+    else:
+        sub = AlertSubscription(
+            alert_subscription_id=uuid.uuid4(),
+            user_id=uuid.UUID(principal.principal_id),
+            campaign_id=campaign.campaign_id,
+            channel=body.channel,
+            active=True,
+        )
+        session.add(sub)
+    session.commit()
+    audit.record(actor=principal.principal_id, action="alerts.subscribe", object_type="campaign",
+                 object_id=str(campaign.campaign_id), detail={"channel": body.channel})
+    return {"alert_subscription_id": str(sub.alert_subscription_id), "active": sub.active}
+
+
+@router.get("/alerts/subscriptions", status_code=status.HTTP_200_OK)
+def list_alert_subscriptions(
+    campaign_id: str | None = None,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.SUBSCRIBE_ALERTS)),
+) -> list[dict[str, Any]]:
+    stmt = select(AlertSubscription)
+    if campaign_id:
+        stmt = stmt.where(AlertSubscription.campaign_id == uuid.UUID(campaign_id))
+    rows = session.execute(stmt).scalars().all()
+    return [
+        {"alert_subscription_id": str(s.alert_subscription_id), "campaign_id": str(s.campaign_id),
+         "channel": s.channel, "active": s.active}
+        for s in rows
+    ]
+
+
+@router.delete("/alerts/subscriptions/{subscription_id}", status_code=status.HTTP_200_OK)
+def unsubscribe_alerts(
+    subscription_id: str,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.SUBSCRIBE_ALERTS)),
+) -> dict[str, Any]:
+    sub = session.get(AlertSubscription, uuid.UUID(subscription_id))
+    if sub is None:
+        raise NotFoundError("subscription not found")
+    sub.active = False
+    session.commit()
+    audit.record(actor=principal.principal_id, action="alerts.unsubscribe", object_type="campaign",
+                 object_id=str(sub.campaign_id), detail={"channel": sub.channel})
+    return {"alert_subscription_id": subscription_id, "active": False}
+
+
+class TemplatePreview(BaseModel):
+    subject: str = ""
+    plain_text: str = ""
+    safe_html: str = ""
+
+
+@router.post("/templates/preview", status_code=status.HTTP_200_OK)
+def preview_template(
+    body: TemplatePreview,
+    request: Request,
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, Any]:
+    from kp_templating.render import CampaignContext, RecipientContext, TrackingContext
+
+    tracking_base = request.app.state.settings.tracking_base_url.rstrip("/")
+    sample_hash = "preview-" + hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:32]
+    recipient = RecipientContext(first_name="Sample", last_name="Employee", department="Engineering",
+                                 email="sample@example.com")
+    campaign_ctx = CampaignContext(title="Preview campaign", sender_display="IT Security",
+                                   training_domain="training.local")
+    tracking = TrackingContext(
+        open_url=f"{tracking_base}/v1/track/open/{sample_hash}",
+        click_url=f"{tracking_base}/v1/track/click/{sample_hash}",
+        training_url=request.app.state.settings.training_base_url,
+    )
+    try:
+        subject = _renderer.render(body.subject or "", recipient=recipient, campaign=campaign_ctx,
+                                   tracking=tracking, sender_email="sender@example.com")
+        plain_text = _renderer.render(body.plain_text or "", recipient=recipient, campaign=campaign_ctx,
+                                      tracking=tracking, sender_email="sender@example.com")
+        html = _renderer.render(body.safe_html or "", recipient=recipient, campaign=campaign_ctx,
+                                tracking=tracking, sender_email="sender@example.com")
+    except Exception as exc:  # noqa: BLE001 - surface template errors to the author
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"subject": subject, "plain_text": plain_text, "safe_html": html}
+
+
+@router.get("/templates")
+def list_templates(
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> list[dict[str, Any]]:
+    rows = session.execute(select(TemplateVersion)).scalars().all()
+    return [
+        {"template_version_id": str(t.template_version_id), "version": t.version,
+         "subject": t.subject, "approval_state": t.approval_state.value}
+        for t in rows
+    ]
+
+
+@router.get("/patterns")
+def list_patterns(
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.APPROVE_PATTERN)),
+) -> list[dict[str, Any]]:
+    rows = session.execute(select(CampaignPattern)).scalars().all()
+    return [
+        {"campaign_pattern_id": str(p.campaign_pattern_id), "lure_category": p.lure_category.value,
+         "approval_state": p.approval_state.value}
+        for p in rows
+    ]
+
+
+@router.post("/patterns/{pattern_id}/approve", status_code=status.HTTP_200_OK)
+def approve_pattern(
+    pattern_id: str,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.APPROVE_PATTERN)),
+) -> dict[str, Any]:
+    pattern = session.get(CampaignPattern, uuid.UUID(pattern_id))
+    if pattern is None:
+        raise NotFoundError("pattern not found")
+    if str(pattern.approved_by) == principal.principal_id:
+        raise PermissionDeniedError("self-approval of your own pattern is prohibited")
+    pattern.approval_state = dm.PatternApprovalState.APPROVED
+    pattern.approved_by = uuid.UUID(principal.principal_id) if principal.principal_id != "anonymous" else None
+    pattern.approved_at = datetime.now(UTC)
+    session.commit()
+    audit.record(actor=principal.principal_id, action="pattern.approve", object_type="campaign_pattern",
+                 object_id=pattern_id)
+    return {"campaign_pattern_id": pattern_id, "approval_state": pattern.approval_state.value}
+
+
+@router.get("/audit", status_code=status.HTTP_200_OK)
+def view_audit(
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.VIEW_AUDIT)),
+) -> list[dict[str, Any]]:
+    rows = session.execute(select(dm.AuditEvent).limit(500)).scalars().all()
+    return [{"actor": a.actor, "action": a.action, "object_type": a.object_type,
+             "object_id": a.object_id, "occurred_at": a.occurred_at} for a in rows]
+
+
+@router.post("/audit/verify", status_code=status.HTTP_200_OK)
+def verify_audit(
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.VIEW_AUDIT)),
+) -> dict[str, Any]:
+    problems = audit.verify()
+    return {"ok": not problems, "problems": problems}
+
+
+def _get_campaign(session: Session, campaign_id: str) -> Campaign:
+    campaign = session.get(Campaign, uuid.UUID(campaign_id))
+    if campaign is None:
+        raise NotFoundError("campaign not found")
+    return campaign
+
+
+@router.post("/kill-switch", status_code=status.HTTP_200_OK)
+def kill_switch(
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.USE_KILL_SWITCH)),
+) -> dict[str, Any]:
+    from kp_database.models import RecipientAssignment, TrackingToken
+
+    now = datetime.now(UTC)
+    rows = session.execute(
+        select(RecipientAssignment).where(
+            RecipientAssignment.send_state == dm.SendState.QUEUED
+        )
+    ).scalars().all()
+    for row in rows:
+        row.send_state = dm.SendState.EXPIRED
+    tokens = session.execute(
+        select(TrackingToken).where(TrackingToken.status == dm.TokenStatus.ACTIVE)
+    ).scalars().all()
+    for token in tokens:
+        token.status = dm.TokenStatus.KILL_SWITCHED
+        token.revoked_at = now
+        token.revoked_reason = "kill switch engaged"
+    session.commit()
+    audit.record(actor=principal.principal_id, action="kill-switch.engage", object_type="system",
+                 object_id="delivery", detail={"cancelled": len(rows), "tokens_revoked": len(tokens)})
+    return {"cancelled": len(rows), "tokens_revoked": len(tokens)}

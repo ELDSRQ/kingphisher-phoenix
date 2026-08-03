@@ -1,0 +1,18 @@
+[project]
+name = "kp-contracts"
+version = "0.1.0"
+description = "Contract-first schemas, event envelope, and job queue for Kingphisher-Phoenix"
+requires-python = ">=3.13"
+dependencies = [
+    "kp-domain-models",
+    "jsonschema>=4.21",
+    "pydantic>=2.7",
+    "redis>=5.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kp_contracts"]

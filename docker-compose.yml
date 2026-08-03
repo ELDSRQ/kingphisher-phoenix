@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kingphisher
+      POSTGRES_PASSWORD: kingphisher
+      POSTGRES_DB: kingphisher
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/containers/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kingphisher -d kingphisher"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    ports:
+      - "8025:8025"   # web UI
+      - "1025:1025"   # SMTP relay used by the delivery worker
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/api/v1/info"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.107.0
+    command: ["--config", "/etc/otel-collector.yaml"]
+    volumes:
+      - ./infrastructure/containers/otel-collector.yaml:/etc/otel-collector.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+
+  mock-idp:
+    build:
+      context: ./infrastructure/mock-services
+    command: ["python", "-m", "uvicorn", "mock_idp:app", "--host", "0.0.0.0", "--port", "8443"]
+    ports:
+      - "8443:8443"
+
+  mock-graph:
+    build:
+      context: ./infrastructure/mock-services
+    command: ["python", "-m", "uvicorn", "mock_graph:app", "--host", "0.0.0.0", "--port", "8181"]
+    ports:
+      - "8181:8181"
+
+  mock-ai:
+    build:
+      context: ./infrastructure/mock-services
+    command: ["python", "-m", "uvicorn", "mock_ai:app", "--host", "0.0.0.0", "--port", "8282"]
+    ports:
+      - "8282:8282"
+
+volumes:
+  postgres_data:

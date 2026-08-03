@@ -1,0 +1,40 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+build/
+dist/
+
+# Virtualenvs / toolchain
+.venv/
+venv/
+.mise/
+.mise.toml
+
+# Node
+node_modules/
+apps/operator-ui/node_modules/
+
+# Runtime data (logs, pidfiles, marker files, local DB volume)
+data/
+*.log
+
+# macOS
+.DS_Store
+
+# Built launcher bundle (regenerate with scripts/build_launcher_app.sh)
+Kingphisher Launcher.app/

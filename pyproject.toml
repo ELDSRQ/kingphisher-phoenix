@@ -1,0 +1,64 @@
+[project]
+name = "kingphisher-phoenix-platform"
+version = "0.1.0"
+description = "Kingphisher-Phoenix: threat-informed phishing training and assessment platform"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "mypy>=1.10",
+    "ruff>=0.6",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/*",
+    "apps/*",
+]
+exclude = [
+    "apps/operator-ui",
+]
+
+[tool.uv.sources]
+kp-domain-models = { workspace = true }
+kp-contracts = { workspace = true }
+kp-auditing = { workspace = true }
+kp-authorization = { workspace = true }
+kp-telemetry = { workspace = true }
+kp-sanitization = { workspace = true }
+kp-database = { workspace = true }
+kp-safety-validation = { workspace = true }
+kp-source-adapters = { workspace = true }
+kp-campaign-patterns = { workspace = true }
+kp-test-fixtures = { workspace = true }
+kp-templating = { workspace = true }
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "SIM"]
+ignore = ["S101"]  # assert allowed in tests
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S113", "B008"]
+"**/tests/**" = ["S105", "S106", "S113", "B008"]
+"apps/**/src/**" = ["B008"]  # FastAPI Depends() defaults are the framework idiom
+"packages/**/src/**/config.py" = ["S106"]  # dev-only DB defaults in the local stack
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = ["jsonschema", "jsonschema.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["packages", "apps"]
+addopts = "-q"
