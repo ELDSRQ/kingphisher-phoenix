@@ -27,7 +27,10 @@ Homebrew (macOS) / apt (Linux), Docker (Colima on macOS, `docker.io` on Linux),
 `uv`, Python 3.13, and all Python dependencies.
 
 ```bash
+# SSH (needs a key added to your GitHub account)
 git clone git@github.com:ELDSRQ/kingphisher-phoenix.git
+# or HTTPS
+git clone https://github.com/ELDSRQ/kingphisher-phoenix.git
 cd kingphisher-phoenix
 ./scripts/install.sh
 ```
