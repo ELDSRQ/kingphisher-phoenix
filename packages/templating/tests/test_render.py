@@ -11,8 +11,7 @@ from kp_templating.render import (
 def test_render_whitelisted_variables() -> None:
     renderer = MessageRenderer()
     out = renderer.render(
-        "Hi {{ recipient.first_name }}, {{ campaign.title }} "
-        "open {{ tracking.open_url }} from {{ sender.email }}",
+        "Hi {{ recipient.first_name }}, {{ campaign.title }} open {{ tracking.open_url }} from {{ sender.email }}",
         recipient=RecipientContext(first_name="Ada"),
         campaign=CampaignContext(title="Phish"),
         tracking=TrackingContext(open_url="http://track/open/h"),

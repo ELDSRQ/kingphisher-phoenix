@@ -7,12 +7,14 @@ from kp_operator_api.main import create_app
 
 KEK = "0123456789abcdef0123456789abcdef"
 HMAC = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+CONSOLE_JWT = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 
 
 def _make_settings() -> OperatorApiSettings:
     return OperatorApiSettings(
         audit_hmac_key=HMAC,
         ciphertext_kek=KEK,
+        console_jwt_secret=CONSOLE_JWT,
         tracking_base_url="http://track.local:8001",
         training_base_url="http://train.local:3000/training/awareness",
         training_domains="example.com,training.local",
@@ -28,7 +30,7 @@ def _token(settings: OperatorApiSettings) -> str:
         "nbf": 0,
         "realm_access": {"roles": ["campaign_author"]},
     }
-    return jwt.encode(claims, settings.require_secret_key().hex(), algorithm="HS256")
+    return jwt.encode(claims, settings.require_console_jwt_secret(), algorithm="HS256")
 
 
 def test_preview_template_renders() -> None:

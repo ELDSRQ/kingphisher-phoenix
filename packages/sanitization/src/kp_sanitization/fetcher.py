@@ -3,6 +3,12 @@
 Implements SAN-001: allowlisted HTTPS fetching with redirect limits, final-domain
 validation, DNS-rebinding protection, private/link-local/metadata address denial,
 response-size and content-type limits, and timeouts. Fails closed.
+
+DNS-rebinding protection: every hop resolves its hostname ONCE, validates that
+every returned address is public, and then opens the connection against the
+pinned IP (with the real hostname preserved for TLS SNI and the Host header), so
+an attacker cannot answer a public address at validation time and a private one
+at request time. Redirects re-enter the same pinned-resolution path.
 """
 
 from __future__ import annotations
@@ -18,13 +24,12 @@ BLOCKED_IP_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),  # includes 169.254.169.254 metadata
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("fc00::/7"),
     ipaddress.ip_network("fe80::/10"),
-    ipaddress.ip_network("169.254.169.254/32"),  # cloud metadata
 ]
 
 _ALLOWED_CONTENT_TYPES = {"text/html", "text/plain", "application/rss+xml", "application/xml", "text/xml"}
@@ -32,6 +37,8 @@ _ALLOWED_CONTENT_TYPES = {"text/html", "text/plain", "application/rss+xml", "app
 DEFAULT_MAX_SIZE_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_REDIRECTS = 3
 DEFAULT_TIMEOUT = 10.0
+
+_ALLOWED_PORTS = {443}
 
 
 @dataclass
@@ -63,7 +70,12 @@ class UnsupportedContentTypeError(FetchError):
     """Response content type is not allowlisted."""
 
 
-def _resolve_allowed(url: str, allowlist: set[str], port_override: int | None = None) -> str:
+def _resolve_pinned(url: str, allowlist: set[str]) -> tuple[str, int, list[str]]:
+    """Resolve `url`'s host and return (host, port, pinned_public_ips).
+
+    Validates scheme, allowlist membership, port, and that EVERY resolved
+    address is public. Raises a FetchError subclass on any violation.
+    """
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise DomainNotAllowedError(f"non-HTTPS scheme rejected: {parsed.scheme}")
@@ -72,17 +84,28 @@ def _resolve_allowed(url: str, allowlist: set[str], port_override: int | None = 
     host = (parsed.hostname or "").lower()
     if host not in allowlist:
         raise DomainNotAllowedError(f"domain {host} not in allowlist")
-    port = parsed.port or (port_override or 443)
+    port = parsed.port or 443
+    if port not in _ALLOWED_PORTS:
+        raise DomainNotAllowedError(f"port {port} is not allowed (only {sorted(_ALLOWED_PORTS)})")
     try:
         addrinfos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-        ips = {ipaddress.ip_address(info[4][0]) for info in addrinfos[:8]}
     except OSError as exc:
         raise DomainNotAllowedError(f"DNS resolution failed for {host}") from exc
+    ips = {ipaddress.ip_address(info[4][0]) for info in addrinfos[:16]}
     for ip in ips:
         for net in BLOCKED_IP_NETWORKS:
             if ip in net:
                 raise DeniedAddressError(f"resolved {ip} is a blocked address")
-    return host
+    if not ips:
+        raise DomainNotAllowedError(f"no addresses resolved for {host}")
+    return host, port, sorted(str(ip) for ip in ips)
+
+
+def _pinned_url(url: str, host: str, port: int, ip: str) -> str:
+    """Rewrite `url`'s host to the pinned IP, preserving path/query."""
+    parsed = urlparse(url)
+    netloc = ip if port == 443 else f"{ip}:{port}"
+    return f"https://{netloc}{parsed.path or '/'}{f'?{parsed.query}' if parsed.query else ''}"
 
 
 class SecureFetcher:
@@ -103,7 +126,7 @@ class SecureFetcher:
 
     def fetch(self, url: str) -> FetchResult:
         # Pre-validate before any network I/O.
-        _resolve_allowed(url, self._allowlist)
+        host, port, _ = _resolve_pinned(url, self._allowlist)
         hops = 0
         current = url
         final = url
@@ -112,11 +135,16 @@ class SecureFetcher:
         data = b""
         with httpx.Client(follow_redirects=False, timeout=self._timeout, http2=False) as client:
             while True:
-                _resolve_allowed(current, self._allowlist)
+                host, port, pinned_ips = _resolve_pinned(current, self._allowlist)
+                ip = pinned_ips[0]
                 try:
                     response = client.get(
-                        current,
-                        headers={"User-Agent": "kingphisher-ingestion/0.1 (+https://internal)"},
+                        _pinned_url(current, host, port, ip),
+                        headers={
+                            "User-Agent": "kingphisher-ingestion/0.1 (+https://internal)",
+                            "Host": host if port == 443 else f"{host}:{port}",
+                        },
+                        extensions={"sni_hostname": host},
                     )
                 except httpx.HTTPError as exc:
                     raise FetchError(f"request failed: {exc}") from exc
@@ -134,7 +162,7 @@ class SecureFetcher:
                         raise DomainNotAllowedError("redirect escaped HTTPS")
                     continue
                 data = response.content
-                final = str(response.url)
+                final = current
                 break
         if status >= 400:
             raise FetchError(f"HTTP {status} for {current}")

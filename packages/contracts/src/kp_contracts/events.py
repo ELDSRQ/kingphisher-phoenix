@@ -92,10 +92,12 @@ _EVENT_SCHEMAS: dict[str, dict[str, Any]] = {
 class EventEnvelope(BaseModel):
     """§11.1 envelope. At-least-once delivery; exactly-once effect via idempotency_key."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    # `schema` intentionally shadows pydantic's deprecated classmethod; type-ignore by design.
-    schema: str = Field(description="schema name@version, e.g. campaign.send_batch@1.0")  # type: ignore[assignment]
+    # NOTE: deliberately not named `schema` — that shadows pydantic's deprecated
+    # classmethod and emits a UserWarning at import. Wire format keeps the key
+    # `schema` for on-the-wire compatibility.
+    schema_name: str = Field(alias="schema", description="schema name@version, e.g. campaign.send_batch@1.0")
     event_id: UUID = Field(default_factory=uuid4)
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     idempotency_key: str
@@ -125,7 +127,7 @@ class SchemaRegistry:
         jsonschema.validate(instance=payload, schema=self._schemas[base_name])
 
     def validate_envelope(self, envelope: EventEnvelope) -> None:
-        self.validate(envelope.schema, envelope.payload)
+        self.validate(envelope.schema_name, envelope.payload)
 
 
 class ContractError(ValueError):

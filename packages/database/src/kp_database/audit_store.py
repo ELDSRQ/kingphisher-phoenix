@@ -3,8 +3,8 @@
 Writes flow through the dedicated AUDIT_DATABASE_URL connection which is
 granted INSERT-only on `audit_events` (see infrastructure/terraform and the
 Alembic migration for role/grants). The application ORM session never touches
-this table. Chaining + head signing come from kp-auditing; this module only
-owns persistence.
+this table. Chaining + head signing come from kp-auditing; this module owns
+persistence, including the persisted HMAC-signed chain head.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from kp_auditing.audit import (
     canonical_bytes,
     chain_hash,
     sign_head,
+    verify_head_signature,
 )
 from kp_telemetry.errors import AuditFailureError
 from sqlalchemy import text
@@ -44,8 +45,16 @@ class AuditStore:
         if head is not None:
             self._writer.reset_to(head)
 
-    def record(self, *, actor: str, action: str, object_type: str, object_id: str,
-               detail: dict[str, Any] | None = None, occurred_at: datetime | None = None) -> AuditRecord:
+    def record(
+        self,
+        *,
+        actor: str,
+        action: str,
+        object_type: str,
+        object_id: str,
+        detail: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> AuditRecord:
         self._resume_chain()
         detail = detail or {}
         occurred_at = occurred_at or datetime.now(UTC)
@@ -58,6 +67,7 @@ class AuditStore:
             detail=detail,
             occurred_at=occurred_at,
         )
+        signature = self.sign_head(record.event_hash) if self._hmac_key is not None else None
         try:
             with self._engine.begin() as conn:
                 conn.execute(
@@ -82,6 +92,17 @@ class AuditStore:
                         "nonce": record.nonce,
                     },
                 )
+                conn.execute(
+                    text(
+                        "INSERT INTO audit_chain_head (id, event_hash, signature, signed_at) "
+                        "VALUES (1, :event_hash, :signature, now()) "
+                        "ON CONFLICT (id) DO UPDATE SET "
+                        "event_hash = EXCLUDED.event_hash, "
+                        "signature = EXCLUDED.signature, "
+                        "signed_at = EXCLUDED.signed_at"
+                    ),
+                    {"event_hash": record.event_hash, "signature": signature},
+                )
         except Exception as exc:  # noqa: BLE001 - convert to domain error
             raise AuditFailureError("audit write failed") from exc
         return record
@@ -91,8 +112,25 @@ class AuditStore:
             raise RuntimeError("audit HMAC key not configured")
         return sign_head(event_hash, self._hmac_key)
 
+    def list_events(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Recent events newest-first, for the operator audit view."""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        "SELECT actor, action, object_type, object_id, occurred_at, detail "
+                        "FROM audit_events ORDER BY occurred_at DESC, event_hash DESC LIMIT :limit"
+                    ),
+                    {"limit": limit},
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(row) for row in rows]
+
     def verify(self) -> list[str]:
-        """Recompute the chain and report mismatches.
+        """Recompute the chain and report mismatches, including a missing or
+        tampered persisted head signature.
 
         Rows are ordered by `occurred_at, event_hash` as a deterministic proxy
         for insertion order (there is no monotonic column). Checks that the
@@ -101,12 +139,21 @@ class AuditStore:
         """
         problems: list[str] = []
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    "SELECT actor, action, object_type, object_id, occurred_at, detail, "
-                    "prev_hash, event_hash, nonce FROM audit_events ORDER BY occurred_at, event_hash"
+            rows = (
+                conn.execute(
+                    text(
+                        "SELECT actor, action, object_type, object_id, occurred_at, detail, "
+                        "prev_hash, event_hash, nonce FROM audit_events ORDER BY occurred_at, event_hash"
+                    )
                 )
-            ).mappings().all()
+                .mappings()
+                .all()
+            )
+            head = (
+                conn.execute(text("SELECT event_hash, signature FROM audit_chain_head WHERE id = 1"))
+                .mappings()
+                .one_or_none()
+            )
         if not rows:
             return problems
         prev = GENESIS_HASH
@@ -132,4 +179,15 @@ class AuditStore:
             if recomputed != row["event_hash"]:
                 problems.append(f"hash mismatch at {row['occurred_at']} {row['actor']}:{row['action']}")
             prev = row["event_hash"]
+        if head is None:
+            problems.append("no persisted signed audit head")
+        elif head["signature"] is None:
+            problems.append("audit head signature missing")
+        else:
+            if head["event_hash"] != prev:
+                problems.append(f"audit head references {head['event_hash']} but chain ends at {prev}")
+            if self._hmac_key is not None and not verify_head_signature(
+                head["event_hash"], head["signature"], self._hmac_key
+            ):
+                problems.append("audit head signature verification failed")
         return problems

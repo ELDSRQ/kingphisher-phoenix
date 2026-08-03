@@ -19,9 +19,15 @@ def _escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
-def generate_invite(*, organizer_email: str, attendee_email: str, event_title: str,
-                    description: str, starts_at: datetime | None = None,
-                    duration_minutes: int = 30) -> tuple[str, str]:
+def generate_invite(
+    *,
+    organizer_email: str,
+    attendee_email: str,
+    event_title: str,
+    description: str,
+    starts_at: datetime | None = None,
+    duration_minutes: int = 30,
+) -> tuple[str, str]:
     """Return `(ics_text, uid)` for a calendar-invite training lure."""
     starts_at = starts_at or (datetime.now(UTC) + timedelta(days=7))
     ends_at = starts_at + timedelta(minutes=duration_minutes)

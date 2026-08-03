@@ -12,6 +12,9 @@ class WorkerSettings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     queue_prefix: str = "kp:queue:"
     poll_seconds: int = 5
+    max_retries: int = 3
+    visibility_seconds: int = 60
+    recovery_every_polls: int = 12
     log_level: str = "info"
     mock_graph_url: str = "http://localhost:8181"
     mock_ai_url: str = "http://localhost:8282"

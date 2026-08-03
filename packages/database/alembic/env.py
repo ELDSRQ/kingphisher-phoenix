@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from alembic import context
+from dotenv import load_dotenv
 from kp_database import models  # noqa: F401 - register tables with metadata
 from kp_database.base import Base
 from sqlalchemy import engine_from_config, pool
+
+# Load the same .env the application reads so migrations behave identically
+# whether launched from the shell or from an installer that only wrote .env.
+_load_env = Path(__file__).resolve().parents[3] / ".env"
+if _load_env.exists():
+    load_dotenv(_load_env, override=False)
 
 config = context.config
 database_url = os.getenv("DATABASE_URL")

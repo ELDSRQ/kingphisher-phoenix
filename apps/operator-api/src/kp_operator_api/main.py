@@ -22,10 +22,13 @@ from kp_telemetry.errors import (
     SafetyRejectionError,
 )
 from kp_telemetry.logging import configure_logging
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from kp_operator_api.auth import make_idp
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.console import router as console_router
+from kp_operator_api.ratelimit import LoginThrottle, RateLimiter
 from kp_operator_api.routers import router
 
 _ERROR_STATUS: dict[type[KpError], int] = {
@@ -47,7 +50,12 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     session_factory = make_session_factory(engine)
     audit_store = AuditStore(audit_engine, settings.require_secret_key())
     CipherText.configure_key(settings.require_cipher_kek())
-    idp = make_idp(settings.oidc_issuer, settings.oidc_audience, settings.require_secret_key().hex())
+    idp = make_idp(
+        settings.oidc_issuer,
+        settings.oidc_audience,
+        mode=settings.oidc_mode,
+        dev_secret=settings.require_console_jwt_secret().decode(),
+    )
     queue = JobQueue(settings.redis_url)
     training_domains = {d.strip() for d in settings.training_domains.split(",") if d.strip()}
 
@@ -57,12 +65,26 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.state.audit_store = audit_store
     app.state.queue = queue
     app.state.idp = idp
-    session_factory.configure(**{"info.safety_validator": SafetyValidator(training_domains=training_domains)})
+    app.state.user_limiter = RateLimiter(limit=settings.rate_limit_user_per_min, window_seconds=60.0)
+    app.state.ip_limiter = RateLimiter(limit=settings.rate_limit_ip_per_min, window_seconds=60.0)
+    app.state.login_throttle = LoginThrottle()
+    # `info` is a sessionmaker keyword: per-session `.info` carries the validator
+    # (previously the kwarg name was mangled and the value never reached sessions).
+    session_factory.configure(info={"safety_validator": SafetyValidator(training_domains=training_domains)})
 
     app.include_router(router)
     app.include_router(console_router)
 
     _mount_console(app, settings)
+
+    @app.middleware("http")
+    async def security_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if _too_large(request, settings.max_body_bytes):
+            return JSONResponse(status_code=413, content={"detail": "request body too large"})
+        client_ip = request.client.host if request.client else "unknown"
+        if not app.state.ip_limiter.allow(client_ip):
+            return JSONResponse(status_code=429, content={"detail": "rate limit exceeded"})
+        return await call_next(request)
 
     @app.exception_handler(KpError)
     async def kp_error_handler(request: Request, exc: KpError) -> JSONResponse:
@@ -82,6 +104,13 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     return app
+
+
+def _too_large(request: Request, max_bytes: int) -> bool:
+    length = request.headers.get("content-length")
+    if length and length.isdigit():
+        return int(length) > max_bytes
+    return False
 
 
 def _mount_console(app: FastAPI, settings: OperatorApiSettings) -> None:

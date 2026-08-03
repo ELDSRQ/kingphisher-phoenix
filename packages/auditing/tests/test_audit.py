@@ -37,10 +37,12 @@ def test_audit_record_generates_uuid_event_id() -> None:
 
 def test_chain_links_records_and_verifier_accepts() -> None:
     writer = AuditWriter()
-    first = writer.append(actor="seed", action="seed.complete", object_type="campaign",
-                          object_id="c1", detail={"a": "b"})
-    second = writer.append(actor="worker", action="campaign.deliver", object_type="campaign",
-                           object_id="c1", detail={"sent": 5})
+    first = writer.append(
+        actor="seed", action="seed.complete", object_type="campaign", object_id="c1", detail={"a": "b"}
+    )
+    second = writer.append(
+        actor="worker", action="campaign.deliver", object_type="campaign", object_id="c1", detail={"sent": 5}
+    )
     assert first.prev_hash == GENESIS_HASH
     assert second.prev_hash == first.event_hash
 
@@ -52,14 +54,14 @@ def test_chain_links_records_and_verifier_accepts() -> None:
 def test_reset_to_links_into_persisted_head() -> None:
     """Multi-process resume: a fresh writer must chain from the stored head."""
     first_writer = AuditWriter()
-    first = first_writer.append(actor="a", action="seed.complete", object_type="campaign",
-                                object_id="c1", detail={})
+    first = first_writer.append(actor="a", action="seed.complete", object_type="campaign", object_id="c1", detail={})
     head = first.event_hash
 
     second_writer = AuditWriter()
     second_writer.reset_to(head)
-    next_record = second_writer.append(actor="b", action="campaign.deliver",
-                                       object_type="campaign", object_id="c1", detail={})
+    next_record = second_writer.append(
+        actor="b", action="campaign.deliver", object_type="campaign", object_id="c1", detail={}
+    )
     assert next_record.prev_hash == head
 
     result = AuditVerifier().verify([first, next_record])

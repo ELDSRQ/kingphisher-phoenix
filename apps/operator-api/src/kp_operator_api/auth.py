@@ -3,7 +3,8 @@
 JWT verification is strict: signature (JWKS or dev shared secret), `iss`,
 `aud`, `exp`, and `nbf` all checked. Roles are mapped to kp-authorization
 capabilities; endpoints call `require()`/`require_any()` on the resolved
-Principal.
+Principal. Unknown roles fail closed (no implicit capability) rather than
+granting anything.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 import httpx
 import jwt
 from fastapi import Depends, HTTPException, Request, status
+from jwt import PyJWKClient
 from kp_authorization.rbac import (
     AuthorizationError,
     Capability,
@@ -26,7 +28,11 @@ from kp_telemetry.errors import AuthenticationError, PermissionDeniedError
 
 
 class DevIdP:
-    """Dev-only IdP client. Production uses OIDC discovery + JWKS."""
+    """Dev-only IdP client (shared-secret HS256). Production uses OIDC + JWKS.
+
+    The dev secret is the dedicated console JWT secret, never the audit HMAC
+    key, so a console token cannot forge the audit-chain signature.
+    """
 
     def __init__(self, issuer: str, audience: str, dev_secret: str) -> None:
         self.issuer = issuer
@@ -48,29 +54,20 @@ class DevIdP:
 
 
 class OidcIdP:
-    """JWKS-based verification using OIDC discovery."""
+    """JWKS-based verification using OIDC discovery (PyJWT 2.x PyJWKClient)."""
 
     def __init__(self, issuer: str, audience: str, *, http_timeout: float = 5.0) -> None:
         self.issuer = issuer.rstrip("/")
         self.audience = audience
         self._jwks_url = f"{self.issuer}/protocol/openid-connect/certs"
-        self._timeout = http_timeout
-        self._certs: dict[str, Any] | None = None
-
-    def _load_keys(self) -> dict[str, Any]:
-        if self._certs is not None:
-            return self._certs
-        resp = httpx.get(self._jwks_url, timeout=self._timeout)
-        resp.raise_for_status()
-        self._certs = resp.json()
-        return self._certs
+        self._client = PyJWKClient(self._jwks_url, cache_jwk_set=True, lifespan=3600, timeout=http_timeout)
 
     def verify(self, token: str) -> Principal:
         try:
-            keys = self._load_keys()
+            signing_key = self._client.get_signing_key_from_jwt(token)
             claims = jwt.decode(
                 token,
-                keys,  # type: ignore[arg-type]  # pyjwt accepts a JWK dict for HS/RS
+                signing_key.key,
                 algorithms=["RS256"],
                 audience=self.audience,
                 issuer=self.issuer,
@@ -80,25 +77,41 @@ class OidcIdP:
         return _claims_to_principal(claims)
 
 
+_ROLE_ALIASES: dict[str, Role] = {
+    "operator": Role.CAMPAIGN_OPERATOR,
+    "campaign-operator": Role.CAMPAIGN_OPERATOR,
+    "campaign_operator": Role.CAMPAIGN_OPERATOR,
+    "admin": Role.ADMINISTRATOR,
+    "administrator": Role.ADMINISTRATOR,
+}
+
+
 def _claims_to_principal(claims: dict[str, Any]) -> Principal:
-    realm_roles = claims.get("realm_access", {}).get("roles", []) if isinstance(
-        claims.get("realm_access"), dict
-    ) else []
+    subject = claims.get("sub")
+    if not subject:
+        raise AuthenticationError("token is missing a subject")
+    realm_roles = (
+        claims.get("realm_access", {}).get("roles", []) if isinstance(claims.get("realm_access"), dict) else []
+    )
     roles: set[Role] = set()
-    for r in realm_roles:
-        try:
-            roles.add(Role(r))
-        except ValueError:
-            continue
-    if not roles:
-        roles = {Role.CAMPAIGN_OPERATOR}  # dev default; never elevates privileges
-    return Principal(subject_id=claims.get("sub", "anonymous"), roles=roles)
+    for name in realm_roles:
+        role = _ROLE_ALIASES.get(name)
+        if role is None:
+            try:
+                role = Role(name)
+            except ValueError:
+                continue
+        roles.add(role)
+    # Fail closed: unrecognized or absent roles grant no capability.
+    return Principal(subject_id=str(subject), roles=roles)
 
 
-def make_idp(issuer: str, audience: str, dev_secret: str) -> OidcIdP | DevIdP:
-    if dev_secret:
+def make_idp(issuer: str, audience: str, *, mode: str, dev_secret: str) -> OidcIdP | DevIdP:
+    if mode == "oidc":
+        return OidcIdP(issuer, audience)
+    if mode == "dev":
         return DevIdP(issuer, audience, dev_secret)
-    return OidcIdP(issuer, audience)
+    raise ValueError(f"unsupported OIDC mode: {mode!r}")
 
 
 def get_principal(request: Request) -> Principal:
@@ -106,7 +119,11 @@ def get_principal(request: Request) -> Principal:
     authorization = request.headers.get("Authorization", "")
     if not authorization.startswith("Bearer "):
         raise AuthenticationError("missing bearer token")
-    return idp.verify(authorization.removeprefix("Bearer "))
+    principal = idp.verify(authorization.removeprefix("Bearer "))
+    user_limiter = request.app.state.user_limiter
+    if not user_limiter.allow(principal.subject_id):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate limit exceeded")
+    return principal
 
 
 def require_capability(capability: Capability) -> Callable[..., Principal]:

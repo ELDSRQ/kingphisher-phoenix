@@ -5,6 +5,7 @@ Revises:
 Create Date: 2026-08-02
 
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -29,14 +30,10 @@ def upgrade() -> None:
     # grants are owned by infrastructure/terraform.
     bind = op.get_bind()
     with contextlib.suppress(Exception):  # noqa: BLE001 - dev DB may not permit REVOKE
-        bind.exec_driver_sql(
-            "REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM PUBLIC"
-        )
+        bind.exec_driver_sql("REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM PUBLIC")
         # Local bootstrap: let the INSERT-only audit role append rows and read
         # the persisted chain head so multiple processes chain together.
-        bind.exec_driver_sql(
-            "GRANT SELECT, INSERT ON audit_events TO audit_writer"
-        )
+        bind.exec_driver_sql("GRANT SELECT, INSERT ON audit_events TO audit_writer")
 
 
 def downgrade() -> None:

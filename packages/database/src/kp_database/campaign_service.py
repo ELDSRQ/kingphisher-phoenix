@@ -44,14 +44,17 @@ class PreparedRecipient(NamedTuple):
 
 
 def _excluded_recipient_ids(session: Session, campaign_id: uuid.UUID) -> set[uuid.UUID]:
-    rows = session.execute(
-        select(RecipientExclusion.recipient_id).where(
-            RecipientExclusion.recipient_id.is_not(None),
-            RecipientExclusion.expires_at.is_(None) | (RecipientExclusion.expires_at > datetime.now(UTC)),
-            (RecipientExclusion.campaign_id == campaign_id)
-            | (RecipientExclusion.campaign_id.is_(None)),
+    rows = (
+        session.execute(
+            select(RecipientExclusion.recipient_id).where(
+                RecipientExclusion.recipient_id.is_not(None),
+                RecipientExclusion.expires_at.is_(None) | (RecipientExclusion.expires_at > datetime.now(UTC)),
+                (RecipientExclusion.campaign_id == campaign_id) | (RecipientExclusion.campaign_id.is_(None)),
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return set(rows)
 
 
@@ -72,9 +75,9 @@ def prepare_campaign(
         raise ValueError(f"campaign is not launchable (state={campaign.state.value})")
 
     excluded = _excluded_recipient_ids(session, campaign.campaign_id)
-    recipients = list(session.execute(
-        select(Recipient).where(Recipient.status == dm.RecipientStatus.ACTIVE)
-    ).scalars().all())
+    recipients = list(
+        session.execute(select(Recipient).where(Recipient.status == dm.RecipientStatus.ACTIVE)).scalars().all()
+    )
 
     now = datetime.now(UTC)
     expires_at = campaign.expires_at
@@ -120,20 +123,22 @@ def prepare_campaign(
 
         raw_token = secrets.token_urlsafe(32)
         token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-        session.add(TrackingToken(
-            token_id=uuid.uuid4(),
-            token_hash=token_hash,
-            token_prefix=raw_token[:6],
-            campaign_id=campaign.campaign_id,
-            recipient_assignment_id=assignment.recipient_assignment_id,
-            pepper_version=1,
-            status=dm.TokenStatus.ACTIVE,
-            expires_at=expires_at,
-        ))
+        session.add(
+            TrackingToken(
+                token_id=uuid.uuid4(),
+                token_hash=token_hash,
+                token_prefix=raw_token[:6],
+                campaign_id=campaign.campaign_id,
+                recipient_assignment_id=assignment.recipient_assignment_id,
+                pepper_version=1,
+                status=dm.TokenStatus.ACTIVE,
+                expires_at=expires_at,
+            )
+        )
         session.flush()
-        assignment.token_id = session.execute(
-            select(TrackingToken).where(TrackingToken.token_hash == token_hash)
-        ).scalar_one().token_id
+        assignment.token_id = (
+            session.execute(select(TrackingToken).where(TrackingToken.token_hash == token_hash)).scalar_one().token_id
+        )
         prepared.append(_urls_for(session, tracking_base_url, assignment))
 
     session.commit()

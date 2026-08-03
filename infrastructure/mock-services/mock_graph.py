@@ -27,10 +27,12 @@ ROSTER = [
 def users() -> dict[str, object]:
     rows = []
     for person in ROSTER:
-        rows.append({
-            "id": str(uuid.uuid5(uuid.NAMESPACE_URL, person["mail"])),
-            "mail": person["mail"],
-            "displayName": person["displayName"],
-            "department": person["department"],
-        })
+        rows.append(
+            {
+                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, person["mail"])),
+                "mail": person["mail"],
+                "displayName": person["displayName"],
+                "department": person["department"],
+            }
+        )
     return {"value": rows, "@odata.count": len(rows)}

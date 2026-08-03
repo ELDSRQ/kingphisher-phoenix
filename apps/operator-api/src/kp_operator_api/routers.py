@@ -121,8 +121,6 @@ def create_campaign(
     ).hexdigest()
     campaign.manifest_hash = manifest
     session.add(campaign)
-    session.commit()
-
     audit.record(
         actor=principal.principal_id,
         action="campaign.create",
@@ -130,6 +128,7 @@ def create_campaign(
         object_id=str(campaign.campaign_id),
         detail={"title": body.title, "manifest_hash": manifest},
     )
+    session.commit()
     return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
 
 
@@ -144,9 +143,13 @@ def submit_campaign(
     if campaign.state != dm.CampaignState.DRAFT:
         raise ConflictError("only drafts can be submitted for approval")
     campaign.state = dm.CampaignState.PENDING_APPROVAL
+    audit.record(
+        actor=principal.principal_id,
+        action="campaign.submit",
+        object_type="campaign",
+        object_id=str(campaign.campaign_id),
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="campaign.submit", object_type="campaign",
-                 object_id=str(campaign.campaign_id))
     return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
 
 
@@ -188,23 +191,30 @@ def approve_campaign(
     session.add(approval)
 
     if body.decision == dm.ApprovalDecision.APPROVED:
-        existing = session.execute(
-            select(CampaignApproval).where(
-                CampaignApproval.campaign_id == campaign.campaign_id,
-                CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+        existing = (
+            session.execute(
+                select(CampaignApproval).where(
+                    CampaignApproval.campaign_id == campaign.campaign_id,
+                    CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         types_approved = {a.approval_type for a in existing}
         types_approved.add(approval_type)
         if types_approved >= {dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY}:
             campaign.state = dm.CampaignState.APPROVED
     else:
         campaign.state = dm.CampaignState.REJECTED
+    audit.record(
+        actor=principal.principal_id,
+        action=f"campaign.approve.{approval_type.value}",
+        object_type="campaign",
+        object_id=str(campaign.campaign_id),
+        detail={"decision": body.decision.value},
+    )
     session.commit()
-
-    audit.record(actor=principal.principal_id, action=f"campaign.approve.{approval_type.value}",
-                 object_type="campaign", object_id=str(campaign.campaign_id),
-                 detail={"decision": body.decision.value})
     return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
 
 
@@ -219,9 +229,7 @@ def schedule_campaign(
     campaign = _get_campaign(session, campaign_id)
     if campaign.state != dm.CampaignState.APPROVED:
         raise ConflictError("campaign must be APPROVED before scheduling")
-    prepared = prepare_campaign(
-        session, campaign, tracking_base_url=request.app.state.settings.tracking_base_url
-    )
+    prepared = prepare_campaign(session, campaign, tracking_base_url=request.app.state.settings.tracking_base_url)
     assignment_ids = [p.assignment_id for p in prepared]
     request.app.state.queue.publish(
         "deliver",
@@ -233,11 +241,15 @@ def schedule_campaign(
         idempotency_key=f"deliver:{campaign_id}",
     )
     campaign.state = dm.CampaignState.SCHEDULED
+    audit.record(
+        actor=principal.principal_id,
+        action="campaign.schedule",
+        object_type="campaign",
+        object_id=str(campaign.campaign_id),
+        detail={"prepared": len(assignment_ids)},
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="campaign.schedule", object_type="campaign",
-                 object_id=str(campaign.campaign_id), detail={"prepared": len(assignment_ids)})
-    return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value,
-            "prepared": len(assignment_ids)}
+    return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value, "prepared": len(assignment_ids)}
 
 
 @router.post("/campaigns/{campaign_id}/test-send", status_code=status.HTTP_200_OK)
@@ -250,8 +262,11 @@ def test_send_campaign(
 ) -> dict[str, Any]:
     campaign = _get_campaign(session, campaign_id)
     prepared = prepare_campaign(
-        session, campaign, tracking_base_url=request.app.state.settings.tracking_base_url,
-        include_test_accounts=True, test_only=True,
+        session,
+        campaign,
+        tracking_base_url=request.app.state.settings.tracking_base_url,
+        include_test_accounts=True,
+        test_only=True,
     )
     assignment_ids = [p.assignment_id for p in prepared]
     request.app.state.queue.publish(
@@ -263,8 +278,13 @@ def test_send_campaign(
         },
         idempotency_key=f"deliver:test:{campaign_id}",
     )
-    audit.record(actor=principal.principal_id, action="campaign.test-send", object_type="campaign",
-                 object_id=str(campaign.campaign_id), detail={"prepared": len(assignment_ids)})
+    audit.record(
+        actor=principal.principal_id,
+        action="campaign.test-send",
+        object_type="campaign",
+        object_id=str(campaign.campaign_id),
+        detail={"prepared": len(assignment_ids)},
+    )
     return {"campaign_id": str(campaign.campaign_id), "prepared": len(assignment_ids)}
 
 
@@ -279,9 +299,13 @@ def recall_campaign(
     if campaign.state in (dm.CampaignState.RECALLED, dm.CampaignState.RECALL_IN_PROGRESS, dm.CampaignState.EXPIRED):
         raise ConflictError(f"campaign already {campaign.state.value}")
     campaign.state = dm.CampaignState.RECALL_IN_PROGRESS
+    audit.record(
+        actor=principal.principal_id,
+        action="campaign.recall",
+        object_type="campaign",
+        object_id=str(campaign.campaign_id),
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="campaign.recall", object_type="campaign",
-                 object_id=str(campaign.campaign_id))
     return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
 
 
@@ -292,8 +316,13 @@ def list_campaigns(
 ) -> list[dict[str, Any]]:
     rows = session.execute(select(Campaign)).scalars().all()
     return [
-        {"campaign_id": str(c.campaign_id), "title": c.title, "state": c.state.value,
-         "schedule_start": c.schedule_start, "schedule_end": c.schedule_end}
+        {
+            "campaign_id": str(c.campaign_id),
+            "title": c.title,
+            "state": c.state.value,
+            "schedule_start": c.schedule_start,
+            "schedule_end": c.schedule_end,
+        }
         for c in rows
     ]
 
@@ -316,9 +345,14 @@ def create_source(
         enabled=False,
     )
     session.add(source)
+    audit.record(
+        actor=principal.principal_id,
+        action="source.create",
+        object_type="source",
+        object_id=str(source.source_id),
+        detail={"base_domain": body.base_domain},
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="source.create", object_type="source",
-                 object_id=str(source.source_id), detail={"base_domain": body.base_domain})
     return {"source_id": str(source.source_id), "enabled": source.enabled}
 
 
@@ -328,10 +362,7 @@ def list_recipients(
     principal: Principal = Depends(require_capability(Capability.VIEW_NAMED_RESULTS)),
 ) -> list[dict[str, Any]]:
     rows = session.execute(select(Recipient)).scalars().all()
-    return [
-        {"recipient_id": str(r.recipient_id), "department": r.department, "status": r.status.value}
-        for r in rows
-    ]
+    return [{"recipient_id": str(r.recipient_id), "department": r.department, "status": r.status.value} for r in rows]
 
 
 @router.post("/recipients/{recipient_id}/exclusions", status_code=status.HTTP_201_CREATED)
@@ -355,9 +386,14 @@ def add_exclusion(
         expires_at=body.expires_at,
     )
     session.add(exclusion)
+    audit.record(
+        actor=principal.principal_id,
+        action="recipient.exclude",
+        object_type="recipient",
+        object_id=recipient_id,
+        detail={"exclusion_type": body.exclusion_type.value},
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="recipient.exclude", object_type="recipient",
-                 object_id=recipient_id, detail={"exclusion_type": body.exclusion_type.value})
     return {"recipient_exclusion_id": str(exclusion.recipient_exclusion_id)}
 
 
@@ -390,9 +426,7 @@ def import_recipients_csv(
             errors.append(f"row {idx}: invalid mailbox {mailbox!r}")
             continue
         mailbox_key = hashlib.sha256(mailbox.lower().encode("utf-8")).hexdigest()
-        existing = session.scalar(
-            select(Recipient).where(Recipient.mailbox_sha256 == mailbox_key)
-        )
+        existing = session.scalar(select(Recipient).where(Recipient.mailbox_sha256 == mailbox_key))
         if existing is not None:
             skipped += 1
             continue
@@ -410,9 +444,14 @@ def import_recipients_csv(
         )
         session.add(recipient)
         created += 1
+    audit.record(
+        actor=principal.principal_id,
+        action="recipient.import",
+        object_type="recipients",
+        object_id="csv",
+        detail={"created": created, "skipped": skipped, "errors": len(errors)},
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="recipient.import", object_type="recipients",
-                 object_id="csv", detail={"created": created, "skipped": skipped, "errors": len(errors)})
     return {"created": created, "skipped": skipped, "errors": errors[:20]}
 
 
@@ -448,9 +487,14 @@ def subscribe_alerts(
             active=True,
         )
         session.add(sub)
+    audit.record(
+        actor=principal.principal_id,
+        action="alerts.subscribe",
+        object_type="campaign",
+        object_id=str(campaign.campaign_id),
+        detail={"channel": body.channel},
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="alerts.subscribe", object_type="campaign",
-                 object_id=str(campaign.campaign_id), detail={"channel": body.channel})
     return {"alert_subscription_id": str(sub.alert_subscription_id), "active": sub.active}
 
 
@@ -465,8 +509,12 @@ def list_alert_subscriptions(
         stmt = stmt.where(AlertSubscription.campaign_id == uuid.UUID(campaign_id))
     rows = session.execute(stmt).scalars().all()
     return [
-        {"alert_subscription_id": str(s.alert_subscription_id), "campaign_id": str(s.campaign_id),
-         "channel": s.channel, "active": s.active}
+        {
+            "alert_subscription_id": str(s.alert_subscription_id),
+            "campaign_id": str(s.campaign_id),
+            "channel": s.channel,
+            "active": s.active,
+        }
         for s in rows
     ]
 
@@ -482,9 +530,14 @@ def unsubscribe_alerts(
     if sub is None:
         raise NotFoundError("subscription not found")
     sub.active = False
+    audit.record(
+        actor=principal.principal_id,
+        action="alerts.unsubscribe",
+        object_type="campaign",
+        object_id=str(sub.campaign_id),
+        detail={"channel": sub.channel},
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="alerts.unsubscribe", object_type="campaign",
-                 object_id=str(sub.campaign_id), detail={"channel": sub.channel})
     return {"alert_subscription_id": subscription_id, "active": False}
 
 
@@ -504,22 +557,39 @@ def preview_template(
 
     tracking_base = request.app.state.settings.tracking_base_url.rstrip("/")
     sample_hash = "preview-" + hashlib.sha256(str(uuid.uuid4()).encode()).hexdigest()[:32]
-    recipient = RecipientContext(first_name="Sample", last_name="Employee", department="Engineering",
-                                 email="sample@example.com")
-    campaign_ctx = CampaignContext(title="Preview campaign", sender_display="IT Security",
-                                   training_domain="training.local")
+    recipient = RecipientContext(
+        first_name="Sample", last_name="Employee", department="Engineering", email="sample@example.com"
+    )
+    campaign_ctx = CampaignContext(
+        title="Preview campaign", sender_display="IT Security", training_domain="training.local"
+    )
     tracking = TrackingContext(
         open_url=f"{tracking_base}/v1/track/open/{sample_hash}",
         click_url=f"{tracking_base}/v1/track/click/{sample_hash}",
         training_url=request.app.state.settings.training_base_url,
     )
     try:
-        subject = _renderer.render(body.subject or "", recipient=recipient, campaign=campaign_ctx,
-                                   tracking=tracking, sender_email="sender@example.com")
-        plain_text = _renderer.render(body.plain_text or "", recipient=recipient, campaign=campaign_ctx,
-                                      tracking=tracking, sender_email="sender@example.com")
-        html = _renderer.render(body.safe_html or "", recipient=recipient, campaign=campaign_ctx,
-                                tracking=tracking, sender_email="sender@example.com")
+        subject = _renderer.render(
+            body.subject or "",
+            recipient=recipient,
+            campaign=campaign_ctx,
+            tracking=tracking,
+            sender_email="sender@example.com",
+        )
+        plain_text = _renderer.render(
+            body.plain_text or "",
+            recipient=recipient,
+            campaign=campaign_ctx,
+            tracking=tracking,
+            sender_email="sender@example.com",
+        )
+        html = _renderer.render(
+            body.safe_html or "",
+            recipient=recipient,
+            campaign=campaign_ctx,
+            tracking=tracking,
+            sender_email="sender@example.com",
+        )
     except Exception as exc:  # noqa: BLE001 - surface template errors to the author
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"subject": subject, "plain_text": plain_text, "safe_html": html}
@@ -532,8 +602,12 @@ def list_templates(
 ) -> list[dict[str, Any]]:
     rows = session.execute(select(TemplateVersion)).scalars().all()
     return [
-        {"template_version_id": str(t.template_version_id), "version": t.version,
-         "subject": t.subject, "approval_state": t.approval_state.value}
+        {
+            "template_version_id": str(t.template_version_id),
+            "version": t.version,
+            "subject": t.subject,
+            "approval_state": t.approval_state.value,
+        }
         for t in rows
     ]
 
@@ -545,8 +619,11 @@ def list_patterns(
 ) -> list[dict[str, Any]]:
     rows = session.execute(select(CampaignPattern)).scalars().all()
     return [
-        {"campaign_pattern_id": str(p.campaign_pattern_id), "lure_category": p.lure_category.value,
-         "approval_state": p.approval_state.value}
+        {
+            "campaign_pattern_id": str(p.campaign_pattern_id),
+            "lure_category": p.lure_category.value,
+            "approval_state": p.approval_state.value,
+        }
         for p in rows
     ]
 
@@ -566,21 +643,22 @@ def approve_pattern(
     pattern.approval_state = dm.PatternApprovalState.APPROVED
     pattern.approved_by = uuid.UUID(principal.principal_id) if principal.principal_id != "anonymous" else None
     pattern.approved_at = datetime.now(UTC)
+    audit.record(
+        actor=principal.principal_id, action="pattern.approve", object_type="campaign_pattern", object_id=pattern_id
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="pattern.approve", object_type="campaign_pattern",
-                 object_id=pattern_id)
     return {"campaign_pattern_id": pattern_id, "approval_state": pattern.approval_state.value}
 
 
 @router.get("/audit", status_code=status.HTTP_200_OK)
 def view_audit(
-    session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
     principal: Principal = Depends(require_capability(Capability.VIEW_AUDIT)),
 ) -> list[dict[str, Any]]:
-    rows = session.execute(select(dm.AuditEvent).limit(500)).scalars().all()
-    return [{"actor": a.actor, "action": a.action, "object_type": a.object_type,
-             "object_id": a.object_id, "occurred_at": a.occurred_at} for a in rows]
+    # CRIT-02: audit rows live on the dedicated audit engine and are not ORM
+    # entities on the application session (previously selected pydantic
+    # `dm.AuditEvent` and 500'd). Read them through the audit store.
+    return audit.list_events(limit=500)
 
 
 @router.post("/audit/verify", status_code=status.HTTP_200_OK)
@@ -608,21 +686,24 @@ def kill_switch(
     from kp_database.models import RecipientAssignment, TrackingToken
 
     now = datetime.now(UTC)
-    rows = session.execute(
-        select(RecipientAssignment).where(
-            RecipientAssignment.send_state == dm.SendState.QUEUED
-        )
-    ).scalars().all()
+    rows = (
+        session.execute(select(RecipientAssignment).where(RecipientAssignment.send_state == dm.SendState.QUEUED))
+        .scalars()
+        .all()
+    )
     for row in rows:
         row.send_state = dm.SendState.EXPIRED
-    tokens = session.execute(
-        select(TrackingToken).where(TrackingToken.status == dm.TokenStatus.ACTIVE)
-    ).scalars().all()
+    tokens = session.execute(select(TrackingToken).where(TrackingToken.status == dm.TokenStatus.ACTIVE)).scalars().all()
     for token in tokens:
         token.status = dm.TokenStatus.KILL_SWITCHED
         token.revoked_at = now
         token.revoked_reason = "kill switch engaged"
+    audit.record(
+        actor=principal.principal_id,
+        action="kill-switch.engage",
+        object_type="system",
+        object_id="delivery",
+        detail={"cancelled": len(rows), "tokens_revoked": len(tokens)},
+    )
     session.commit()
-    audit.record(actor=principal.principal_id, action="kill-switch.engage", object_type="system",
-                 object_id="delivery", detail={"cancelled": len(rows), "tokens_revoked": len(tokens)})
     return {"cancelled": len(rows), "tokens_revoked": len(tokens)}

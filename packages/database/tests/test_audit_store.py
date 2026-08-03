@@ -7,15 +7,25 @@ the database is unreachable so the unit suite still runs anywhere.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
+from dotenv import load_dotenv
 from kp_database.audit_store import AuditStore
 from kp_database.base import Base
 from kp_database.session import create_db_engine
 from sqlalchemy import text
 
-TEST_URL = "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher_test"
-AUDIT_URL = "postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher_test"
-HMAC_KEY = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+
+TEST_URL = os.environ.get(
+    "DATABASE_URL_TEST", "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher_test"
+)
+AUDIT_URL = os.environ.get(
+    "AUDIT_DATABASE_URL_TEST", "postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher_test"
+)
+HMAC_KEY = os.environ.get("AUDIT_HMAC_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").encode()
 
 _available = None
 
@@ -47,7 +57,16 @@ def _create_tables() -> None:
     engine = create_db_engine(TEST_URL)
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
-        conn.execute(text("GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO audit_writer"))
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS audit_chain_head ("
+                "id INTEGER PRIMARY KEY CHECK (id = 1), "
+                "event_hash VARCHAR(64) NOT NULL, "
+                "signature VARCHAR(64), "
+                "signed_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
+        )
+        conn.execute(text("GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO audit_writer"))
     engine.dispose()
 
 
@@ -58,10 +77,12 @@ def test_audit_store_roundtrip_and_chain() -> None:
     engine = create_db_engine(TEST_URL)
     audit = AuditStore(create_db_engine(AUDIT_URL), hmac_key=HMAC_KEY)
 
-    first = audit.record(actor="seed", action="seed.complete", object_type="campaign",
-                         object_id="c1", detail={"pattern": "p1"})
-    second = audit.record(actor="worker", action="campaign.deliver", object_type="campaign",
-                          object_id="c1", detail={"sent": 5})
+    first = audit.record(
+        actor="seed", action="seed.complete", object_type="campaign", object_id="c1", detail={"pattern": "p1"}
+    )
+    second = audit.record(
+        actor="worker", action="campaign.deliver", object_type="campaign", object_id="c1", detail={"sent": 5}
+    )
 
     assert first.prev_hash == "0" * 64
     assert second.prev_hash == first.event_hash
@@ -99,8 +120,6 @@ def test_verify_detects_tampered_detail() -> None:
     audit.record(actor="a", action="campaign.create", object_type="campaign", object_id="c1")
 
     with engine.begin() as conn:
-        conn.execute(
-            text("UPDATE audit_events SET detail = '{\"evil\": true}' WHERE actor = 'a'")
-        )
+        conn.execute(text("UPDATE audit_events SET detail = '{\"evil\": true}' WHERE actor = 'a'"))
     assert audit.verify() != []
     engine.dispose()

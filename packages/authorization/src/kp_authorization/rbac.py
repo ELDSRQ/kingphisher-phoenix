@@ -98,20 +98,49 @@ SUBSCRIBE_ALERTS = Capability.SUBSCRIBE_ALERTS
 _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.SOURCE_CURATOR: frozenset([SUBMIT_SOURCE, MANAGE_SOURCES, APPROVE_PATTERN, VIEW_AGGREGATE]),
     Role.CAMPAIGN_AUTHOR: frozenset([CREATE_CAMPAIGN, VIEW_AGGREGATE]),
-    Role.SECURITY_APPROVER: frozenset([APPROVE_CAMPAIGN, APPROVE_SECURITY, VIEW_NAMED_RESULTS,
-                                       VIEW_AGGREGATE, STOP_CAMPAIGN]),
-    Role.PRIVACY_APPROVER: frozenset([APPROVE_CAMPAIGN, APPROVE_PRIVACY, HANDLE_PRIVACY,
-                                      VIEW_NAMED_RESULTS, VIEW_AGGREGATE, MANAGE_EXCLUSIONS]),
-    Role.CAMPAIGN_OPERATOR: frozenset([SCHEDULE_CAMPAIGN, SEND_CAMPAIGN, STOP_CAMPAIGN,
-                                       USE_KILL_SWITCH, VIEW_AGGREGATE, MANAGE_RECIPIENTS,
-                                       APPROVE_CAMPAIGN, SUBSCRIBE_ALERTS]),
+    Role.SECURITY_APPROVER: frozenset(
+        [APPROVE_CAMPAIGN, APPROVE_SECURITY, VIEW_NAMED_RESULTS, VIEW_AGGREGATE, STOP_CAMPAIGN]
+    ),
+    Role.PRIVACY_APPROVER: frozenset(
+        [APPROVE_CAMPAIGN, APPROVE_PRIVACY, HANDLE_PRIVACY, VIEW_NAMED_RESULTS, VIEW_AGGREGATE, MANAGE_EXCLUSIONS]
+    ),
+    Role.CAMPAIGN_OPERATOR: frozenset(
+        [
+            SCHEDULE_CAMPAIGN,
+            SEND_CAMPAIGN,
+            STOP_CAMPAIGN,
+            USE_KILL_SWITCH,
+            VIEW_AGGREGATE,
+            MANAGE_RECIPIENTS,
+            APPROVE_CAMPAIGN,
+            SUBSCRIBE_ALERTS,
+        ]
+    ),
     Role.AUDITOR: frozenset([VIEW_AUDIT, VIEW_NAMED_RESULTS, VIEW_AGGREGATE]),
-    Role.ADMINISTRATOR: frozenset([
-        APPROVE_CAMPAIGN, APPROVE_SECURITY, APPROVE_PRIVACY, CREATE_CAMPAIGN, SCHEDULE_CAMPAIGN,
-        STOP_CAMPAIGN, SEND_CAMPAIGN, MANAGE_SOURCES, SUBMIT_SOURCE, VIEW_NAMED_RESULTS,
-        VIEW_AGGREGATE, EXPORT_BULK, VIEW_AUDIT, MANAGE_RECIPIENTS, MANAGE_EXCLUSIONS,
-        HANDLE_PRIVACY, APPROVE_PATTERN, MANAGE_ROLES, USE_KILL_SWITCH, SUBSCRIBE_ALERTS,
-    ]),
+    Role.ADMINISTRATOR: frozenset(
+        [
+            APPROVE_CAMPAIGN,
+            APPROVE_SECURITY,
+            APPROVE_PRIVACY,
+            CREATE_CAMPAIGN,
+            SCHEDULE_CAMPAIGN,
+            STOP_CAMPAIGN,
+            SEND_CAMPAIGN,
+            MANAGE_SOURCES,
+            SUBMIT_SOURCE,
+            VIEW_NAMED_RESULTS,
+            VIEW_AGGREGATE,
+            EXPORT_BULK,
+            VIEW_AUDIT,
+            MANAGE_RECIPIENTS,
+            MANAGE_EXCLUSIONS,
+            HANDLE_PRIVACY,
+            APPROVE_PATTERN,
+            MANAGE_ROLES,
+            USE_KILL_SWITCH,
+            SUBSCRIBE_ALERTS,
+        ]
+    ),
 }
 
 
@@ -154,9 +183,7 @@ def require(principal: Principal, capability: Capability) -> None:
 def require_any(principal: Principal, *capabilities: Capability) -> None:
     if not any(principal.can(capability) for capability in capabilities):
         names = ", ".join(f"{c.action}:{c.object}" for c in capabilities)
-        raise AuthorizationError(
-            f"principal {principal.subject_id} lacks any of: {names}"
-        )
+        raise AuthorizationError(f"principal {principal.subject_id} lacks any of: {names}")
 
 
 def self_approval_blocked(principal: Principal, author_id: str, object_type: str) -> None:

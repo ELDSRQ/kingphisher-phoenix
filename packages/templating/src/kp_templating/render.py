@@ -119,26 +119,51 @@ class MessageRenderer:
             if field not in fields:
                 raise TemplateVariableError(f"unauthorized template variable: {'.'.join(chain)}")
 
-    def render(self, source: str, *, recipient: RecipientContext, campaign: CampaignContext,
-               tracking: TrackingContext, sender_email: str) -> str:
+    def render(
+        self,
+        source: str,
+        *,
+        recipient: RecipientContext,
+        campaign: CampaignContext,
+        tracking: TrackingContext,
+        sender_email: str,
+    ) -> str:
         self._validate_names(source)
         context: dict[str, Any] = {}
-        context.update(_make_context("recipient", _RECIPIENT_FIELDS, {
-            "first_name": recipient.first_name,
-            "last_name": recipient.last_name,
-            "department": recipient.department,
-            "email": recipient.email,
-        }))
-        context.update(_make_context("campaign", _CAMPAIGN_FIELDS, {
-            "title": campaign.title,
-            "sender_display": campaign.sender_display,
-            "training_domain": campaign.training_domain,
-        }))
-        context.update(_make_context("tracking", _TRACKING_FIELDS, {
-            "open_url": tracking.open_url,
-            "click_url": tracking.click_url,
-            "training_url": tracking.training_url,
-        }))
+        context.update(
+            _make_context(
+                "recipient",
+                _RECIPIENT_FIELDS,
+                {
+                    "first_name": recipient.first_name,
+                    "last_name": recipient.last_name,
+                    "department": recipient.department,
+                    "email": recipient.email,
+                },
+            )
+        )
+        context.update(
+            _make_context(
+                "campaign",
+                _CAMPAIGN_FIELDS,
+                {
+                    "title": campaign.title,
+                    "sender_display": campaign.sender_display,
+                    "training_domain": campaign.training_domain,
+                },
+            )
+        )
+        context.update(
+            _make_context(
+                "tracking",
+                _TRACKING_FIELDS,
+                {
+                    "open_url": tracking.open_url,
+                    "click_url": tracking.click_url,
+                    "training_url": tracking.training_url,
+                },
+            )
+        )
         context.update(_make_context("sender", _SENDER_FIELDS, {"email": sender_email}))
         template = self._env.from_string(source)
         return template.render(**context)

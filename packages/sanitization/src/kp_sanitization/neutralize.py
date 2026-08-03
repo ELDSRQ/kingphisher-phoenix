@@ -58,9 +58,23 @@ _FAKE_ADMIN_PATTERNS = [
 ]
 
 # Common brands whose punycode/homoglyph lookalikes must never appear in output.
-_PROTECTED_BRANDS = {"microsoft", "google", "apple", "amazon", "linkedin", "dropbox",
-                     "adobe", "okta", "github", "cisco", "zoom", "office", "sharepoint",
-                     "paypal", "netflix"}
+_PROTECTED_BRANDS = {
+    "microsoft",
+    "google",
+    "apple",
+    "amazon",
+    "linkedin",
+    "dropbox",
+    "adobe",
+    "okta",
+    "github",
+    "cisco",
+    "zoom",
+    "office",
+    "sharepoint",
+    "paypal",
+    "netflix",
+}
 
 
 @dataclass

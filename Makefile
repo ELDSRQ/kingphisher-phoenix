@@ -48,10 +48,11 @@ lint:
 typecheck:
 	@$(PY) mypy packages apps
 
+## Static security scanning (fail on findings; tools must be installed).
 security-scan:
-	@$(PY) bandit -r packages apps -q || true
-	@$(PY) semgrep scan --config=auto --error packages apps || true
-	@trivy fs --scanners vuln,secret . || true
+	@$(PY) bandit -r packages apps -q
+	@if command -v semgrep >/dev/null 2>&1; then semgrep scan --config=auto --error packages apps; fi
+	@if command -v trivy >/dev/null 2>&1; then trivy fs --scanners vuln,secret .; fi
 
 ## Database migrations.
 db-migrate:

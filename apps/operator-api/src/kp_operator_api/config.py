@@ -17,10 +17,14 @@ class OperatorApiSettings(BaseSettings):
     audit_database_url: str = "postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher"
     audit_hmac_key: str = ""
     ciphertext_kek: str = ""
+    console_jwt_secret: str = ""
+    oidc_mode: str = "dev"
     oidc_issuer: str = "http://localhost:8443/realms/kingphisher"
     oidc_audience: str = "kp-operator-api"
     log_level: str = "info"
-    rate_limit_per_minute: int = 120
+    rate_limit_user_per_min: int = 120
+    rate_limit_ip_per_min: int = 600
+    max_body_bytes: int = 1_000_000
     redis_url: str = "redis://localhost:6379/0"
     tracking_base_url: str = "http://localhost:8001"
     training_base_url: str = "http://localhost:3000/training/awareness"
@@ -37,3 +41,11 @@ class OperatorApiSettings(BaseSettings):
         if not self.ciphertext_kek:
             raise RuntimeError("OPERATOR_API_CIPHERTEXT_KEK is required")
         return self.ciphertext_kek.encode()
+
+    def require_console_jwt_secret(self) -> bytes:
+        if not self.console_jwt_secret:
+            raise RuntimeError("OPERATOR_API_CONSOLE_JWT_SECRET is required")
+        secret = self.console_jwt_secret.encode()
+        if len(secret) < 32:
+            raise RuntimeError("OPERATOR_API_CONSOLE_JWT_SECRET must be at least 32 bytes")
+        return secret

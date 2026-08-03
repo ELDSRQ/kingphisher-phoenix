@@ -25,42 +25,11 @@ require() {
   fi
 }
 
-bootstrap_env() {
-  require docker
-  require uv
-
-  if [ ! -f "$ENV_FILE" ]; then
-    cp .env.example "$ENV_FILE"
-  fi
-
-  # Generate secrets once, preserving any value already present in .env.
-  if ! grep -q '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" || [ -z "$(grep '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" | cut -d= -f2-)" ]; then
-    HMAC_KEY="$(openssl rand -hex 32)"
-    grep -q '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" \
-      && sed -i '' "s|^OPERATOR_API_AUDIT_HMAC_KEY=.*|OPERATOR_API_AUDIT_HMAC_KEY=$HMAC_KEY|" "$ENV_FILE" \
-      || echo "OPERATOR_API_AUDIT_HMAC_KEY=$HMAC_KEY" >> "$ENV_FILE"
-  fi
-  if ! grep -q '^OPERATOR_API_CIPHERTEXT_KEK=' "$ENV_FILE" || [ -z "$(grep '^OPERATOR_API_CIPHERTEXT_KEK=' "$ENV_FILE" | cut -d= -f2-)" ]; then
-    KEK="$(openssl rand -hex 16)"
-    grep -q '^OPERATOR_API_CIPHERTEXT_KEK=' "$ENV_FILE" \
-      && sed -i '' "s|^OPERATOR_API_CIPHERTEXT_KEK=.*|OPERATOR_API_CIPHERTEXT_KEK=$KEK|" "$ENV_FILE" \
-      || echo "OPERATOR_API_CIPHERTEXT_KEK=$KEK" >> "$ENV_FILE"
-  fi
-  if ! grep -q '^KP_WORKER_AUDIT_HMAC_KEY=' "$ENV_FILE" || [ -z "$(grep '^KP_WORKER_AUDIT_HMAC_KEY=' "$ENV_FILE" | cut -d= -f2-)" ]; then
-    echo "KP_WORKER_AUDIT_HMAC_KEY=$(grep '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" | cut -d= -f2-)" >> "$ENV_FILE"
-  fi
-  if ! grep -q '^KP_WORKER_CIPHERTEXT_KEK=' "$ENV_FILE" || [ -z "$(grep '^KP_WORKER_CIPHERTEXT_KEK=' "$ENV_FILE" | cut -d= -f2-)" ]; then
-    echo "KP_WORKER_CIPHERTEXT_KEK=$(grep '^OPERATOR_API_CIPHERTEXT_KEK=' "$ENV_FILE" | cut -d= -f2-)" >> "$ENV_FILE"
-  fi
-  if ! grep -q '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" || [ -z "$(grep '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" ]; then
-    PASSWORD="$(openssl rand -base64 12 | tr -d '/+=' )"
-    grep -q '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" \
-      && sed -i '' "s|^KP_CONSOLE_PASSWORD=.*|KP_CONSOLE_PASSWORD=$PASSWORD|" "$ENV_FILE" \
-      || echo "KP_CONSOLE_PASSWORD=$PASSWORD" >> "$ENV_FILE"
-  fi
-}
+# shellcheck source=scripts/bootstrap_env.sh
+source "$PROJECT_ROOT/scripts/bootstrap_env.sh"
 
 start_infra() {
+  require docker
   echo "starting infrastructure (postgres, redis, mailpit, mocks)..."
   docker compose up -d postgres redis mailpit otel-collector mock-graph mock-ai mock-idp
   echo "waiting for postgres and redis to be healthy..."
@@ -80,6 +49,7 @@ init_db() {
 }
 
 ensure_venv() {
+  require uv
   if [ ! -d ".venv" ]; then
     echo "creating project virtualenv..."
     uv sync --all-packages

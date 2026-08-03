@@ -27,17 +27,33 @@ from typing import Any
 
 import jwt
 from dotenv import dotenv_values, set_key
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from kp_authorization.rbac import Capability, Principal
 from kp_telemetry.errors import AuthenticationError, PermissionDeniedError
 from pydantic import BaseModel, Field
 
 from kp_operator_api.auth import require_capability
+from kp_operator_api.ratelimit import LoginThrottle
 
 router = APIRouter(prefix="/api/v1/console", tags=["console"])
 
 CONSOLE_PASSWORD_KEY = "KP_CONSOLE_PASSWORD"  # noqa: S105
+# Stable, valid-UUID principal for the browser console operator. Downstream
+# code does `uuid.UUID(principal.principal_id)`; the legacy `console-operator`
+# subject made that raise ValueError (500) and broke self-approval checks.
+CONSOLE_OPERATOR_UUID = "11111111-1111-4111-8111-111111111111"
 _SESSION_TTL_SECONDS = 8 * 60 * 60
+
+_SECRET_KEYS: frozenset[str] = frozenset(
+    {
+        CONSOLE_PASSWORD_KEY,
+        "OPERATOR_API_AUDIT_HMAC_KEY",
+        "OPERATOR_API_CIPHERTEXT_KEK",
+        "OPERATOR_API_CONSOLE_JWT_SECRET",
+        "KP_WORKER_AUDIT_HMAC_KEY",
+        "KP_WORKER_CIPHERTEXT_KEK",
+    }
+)
 
 
 def _env_path(request: Request) -> Path:
@@ -74,52 +90,67 @@ def create_session(
     request: Request,
 ) -> SessionResponse:
     settings = request.app.state.settings
+    if settings.oidc_mode != "dev":
+        raise AuthenticationError("console password login is disabled; sign in via the identity provider")
+    client_ip = request.client.host if request.client else "unknown"
+    throttle: LoginThrottle = request.app.state.login_throttle
+    if throttle.locked(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="too many failed logins; try again later"
+        )
+
     env_path = _env_path(request)
     if not _verify_console_password(env_path, body.password):
+        throttle.record_failure(client_ip)
         raise AuthenticationError("invalid console password")
+    throttle.record_success(client_ip)
 
     now = datetime.datetime.now(datetime.UTC)
     claims = {
-        "sub": "console-operator",
+        "sub": CONSOLE_OPERATOR_UUID,
         "iss": settings.oidc_issuer,
         "aud": settings.oidc_audience,
         "iat": int(now.timestamp()),
         "exp": int(now.timestamp()) + _SESSION_TTL_SECONDS,
         "realm_access": {"roles": ["administrator"]},
     }
-    secret = settings.require_secret_key().hex()
-    token = jwt.encode(claims, secret, algorithm="HS256")
+    token = jwt.encode(claims, settings.require_console_jwt_secret(), algorithm="HS256")
     return SessionResponse(token=token, expires_in=_SESSION_TTL_SECONDS)
 
 
-_ALLOWED_KEYS: frozenset[str] = frozenset({
-    CONSOLE_PASSWORD_KEY,
-    "OPERATOR_API_HOST",
-    "OPERATOR_API_PORT",
-    "OPERATOR_API_OIDC_ISSUER",
-    "OPERATOR_API_OIDC_AUDIENCE",
-    "OPERATOR_API_LOG_LEVEL",
-    "OPERATOR_API_RATE_LIMIT_USER_PER_MIN",
-    "OPERATOR_API_RATE_LIMIT_IP_PER_MIN",
-    "OPERATOR_API_TRACKING_BASE_URL",
-    "OPERATOR_API_TRAINING_BASE_URL",
-    "OPERATOR_API_TRAINING_DOMAINS",
-    "OPERATOR_API_APP_NAME",
-    "OPERATOR_API_DATABASE_URL",
-    "OPERATOR_API_AUDIT_DATABASE_URL",
-    "OPERATOR_API_AUDIT_HMAC_KEY",
-    "OPERATOR_API_CIPHERTEXT_KEK",
-    "TRACKING_API_HOST",
-    "TRACKING_API_PORT",
-    "KP_WORKER_AUDIT_HMAC_KEY",
-    "KP_WORKER_CIPHERTEXT_KEK",
-    "KP_WORKER_POLL_SECONDS",
-    "KP_WORKER_LOG_LEVEL",
-    "MOCK_IDP_URL",
-    "MOCK_GRAPH_URL",
-    "MOCK_AI_URL",
-    "MAILPIT_URL",
-})
+_ALLOWED_KEYS: frozenset[str] = frozenset(
+    {
+        CONSOLE_PASSWORD_KEY,
+        "OPERATOR_API_HOST",
+        "OPERATOR_API_PORT",
+        "OPERATOR_API_OIDC_ISSUER",
+        "OPERATOR_API_OIDC_AUDIENCE",
+        "OPERATOR_API_OIDC_MODE",
+        "OPERATOR_API_LOG_LEVEL",
+        "OPERATOR_API_RATE_LIMIT_USER_PER_MIN",
+        "OPERATOR_API_RATE_LIMIT_IP_PER_MIN",
+        "OPERATOR_API_MAX_BODY_BYTES",
+        "OPERATOR_API_TRACKING_BASE_URL",
+        "OPERATOR_API_TRAINING_BASE_URL",
+        "OPERATOR_API_TRAINING_DOMAINS",
+        "OPERATOR_API_APP_NAME",
+        "OPERATOR_API_AUDIT_HMAC_KEY",
+        "OPERATOR_API_CIPHERTEXT_KEK",
+        "OPERATOR_API_CONSOLE_JWT_SECRET",
+        "TRACKING_API_HOST",
+        "TRACKING_API_PORT",
+        "KP_WORKER_AUDIT_HMAC_KEY",
+        "KP_WORKER_CIPHERTEXT_KEK",
+        "KP_WORKER_POLL_SECONDS",
+        "KP_WORKER_LOG_LEVEL",
+        "MOCK_IDP_URL",
+        "MOCK_GRAPH_URL",
+        "MOCK_AI_URL",
+        "MAILPIT_URL",
+    }
+)
+# Database DSNs embed credentials and are deliberately NOT exposed or writable
+# through the console (rotation happens in .env/run_console.sh).
 
 
 class ConfigPatch(BaseModel):
@@ -134,26 +165,20 @@ class ConfigResponse(BaseModel):
     masked: dict[str, bool]
 
 
-def _mask(value: str) -> str:
-    if len(value) <= 4:
-        return "****"
-    return value[:4] + "****" + value[-4:]
-
-
 @router.get("/config", response_model=ConfigResponse)
 def get_config(
     request: Request,
     _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> ConfigResponse:
     values = _env_values(_env_path(request))
-    secret_keys = {CONSOLE_PASSWORD_KEY, "OPERATOR_API_AUDIT_HMAC_KEY", "OPERATOR_API_CIPHERTEXT_KEK",
-                   "KP_WORKER_AUDIT_HMAC_KEY", "KP_WORKER_CIPHERTEXT_KEK"}
     masked: dict[str, bool] = {}
     display: dict[str, str] = {}
     for key in _ALLOWED_KEYS:
         raw = values.get(key, "")
-        display[key] = _mask(raw) if raw and key in secret_keys else raw
-        masked[key] = key in secret_keys
+        # Secrets are never returned — not even masked — so the GUI cannot
+        # round-trip a masked placeholder back into .env (CRIT-01).
+        display[key] = "" if key in _SECRET_KEYS else raw
+        masked[key] = key in _SECRET_KEYS
     return ConfigResponse(values=display, masked=masked)
 
 
@@ -161,7 +186,7 @@ def get_config(
 def put_config(
     body: ConfigPatch,
     request: Request,
-    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     forbidden = set(body.values) - _ALLOWED_KEYS
     if forbidden:
@@ -169,17 +194,18 @@ def put_config(
 
     env_path = _env_path(request)
     changed: list[str] = []
+    current = _env_values(env_path)
     for key, value in body.values.items():
-        current = _env_values(env_path).get(key, "")
-        if value == current:
+        if key in _SECRET_KEYS and not value:
+            continue  # blank secret means "keep the current value"
+        if value == current.get(key, ""):
             continue
         set_key(str(env_path), key, value)
         changed.append(key)
 
-    # The console operator changes the console password; the next login uses it.
     audit = request.app.state.audit_store
     audit.record(
-        actor="console-operator",
+        actor=principal.principal_id,
         action="console.config.update",
         object_type="system",
         object_id=".env",

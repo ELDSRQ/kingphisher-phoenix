@@ -149,6 +149,10 @@ ok "project virtualenv ready"
 # --------------------------------------------------------------------------
 # 5. Local infrastructure
 # --------------------------------------------------------------------------
+# shellcheck source=scripts/bootstrap_env.sh
+source "$PROJECT_ROOT/scripts/bootstrap_env.sh"
+bootstrap_env
+
 step "starting infrastructure (postgres, redis, mailpit, mocks)"
 dc up -d postgres redis mailpit otel-collector mock-graph mock-ai mock-idp
 

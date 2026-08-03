@@ -22,6 +22,10 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+
 from kp_campaign_patterns.builder import build_pattern_candidate  # noqa: E402
 from kp_database.audit_store import AuditStore  # noqa: E402
 from kp_database.models import (  # noqa: E402
@@ -50,12 +54,17 @@ DEV_HMAC_KEY = os.environ.get(
 ).encode()
 DEV_KEK = os.environ.get("SEED_CIPHERTEXT_KEK", "0123456789abcdef0123456789abcdef").encode()
 
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher")
+AUDIT_DATABASE_URL = os.environ.get(
+    "AUDIT_DATABASE_URL", "postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher"
+)
+
 
 def main() -> None:
-    engine = create_db_engine("postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher")
+    engine = create_db_engine(DATABASE_URL)
     session = make_session_factory(engine)()
     audit = AuditStore(
-        create_db_engine("postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher"),
+        create_db_engine(AUDIT_DATABASE_URL),
         hmac_key=DEV_HMAC_KEY,
     )
     CipherText.configure_key(DEV_KEK)
@@ -68,10 +77,17 @@ def main() -> None:
         _seed_recipients(session)
         _seed_approvals(session, campaign.campaign_id, template.template_version_id)
 
-        audit.record(actor=SOURCE_OWNER, action="seed.complete", object_type="campaign",
-                     object_id=str(campaign.campaign_id),
-                     detail={"source": str(source_id), "pattern": str(pattern.campaign_pattern_id),
-                             "template": str(template.template_version_id)})
+        audit.record(
+            actor=SOURCE_OWNER,
+            action="seed.complete",
+            object_type="campaign",
+            object_id=str(campaign.campaign_id),
+            detail={
+                "source": str(source_id),
+                "pattern": str(pattern.campaign_pattern_id),
+                "template": str(template.template_version_id),
+            },
+        )
         session.commit()
 
         assignment_ids, token_hashes = _prepare_campaign(session)
@@ -79,9 +95,11 @@ def main() -> None:
         session.close()
         engine.dispose()
 
-    print("seed complete:"
-          f" source={source_id} pattern={pattern.campaign_pattern_id}"
-          f" template={template.template_version_id} campaign={campaign.campaign_id}")
+    print(
+        "seed complete:"
+        f" source={source_id} pattern={pattern.campaign_pattern_id}"
+        f" template={template.template_version_id} campaign={campaign.campaign_id}"
+    )
     _ = assignment_ids
     print(f"prepared campaign with {len(token_hashes)} tracking tokens")
 
@@ -115,22 +133,24 @@ def _seed_pattern(session: Session, source_id: UUID) -> CampaignPattern:
         "attackers urge immediate payment through a phishing link."
     )
     item.content_hash = hashlib.sha256(item.sanitized_text.encode("utf-8")).hexdigest()
-    session.add(SourceItem(
-        source_item_id=item.source_item_id,
-        source_id=source_id,
-        publisher="kaspersky.com",
-        title=item.title,
-        published_at=item.published_at,
-        retrieved_at=item.retrieved_at,
-        sanitized_text=item.sanitized_text,
-        content_hash=item.content_hash,
-        source_reference=item.source_reference,
-        confidence=dm.Confidence.HIGH,
-        claimed_actor="FinanciallyMotivated",
-        claimed_target_sector="finance",
-        extracted_indicators={},
-        quarantine_state=dm.QuarantineState.ACTIVE,
-    ))
+    session.add(
+        SourceItem(
+            source_item_id=item.source_item_id,
+            source_id=source_id,
+            publisher="kaspersky.com",
+            title=item.title,
+            published_at=item.published_at,
+            retrieved_at=item.retrieved_at,
+            sanitized_text=item.sanitized_text,
+            content_hash=item.content_hash,
+            source_reference=item.source_reference,
+            confidence=dm.Confidence.HIGH,
+            claimed_actor="FinanciallyMotivated",
+            claimed_target_sector="finance",
+            extracted_indicators={},
+            quarantine_state=dm.QuarantineState.ACTIVE,
+        )
+    )
     session.flush()
 
     candidate = build_pattern_candidate(item)
@@ -279,16 +299,18 @@ def _seed_approvals(session: Session, campaign_id: UUID, template_id: UUID) -> N
         return
     now = datetime.now(UTC)
     for approval_type in (dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY, dm.ApprovalType.HR):
-        session.add(CampaignApproval(
-            campaign_approval_id=uuid4(),
-            campaign_id=campaign_id,
-            approval_type=approval_type,
-            approver_id=uuid5(NAMESPACE_URL, f"seed-approver-{approval_type.value}"),
-            decision=dm.ApprovalDecision.APPROVED,
-            rationale="seed demo dataset",
-            decided_at=now,
-            template_version_id=template_id,
-        ))
+        session.add(
+            CampaignApproval(
+                campaign_approval_id=uuid4(),
+                campaign_id=campaign_id,
+                approval_type=approval_type,
+                approver_id=uuid5(NAMESPACE_URL, f"seed-approver-{approval_type.value}"),
+                decision=dm.ApprovalDecision.APPROVED,
+                rationale="seed demo dataset",
+                decided_at=now,
+                template_version_id=template_id,
+            )
+        )
     session.commit()
 
 

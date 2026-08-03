@@ -55,8 +55,9 @@ class _SessionFactory(Protocol):
 
 
 class WorkerContext:
-    def __init__(self, settings: WorkerSettings, session_factory: _SessionFactory,
-                 audit_store: AuditStore, queue: JobQueue) -> None:
+    def __init__(
+        self, settings: WorkerSettings, session_factory: _SessionFactory, audit_store: AuditStore, queue: JobQueue
+    ) -> None:
         self.settings = settings
         self.session_factory = session_factory
         self.audit_store = audit_store
@@ -78,10 +79,16 @@ def process_ingestion(ctx: WorkerContext, message: dict[str, Any]) -> None:
             logger.info("source %s disabled; skipping", source_id)
             return
         fetcher = _make_fetcher(source)
-        adapter = RssAdapter(source=dm.Source(
-            source_id=source.source_id, source_key=source.source_key, name=source.name,
-            source_type=source.source_type, base_domain=source.base_domain,
-        ), fetcher=fetcher)
+        adapter = RssAdapter(
+            source=dm.Source(
+                source_id=source.source_id,
+                source_key=source.source_key,
+                name=source.name,
+                source_type=source.source_type,
+                base_domain=source.base_domain,
+            ),
+            fetcher=fetcher,
+        )
         items = adapter.fetch()
         inserted = 0
         patterns = 0
@@ -104,8 +111,13 @@ def process_ingestion(ctx: WorkerContext, message: dict[str, Any]) -> None:
         source.last_attempt_at = datetime.now(UTC)
         source.consecutive_failures = 0
         session.commit()
-    ctx.audit_store.record(actor="worker:ingestion", action="ingest.run", object_type="source",
-                           object_id=source_id, detail={"inserted": inserted, "patterns": patterns})
+    ctx.audit_store.record(
+        actor="worker:ingestion",
+        action="ingest.run",
+        object_type="source",
+        object_id=source_id,
+        detail={"inserted": inserted, "patterns": patterns},
+    )
 
 
 def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
@@ -141,8 +153,9 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
         session.add(template)
         session.commit()
         template_id = template.template_version_id
-    ctx.audit_store.record(actor="worker:generation", action="template.generate", object_type="template",
-                           object_id=str(template_id))
+    ctx.audit_store.record(
+        actor="worker:generation", action="template.generate", object_type="template", object_id=str(template_id)
+    )
 
 
 def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
@@ -165,32 +178,46 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         pattern = session.get(CampaignPattern, campaign.pattern_id) if campaign.pattern_id else None
         spf = check_spf_for_mailbox(campaign.sender_mailbox)
         if not spf.has_spf:
-            logger.warning(
-                "SPF pre-flight: %s publishes no SPF record; delivery may be flagged", spf.domain
-            )
+            logger.warning("SPF pre-flight: %s publishes no SPF record; delivery may be flagged", spf.domain)
         sent = 0
+        failed = 0
         for assignment_id in assignment_ids:
             assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
             if assignment is None or assignment.send_state != dm.SendState.QUEUED:
                 continue
             token = session.scalar(
-                select(TrackingToken).where(
-                    TrackingToken.recipient_assignment_id == assignment.recipient_assignment_id
-                )
+                select(TrackingToken).where(TrackingToken.recipient_assignment_id == assignment.recipient_assignment_id)
             )
             recipient = session.get(Recipient, assignment.recipient_id)
             if token is None or recipient is None or recipient.status != dm.RecipientStatus.ACTIVE:
                 assignment.send_state = dm.SendState.FAILED
+                failed += 1
                 continue
-            _send_email(ctx, campaign, template, pattern, assignment, recipient, token)
-            assignment.send_state = dm.SendState.DELIVERED
-            sent += 1
+            try:
+                _send_email(ctx, campaign, template, pattern, assignment, recipient, token)
+                assignment.send_state = dm.SendState.DELIVERED
+                sent += 1
+            except Exception:  # noqa: BLE001 - per-recipient isolation: one bad
+                # recipient must not roll back the whole batch or drop the message
+                logger.exception("delivery failed for recipient %s; marking FAILED", recipient.mailbox)
+                assignment.send_state = dm.SendState.FAILED
+                failed += 1
+            session.commit()
         campaign.state = dm.CampaignState.ACTIVE
         session.commit()
-    ctx.audit_store.record(actor="worker:delivery", action="campaign.deliver", object_type="campaign",
-                           object_id=campaign_id,
-                           detail={"sent": sent, "template_hash": template_hash,
-                                   "spf_has_record": spf.has_spf, "spf_domain": spf.domain})
+    ctx.audit_store.record(
+        actor="worker:delivery",
+        action="campaign.deliver",
+        object_type="campaign",
+        object_id=campaign_id,
+        detail={
+            "sent": sent,
+            "failed": failed,
+            "template_hash": template_hash,
+            "spf_has_record": spf.has_spf,
+            "spf_domain": spf.domain,
+        },
+    )
 
 
 def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
@@ -198,12 +225,16 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
     policy_id = payload.get("retention_policy_id", "default")
     with ctx.session_factory() as session:
         expired = datetime.now(UTC)
-        rows = list(session.execute(
-            select(RecipientAssignment).where(
-                RecipientAssignment.send_state == dm.SendState.DELIVERED,
-                RecipientAssignment.created_at < expired,
+        rows = list(
+            session.execute(
+                select(RecipientAssignment).where(
+                    RecipientAssignment.send_state == dm.SendState.DELIVERED,
+                    RecipientAssignment.created_at < expired,
+                )
             )
-        ).scalars().all()[:1000])
+            .scalars()
+            .all()[:1000]
+        )
         for row in rows:
             session.delete(row)
         action = RetentionAction(
@@ -216,21 +247,28 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
         )
         session.add(action)
         session.commit()
-    ctx.audit_store.record(actor="worker:retention", action="retention.run", object_type="system",
-                           object_id=policy_id, detail={"deleted": len(rows)})
+    ctx.audit_store.record(
+        actor="worker:retention",
+        action="retention.run",
+        object_type="system",
+        object_id=policy_id,
+        detail={"deleted": len(rows)},
+    )
 
 
 def process_mailbox(ctx: WorkerContext, message: dict[str, Any]) -> None:
     # Mailpit API lists captured messages in the training mailbox. In the
     # foundation build we record a heartbeat; reply ingestion is wired to
     # Mailpit's API in a later wave.
-    ctx.audit_store.record(actor="worker:mailbox", action="mailbox.poll", object_type="system",
-                           object_id="training-mailbox", detail={})
+    ctx.audit_store.record(
+        actor="worker:mailbox", action="mailbox.poll", object_type="system", object_id="training-mailbox", detail={}
+    )
 
 
 def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
-    ctx.audit_store.record(actor="worker:reminder", action="training.remind", object_type="system",
-                           object_id="training", detail={})
+    ctx.audit_store.record(
+        actor="worker:reminder", action="training.remind", object_type="system", object_id="training", detail={}
+    )
 
 
 def _make_fetcher(source: SourceRow) -> Any:
@@ -251,9 +289,15 @@ def _call_ai(ctx: WorkerContext, pattern_id: str) -> dict[str, Any]:
     return dict(resp.json())
 
 
-def _send_email(ctx: WorkerContext, campaign: Campaign, template: TemplateVersion,
-                pattern: CampaignPattern | None, assignment: RecipientAssignment,
-                recipient: Recipient, token: TrackingToken) -> None:
+def _send_email(
+    ctx: WorkerContext,
+    campaign: Campaign,
+    template: TemplateVersion,
+    pattern: CampaignPattern | None,
+    assignment: RecipientAssignment,
+    recipient: Recipient,
+    token: TrackingToken,
+) -> None:
     tracking_base = ctx.settings.tracking_base_url.rstrip("/")
     tracking = TrackingContext(
         open_url=f"{tracking_base}/v1/track/open/{token.token_hash}",
@@ -268,22 +312,20 @@ def _send_email(ctx: WorkerContext, campaign: Campaign, template: TemplateVersio
     campaign_ctx = CampaignContext(
         title=campaign.title,
         sender_display=(
-            pattern.impersonation_category
-            if pattern and pattern.impersonation_category
-            else campaign.sender_mailbox
+            pattern.impersonation_category if pattern and pattern.impersonation_category else campaign.sender_mailbox
         ),
         training_domain=campaign.training_domain,
     )
-    subject = _render_or_plain(ctx, template.subject or campaign.title, recipient_ctx, campaign_ctx, tracking,
-                                recipient.mailbox or "")
-    plain_text = _render_or_plain(ctx, template.plain_text or "", recipient_ctx, campaign_ctx, tracking,
-                                  recipient.mailbox or "")
-    html = _render_or_plain(ctx, template.safe_html or "", recipient_ctx, campaign_ctx, tracking,
-                            recipient.mailbox or "")
-    pixel_tag = (
-        f'<img src="{tracking.open_url}" width="1" height="1" '
-        'style="display:none" alt="" />'
+    subject = _render_or_plain(
+        ctx, template.subject or campaign.title, recipient_ctx, campaign_ctx, tracking, recipient.mailbox or ""
     )
+    plain_text = _render_or_plain(
+        ctx, template.plain_text or "", recipient_ctx, campaign_ctx, tracking, recipient.mailbox or ""
+    )
+    html = _render_or_plain(
+        ctx, template.safe_html or "", recipient_ctx, campaign_ctx, tracking, recipient.mailbox or ""
+    )
+    pixel_tag = f'<img src="{tracking.open_url}" width="1" height="1" style="display:none" alt="" />'
     if html and "</body>" in html.lower():
         html = html.replace("</body>", f"{pixel_tag}</body>", 1)
     elif html:
@@ -303,33 +345,54 @@ def _send_email(ctx: WorkerContext, campaign: Campaign, template: TemplateVersio
             event_title=subject or "Security awareness session",
             description=f"Training session for {campaign.title}.",
         )
-        msg.add_attachment(ics_text.encode("utf-8"), maintype="text", subtype="calendar",
-                           filename=f"invite-{uid[:12]}.ics")
+        msg.add_attachment(
+            ics_text.encode("utf-8"), maintype="text", subtype="calendar", filename=f"invite-{uid[:12]}.ics"
+        )
     with smtplib.SMTP(ctx.settings.mailpit_smtp, timeout=5) as smtp:
         smtp.send_message(msg)
 
 
-def _render_or_plain(ctx: WorkerContext, source: str, recipient_ctx: RecipientContext,
-                     campaign_ctx: CampaignContext, tracking: TrackingContext, sender_email: str) -> str:
+def _render_or_plain(
+    ctx: WorkerContext,
+    source: str,
+    recipient_ctx: RecipientContext,
+    campaign_ctx: CampaignContext,
+    tracking: TrackingContext,
+    sender_email: str,
+) -> str:
     try:
-        return _renderer.render(source, recipient=recipient_ctx, campaign=campaign_ctx,
-                                tracking=tracking, sender_email=sender_email)
-    except Exception as exc:  # noqa: BLE001 - a bad template must fail the message, not the worker
+        return _renderer.render(
+            source, recipient=recipient_ctx, campaign=campaign_ctx, tracking=tracking, sender_email=sender_email
+        )
+    except Exception as exc:  # noqa: BLE001 - surfaced to the delivery loop, which
+        # marks the recipient FAILED and continues; never silently dropped
         logger.error("template rendering failed: %s", exc)
         raise
 
 
-def run_loop(ctx: WorkerContext, topic: str,
-             process: Callable[[WorkerContext, dict[str, Any]], None]) -> None:
+def run_loop(ctx: WorkerContext, topic: str, process: Callable[[WorkerContext, dict[str, Any]], None]) -> None:
     logger.info("worker %s listening on %s", ctx.settings.worker_name, topic)
+    polls_since_recovery = 0
     while True:
+        message: dict[str, Any] | None = None
         try:
             message = ctx.queue.pop(topic, timeout=ctx.settings.poll_seconds)
             if message is None:
+                polls_since_recovery += 1
+                if polls_since_recovery >= ctx.settings.recovery_every_polls:
+                    recovered = ctx.queue.recover_stale(topic, visibility_seconds=ctx.settings.visibility_seconds)
+                    if recovered:
+                        logger.warning("recovered %d stale claims on %s", recovered, topic)
+                    polls_since_recovery = 0
                 continue
             process(ctx, message)
+            ctx.queue.ack(topic, message)
         except SafetyRejectionError:
-            logger.error("safety rejection in %s", topic, exc_info=True)
+            logger.error("safety rejection in %s; rejecting message", topic, exc_info=True)
+            if message is not None:
+                ctx.queue.reject(topic, message, max_retries=ctx.settings.max_retries)
         except Exception:  # noqa: BLE001 - keep the worker alive, surface the failure
-            logger.exception("unhandled error in %s", topic)
+            logger.exception("unhandled error in %s; rejecting message", topic)
+            if message is not None:
+                ctx.queue.reject(topic, message, max_retries=ctx.settings.max_retries)
         time.sleep(0.1)

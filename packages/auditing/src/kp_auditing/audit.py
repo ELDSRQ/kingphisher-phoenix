@@ -24,8 +24,9 @@ GENESIS_HASH = "0" * 64
 _HMAC_KEY_LEN = 32
 
 
-def canonical_bytes(actor: str, action: str, object_type: str, object_id: str,
-                    occurred_at: datetime, detail: dict[str, Any]) -> bytes:
+def canonical_bytes(
+    actor: str, action: str, object_type: str, object_id: str, occurred_at: datetime, detail: dict[str, Any]
+) -> bytes:
     """Deterministic canonical encoding for hashing (field order fixed)."""
     occurred = occurred_at if occurred_at.tzinfo else occurred_at.replace(tzinfo=UTC)
     parts = [
@@ -81,8 +82,12 @@ class AuditRecord:
     @property
     def body_bytes(self) -> bytes:
         return canonical_bytes(
-            self.actor, self.action, self.object_type, self.object_id,
-            self.occurred_at, self.detail,
+            self.actor,
+            self.action,
+            self.object_type,
+            self.object_id,
+            self.occurred_at,
+            self.detail,
         )
 
     def as_row(self) -> dict[str, Any]:
@@ -122,9 +127,16 @@ class AuditWriter:
     def prev_hash(self) -> str:
         return self._prev_hash
 
-    def append(self, actor: str, action: str, object_type: str, object_id: str,
-               outcome: str = "success", detail: dict[str, Any] | None = None,
-               occurred_at: datetime | None = None) -> AuditRecord:
+    def append(
+        self,
+        actor: str,
+        action: str,
+        object_type: str,
+        object_id: str,
+        outcome: str = "success",
+        detail: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> AuditRecord:
         detail = dict(detail or {})
         occurred_at = occurred_at or datetime.now(UTC)
         nonce = make_nonce()
@@ -160,8 +172,9 @@ class AuditVerifier:
     Records must be supplied in insertion order (by `audit_event_id` as persisted).
     """
 
-    def verify(self, records: Sequence[AuditRecord] | Iterable[dict[str, Any]],
-               genesis: str = GENESIS_HASH) -> VerificationResult:
+    def verify(
+        self, records: Sequence[AuditRecord] | Iterable[dict[str, Any]], genesis: str = GENESIS_HASH
+    ) -> VerificationResult:
         expected = genesis
         count = 0
         for raw in records:

@@ -23,8 +23,7 @@ class AdapterError(Exception):
 class SourceAdapter(Protocol):
     source_type: dm.SourceType
 
-    def fetch(self) -> list[dm.SourceItem]:
-        ...
+    def fetch(self) -> list[dm.SourceItem]: ...
 
 
 class RssAdapter:
@@ -38,7 +37,7 @@ class RssAdapter:
         self._limit = limit
 
     def fetch(self) -> list[dm.SourceItem]:
-        result = self._fetcher.fetch(self._source.base_domain)
+        result = self._fetcher.fetch(f"https://{self._source.base_domain}")
         text = result.content.decode("utf-8", errors="replace")
         plain = sanitize_html(text)
         # Minimal XML-item extraction; the curation step later maps to patterns.
@@ -84,10 +83,12 @@ def _extract_items(plain: str, *, limit: int) -> list[_ExtractedItem]:
         lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
         if not lines:
             continue
-        items.append({
-            "title": lines[0][:255],
-            "body": block,
-            "link": "",
-            "published_at": datetime.now(UTC),
-        })
+        items.append(
+            {
+                "title": lines[0][:255],
+                "body": block,
+                "link": "",
+                "published_at": datetime.now(UTC),
+            }
+        )
     return items

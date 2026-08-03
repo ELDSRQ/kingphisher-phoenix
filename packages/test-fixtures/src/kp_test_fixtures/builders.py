@@ -26,8 +26,9 @@ def make_recipient(index: int, *, department: str = "Engineering") -> dict[str, 
     }
 
 
-def make_source_item(index: int, *, actor: str = "FinanciallyMotivated",
-                     source_id: UUID | None = None) -> dm.SourceItem:
+def make_source_item(
+    index: int, *, actor: str = "FinanciallyMotivated", source_id: UUID | None = None
+) -> dm.SourceItem:
     body = (
         f"Advisory {index}: observed {actor} campaign using credential "
         f"harvesting lure referencing invoice for index {index}."
@@ -55,12 +56,11 @@ def make_source_item(index: int, *, actor: str = "FinanciallyMotivated",
 
 def make_send_batch_event(index: int) -> EventEnvelope:
     return build_envelope(
-        schema="campaign.send_batch",
+        schema="campaign.send_batch@1.0",
         payload={
-            "campaign_id": f"c_{index:04d}",
-            "batch_id": f"b_{index:04d}",
-            "recipient_assignment_ids": [f"r_{index:04d}"],
-            "template_hash": hashlib.sha256(f"template-{index}".encode()).hexdigest(),
+            "campaign_id": str(uuid5(NAMESPACE_URL, f"campaign-{index}")),
+            "batch_size": 1,
+            "manifest_hash": hashlib.sha256(f"template-{index}".encode()).hexdigest(),
         },
         idempotency_key=f"send-{index:04d}",
     )
@@ -68,13 +68,13 @@ def make_send_batch_event(index: int) -> EventEnvelope:
 
 def make_tracking_event(index: int) -> EventEnvelope:
     return build_envelope(
-        schema="events.tracking",
+        schema="events.tracking@1.0",
         payload={
+            "event_id": str(uuid5(NAMESPACE_URL, f"event-{index}")),
             "event_type": "opened",
-            "token_hash": hashlib.sha256(f"token-{index}".encode()).hexdigest(),
+            "token_prefix": f"tok{index:03d}"[:6],
+            "confidence": "medium" if index % 2 else "low",
             "occurred_at": datetime.now(UTC).isoformat(),
-            "client_ip": "203.0.113.10",
-            "user_agent": "kingphisher-test-agent/1.0",
         },
         idempotency_key=f"evt-{index:04d}",
     )

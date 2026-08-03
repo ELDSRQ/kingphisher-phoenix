@@ -13,12 +13,36 @@ from urllib.parse import parse_qsl, urlparse
 from bs4 import BeautifulSoup, Comment
 
 REMOVE_TAGS = {"script", "style", "form", "iframe", "object", "embed", "svg", "math", "noscript"}
-REMOVE_ATTRS = {"onerror", "onload", "onclick", "onmouseover", "onmouseout", "onfocus", "onblur",
-                "onchange", "onsubmit", "onkeydown", "onkeyup", "onkeypress", "oninput",
-                "srcdoc", "formaction"}
+REMOVE_ATTRS = {
+    "onerror",
+    "onload",
+    "onclick",
+    "onmouseover",
+    "onmouseout",
+    "onfocus",
+    "onblur",
+    "onchange",
+    "onsubmit",
+    "onkeydown",
+    "onkeyup",
+    "onkeypress",
+    "oninput",
+    "srcdoc",
+    "formaction",
+}
 REMOVED_EVENT_PREFIX = "on"
-TRACKING_PARAMS = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-                   "ref", "spm", "mtm_source", "mc_cid", "mc_eid"}
+TRACKING_PARAMS = {
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "ref",
+    "spm",
+    "mtm_source",
+    "mc_cid",
+    "mc_eid",
+}
 
 
 class SanitizationError(Exception):

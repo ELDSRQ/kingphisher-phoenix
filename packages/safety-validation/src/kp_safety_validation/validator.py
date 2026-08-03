@@ -8,24 +8,109 @@ software-installation requests, and command-execution requests.
 The validator is fully deterministic — it never uses an AI model — and cannot
 be bypassed by operator editing (the same validator runs on edited content at
 save time and on the approved template hash before delivery).
+
+Anti-evasion hardening:
+- HTML entities are decoded before pattern matching (``https&#58;//``,
+  ``&#112;&#97;&#115;&#115;`` render to the strings the victim's client sees).
+- Unicode NFKC normalization plus a Cyrillic->Latin fold defeats homoglyphs.
+- Percent-encoded schemes (``https%3A%2F%2F``), scheme-less ``www.`` links,
+  href/src attribute values, and trailing-dot FQDNs are all checked.
 """
 
 from __future__ import annotations
 
+import contextlib
+import html
+import ipaddress
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 # External link detection: anything with a scheme-host that is not on the
 # approved training-domain allowlist is rejected.
 URL_SHORTENER_HOSTS = {
-    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly",
-    "rb.gy", "shorturl.at", "cutt.ly", "tiny.cc", "sniply.in", "x.co",
+    "bit.ly",
+    "tinyurl.com",
+    "t.co",
+    "goo.gl",
+    "ow.ly",
+    "is.gd",
+    "buff.ly",
+    "rb.gy",
+    "shorturl.at",
+    "cutt.ly",
+    "tiny.cc",
+    "sniply.in",
+    "x.co",
+    "t.ly",
+    "rebrand.ly",
+    "tiny.one",
+    "dub.sh",
+    "bl.ink",
+    "clicky.me",
+    "go2l.ink",
+    "j.mp",
+    "lnkd.in",
+    "po.st",
+    "qr.ae",
+    "short.cm",
+    "smarturl.it",
+    "snip.ly",
+    "t2m.io",
+    "u.nu",
+    "v.gd",
+    "vgd.me",
+    "yep.it",
+    "kutt.it",
+    "soo.gd",
+    "tr.im",
+    "zurl.ws",
+    "adf.ly",
+    "shorte.st",
+    "bc.vc",
+    "bit.do",
+}
+
+# Visual-homoglyph fold for Cyrillic letters that render identically to Latin.
+# Applied only for detection; the original text is never modified downstream.
+_HOMOGLYPH_FOLD = {
+    0x0410: "A",
+    0x0412: "B",
+    0x0415: "E",
+    0x041A: "K",
+    0x041C: "M",
+    0x041D: "H",
+    0x041E: "O",
+    0x0420: "P",
+    0x0421: "C",
+    0x0422: "T",
+    0x0425: "X",
+    0x0423: "Y",
+    0x0430: "a",
+    0x0435: "e",
+    0x043A: "k",
+    0x043C: "m",
+    0x043D: "h",
+    0x043E: "o",
+    0x0440: "p",
+    0x0441: "c",
+    0x0442: "t",
+    0x0443: "y",
+    0x0445: "x",
+    0x0456: "i",
+    0x0458: "j",
+    0x045C: "k",
+    0x044D: "a",
+    0x044F: "a",
+    0x0451: "e",
+    0x04AF: "u",
 }
 
 _COMMAND_PATTERNS = [
     re.compile(r"\b(powershell|cmd\.exe|bash\s+-c|sh\s+-c|python\s+-c|curl\b.*\|\s*(bash|sh))\b", re.I),
     re.compile(r"\b(wscript|mshta|rundll32|cscript)\b", re.I),
+    re.compile(r"\b(iex|invoke-expression|invoke-webrequest|iwr|bitsadmin|certutil|regsvr32|wmic)\b", re.I),
 ]
 
 _SOFTWARE_INSTALL_PATTERNS = [
@@ -42,7 +127,7 @@ _FINANCIAL_PATTERNS = [
 
 _CREDENTIAL_PATTERNS = [
     re.compile(r"\b(password|passcode|pin)\b", re.I),
-    re.compile(r"\b(one-time|mfa|otp|2fa|two-factor|verification)\s*(code|code)\b", re.I),
+    re.compile(r"\b(one-time|mfa|otp|2fa|two-factor|verification)\s*code\b", re.I),
     re.compile(r"\bsign\s+in\b.*\b(password|credentials)\b", re.I),
     re.compile(r"\blogin\s+(id|username)\b", re.I),
 ]
@@ -60,7 +145,50 @@ _SENSITIVE_EMPLOYEE_PATTERNS = [
 
 QR_CODE_PATTERN = re.compile(r"\b(qr\s*code|qrcode)\b", re.I)
 JAVASCRIPT_PATTERN = re.compile(r"\bjavascript\s*:", re.I)
+SCRIPT_URI_PATTERN = re.compile(r"\b(vbscript|data|file)\s*:", re.I)
 MACRO_PATTERN = re.compile(r"\b(macro|vba|enable\s+content)\b", re.I)
+
+# Explicit-scheme URLs (also data:/file:/vbscript:) plus the scheme-less link
+# shapes that mail clients auto-linkify or that appear in href attributes.
+_SCHEME_URL_RE = re.compile(r"(?:https?|ftp|data|file|vbscript):[^\s<>\"']+", re.I)
+_PERCENT_SCHEME_RE = re.compile(r"https?%3A%2F%2F[^\s<>\"']+", re.I)
+_WWW_HOST_RE = re.compile(r"\bwww\.[a-z0-9](?:[a-z0-9.-]{0,253})?[a-z0-9]", re.I)
+_HREF_RE = re.compile(r"\b(?:href|src)\s*=\s*[\"']?([^\"'>\s][^\"'>\s]*)", re.I)
+_BARE_HOST_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b", re.I)
+
+
+def _normalize(text: str) -> str:
+    """Fold a message into the shape the recipient's client renders.
+
+    HTML-entity decoding first (so ``&#112;&#97;&#115;&#115;`` becomes
+    ``pass``), then NFKC normalization, then a Cyrillic homoglyph fold so
+    ``pаssword`` matches ``password``. NFKC also collapses fullwidth and
+    compatibility characters used to smuggle keywords past the regexes.
+    """
+    decoded = html.unescape(text)
+    normalized = unicodedata.normalize("NFKC", decoded)
+    return normalized.translate(_HOMOGLYPH_FOLD)
+
+
+def _clean_host(host: str) -> str:
+    host = host.strip().strip(".").lower()
+    if host.endswith("."):
+        host = host[:-1]
+    with contextlib.suppress(UnicodeError):
+        host = host.encode("idna").decode("ascii")
+    return host
+
+
+def _looks_like_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+class SafetyValidatorError(Exception):
+    """Raised when a safety-critical input cannot be checked (fail closed)."""
 
 
 @dataclass
@@ -76,18 +204,72 @@ class SafetyValidator:
     training_domains: set[str]
     allow_qr_codes: bool = False
 
-    def validate(self, subject: str | None, plain_text: str, html: str | None = None,
-                 attachments: list[str] | None = None) -> SafetyVerdict:
-        reasons: list[str] = []
-        haystack = "\n".join(x for x in (subject, plain_text, html) if x)
+    def _allowed_host(self, host: str) -> bool:
+        host = _clean_host(host)
+        if not host or host.startswith((".", "-")):
+            return False
+        return any(host == d or host.endswith("." + d) for d in self.training_domains)
 
-        urls = re.findall(r"https?://[^\s<>\"']+", haystack)
-        for url in urls:
-            host = (urlparse(url).hostname or "").lower()
+    def _extract_hosts(self, haystack: str) -> list[tuple[str, str]]:
+        """Return (host, origin) pairs for every link-shaped string found."""
+        found: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def _add(host: str, origin: str) -> None:
+            host = _clean_host(host)
+            if not host or host in seen:
+                return
+            seen.add(host)
+            found.append((host, origin))
+
+        for url in _SCHEME_URL_RE.findall(haystack):
+            if url.lower().startswith(("data:", "file:", "vbscript:")):
+                _add(url.split(":", 1)[0], "prohibited-scheme")
+                continue
+            _add(urlparse(url).hostname or "", "explicit-url")
+
+        for url in _PERCENT_SCHEME_RE.findall(haystack):
+            _add(urlparse(url.replace("%3A", ":", 1).replace("%2F", "/", 2)).hostname or "", "percent-encoded-url")
+
+        for host in _WWW_HOST_RE.findall(haystack):
+            _add(host, "scheme-less-www")
+
+        for match in _HREF_RE.finditer(haystack):
+            value = html.unescape(match.group(1))
+            if not value or value.startswith("#"):
+                continue
+            if value.lower().startswith(("data:", "file:", "vbscript:", "javascript:")):
+                _add(value.split(":", 1)[0], "prohibited-scheme")
+            elif value.lower().startswith(("http://", "https://")):
+                _add(urlparse(value).hostname or "", "href-url")
+            elif re.match(r"^[a-z0-9][a-z0-9.-]+$", value, re.I):
+                # bare domain in an href/src (mail clients will open it directly)
+                _add(value, "href-bare-domain")
+
+        # Bare multi-label hosts in prose (e.g. "training.example.com"); only
+        # when they carry a real TLD and more than one label, to avoid flagging
+        # abbreviations like "e.g." or sentence fragments.
+        for host in _BARE_HOST_RE.findall(haystack):
+            labels = host.split(".")
+            if len(labels) >= 2 and len(labels[0]) >= 2:
+                _add(host, "bare-domain")
+
+        return found
+
+    def validate(
+        self, subject: str | None, plain_text: str, html_body: str | None = None, attachments: list[str] | None = None
+    ) -> SafetyVerdict:
+        reasons: list[str] = []
+        raw = "\n".join(x for x in (subject, plain_text, html_body) if x)
+        haystack = _normalize(raw)
+
+        for host, origin in self._extract_hosts(haystack):
             if host in URL_SHORTENER_HOSTS:
-                reasons.append(f"URL shortener: {host}")
-            elif host and not any(host == d or host.endswith("." + d) for d in self.training_domains):
-                reasons.append(f"external link not on training allowlist: {host}")
+                reasons.append(f"URL shortener: {host} ({origin})")
+            elif _looks_like_ip(host) and not self._allowed_host(host):
+                reasons.append(f"external IP link not on training allowlist: {host} ({origin})")
+            elif not self._allowed_host(host):
+                reasons.append(f"external link not on training allowlist: {host} ({origin})")
 
         for pattern in _CREDENTIAL_PATTERNS:
             if pattern.search(haystack):
@@ -115,6 +297,9 @@ class SafetyValidator:
 
         if JAVASCRIPT_PATTERN.search(haystack):
             reasons.append("javascript: URI present")
+
+        if SCRIPT_URI_PATTERN.search(haystack):
+            reasons.append("data:/file:/vbscript: URI present")
 
         if MACRO_PATTERN.search(haystack):
             reasons.append("macro content present")

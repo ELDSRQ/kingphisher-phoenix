@@ -82,7 +82,6 @@ class CipherText(TypeDecorator[str]):
         return self._decrypt(value) if value is not None else None
 
 
-
 def _pk() -> Mapped[Any]:
     return mapped_column(UUID(as_uuid=True), primary_key=True)
 
@@ -203,8 +202,9 @@ class Campaign(Base):
     pattern_id = mapped_column(UUID(as_uuid=True), ForeignKey("campaign_patterns.campaign_pattern_id"), nullable=False)
     current_template_id = mapped_column(UUID(as_uuid=True), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
-    state: Mapped[dm.CampaignState] = mapped_column(Enum(dm.CampaignState, name="campaign_state"),
-                                                    default=dm.CampaignState.DRAFT)
+    state: Mapped[dm.CampaignState] = mapped_column(
+        Enum(dm.CampaignState, name="campaign_state"), default=dm.CampaignState.DRAFT
+    )
     sender_mailbox: Mapped[str] = mapped_column(String(255))
     training_domain: Mapped[str] = mapped_column(String(255))
     schedule_start = mapped_column(DateTime(timezone=True), nullable=True)
@@ -243,8 +243,9 @@ class Recipient(Base):
     display_name: Mapped[str | None] = mapped_column(CipherText, nullable=True)
     department: Mapped[str | None] = mapped_column(CipherText, nullable=True)
     is_test_account: Mapped[bool] = mapped_column(Boolean, default=False)
-    status: Mapped[dm.RecipientStatus] = mapped_column(Enum(dm.RecipientStatus, name="recipient_status"),
-                                                       default=dm.RecipientStatus.ACTIVE)
+    status: Mapped[dm.RecipientStatus] = mapped_column(
+        Enum(dm.RecipientStatus, name="recipient_status"), default=dm.RecipientStatus.ACTIVE
+    )
     last_snapshot_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
@@ -269,8 +270,9 @@ class TrackingToken(Base):
     campaign_id = mapped_column(UUID(as_uuid=True), ForeignKey("campaigns.campaign_id"), nullable=False)
     recipient_assignment_id = mapped_column(UUID(as_uuid=True), nullable=False)
     pepper_version: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[dm.TokenStatus] = mapped_column(Enum(dm.TokenStatus, name="token_status"),
-                                                   default=dm.TokenStatus.ACTIVE)
+    status: Mapped[dm.TokenStatus] = mapped_column(
+        Enum(dm.TokenStatus, name="token_status"), default=dm.TokenStatus.ACTIVE
+    )
     expires_at = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -284,8 +286,7 @@ class RecipientAssignment(Base):
     recipient_id = mapped_column(UUID(as_uuid=True), ForeignKey("recipients.recipient_id"), nullable=False)
     snapshot_version: Mapped[int] = mapped_column(Integer, default=1)
     token_id = mapped_column(UUID(as_uuid=True), nullable=True)
-    send_state: Mapped[dm.SendState] = mapped_column(Enum(dm.SendState, name="send_state"),
-                                                     default=dm.SendState.QUEUED)
+    send_state: Mapped[dm.SendState] = mapped_column(Enum(dm.SendState, name="send_state"), default=dm.SendState.QUEUED)
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
     idempotency_key: Mapped[str] = mapped_column(String(128), unique=True)
 
@@ -298,8 +299,7 @@ class TrackingEvent(Base):
     token_id = mapped_column(UUID(as_uuid=True), nullable=True)
     recipient_id = mapped_column(UUID(as_uuid=True), nullable=True)
     campaign_id = mapped_column(UUID(as_uuid=True), nullable=True)
-    confidence: Mapped[dm.Confidence] = mapped_column(Enum(dm.Confidence, name="confidence"),
-                                                      default=dm.Confidence.LOW)
+    confidence: Mapped[dm.Confidence] = mapped_column(Enum(dm.Confidence, name="confidence"), default=dm.Confidence.LOW)
     occurred_at = mapped_column(DateTime(timezone=True), nullable=False)
     client_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -329,8 +329,9 @@ class TrainingAssignment(Base):
 
     training_assignment_id = _pk()
     recipient_id = mapped_column(UUID(as_uuid=True), nullable=False)
-    resource_id = mapped_column(UUID(as_uuid=True), ForeignKey("training_resources.training_resource_id"),
-                                nullable=False)
+    resource_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("training_resources.training_resource_id"), nullable=False
+    )
     campaign_id = mapped_column(UUID(as_uuid=True), nullable=True)
     assigned_at = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at = mapped_column(DateTime(timezone=True), nullable=True)

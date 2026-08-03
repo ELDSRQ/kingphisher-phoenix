@@ -54,17 +54,19 @@ def record_open(token_hash: str, request: Request, session: Session = Depends(_s
         )
     )
     if existing is None:
-        session.add(TrackingEvent(
-            event_id=uuid.uuid4(),
-            event_type=dm.EventType.OPENED,
-            token_id=token.token_id,
-            campaign_id=token.campaign_id,
-            confidence=dm.Confidence.MEDIUM,
-            occurred_at=datetime.now(UTC),
-            client_ip=_client_ip(request),
-            user_agent=request.headers.get("user-agent", "")[:1000],
-            payload={},
-        ))
+        session.add(
+            TrackingEvent(
+                event_id=uuid.uuid4(),
+                event_type=dm.EventType.OPENED,
+                token_id=token.token_id,
+                campaign_id=token.campaign_id,
+                confidence=dm.Confidence.MEDIUM,
+                occurred_at=datetime.now(UTC),
+                client_ip=_client_ip(request),
+                user_agent=request.headers.get("user-agent", "")[:1000],
+                payload={},
+            )
+        )
         session.commit()
     return Response(content=GIF_BYTES, media_type="image/gif", headers={"Cache-Control": "no-store"})
 
@@ -76,21 +78,23 @@ def record_click(token_hash: str, request: Request, session: Session = Depends(_
         return Response(status_code=404)
     if token.expires_at and token.expires_at < datetime.now(UTC):
         return Response(status_code=404)
-    session.add(TrackingEvent(
-        event_id=uuid.uuid4(),
-        event_type=dm.EventType.CLICKED,
-        token_id=token.token_id,
-        campaign_id=token.campaign_id,
-        confidence=dm.Confidence.MEDIUM,
-        occurred_at=datetime.now(UTC),
-        client_ip=_client_ip(request),
-        user_agent=request.headers.get("user-agent", "")[:1000],
-        payload={},
-    ))
+    session.add(
+        TrackingEvent(
+            event_id=uuid.uuid4(),
+            event_type=dm.EventType.CLICKED,
+            token_id=token.token_id,
+            campaign_id=token.campaign_id,
+            confidence=dm.Confidence.MEDIUM,
+            occurred_at=datetime.now(UTC),
+            client_ip=_client_ip(request),
+            user_agent=request.headers.get("user-agent", "")[:1000],
+            payload={},
+        )
+    )
     session.commit()
-    return Response(status_code=302,
-                    headers={"Location": request.app.state.settings.training_base_url,
-                             "Cache-Control": "no-store"})
+    return Response(
+        status_code=302, headers={"Location": request.app.state.settings.training_base_url, "Cache-Control": "no-store"}
+    )
 
 
 class CorrectionBody(BaseModel):

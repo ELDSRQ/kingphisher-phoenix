@@ -420,7 +420,7 @@ views.settings = async (root) => {
     const input = el("input", { id: `cfg-${key}`, value });
     if (cfg.masked[key]) {
       input.type = "password";
-      input.placeholder = "set to change (masked)";
+      input.placeholder = "leave blank to keep current";
     }
     inputs[key] = input;
     wrap.appendChild(input);
@@ -433,7 +433,10 @@ views.settings = async (root) => {
       el("button", { class: "btn primary", text: "Save changes", onclick: async (e) => {
         const btn = e.target; btn.disabled = true;
         const values = {};
-        for (const [key, input] of Object.entries(inputs)) values[key] = input.value;
+        for (const [key, input] of Object.entries(inputs)) {
+          if (cfg.masked[key] && !input.value) continue; // blank secret = keep current
+          values[key] = input.value;
+        }
         try {
           const res = await api("/console/config", { method: "PUT", body: JSON.stringify({ values }) });
           toast(`Saved. Changed: ${res.changed.length ? res.changed.join(", ") : "none"}`, "success");

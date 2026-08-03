@@ -12,8 +12,19 @@ from kp_domain_models import models as dm
 
 _LURE_KEYWORDS = {
     "impersonation": [
-        "microsoft", "google", "apple", "linkedin", "amazon", "okta", "zoom",
-        "adobe", "slack", "github", "facebook", "netflix", "paypal",
+        "microsoft",
+        "google",
+        "apple",
+        "linkedin",
+        "amazon",
+        "okta",
+        "zoom",
+        "adobe",
+        "slack",
+        "github",
+        "facebook",
+        "netflix",
+        "paypal",
     ],
     "credential-phish": ["password", "credential", "log in", "sign in", "verify your account", "mfa", "2fa", "otp"],
     "malware": ["malware", "ransomware", "trojan", "dropper", "loader"],
