@@ -52,25 +52,21 @@ mailpit permanently `unhealthy` and failing `verify_install.sh`'s mailpit check.
 Fix: `interval/timeout: 10s` + `start_period: 10s` in docker-compose.yml.
 Verified: mailpit now reports `healthy`; API/SMTP 200.
 
-## Environment Workaround (the recurring "pause") — WEDGED DOCKER CLI
+## Environment Fix — WEDGED DOCKER CLI (RESOLVED)
 
-Symptom: `docker ps`/`docker context ls` hang forever while Docker Desktop
-backend + VM are alive (engine answers `/_ping` OK). Root cause here: the default
-CLI proxy socket `~/.docker/run/docker.sock` (held by `com.docker.backend`) accepts
-connections but never answers after a Desktop restart; the engine socket
-`~/Library/Containers/com.docker.docker/Data/docker.raw.sock` is fine.
-Secondary: even with the correct socket, `docker compose up -d` completes the work
-(recreate) but the client lingers and never exits (Desktop 4.78.0).
+**Root cause (verified 2026-08-04):** The default CLI proxy socket
+`~/.docker/run/docker.sock` was wedged — `com.docker.backend` held ~10
+accumulated open connections (leaked from hung `docker` invocations) and the
+proxy stopped servicing new connections. The engine itself
+(`docker.raw.sock`) was healthy.
 
-Workaround (in `scripts/bootstrap_env.sh`, wired into `run_console.sh`,
-`install.sh`, `verify_install.sh`):
-- `bootstrap_docker_host`: probes engine sockets directly with bounded `curl` and
-  exports `DOCKER_HOST` — no docker CLI call, cannot hang.
-- `bounded <secs> <cmd>`: runs a command under a hard wall-clock bound (macOS has
-  no `timeout(1)`); used around `docker compose up -d` so launchers never stall;
-  callers then re-verify real state with `docker compose ps`.
-Verified: `docker ps` lists 21 containers; `docker compose ps postgres redis
-mailpit` returns healthy; `run_console.sh` path exercises both helpers.
+**Permanent fix:** Created a dedicated docker context `kp-engine` pointing at the
+live engine socket and made it the default (`docker context use kp-engine`). All
+`docker` / `docker compose` commands now work instantly with no hang, no env
+vars needed, persisting across shell restarts.
+
+The repo launchers still include the `bootstrap_docker_host` + `bounded`
+helpers as a safety net — they auto-skip when the default context works.
 
 ## Environment Notes (not app bugs)
 

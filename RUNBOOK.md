@@ -236,30 +236,32 @@ uv run python scripts/seed.py
 
 ## 6. Troubleshooting
 
-### 6.1 Docker CLI hangs ("the pause") — macOS Docker Desktop
+### 6.1 Docker CLI hangs ("the pause") — macOS Docker Desktop — RESOLVED
 
-**Symptom:** `docker ps` / `docker context ls` hang forever while Docker Desktop
-is "running". Engine usually fine; the default CLI proxy socket
-`~/.docker/run/docker.sock` is wedged. Also: `docker compose up -d` can complete
-the work (recreate) but the client never exits.
+**Root cause (verified 2026-08-04):** The Docker Desktop CLI proxy socket
+(`~/.docker/run/docker.sock`) was wedged — `com.docker.backend` held ~10
+accumulated open connections (leaked from hung `docker` invocations) and the
+proxy stopped servicing new connections. The engine itself
+(`~/Library/Containers/com.docker.docker/Data/docker.raw.sock`) was healthy.
 
-**Fix (already in the code):** the launchers resolve it automatically via
-`scripts/bootstrap_env.sh`:
-
-- `bootstrap_docker_host` — probes the live engine sockets
-  (`docker.raw.sock`, `docker-cli.sock`, `backend.sock` under
-  `~/Library/Containers/com.docker.docker/Data/`) with bounded `curl` and
-  exports `DOCKER_HOST` to the first responder. Never invokes the hung CLI.
-- `bounded <secs> <cmd>` — runs a command under a hard wall-clock bound
-  (macOS has no `timeout(1)`); `docker compose up -d` is wrapped with it and
-  real state is re-verified afterwards with `docker compose ps`.
-
-Manual one-liner if you're in a plain shell:
+**Permanent fix:** Created a dedicated docker context `kp-engine` pointing at the
+live engine socket and made it the default. All `docker` / `docker compose`
+commands now bypass the wedged proxy entirely.
 
 ```bash
+# One-time setup (already done on this machine):
 export DOCKER_HOST=unix://$HOME/Library/Containers/com.docker.docker/Data/docker.raw.sock
-docker ps
+docker context create kp-engine --docker "host=unix://$HOME/Library/Containers/com.docker.docker/Data/docker.raw.sock"
+docker context use kp-engine
 ```
+
+After this, `docker ps`, `docker compose up`, etc. work instantly with no hang,
+and the fix persists across shell restarts. To revert:
+`docker context use desktop-linux`.
+
+The repo launchers (`run_console.sh`, `install.sh`, `verify_install.sh`) still
+include the `bootstrap_docker_host` + `bounded` helpers as a safety net — they
+detect a working default context and skip the workaround automatically.
 
 ### 6.2 Mailpit shows unhealthy
 

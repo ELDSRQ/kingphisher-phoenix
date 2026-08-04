@@ -119,8 +119,13 @@ def create_thing(
     principal: Principal = Depends(require_capability(Capability.MANAGE_THINGS)),
 ) -> dict[str, Any]:
     # ...mutate, then:
-    audit.record(actor=principal.principal_id, action="thing.create",
-                 object_type="thing", object_id=str(thing.id), detail={...})
+    audit.record(
+        actor=principal.principal_id,
+        action="thing.create",
+        object_type="thing",
+        object_id=str(thing.id),
+        detail={...},
+    )
     session.commit()
     return {...}
 ```
@@ -241,14 +246,15 @@ module-scope `drop_all/create_all` + a skip-if-no-DB guard.
 
 ## 9. Environment quirks & gotchas (all real, verified 2026-08-04)
 
-1. **Docker CLI wedge (macOS Docker Desktop)** — default
-   `~/.docker/run/docker.sock` can accept-but-never-answer; engine is fine on
-   `~/Library/Containers/com.docker.docker/Data/docker.raw.sock`.
-   `scripts/bootstrap_env.sh` provides `bootstrap_docker_host` (probes + exports
-   `DOCKER_HOST`) and `bounded <secs> <cmd>` (wall-clock bound; macOS lacks
-   `timeout(1)`) because `docker compose up -d` can also linger after
-   completing. Use both when touching launchers; `install.sh`/`run_console.sh`/
-   `verify_install.sh` already do.
+1. **Docker CLI wedge (macOS Docker Desktop) — RESOLVED via context**
+   The default `~/.docker/run/docker.sock` wedged (proxy held ~10 leaked
+   connections; engine fine on `docker.raw.sock`).
+   **Permanent fix:** created context `kp-engine` pointing at the live engine
+   socket and made it default (`docker context use kp-engine`). All docker/
+   compose commands now work instantly with no hang, no env vars needed.
+   The `bootstrap_docker_host` + `bounded` helpers in `bootstrap_env.sh` remain
+   in the launchers as a safety net — they auto-skip when the default context
+   works.
 2. **Mailpit healthcheck** needs 10s timeout + start_period under gvisor
    (docker-compose.yml already fixed).
 3. **Compose interpolation** requires non-empty `POSTGRES_PASSWORD`,
