@@ -116,7 +116,10 @@ function shell() {
   const content = el("div", { class: "content" });
   const root = el("div", { class: "shell" }, [
     el("aside", { class: "sidebar" }, [
-      el("div", { class: "brand" }, [el("span", { text: "Kingphisher" }), el("small", { text: "Operator console" })]),
+      el("div", { class: "brand" }, [
+        el("img", { src: "/console/logo.png", alt: "Kingphisher logo", class: "brand-logo" }),
+        el("span", { text: "Kingphisher" }), el("small", { text: "Operator console" }),
+      ]),
       nav,
       el("div", { class: "footer" }, [
         el("div", { text: "Signed in as console-operator" }),
