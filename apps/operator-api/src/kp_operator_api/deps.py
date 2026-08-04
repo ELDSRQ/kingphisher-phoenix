@@ -8,6 +8,8 @@ from fastapi import Request
 from kp_database.audit_store import AuditStore
 from sqlalchemy.orm import Session
 
+from kp_operator_api.config import OperatorApiSettings
+
 
 def get_session(request: Request) -> Iterator[Session]:
     session_factory = request.app.state.session_factory
@@ -18,3 +20,8 @@ def get_session(request: Request) -> Iterator[Session]:
 def get_audit_store(request: Request) -> AuditStore:
     audit_store: AuditStore = request.app.state.audit_store
     return audit_store
+
+
+def get_settings(request: Request) -> OperatorApiSettings:
+    settings: OperatorApiSettings = request.app.state.settings
+    return settings

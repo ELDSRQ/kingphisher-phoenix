@@ -20,8 +20,9 @@ from kp_telemetry.errors import (
     NotFoundError,
     PermissionDeniedError,
     SafetyRejectionError,
+    ValidationError_,
 )
-from kp_telemetry.logging import configure_logging
+from kp_telemetry.logging import AccessLogMiddleware, configure_logging
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 
@@ -37,6 +38,7 @@ _ERROR_STATUS: dict[type[KpError], int] = {
     NotFoundError: 404,
     ConflictError: 409,
     SafetyRejectionError: 422,
+    ValidationError_: 422,
     AuditFailureError: 500,
 }
 
@@ -76,6 +78,10 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.include_router(console_router)
 
     _mount_console(app, settings)
+
+    # Structured access logging replaces uvicorn's plain-text access log
+    # (MED-04 / WS-12); uvicorn runs with access_log=False in __main__.
+    app.add_middleware(AccessLogMiddleware, logger_name="kp.access.operator")
 
     @app.middleware("http")
     async def security_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:

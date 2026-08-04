@@ -27,12 +27,14 @@ from kp_database.models import (
     RecipientExclusion,
     TemplateVersion,
 )
+from kp_database.privacy import hash_mailbox
 from kp_domain_models import models as dm
 from kp_telemetry.errors import (
     ConflictError,
     NotFoundError,
     PermissionDeniedError,
     SafetyRejectionError,
+    ValidationError_,
 )
 from kp_templating.render import MessageRenderer
 from pydantic import BaseModel, Field
@@ -40,7 +42,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_capability
-from kp_operator_api.deps import get_audit_store, get_session
+from kp_operator_api.config import OperatorApiSettings
+from kp_operator_api.deps import get_audit_store, get_session, get_settings
 
 router = APIRouter(prefix="/api/v1")
 _renderer = MessageRenderer()
@@ -407,11 +410,13 @@ def import_recipients_csv(
     body: RecipientsImport,
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
+    settings: OperatorApiSettings = Depends(get_settings),
     principal: Principal = Depends(require_capability(Capability.MANAGE_RECIPIENTS)),
 ) -> dict[str, Any]:
     import csv
     import io
 
+    salt = settings.require_recipient_hash_salt()
     created = 0
     skipped = 0
     errors: list[str] = []
@@ -425,7 +430,7 @@ def import_recipients_csv(
         if "@" not in mailbox:
             errors.append(f"row {idx}: invalid mailbox {mailbox!r}")
             continue
-        mailbox_key = hashlib.sha256(mailbox.lower().encode("utf-8")).hexdigest()
+        mailbox_key = hash_mailbox(mailbox, salt)
         existing = session.scalar(select(Recipient).where(Recipient.mailbox_sha256 == mailbox_key))
         if existing is not None:
             skipped += 1
@@ -677,23 +682,40 @@ def _get_campaign(session: Session, campaign_id: str) -> Campaign:
     return campaign
 
 
+class KillSwitchBody(BaseModel):
+    campaign_id: uuid.UUID | None = None
+    confirm: bool = False
+
+
 @router.post("/kill-switch", status_code=status.HTTP_200_OK)
 def kill_switch(
+    body: KillSwitchBody,
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
     principal: Principal = Depends(require_capability(Capability.USE_KILL_SWITCH)),
 ) -> dict[str, Any]:
+    """Revoke queued deliveries + tracking tokens.
+
+    MED-13: scoped to a single campaign when `campaign_id` is given (global
+    otherwise) and requires an explicit `confirm=true` so a misclick cannot
+    cancel the whole delivery queue.
+    """
+    if not body.confirm:
+        raise ValidationError_("kill switch requires explicit confirmation (confirm=true)")
+
     from kp_database.models import RecipientAssignment, TrackingToken
 
     now = datetime.now(UTC)
-    rows = (
-        session.execute(select(RecipientAssignment).where(RecipientAssignment.send_state == dm.SendState.QUEUED))
-        .scalars()
-        .all()
-    )
+    assignment_filter = RecipientAssignment.send_state == dm.SendState.QUEUED
+    token_filter = TrackingToken.status == dm.TokenStatus.ACTIVE
+    if body.campaign_id is not None:
+        assignment_filter = assignment_filter & (RecipientAssignment.campaign_id == body.campaign_id)
+        token_filter = token_filter & (TrackingToken.campaign_id == body.campaign_id)
+
+    rows = session.execute(select(RecipientAssignment).where(assignment_filter)).scalars().all()
     for row in rows:
         row.send_state = dm.SendState.EXPIRED
-    tokens = session.execute(select(TrackingToken).where(TrackingToken.status == dm.TokenStatus.ACTIVE)).scalars().all()
+    tokens = session.execute(select(TrackingToken).where(token_filter)).scalars().all()
     for token in tokens:
         token.status = dm.TokenStatus.KILL_SWITCHED
         token.revoked_at = now
@@ -701,9 +723,9 @@ def kill_switch(
     audit.record(
         actor=principal.principal_id,
         action="kill-switch.engage",
-        object_type="system",
-        object_id="delivery",
-        detail={"cancelled": len(rows), "tokens_revoked": len(tokens)},
+        object_type="campaign" if body.campaign_id else "system",
+        object_id=str(body.campaign_id) if body.campaign_id else "delivery",
+        detail={"cancelled": len(rows), "tokens_revoked": len(tokens), "confirm": body.confirm},
     )
     session.commit()
     return {"cancelled": len(rows), "tokens_revoked": len(tokens)}

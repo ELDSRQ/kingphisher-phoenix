@@ -6,9 +6,9 @@ template, active recipients (including two test accounts), and an approved
 campaign ready to schedule. Writes a hash-chained audit trail for each step.
 
 Run via `make seed` (or `uv run python scripts/seed.py`) against the local dev
-stack. Uses the dev audit HMAC key and CipherText KEK (same values as
-apps/operator-api/tests/conftest.py) so it works without a `.env`; real
-environments should read these from the secret store instead.
+stack. Reads the real audit HMAC key and CipherText KEK from `OPERATOR_API_*`
+env vars (populated by scripts/bootstrap_env.sh) and fails fast if they are
+missing or not 256-bit — no known defaults (WS-11 / HIGH-06).
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from kp_database.models import (  # noqa: E402
 from kp_database.models import (  # noqa: E402
     Source as SourceRow,
 )
+from kp_database.privacy import hash_mailbox  # noqa: E402
 from kp_database.session import create_db_engine, make_session_factory  # noqa: E402
 from kp_domain_models import models as dm  # noqa: E402
 from kp_test_fixtures.builders import make_source_item  # noqa: E402
@@ -48,11 +49,32 @@ from sqlalchemy.orm import Session  # noqa: E402
 
 SOURCE_KEY = "seed-src-kaspersky"
 SOURCE_OWNER = "seed"
-DEV_HMAC_KEY = os.environ.get(
-    "SEED_AUDIT_HMAC_KEY",
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-).encode()
-DEV_KEK = os.environ.get("SEED_CIPHERTEXT_KEK", "0123456789abcdef0123456789abcdef").encode()
+
+
+def _require_hex_bytes(value: str, name: str) -> bytes:
+    if not value:
+        raise SystemExit(f"{name} is required — run scripts/bootstrap_env.sh or set it explicitly")
+    try:
+        raw = bytes.fromhex(value)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be a hex string") from exc
+    if len(raw) != 32:
+        raise SystemExit(f"{name} must be a 256-bit hex key (64 hex chars)")
+    return raw
+
+
+DEV_HMAC_KEY = _require_hex_bytes(
+    os.environ.get("OPERATOR_API_AUDIT_HMAC_KEY", ""),
+    "OPERATOR_API_AUDIT_HMAC_KEY",
+)
+DEV_KEK = _require_hex_bytes(
+    os.environ.get("OPERATOR_API_CIPHERTEXT_KEK", ""),
+    "OPERATOR_API_CIPHERTEXT_KEK",
+)
+RECIPIENT_HASH_SALT = _require_hex_bytes(
+    os.environ.get("OPERATOR_API_RECIPIENT_HASH_SALT", ""),
+    "OPERATOR_API_RECIPIENT_HASH_SALT",
+)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher")
 AUDIT_DATABASE_URL = os.environ.get(
@@ -267,7 +289,7 @@ def _seed_recipients(session: Session) -> list[Recipient]:
         ("test+batch2@example.com", "Batch Test 2", "QA", True),
     ]
     for idx, (mailbox, name, department, is_test) in enumerate(roster):
-        key = hashlib.sha256(mailbox.lower().encode("utf-8")).hexdigest()
+        key = hash_mailbox(mailbox, RECIPIENT_HASH_SALT)
         existing = session.scalar(select(Recipient).where(Recipient.mailbox_sha256 == key))
         if existing is not None:
             created.append(existing)

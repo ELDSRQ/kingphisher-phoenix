@@ -26,12 +26,24 @@ class WorkerSettings(BaseSettings):
     def require_hmac(self) -> bytes:
         if not self.audit_hmac_key:
             raise RuntimeError("KP_WORKER_AUDIT_HMAC_KEY is required")
-        return self.audit_hmac_key.encode()
+        try:
+            key = bytes.fromhex(self.audit_hmac_key)
+        except ValueError as exc:
+            raise RuntimeError("KP_WORKER_AUDIT_HMAC_KEY must be a hex string") from exc
+        if len(key) != 32:
+            raise RuntimeError("KP_WORKER_AUDIT_HMAC_KEY must be a 256-bit hex key (64 hex chars)")
+        return key
 
     def require_kek(self) -> bytes:
         if not self.ciphertext_kek:
             raise RuntimeError("KP_WORKER_CIPHERTEXT_KEK is required")
-        return self.ciphertext_kek.encode()
+        try:
+            kek = bytes.fromhex(self.ciphertext_kek)
+        except ValueError as exc:
+            raise RuntimeError("KP_WORKER_CIPHERTEXT_KEK must be a hex string") from exc
+        if len(kek) != 32:
+            raise RuntimeError("KP_WORKER_CIPHERTEXT_KEK must be a 256-bit hex key (64 hex chars)")
+        return kek
 
     def training_domain_set(self) -> set[str]:
         return {d.strip().lower() for d in self.training_domains.split(",") if d.strip()}

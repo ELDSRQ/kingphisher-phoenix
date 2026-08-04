@@ -232,9 +232,10 @@ def get_status(
     workers: dict[str, bool] = {}
     for name in ("ingestion", "generation", "delivery", "retention", "mailbox", "reminder"):
         workers[name] = _process_alive(run_dir / f"worker-{name}.pid")
+    tracking_health = request.app.state.settings.tracking_base_url.rstrip("/") + "/healthz"
     return StatusResponse(
         operator_api=True,
-        tracking_api=_http_ok("http://127.0.0.1:8001/healthz"),
+        tracking_api=_http_ok(tracking_health),
         postgres=_tcp_ok("127.0.0.1", 5432),
         redis=_tcp_ok("127.0.0.1", 6379),
         console_password_set=_console_password(_env_path(request)) is not None,

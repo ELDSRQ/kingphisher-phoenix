@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import create_app
 
-KEK = "0123456789abcdef0123456789abcdef"
+KEK = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 HMAC = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 CONSOLE_JWT = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 CONSOLE_PASSWORD = "correct-horse-battery-staple"

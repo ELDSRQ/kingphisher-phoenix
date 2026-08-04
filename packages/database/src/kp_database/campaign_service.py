@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from kp_domain_models import models as dm
+from kp_telemetry.errors import ConflictError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -33,6 +34,25 @@ from kp_database.models import (
 )
 
 TOKEN_EXPIRY_BUFFER_SECONDS = 7 * 24 * 60 * 60
+
+_LAUNCHABLE_STATES = {
+    dm.CampaignState.APPROVED,
+    dm.CampaignState.SCHEDULED,
+    dm.CampaignState.SENDING,
+    dm.CampaignState.ACTIVE,
+}
+
+# Test sends may target test accounts from any non-terminal state (e.g. a DRAFT
+# being iterated on), but never from a state that ended the campaign.
+_TERMINAL_STATES = {
+    dm.CampaignState.RECALLED,
+    dm.CampaignState.RECALL_IN_PROGRESS,
+    dm.CampaignState.EXPIRED,
+    dm.CampaignState.CANCELLED,
+    dm.CampaignState.COMPLETED,
+    dm.CampaignState.STOPPED,
+    dm.CampaignState.REJECTED,
+}
 
 
 class PreparedRecipient(NamedTuple):
@@ -71,13 +91,29 @@ def prepare_campaign(
     Returns tracking URLs per recipient so the caller can publish the deliver
     job. Safe to call once; idempotency keys prevent duplicates on retry.
     """
-    if campaign.state not in (dm.CampaignState.APPROVED, dm.CampaignState.SCHEDULED, dm.CampaignState.SENDING):
-        raise ValueError(f"campaign is not launchable (state={campaign.state.value})")
+    if campaign.state in _TERMINAL_STATES:
+        raise ConflictError(f"campaign is in a terminal state ({campaign.state.value})")
+    if not test_only and campaign.state not in _LAUNCHABLE_STATES:
+        raise ConflictError(f"campaign is not launchable (state={campaign.state.value})")
 
     excluded = _excluded_recipient_ids(session, campaign.campaign_id)
-    recipients = list(
-        session.execute(select(Recipient).where(Recipient.status == dm.RecipientStatus.ACTIVE)).scalars().all()
-    )
+
+    def _eligible(recipient: Recipient) -> bool:
+        if recipient.recipient_id in excluded:
+            return False
+        return (not test_only or recipient.is_test_account) and (
+            recipient.is_test_account is False or include_test_accounts
+        )
+
+    eligible = [
+        r
+        for r in session.execute(select(Recipient).where(Recipient.status == dm.RecipientStatus.ACTIVE)).scalars().all()
+        if _eligible(r)
+    ]
+    if len(eligible) > campaign.max_recipients:
+        raise ConflictError(
+            f"campaign exceeds max_recipients ({len(eligible)} eligible > {campaign.max_recipients} allowed)"
+        )
 
     now = datetime.now(UTC)
     expires_at = campaign.expires_at
@@ -92,14 +128,7 @@ def prepare_campaign(
     tracking_base_url = tracking_base_url.rstrip("/")
     prepared: list[PreparedRecipient] = []
 
-    for recipient in recipients:
-        if recipient.recipient_id in excluded:
-            continue
-        if recipient.is_test_account and not include_test_accounts:
-            continue
-        if test_only and not recipient.is_test_account:
-            continue
-
+    for recipient in eligible:
         assignment = session.scalar(
             select(RecipientAssignment).where(
                 RecipientAssignment.campaign_id == campaign.campaign_id,
@@ -127,7 +156,9 @@ def prepare_campaign(
             TrackingToken(
                 token_id=uuid.uuid4(),
                 token_hash=token_hash,
-                token_prefix=raw_token[:6],
+                # Prefix derived from the hash, never from the raw token, so the
+                # stored prefix leaks zero information about the token (HIGH-08).
+                token_prefix=token_hash[:6],
                 campaign_id=campaign.campaign_id,
                 recipient_assignment_id=assignment.recipient_assignment_id,
                 pepper_version=1,

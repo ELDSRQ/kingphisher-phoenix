@@ -67,17 +67,20 @@ bootstrap_env() {
   _set_line TRACKING_API_DATABASE_URL "postgresql+psycopg://kingphisher:${POSTGRES_PASSWORD}@localhost:5432/kingphisher"
 
   # Generate secrets once, preserving any value already present in .env.
-  if ! grep -q '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" || [ -z "$(grep '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" | cut -d= -f2-)" ]; then
+  # KEK/HMAC must be 256-bit hex (64 chars) — a legacy 128-bit value is
+  # rotated, since CipherText/AuditStore now reject it (WS-11 / HIGH-18).
+  # NOTE: rotating the KEK invalidates recipient ciphertext written under the
+  # old key; combine with a dev-DB recreate (`docker compose down -v`) as with
+  # the password rotation above.
+  HMAC_KEY="$(grep '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$HMAC_KEY" ] || ! [[ "$HMAC_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
     HMAC_KEY="$(openssl rand -hex 32)"
-    grep -q '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" \
-      && sed -i '' "s|^OPERATOR_API_AUDIT_HMAC_KEY=.*|OPERATOR_API_AUDIT_HMAC_KEY=$HMAC_KEY|" "$ENV_FILE" \
-      || echo "OPERATOR_API_AUDIT_HMAC_KEY=$HMAC_KEY" >> "$ENV_FILE"
+    _set_line OPERATOR_API_AUDIT_HMAC_KEY "$HMAC_KEY"
   fi
-  if ! grep -q '^OPERATOR_API_CIPHERTEXT_KEK=' "$ENV_FILE" || [ -z "$(grep '^OPERATOR_API_CIPHERTEXT_KEK=' "$ENV_FILE" | cut -d= -f2-)" ]; then
-    KEK="$(openssl rand -hex 16)"
-    grep -q '^OPERATOR_API_CIPHERTEXT_KEK=' "$ENV_FILE" \
-      && sed -i '' "s|^OPERATOR_API_CIPHERTEXT_KEK=.*|OPERATOR_API_CIPHERTEXT_KEK=$KEK|" "$ENV_FILE" \
-      || echo "OPERATOR_API_CIPHERTEXT_KEK=$KEK" >> "$ENV_FILE"
+  KEK="$(grep '^OPERATOR_API_CIPHERTEXT_KEK=' "$ENV_FILE" | cut -d= -f2-)"
+  if [ -z "$KEK" ] || ! [[ "$KEK" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    KEK="$(openssl rand -hex 32)"  # 256-bit KEK (HIGH-18 / WS-11)
+    _set_line OPERATOR_API_CIPHERTEXT_KEK "$KEK"
   fi
   if ! grep -q '^KP_WORKER_AUDIT_HMAC_KEY=' "$ENV_FILE" || [ -z "$(grep '^KP_WORKER_AUDIT_HMAC_KEY=' "$ENV_FILE" | cut -d= -f2-)" ]; then
     echo "KP_WORKER_AUDIT_HMAC_KEY=$(grep '^OPERATOR_API_AUDIT_HMAC_KEY=' "$ENV_FILE" | cut -d= -f2-)" >> "$ENV_FILE"
@@ -87,10 +90,10 @@ bootstrap_env() {
   fi
   if ! grep -q '^OPERATOR_API_CONSOLE_JWT_SECRET=' "$ENV_FILE" || [ -z "$(grep '^OPERATOR_API_CONSOLE_JWT_SECRET=' "$ENV_FILE" | cut -d= -f2-)" ]; then
     JWT_SECRET="$(openssl rand -hex 32)"
-    grep -q '^OPERATOR_API_CONSOLE_JWT_SECRET=' "$ENV_FILE" \
-      && sed -i '' "s|^OPERATOR_API_CONSOLE_JWT_SECRET=.*|OPERATOR_API_CONSOLE_JWT_SECRET=$JWT_SECRET|" "$ENV_FILE" \
-      || echo "OPERATOR_API_CONSOLE_JWT_SECRET=$JWT_SECRET" >> "$ENV_FILE"
+    _set_line OPERATOR_API_CONSOLE_JWT_SECRET "$JWT_SECRET"
   fi
+  _generate_if_absent OPERATOR_API_RECIPIENT_HASH_SALT "$(openssl rand -hex 32)"  # mailbox_sha256 salt (WS-12)
+  _generate_if_absent TRACKING_API_CORRECTIONS_SECRET "$(openssl rand -hex 32)"  # corrections bearer secret (WS-9)
   if ! grep -q '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" || [ -z "$(grep '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" ]; then
     PASSWORD="$(openssl rand -base64 12 | tr -d '/+=' )"
     grep -q '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" \

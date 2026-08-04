@@ -250,6 +250,15 @@ views.campaigns = async (root) => {
         if (c.state === "approved") actions.push(el("button", { class: "btn small primary", text: "Schedule", onclick: act(`/campaigns/${c.campaign_id}/schedule`, "Scheduled") }));
         if (c.state === "scheduled") actions.push(el("button", { class: "btn small", text: "Test send", onclick: act(`/campaigns/${c.campaign_id}/test-send`, "Test send queued") }));
         if (["scheduled", "approved"].includes(c.state)) actions.push(el("button", { class: "btn small danger", text: "Recall", onclick: act(`/campaigns/${c.campaign_id}/recall`, "Recall initiated") }));
+        if (["scheduled", "sending", "active"].includes(c.state)) actions.push(el("button", { class: "btn small danger", text: "Kill switch", onclick: (async (e) => {
+          if (!confirm(`Scoped kill switch for "${c.title}"? Revokes this campaign's queued deliveries and tracking tokens.`)) return;
+          e.target.disabled = true;
+          try {
+            const res = await api("/kill-switch", { method: "POST", body: JSON.stringify({ campaign_id: c.campaign_id, confirm: true }) });
+            toast(`Kill switch: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
+          } catch (err) { toast(err.message, "error"); }
+          finally { e.target.disabled = false; }
+        }) }));
         return actions;
       })()),
     ]))),
@@ -378,10 +387,10 @@ views.audit = async (root) => {
       finally { e.target.disabled = false; }
     } }),
     el("button", { class: "btn danger", text: "Engage kill switch", onclick: async (e) => {
-      if (!confirm("Engage kill switch? This cancels queued deliveries and revokes tracking tokens.")) return;
+      if (!confirm("Engage the global kill switch? This cancels ALL queued deliveries and revokes ALL tracking tokens.")) return;
       e.target.disabled = true;
       try {
-        const res = await api("/kill-switch", { method: "POST" });
+        const res = await api("/kill-switch", { method: "POST", body: JSON.stringify({ confirm: true }) });
         toast(`Kill switch engaged: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
       } catch (err) { toast(err.message, "error"); }
       finally { e.target.disabled = false; }

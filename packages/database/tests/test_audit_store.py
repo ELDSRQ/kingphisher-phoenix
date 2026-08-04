@@ -25,7 +25,8 @@ TEST_URL = os.environ.get(
 AUDIT_URL = os.environ.get(
     "AUDIT_DATABASE_URL_TEST", "postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher_test"
 )
-HMAC_KEY = os.environ.get("AUDIT_HMAC_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").encode()
+_HMAC_HEX = os.environ.get("AUDIT_HMAC_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+HMAC_KEY = bytes.fromhex(_HMAC_HEX)
 
 _available = None
 

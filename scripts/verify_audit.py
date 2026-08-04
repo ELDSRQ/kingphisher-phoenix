@@ -28,8 +28,8 @@ def main() -> int:
             "postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher",
         ),
     )
-    hmac_key = os.environ.get("OPERATOR_API_AUDIT_HMAC_KEY", "").encode()
-    store = AuditStore(create_db_engine(audit_url), hmac_key=hmac_key or None)
+    hmac_key = bytes.fromhex(os.environ.get("OPERATOR_API_AUDIT_HMAC_KEY", "")) or None
+    store = AuditStore(create_db_engine(audit_url), hmac_key=hmac_key)
     problems = store.verify()
     if problems:
         print("audit chain FAILED:", file=sys.stderr)
