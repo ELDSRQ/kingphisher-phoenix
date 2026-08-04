@@ -30,8 +30,9 @@ source "$PROJECT_ROOT/scripts/bootstrap_env.sh"
 
 start_infra() {
   require docker
+  bootstrap_docker_host || true
   echo "starting infrastructure (postgres, redis, mailpit, mocks)..."
-  docker compose up -d postgres redis mailpit otel-collector mock-graph mock-ai mock-idp
+  bounded 90 docker compose up -d postgres redis mailpit otel-collector mock-graph mock-ai mock-idp
   echo "waiting for postgres and redis to be healthy..."
   for _ in $(seq 1 30); do
     if docker compose ps postgres redis | grep -q healthy; then

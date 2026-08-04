@@ -102,3 +102,56 @@ bootstrap_env() {
       || echo "KP_CONSOLE_PASSWORD=$PASSWORD" >> "$ENV_FILE"
   fi
 }
+
+# Run a command under a hard wall-clock bound (macOS has no `timeout(1)`).
+# Docker Desktop's compose client can linger after completing `up -d`
+# (recreate done, client never exits); bounding it keeps launchers moving,
+# and callers re-verify actual state afterwards with docker compose ps.
+bounded() {
+  local secs="$1"
+  shift
+  "$@" &
+  local pid=$!
+  local i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$i" -ge "$secs" ]; then
+      echo "command exceeded ${secs}s bound; continuing: $*" >&2
+      kill "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      return 124
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  wait "$pid"
+  return $?
+}
+
+# Workaround for a wedged Docker CLI on macOS (Docker Desktop): after a Desktop
+# restart the default engine proxy socket (~/.docker/run/docker.sock) can accept
+# connections but never answer, so every `docker` command hangs indefinitely.
+# The engine itself is usually fine on docker.raw.sock. This resolver probes the
+# live engine sockets directly with curl (bounded, never invokes the hung CLI)
+# and exports DOCKER_HOST so launchers/installers avoid the stall.
+_boot_socket_probe() {
+  [ -S "$1" ] || return 1
+  [ "$(curl -s --max-time 2 --unix-socket "$1" http://localhost/_ping 2>/dev/null)" = "OK" ]
+}
+
+bootstrap_docker_host() {
+  if [ "${DOCKER_HOST:-}" != "" ] && _boot_socket_probe "${DOCKER_HOST#unix://}"; then
+    return 0
+  fi
+  local cand
+  for cand in \
+    "$HOME/Library/Containers/com.docker.docker/Data/docker.raw.sock" \
+    "$HOME/Library/Containers/com.docker.docker/Data/docker-cli.sock" \
+    "$HOME/Library/Containers/com.docker.docker/Data/backend.sock"; do
+    if _boot_socket_probe "$cand"; then
+      export DOCKER_HOST="unix://$cand"
+      echo "docker: default CLI socket is not responding; using engine socket $DOCKER_HOST"
+      return 0
+    fi
+  done
+  return 1
+}

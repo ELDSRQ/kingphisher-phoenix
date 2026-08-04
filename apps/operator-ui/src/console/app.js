@@ -375,14 +375,24 @@ views.privacy = async (root) => {
     if (r.status === "opened") {
       actions.appendChild(el("button", { class: "btn small", text: "Verify", onclick: async (e) => {
         e.target.disabled = true;
-        try { await api(`/privacy/requests/${r.request_id}/verify`, { method: "POST" }); toast("Verified", "success"); location.reload(); }
+        try { await api(`/privacy/requests/${r.privacy_request_id}/verify`, { method: "POST" }); toast("Verified", "success"); location.reload(); }
         catch (err) { toast(err.message, "error"); }
+      } }));
+    }
+    if (r.status === "in_progress" && r.request_type === "access_export") {
+      actions.appendChild(el("button", { class: "btn small", text: "Export", onclick: async (e) => {
+        e.target.disabled = true;
+        try {
+          const res = await api(`/privacy/requests/${r.privacy_request_id}/export`);
+          const preview = (res.records || []).slice(0, 5).map((rec) => rec.mailbox).join(", ");
+          toast(`Export: ${(res.records || []).length} record(s)` + (preview ? ` — ${preview}` : ""), "success");
+        } catch (err) { toast(err.message, "error"); }
       } }));
     }
     if (r.status === "in_progress" && r.request_type === "deletion") {
       actions.appendChild(el("button", { class: "btn small primary", text: "Fulfill", onclick: async (e) => {
         e.target.disabled = true;
-        try { await api(`/privacy/requests/${r.request_id}/fulfill`, { method: "POST", body: JSON.stringify({}) }); toast("Request fulfilled", "success"); location.reload(); }
+        try { await api(`/privacy/requests/${r.privacy_request_id}/fulfill`, { method: "POST", body: JSON.stringify({}) }); toast("Request fulfilled", "success"); location.reload(); }
         catch (err) { toast(err.message, "error"); }
       } }));
     }
@@ -420,7 +430,7 @@ views.sources = async (root) => {
       ]),
       el("div", {}, [
         el("label", { text: "Source type" }),
-        el("select", { id: "s-type" }, ["rss", "feed", "api"].map((t) => el("option", { value: t, text: t }))),
+        el("select", { id: "s-type" }, ["advisory", "rss", "stix", "bulk_download", "curated"].map((t) => el("option", { value: t, text: t }))),
       ]),
     ]),
     el("div", { class: "btn-row" }, [
@@ -469,6 +479,12 @@ views.patterns = async (root) => {
 views.audit = async (root) => {
   root.appendChild(el("h2", { text: "Audit" }));
   root.appendChild(el("p", { class: "sub", text: "Hash-chained append-only event log." }));
+  let events, kill;
+  try { [events, kill] = await Promise.all([api("/audit"), api("/kill-switch")]); }
+  catch (e) {
+    root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` })); return;
+  }
+  const engaged = !!(kill && kill.engaged);
   root.appendChild(el("div", { class: "btn-row" }, [
     el("button", { class: "btn", text: "Verify chain", onclick: async (e) => {
       e.target.disabled = true;
@@ -478,19 +494,20 @@ views.audit = async (root) => {
       } catch (err) { toast(err.message, "error"); }
       finally { e.target.disabled = false; }
     } }),
-    el("button", { class: "btn danger", text: "Engage kill switch", onclick: async (e) => {
+    el("button", { class: "btn danger", text: engaged ? "Kill switch engaged" : "Engage kill switch", disabled: engaged,
+      onclick: async (e) => {
       if (!confirm("Engage the global kill switch? This cancels ALL queued deliveries and revokes ALL tracking tokens.")) return;
       e.target.disabled = true;
       try {
         const res = await api("/kill-switch", { method: "POST", body: JSON.stringify({ confirm: true }) });
         toast(`Kill switch engaged: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
+        location.reload();
       } catch (err) { toast(err.message, "error"); }
       finally { e.target.disabled = false; }
     } }),
   ]));
-  let events;
-  try { events = await api("/audit"); } catch (e) {
-    root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` })); return;
+  if (engaged) {
+    root.appendChild(el("p", { class: "ok", text: `Kill switch engaged by ${kill.actor || "?"}${kill.engaged_at ? ` at ${String(kill.engaged_at).slice(0, 19)}` : ""} — last run cancelled ${kill.last_cancelled ?? 0}, revoked ${kill.last_tokens_revoked ?? 0}.` }));
   }
   root.appendChild(el("div", { class: "card" }, [el("h3", { text: "Recent events" }), el("table", {}, [
     el("thead", {}, [el("tr", {}, [el("th", { text: "Time" }), el("th", { text: "Actor" }), el("th", { text: "Action" }), el("th", { text: "Object" })])]),
@@ -561,7 +578,7 @@ views.settings = async (root) => {
         } catch (err) { toast(err.message, "error"); }
         finally { btn.disabled = false; }
       } }),
-    ])),
+    ]),
   ]));
 
   let status;

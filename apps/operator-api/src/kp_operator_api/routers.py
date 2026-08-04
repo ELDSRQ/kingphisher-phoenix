@@ -734,6 +734,33 @@ def kill_switch(
     return {"cancelled": len(rows), "tokens_revoked": len(tokens)}
 
 
+@router.get("/kill-switch", status_code=status.HTTP_200_OK)
+def kill_switch_state(
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.USE_KILL_SWITCH)),
+) -> dict[str, Any]:
+    """Report whether the global kill switch has been engaged.
+
+    The switch is one-shot by design; engagement is read back from the most
+    recent global audit event so the console can arm/disable the button.
+    """
+    event = None
+    for candidate in audit.list_events(limit=1000):
+        if candidate["action"] == "kill-switch.engage" and candidate["object_type"] == "system":
+            event = candidate
+            break
+    if event is None:
+        return {"engaged": False}
+    detail = event.get("detail") or {}
+    return {
+        "engaged": True,
+        "engaged_at": event.get("occurred_at"),
+        "actor": event.get("actor"),
+        "last_cancelled": int(detail.get("cancelled", 0)),
+        "last_tokens_revoked": int(detail.get("tokens_revoked", 0)),
+    }
+
+
 _PRIVACY_SLA_DAYS = 45
 
 

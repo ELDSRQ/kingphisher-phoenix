@@ -25,6 +25,10 @@ cd "$PROJECT_ROOT"
 CONSOLE_URL="http://127.0.0.1:8000/console"
 ENV_FILE="$PROJECT_ROOT/.env"
 
+# shellcheck source=scripts/bootstrap_env.sh
+source "$PROJECT_ROOT/scripts/bootstrap_env.sh"
+bootstrap_docker_host || true
+
 SKIP_DEPS=0
 for arg in "$@"; do
   case "$arg" in
@@ -154,7 +158,7 @@ source "$PROJECT_ROOT/scripts/bootstrap_env.sh"
 bootstrap_env
 
 step "starting infrastructure (postgres, redis, mailpit, mocks)"
-dc up -d postgres redis mailpit otel-collector mock-graph mock-ai mock-idp
+bounded 120 dc up -d postgres redis mailpit otel-collector mock-graph mock-ai mock-idp
 
 step "waiting for postgres and redis to become healthy"
 for _ in $(seq 1 60); do

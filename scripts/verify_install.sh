@@ -10,6 +10,10 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# shellcheck source=scripts/bootstrap_env.sh
+source "$PROJECT_ROOT/scripts/bootstrap_env.sh"
+bootstrap_docker_host || true
+
 step() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m    ok:\033[0m %s\n' "$*"; }
 bad()  { printf '\033[1;31m    FAIL:\033[0m %s\n' "$*"; }

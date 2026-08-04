@@ -37,9 +37,10 @@ services:
       - "127.0.0.1:1025:1025"   # SMTP relay used by the delivery worker
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/api/v1/info"]
-      interval: 5s
-      timeout: 3s
+      interval: 10s
+      timeout: 10s
       retries: 10
+      start_period: 10s
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.107.0
