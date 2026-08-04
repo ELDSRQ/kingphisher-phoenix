@@ -5,9 +5,11 @@ const API = "/api/v1";
 
 const TOKEN_KEY = "kp_console_token";
 
-function token() { return localStorage.getItem(TOKEN_KEY) || ""; }
-function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
-function clearToken() { localStorage.removeItem(TOKEN_KEY); }
+/* Session-scoped, not persisted to disk: the admin JWT must not survive the
+   tab (MED-07 / WS-15). */
+function token() { return sessionStorage.getItem(TOKEN_KEY) || ""; }
+function setToken(t) { sessionStorage.setItem(TOKEN_KEY, t); }
+function clearToken() { sessionStorage.removeItem(TOKEN_KEY); }
 
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
@@ -96,6 +98,7 @@ const NAV = [
   ["recipients", "Recipients"],
   ["sources", "Sources"],
   ["patterns", "Patterns"],
+  ["privacy", "Privacy"],
   ["audit", "Audit"],
   ["settings", "Settings"],
 ];
@@ -313,6 +316,92 @@ views.recipients = async (root) => {
     ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 2, text: "No recipients." })])]),
   ]);
   root.appendChild(el("div", { class: "card" }, [el("h3", { text: "Recipients" }), table]));
+};
+
+/* ---------- privacy ---------- */
+const PRIVACY_TYPES = ["search", "access_export", "correction", "deletion", "exception"];
+const PRIVACY_STATES = ["opened", "in_progress", "fulfilled", "rejected"];
+
+views.privacy = async (root) => {
+  root.appendChild(el("h2", { text: "Privacy" }));
+  root.appendChild(el("p", { class: "sub", text: "Privacy notice and data-subject requests (CCPA)." }));
+  let notice, requests;
+  try {
+    [notice, requests] = await Promise.all([api("/privacy/notice"), api("/privacy/requests")]);
+  } catch (e) {
+    root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` })); return;
+  }
+
+  const noticeCard = el("div", { class: "card" }, [
+    el("h3", { text: "Current privacy notice" }),
+    el("p", { text: notice ? notice.notice_text : "No current notice published." }),
+    el("small", { text: notice ? `version ${notice.version} · effective ${notice.effective_at}` : "" }),
+  ]);
+
+  const form = el("div", { class: "card" }, [
+    el("h3", { text: "New data-subject request" }),
+    el("div", { class: "form-grid" }, [
+      el("div", {}, [
+        el("label", { text: "Request type" }),
+        el("select", { id: "pr-type" }, PRIVACY_TYPES.map((t) => el("option", { value: t, text: t }))),
+      ]),
+      el("div", {}, [
+        el("label", { text: "Requester mailbox" }), el("input", { id: "pr-mailbox", type: "email" }),
+        el("label", { text: "Campaign ID (optional)" }), el("input", { id: "pr-campaign" }),
+      ]),
+    ]),
+    el("div", { class: "btn-row" }, [
+      el("button", { class: "btn primary", text: "Submit request", onclick: async (e) => {
+        const btn = e.target; btn.disabled = true;
+        try {
+          await api("/privacy/requests", { method: "POST", body: JSON.stringify({
+            request_type: document.getElementById("pr-type").value,
+            requester_mailbox: document.getElementById("pr-mailbox").value,
+            campaign_id: document.getElementById("pr-campaign").value || null,
+          }) });
+          toast("Request submitted", "success");
+          location.reload();
+        } catch (err) { toast(err.message, "error"); }
+        finally { btn.disabled = false; }
+      } }),
+    ]),
+  ]);
+
+  const rows = requests.map((r) => {
+    const actions = el("td", {});
+    if (r.status === "opened") {
+      actions.appendChild(el("button", { class: "btn small", text: "Verify", onclick: async (e) => {
+        e.target.disabled = true;
+        try { await api(`/privacy/requests/${r.request_id}/verify`, { method: "POST" }); toast("Verified", "success"); location.reload(); }
+        catch (err) { toast(err.message, "error"); }
+      } }));
+    }
+    if (r.status === "in_progress" && r.request_type === "deletion") {
+      actions.appendChild(el("button", { class: "btn small primary", text: "Fulfill", onclick: async (e) => {
+        e.target.disabled = true;
+        try { await api(`/privacy/requests/${r.request_id}/fulfill`, { method: "POST", body: JSON.stringify({}) }); toast("Request fulfilled", "success"); location.reload(); }
+        catch (err) { toast(err.message, "error"); }
+      } }));
+    }
+    return el("tr", {}, [
+      el("td", { text: r.request_type }),
+      el("td", { text: r.requester_mailbox }),
+      el("td", { text: r.status }),
+      el("td", { text: r.sla_deadline || "" }),
+      actions,
+    ]);
+  });
+  const table = el("table", {}, [
+    el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Type" }), el("th", { text: "Mailbox" }),
+      el("th", { text: "Status" }), el("th", { text: "SLA deadline" }), el("th", { text: "Actions" }),
+    ])]),
+    el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", { class: "empty", colspan: 5, text: "No data-subject requests." })])]),
+  ]);
+
+  root.appendChild(noticeCard);
+  root.appendChild(form);
+  root.appendChild(el("div", { class: "card" }, [el("h3", { text: "Requests" }), table]));
 };
 
 /* ---------- sources ---------- */

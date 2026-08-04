@@ -19,6 +19,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -105,7 +106,7 @@ class SourceTerms(Base):
     __tablename__ = "source_terms"
 
     source_terms_id = _pk()
-    source_id = mapped_column(UUID(as_uuid=True), ForeignKey("sources.source_id"), nullable=False)
+    source_id = mapped_column(UUID(as_uuid=True), ForeignKey("sources.source_id", ondelete="CASCADE"), nullable=False)
     terms_reference: Mapped[str] = mapped_column(Text)
     terms_hash: Mapped[str] = mapped_column(String(64))
     commercial_use_ok: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -121,7 +122,7 @@ class SourceItem(Base):
     __tablename__ = "source_items"
 
     source_item_id = _pk()
-    source_id = mapped_column(UUID(as_uuid=True), ForeignKey("sources.source_id"), nullable=False)
+    source_id = mapped_column(UUID(as_uuid=True), ForeignKey("sources.source_id", ondelete="CASCADE"), nullable=False)
     publisher: Mapped[str] = mapped_column(String(255))
     title: Mapped[str] = mapped_column(Text)
     published_at = mapped_column(DateTime(timezone=True), nullable=False)
@@ -211,7 +212,9 @@ class Campaign(Base):
     schedule_end = mapped_column(DateTime(timezone=True), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
     max_recipients: Mapped[int] = mapped_column(Integer)
-    retention_policy_id = mapped_column(UUID(as_uuid=True), nullable=True)
+    retention_policy_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("retention_policies.retention_policy_id"), nullable=True
+    )
     difficulty: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     manifest_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     manifest_signed_at = mapped_column(DateTime(timezone=True), nullable=True)
@@ -224,7 +227,9 @@ class CampaignApproval(Base):
     __tablename__ = "campaign_approvals"
 
     campaign_approval_id = _pk()
-    campaign_id = mapped_column(UUID(as_uuid=True), ForeignKey("campaigns.campaign_id"), nullable=False)
+    campaign_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="CASCADE"), nullable=False
+    )
     approval_type: Mapped[dm.ApprovalType] = mapped_column(Enum(dm.ApprovalType, name="approval_type"))
     approver_id = mapped_column(UUID(as_uuid=True), nullable=False)
     decision: Mapped[dm.ApprovalDecision] = mapped_column(Enum(dm.ApprovalDecision, name="approval_decision"))
@@ -239,7 +244,7 @@ class Recipient(Base):
     recipient_id = _pk()
     employee_key: Mapped[str] = mapped_column(CipherText, unique=False)
     mailbox: Mapped[str] = mapped_column(CipherText)
-    mailbox_sha256: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    mailbox_sha256: Mapped[str] = mapped_column(String(64), index=True)
     display_name: Mapped[str | None] = mapped_column(CipherText, nullable=True)
     department: Mapped[str | None] = mapped_column(CipherText, nullable=True)
     is_test_account: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -247,13 +252,24 @@ class Recipient(Base):
         Enum(dm.RecipientStatus, name="recipient_status"), default=dm.RecipientStatus.ACTIVE
     )
     last_snapshot_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    deleted_at = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        Index(
+            "uq_recipients_mailbox_sha256_active",
+            "mailbox_sha256",
+            unique=True,
+            postgresql_where=sa_text("deleted_at IS NULL"),
+        ),
+    )
 
 
 class RecipientExclusion(Base):
     __tablename__ = "recipient_exclusions"
 
     recipient_exclusion_id = _pk()
-    recipient_id = mapped_column(UUID(as_uuid=True), ForeignKey("recipients.recipient_id"), nullable=False)
+    recipient_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("recipients.recipient_id", ondelete="CASCADE"), nullable=False
+    )
     exclusion_type: Mapped[dm.ExclusionType] = mapped_column(Enum(dm.ExclusionType, name="exclusion_type"))
     campaign_id = mapped_column(UUID(as_uuid=True), nullable=True)
     reason: Mapped[str | None] = mapped_column(CipherText, nullable=True)
@@ -267,7 +283,9 @@ class TrackingToken(Base):
     token_id = _pk()
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     token_prefix: Mapped[str] = mapped_column(String(6))
-    campaign_id = mapped_column(UUID(as_uuid=True), ForeignKey("campaigns.campaign_id"), nullable=False)
+    campaign_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="CASCADE"), nullable=False
+    )
     recipient_assignment_id = mapped_column(UUID(as_uuid=True), nullable=False)
     pepper_version: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[dm.TokenStatus] = mapped_column(
@@ -282,8 +300,12 @@ class RecipientAssignment(Base):
     __tablename__ = "recipient_assignments"
 
     recipient_assignment_id = _pk()
-    campaign_id = mapped_column(UUID(as_uuid=True), ForeignKey("campaigns.campaign_id"), nullable=False)
-    recipient_id = mapped_column(UUID(as_uuid=True), ForeignKey("recipients.recipient_id"), nullable=False)
+    campaign_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="CASCADE"), nullable=False
+    )
+    recipient_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("recipients.recipient_id", ondelete="CASCADE"), nullable=False
+    )
     snapshot_version: Mapped[int] = mapped_column(Integer, default=1)
     token_id = mapped_column(UUID(as_uuid=True), nullable=True)
     send_state: Mapped[dm.SendState] = mapped_column(Enum(dm.SendState, name="send_state"), default=dm.SendState.QUEUED)
@@ -330,7 +352,7 @@ class TrainingAssignment(Base):
     training_assignment_id = _pk()
     recipient_id = mapped_column(UUID(as_uuid=True), nullable=False)
     resource_id = mapped_column(
-        UUID(as_uuid=True), ForeignKey("training_resources.training_resource_id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("training_resources.training_resource_id", ondelete="CASCADE"), nullable=False
     )
     campaign_id = mapped_column(UUID(as_uuid=True), nullable=True)
     assigned_at = mapped_column(DateTime(timezone=True), nullable=False)
@@ -353,8 +375,34 @@ class PrivacyRequest(Base):
     campaign_id = mapped_column(UUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="open")
     opened_at = mapped_column(DateTime(timezone=True), nullable=False)
+    # CCPA regs §7024: complete DSRs within 45 days of the request.
+    sla_deadline = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at = mapped_column(DateTime(timezone=True), nullable=True)
     completion_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PrivacyNotice(Base):
+    """Current consumer privacy notice / monitoring disclosure (CRIT-08, MED-20)."""
+
+    __tablename__ = "privacy_notices"
+
+    notice_id = _pk()
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    notice_text: Mapped[str] = mapped_column(Text)
+    effective_at = mapped_column(DateTime(timezone=True), nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class RetentionPolicy(Base):
+    __tablename__ = "retention_policies"
+
+    retention_policy_id = _pk()
+    name: Mapped[str] = mapped_column(String(128))
+    data_category: Mapped[str] = mapped_column(String(64))
+    retention_days: Mapped[int] = mapped_column(Integer)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
 
 
 class AuditEvent(Base):
@@ -379,7 +427,9 @@ class RetentionAction(Base):
     __tablename__ = "retention_actions"
 
     retention_action_id = _pk()
-    retention_policy_id = mapped_column(UUID(as_uuid=True), nullable=True)
+    retention_policy_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("retention_policies.retention_policy_id"), nullable=True
+    )
     executed_at = mapped_column(DateTime(timezone=True), nullable=False)
     target_table: Mapped[str] = mapped_column(String(128))
     row_count_deleted: Mapped[int] = mapped_column(Integer, default=0)

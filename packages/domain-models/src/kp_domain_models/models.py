@@ -377,6 +377,7 @@ class PrivacyRequest(BaseEntity):
     campaign_id: UUID | None = None
     status: Literal["open", "in_progress", "completed", "exception_recorded"] = "open"
     opened_at: datetime
+    sla_deadline: datetime
     completed_at: datetime | None = None
     completion_note: str | None = None
 

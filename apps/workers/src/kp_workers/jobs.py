@@ -13,7 +13,7 @@ import smtplib
 import time
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from typing import Any, Protocol
 
@@ -26,6 +26,7 @@ from kp_database.models import (
     Recipient,
     RecipientAssignment,
     RetentionAction,
+    RetentionPolicy,
     SourceItem,
     TemplateVersion,
     TrackingToken,
@@ -48,6 +49,7 @@ from kp_workers.config import WorkerSettings
 
 logger = get_logger("kp_workers.jobs")
 _renderer = MessageRenderer()
+_DEFAULT_RETENTION_DAYS = 365
 
 
 class _SessionFactory(Protocol):
@@ -224,12 +226,18 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
     payload = message["payload"]
     policy_id = payload.get("retention_policy_id", "default")
     with ctx.session_factory() as session:
-        expired = datetime.now(UTC)
+        now = datetime.now(UTC)
+        if policy_id != "default":
+            policy = session.get(RetentionPolicy, uuid.UUID(policy_id))
+        else:
+            policy = session.scalar(select(RetentionPolicy).where(RetentionPolicy.is_default.is_(True)).limit(1))
+        retention_days = policy.retention_days if policy is not None else _DEFAULT_RETENTION_DAYS
+        cutoff = now - timedelta(days=retention_days)
         rows = list(
             session.execute(
                 select(RecipientAssignment).where(
                     RecipientAssignment.send_state == dm.SendState.DELIVERED,
-                    RecipientAssignment.created_at < expired,
+                    RecipientAssignment.created_at < cutoff,
                 )
             )
             .scalars()
@@ -239,8 +247,8 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
             session.delete(row)
         action = RetentionAction(
             retention_action_id=uuid.uuid4(),
-            retention_policy_id=uuid.UUID(policy_id) if policy_id != "default" else None,
-            executed_at=expired,
+            retention_policy_id=policy.retention_policy_id if policy is not None else None,
+            executed_at=now,
             target_table="recipient_assignments",
             row_count_deleted=len(rows),
             idempotency_key=message["idempotency_key"],
@@ -251,8 +259,25 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
         actor="worker:retention",
         action="retention.run",
         object_type="system",
-        object_id=policy_id,
-        detail={"deleted": len(rows)},
+        object_id=str(policy_id),
+        detail={"deleted": len(rows), "retention_days": retention_days},
+    )
+
+
+def maybe_publish_retention(ctx: WorkerContext, now: datetime) -> None:
+    """Self-publish a retention run on a cadence (CRIT-07 / WS-6).
+
+    Nothing else publishes to the retention topic; without this the retention
+    worker would idle forever. A fresh idempotency key lets each run be
+    processed exactly once.
+    """
+    ctx.queue.publish(
+        "retention",
+        {
+            "retention_policy_id": "default",
+            "scheduled_at": now.isoformat(),
+            "idempotency_key": f"retention-self-{int(now.timestamp())}",
+        },
     )
 
 
@@ -373,7 +398,12 @@ def _render_or_plain(
 def run_loop(ctx: WorkerContext, topic: str, process: Callable[[WorkerContext, dict[str, Any]], None]) -> None:
     logger.info("worker %s listening on %s", ctx.settings.worker_name, topic)
     polls_since_recovery = 0
+    last_self_publish = 0.0
     while True:
+        now_monotonic = time.monotonic()
+        if topic == "retention" and (now_monotonic - last_self_publish >= ctx.settings.retention_interval_seconds):
+            maybe_publish_retention(ctx, datetime.now(UTC))
+            last_self_publish = now_monotonic
         message: dict[str, Any] | None = None
         try:
             message = ctx.queue.pop(topic, timeout=ctx.settings.poll_seconds)

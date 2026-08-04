@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -23,9 +23,12 @@ from kp_database.models import (
     Campaign,
     CampaignApproval,
     CampaignPattern,
+    PrivacyNotice,
+    PrivacyRequest,
     Recipient,
     RecipientExclusion,
     TemplateVersion,
+    TrackingEvent,
 )
 from kp_database.privacy import hash_mailbox
 from kp_domain_models import models as dm
@@ -38,10 +41,10 @@ from kp_telemetry.errors import (
 )
 from kp_templating.render import MessageRenderer
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from kp_operator_api.auth import require_capability
+from kp_operator_api.auth import require_any_capability, require_capability
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
 
@@ -729,3 +732,235 @@ def kill_switch(
     )
     session.commit()
     return {"cancelled": len(rows), "tokens_revoked": len(tokens)}
+
+
+_PRIVACY_SLA_DAYS = 45
+
+
+class PrivacyRequestCreate(BaseModel):
+    request_type: dm.PrivacyRequestType
+    requester_mailbox: str
+    campaign_id: str | None = None
+
+
+@router.get("/privacy/notice")
+def get_privacy_notice(
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.HANDLE_PRIVACY)),
+) -> dict[str, Any]:
+    notice = session.scalar(select(PrivacyNotice).where(PrivacyNotice.is_current.is_(True)).limit(1))
+    if notice is None:
+        raise NotFoundError("no current privacy notice")
+    return {
+        "version": notice.version,
+        "notice_text": notice.notice_text,
+        "effective_at": notice.effective_at,
+    }
+
+
+@router.get("/privacy/requests")
+def list_privacy_requests(
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.HANDLE_PRIVACY)),
+) -> list[dict[str, Any]]:
+    rows = session.execute(select(PrivacyRequest).order_by(PrivacyRequest.opened_at.desc())).scalars().all()
+    return [
+        {
+            "privacy_request_id": str(r.privacy_request_id),
+            "request_type": r.request_type.value,
+            "requester_mailbox": r.requester_key,
+            "status": r.status,
+            "opened_at": r.opened_at,
+            "sla_deadline": r.sla_deadline,
+            "completed_at": r.completed_at,
+            "completion_note": r.completion_note,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/privacy/requests", status_code=status.HTTP_201_CREATED)
+def submit_privacy_request(
+    body: PrivacyRequestCreate,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    settings: OperatorApiSettings = Depends(get_settings),
+    principal: Principal = Depends(require_capability(Capability.HANDLE_PRIVACY)),
+) -> dict[str, Any]:
+    opened_at = datetime.now(UTC)
+    request = PrivacyRequest(
+        privacy_request_id=uuid.uuid4(),
+        request_type=body.request_type,
+        requester_key=body.requester_mailbox,
+        campaign_id=uuid.UUID(body.campaign_id) if body.campaign_id else None,
+        status="opened",
+        opened_at=opened_at,
+        sla_deadline=opened_at + timedelta(days=_PRIVACY_SLA_DAYS),
+    )
+    session.add(request)
+    audit.record(
+        actor=principal.principal_id,
+        action="privacy_request.submit",
+        object_type="privacy_request",
+        object_id=str(request.privacy_request_id),
+        detail={
+            "request_type": body.request_type.value,
+            "campaign_id": body.campaign_id,
+            "sla_deadline": request.sla_deadline.isoformat(),
+        },
+    )
+    session.commit()
+    return {
+        "privacy_request_id": str(request.privacy_request_id),
+        "status": request.status,
+        "sla_deadline": request.sla_deadline,
+    }
+
+
+@router.post("/privacy/requests/{request_id}/verify")
+def verify_privacy_request(
+    request_id: str,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.HANDLE_PRIVACY)),
+) -> dict[str, Any]:
+    request = session.get(PrivacyRequest, uuid.UUID(request_id))
+    if request is None:
+        raise NotFoundError("privacy request not found")
+    if request.status == "completed":
+        raise ConflictError("privacy request already completed")
+    request.status = "in_progress"
+    audit.record(
+        actor=principal.principal_id,
+        action="privacy_request.verify",
+        object_type="privacy_request",
+        object_id=str(request.privacy_request_id),
+    )
+    session.commit()
+    return {"privacy_request_id": str(request.privacy_request_id), "status": request.status}
+
+
+def _recipients_for_request(
+    session: Session, settings: OperatorApiSettings, request: PrivacyRequest
+) -> list[Recipient]:
+    salt = settings.require_recipient_hash_salt()
+    mailbox = request.requester_key
+    if not mailbox:
+        return []
+    digest = hash_mailbox(mailbox, salt)
+    return list(session.execute(select(Recipient).where(Recipient.mailbox_sha256 == digest)).scalars().all())
+
+
+@router.get("/privacy/requests/{request_id}/export")
+def export_privacy_request(
+    request_id: str,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    settings: OperatorApiSettings = Depends(get_settings),
+    principal: Principal = Depends(require_capability(Capability.HANDLE_PRIVACY)),
+) -> dict[str, Any]:
+    request = session.get(PrivacyRequest, uuid.UUID(request_id))
+    if request is None:
+        raise NotFoundError("privacy request not found")
+    recipients = _recipients_for_request(session, settings, request)
+    audit.record(
+        actor=principal.principal_id,
+        action="privacy_request.export",
+        object_type="privacy_request",
+        object_id=str(request.privacy_request_id),
+        detail={"records": len(recipients)},
+    )
+    session.commit()
+    return {
+        "privacy_request_id": str(request.privacy_request_id),
+        "request_type": request.request_type.value,
+        "records": [
+            {
+                "recipient_id": str(r.recipient_id),
+                "mailbox": r.mailbox,
+                "employee_key": r.employee_key,
+                "display_name": r.display_name,
+                "department": r.department,
+                "is_test_account": r.is_test_account,
+            }
+            for r in recipients
+        ],
+    }
+
+
+@router.post("/privacy/requests/{request_id}/fulfill")
+def fulfill_privacy_request(
+    request_id: str,
+    body: dict[str, str],
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    settings: OperatorApiSettings = Depends(get_settings),
+    principal: Principal = Depends(require_any_capability(Capability.HANDLE_PRIVACY, Capability.DELETE_DATA)),
+) -> dict[str, Any]:
+    request = session.get(PrivacyRequest, uuid.UUID(request_id))
+    if request is None:
+        raise NotFoundError("privacy request not found")
+    if request.status == "completed":
+        raise ConflictError("privacy request already completed")
+    note = (body or {}).get("note", "")
+    deleted = 0
+    if request.request_type == dm.PrivacyRequestType.DELETION:
+        from kp_database.models import RecipientAssignment, TrackingToken
+
+        recipients = _recipients_for_request(session, settings, request)
+        for recipient in recipients:
+            if recipient.deleted_at is not None:
+                continue
+            recipient.deleted_at = datetime.now(UTC)
+            assignment_ids = list(
+                session.execute(
+                    select(RecipientAssignment.recipient_assignment_id).where(
+                        RecipientAssignment.recipient_id == recipient.recipient_id
+                    )
+                ).scalars()
+            )
+            if assignment_ids:
+                session.execute(delete(TrackingToken).where(TrackingToken.recipient_assignment_id.in_(assignment_ids)))
+                session.execute(
+                    delete(RecipientAssignment).where(RecipientAssignment.recipient_assignment_id.in_(assignment_ids))
+                )
+            session.execute(delete(TrackingEvent).where(TrackingEvent.recipient_id == recipient.recipient_id))
+            deleted += 1
+    request.status = "completed"
+    request.completed_at = datetime.now(UTC)
+    request.completion_note = note
+    audit.record(
+        actor=principal.principal_id,
+        action="privacy_request.fulfill",
+        object_type="privacy_request",
+        object_id=str(request.privacy_request_id),
+        detail={"request_type": request.request_type.value, "deleted": deleted, "note": note},
+    )
+    session.commit()
+    return {
+        "privacy_request_id": str(request.privacy_request_id),
+        "status": request.status,
+        "deleted": deleted,
+        "sla_deadline": request.sla_deadline,
+    }
+
+
+@router.delete("/recipients/{recipient_id}", status_code=status.HTTP_200_OK)
+def delete_recipient(
+    recipient_id: str,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.DELETE_DATA)),
+) -> dict[str, Any]:
+    recipient = session.get(Recipient, uuid.UUID(recipient_id))
+    if recipient is None or recipient.deleted_at is not None:
+        raise NotFoundError("recipient not found")
+    recipient.deleted_at = datetime.now(UTC)
+    audit.record(
+        actor=principal.principal_id,
+        action="recipient.delete",
+        object_type="recipient",
+        object_id=str(recipient.recipient_id),
+    )
+    session.commit()
+    return {"recipient_id": str(recipient.recipient_id), "deleted_at": recipient.deleted_at}

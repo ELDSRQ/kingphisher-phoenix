@@ -44,6 +44,7 @@ class Capability:
     MANAGE_RECIPIENTS: ClassVar[Capability]
     MANAGE_EXCLUSIONS: ClassVar[Capability]
     HANDLE_PRIVACY: ClassVar[Capability]
+    DELETE_DATA: ClassVar[Capability]
     APPROVE_PATTERN: ClassVar[Capability]
     MANAGE_ROLES: ClassVar[Capability]
     USE_KILL_SWITCH: ClassVar[Capability]
@@ -69,6 +70,7 @@ Capability.VIEW_AUDIT = Capability("view", "audit")
 Capability.MANAGE_RECIPIENTS = Capability("manage", "recipients")
 Capability.MANAGE_EXCLUSIONS = Capability("manage", "exclusions")
 Capability.HANDLE_PRIVACY = Capability("handle", "privacy_requests")
+Capability.DELETE_DATA = Capability("delete", "data")
 Capability.APPROVE_PATTERN = Capability("approve", "pattern")
 Capability.MANAGE_ROLES = Capability("manage", "roles")
 Capability.USE_KILL_SWITCH = Capability("use", "kill_switch")
@@ -90,6 +92,7 @@ VIEW_AUDIT = Capability.VIEW_AUDIT
 MANAGE_RECIPIENTS = Capability.MANAGE_RECIPIENTS
 MANAGE_EXCLUSIONS = Capability.MANAGE_EXCLUSIONS
 HANDLE_PRIVACY = Capability.HANDLE_PRIVACY
+DELETE_DATA = Capability.DELETE_DATA
 APPROVE_PATTERN = Capability.APPROVE_PATTERN
 MANAGE_ROLES = Capability.MANAGE_ROLES
 USE_KILL_SWITCH = Capability.USE_KILL_SWITCH
@@ -102,7 +105,15 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
         [APPROVE_CAMPAIGN, APPROVE_SECURITY, VIEW_NAMED_RESULTS, VIEW_AGGREGATE, STOP_CAMPAIGN]
     ),
     Role.PRIVACY_APPROVER: frozenset(
-        [APPROVE_CAMPAIGN, APPROVE_PRIVACY, HANDLE_PRIVACY, VIEW_NAMED_RESULTS, VIEW_AGGREGATE, MANAGE_EXCLUSIONS]
+        [
+            APPROVE_CAMPAIGN,
+            APPROVE_PRIVACY,
+            HANDLE_PRIVACY,
+            DELETE_DATA,
+            VIEW_NAMED_RESULTS,
+            VIEW_AGGREGATE,
+            MANAGE_EXCLUSIONS,
+        ]
     ),
     Role.CAMPAIGN_OPERATOR: frozenset(
         [
@@ -135,6 +146,7 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             MANAGE_RECIPIENTS,
             MANAGE_EXCLUSIONS,
             HANDLE_PRIVACY,
+            DELETE_DATA,
             APPROVE_PATTERN,
             MANAGE_ROLES,
             USE_KILL_SWITCH,

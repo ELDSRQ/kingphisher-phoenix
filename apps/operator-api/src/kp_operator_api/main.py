@@ -90,7 +90,13 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
         client_ip = request.client.host if request.client else "unknown"
         if not app.state.ip_limiter.allow(client_ip):
             return JSONResponse(status_code=429, content={"detail": "rate limit exceeded"})
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        if request.url.path.startswith("/console"):
+            response.headers.setdefault("Content-Security-Policy", _CONSOLE_CSP)
+        return response
 
     @app.exception_handler(KpError)
     async def kp_error_handler(request: Request, exc: KpError) -> JSONResponse:
@@ -110,6 +116,9 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
         return {"status": "ok"}
 
     return app
+
+
+_CONSOLE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'"
 
 
 def _too_large(request: Request, max_bytes: int) -> bool:

@@ -33,7 +33,9 @@ from kp_database.models import (  # noqa: E402
     CampaignApproval,
     CampaignPattern,
     CipherText,
+    PrivacyNotice,
     Recipient,
+    RetentionPolicy,
     SourceItem,
     TemplateVersion,
 )
@@ -92,10 +94,11 @@ def main() -> None:
     CipherText.configure_key(DEV_KEK)
 
     try:
+        policy = _seed_retention_and_notice(session)
         source_id = _seed_source(session)
         pattern = _seed_pattern(session, source_id)
         template = _seed_template(session)
-        campaign = _seed_campaign(session, pattern.campaign_pattern_id, template.template_version_id)
+        campaign = _seed_campaign(session, pattern.campaign_pattern_id, template.template_version_id, policy)
         _seed_recipients(session)
         _seed_approvals(session, campaign.campaign_id, template.template_version_id)
 
@@ -253,7 +256,42 @@ def _seed_template(session: Session) -> TemplateVersion:
     return template
 
 
-def _seed_campaign(session: Session, pattern_id: UUID, template_id: UUID) -> Campaign:
+def _seed_retention_and_notice(session: Session) -> RetentionPolicy:
+    policy = session.scalar(select(RetentionPolicy).where(RetentionPolicy.is_default.is_(True)).limit(1))
+    if policy is None:
+        policy = RetentionPolicy(
+            retention_policy_id=uuid4(),
+            name="Default",
+            data_category="recipient_assignments",
+            retention_days=365,
+            is_default=True,
+            description="Delivered assignments, tracking tokens, and interaction events are purged "
+            "365 days after delivery.",
+        )
+        session.add(policy)
+    notice = session.scalar(select(PrivacyNotice).where(PrivacyNotice.is_current.is_(True)).limit(1))
+    if notice is None:
+        session.add(
+            PrivacyNotice(
+                notice_id=uuid4(),
+                version=1,
+                notice_text=(
+                    "Security-awareness simulations collect limited personal data (work mailbox, "
+                    "department, and interaction events) to deliver and measure the exercises. Simulated "
+                    "lures are clearly presented as training and participation is disclosed to your "
+                    "administrator. Data is retained no longer than 365 days and can be exported or "
+                    "deleted on request within 45 days; contact your administrator to exercise any "
+                    "data-subject right."
+                ),
+                effective_at=datetime.now(UTC),
+                is_current=True,
+            )
+        )
+    session.commit()
+    return policy
+
+
+def _seed_campaign(session: Session, pattern_id: UUID, template_id: UUID, policy: RetentionPolicy) -> Campaign:
     existing = session.scalar(select(Campaign).where(Campaign.title == "Q3 Invoice Lure Drill"))
     if existing is not None:
         return existing
@@ -270,6 +308,7 @@ def _seed_campaign(session: Session, pattern_id: UUID, template_id: UUID) -> Cam
         schedule_end=now + timedelta(days=13),
         timezone="UTC",
         max_recipients=100_000,
+        retention_policy_id=policy.retention_policy_id,
         manifest_hash=hashlib.sha256(b"seed-campaign-invoice").hexdigest(),
         created_by=UUID(int=0),
         expires_at=now + timedelta(days=14),

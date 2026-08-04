@@ -15,6 +15,7 @@ class WorkerSettings(BaseSettings):
     max_retries: int = 3
     visibility_seconds: int = 60
     recovery_every_polls: int = 12
+    retention_interval_seconds: int = 86400
     log_level: str = "info"
     mock_graph_url: str = "http://localhost:8181"
     mock_ai_url: str = "http://localhost:8282"
