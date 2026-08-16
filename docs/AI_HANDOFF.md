@@ -231,11 +231,19 @@ Roles:
 ```bash
 make test            # 111 passed — includes apps/operator-api/tests/test_privacy.py,
                      # apps/workers/tests/test_retention.py
-make lint            # ruff check + format (88 files formatted)
+make lint            # ruff check + format plus node --check for console JavaScript
 make typecheck       # mypy strict (62 files)
 make verify-audit    # recompute audit chain
 make verify-install  # health-check a live install (infra, APIs, console auth, pidfiles)
+make operational-readiness # disposable-local full gate plus live HTTP E2E smoke
 ```
+
+The readiness E2E is dependency-free HTTP coverage. It logs in, validates
+assets/auth/provider status, then (only on loopback dev auth) uses distinct JWT
+principals to create, submit, security-approve, privacy-approve, alert-subscribe,
+and future-schedule a one-recipient campaign. It requires seeded approved
+pattern/template records and intentionally leaves the uniquely named campaign
+as audit evidence in the disposable local database.
 
 Test DB: `DATABASE_URL_TEST` (`kingphisher_test`). **After any `drop schema
 public cascade` reset, re-grant `audit_writer`** (USAGE/CREATE on schema,
@@ -261,7 +269,7 @@ module-scope `drop_all/create_all` + a skip-if-no-DB guard.
    `REDIS_PASSWORD`, `AUDIT_WRITER_PASSWORD`, `MAILPIT_API_PASSWORD`.
 4. `OPERATOR_API_CONSOLE_STATIC_DIR` must be absolute or root-relative.
 5. Rotating the KEK invalidates encrypted recipient data — pair with a DB reset.
-6. Console SPA has no JS lint in the gate yet — always `node --check` app.js.
+6. Console SPA syntax is gated by `node --check` in `make lint`.
 7. Killing the supervisor or services: `scripts/supervisor.py` does **not**
    auto-restart dead children — only on the `data/run/restart` marker.
 8. `.env` DSNs embed the rotated credentials — editing `.env` by hand must keep
@@ -272,21 +280,19 @@ module-scope `drop_all/create_all` + a skip-if-no-DB guard.
 
 ## 10. Suggested next enhancements (roughly ordered)
 
-1. Add `node --check apps/operator-ui/src/console/app.js` to `make lint`
-   (prevent BUG-4 class).
-2. Unit tests for the new `GET /api/v1/kill-switch` (engaged + not-engaged
+1. Unit tests for the new `GET /api/v1/kill-switch` (engaged + not-engaged
    paths) in `apps/operator-api/tests/`.
-3. Console: tracking-events drill-down per campaign (assignments → opens/clicks
+2. Console: tracking-events drill-down per campaign (assignments → opens/clicks
    from `TrackingEvent`), export-to-CSV.
-4. Console: retention policy + privacy notice editing UI (models exist; only
+3. Console: retention policy + privacy notice editing UI (models exist; only
    read-only view today), and an Export affordance for completed
    `access_export` DSRs.
-5. `mailbox`/`reminder` workers: flesh out mock inbox handling and reminder
+4. `mailbox`/`reminder` workers: flesh out mock inbox handling and reminder
    cadence (currently minimal).
-6. Source adapters: add STIX/bulk_download importers (enum values exist).
-7. E2E: a Playwright/headless-Chrome smoke that logs into the console and
-   exercises the screens (catches SPA regressions the gate misses).
-8. OTel collector wiring: confirm worker/API traces reach :4317 and add a
+5. Source adapters: add STIX/bulk_download importers (enum values exist).
+6. E2E: extend the dependency-free live HTTP smoke with Playwright when browser
+   interaction coverage justifies adding and maintaining the browser runtime.
+7. OTel collector wiring: confirm worker/API traces reach :4317 and add a
    dashboard note.
 
 Follow §7 invariants for anything security-adjacent, keep the idempotent

@@ -12,9 +12,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from kp_authorization.rbac import Capability, Principal, Role
@@ -87,6 +89,7 @@ class SourceCreate(BaseModel):
     name: str
     source_type: dm.SourceType
     base_domain: str
+    fetch_path: str = Field(default="/", max_length=1024)
     license_state_id: str | None = None
 
 
@@ -273,6 +276,7 @@ def schedule_campaign(
             object_id=str(campaign.campaign_id),
             detail={"prepared": len(assignment_ids), "scheduled_for": schedule_start.isoformat()},
         )
+        _queue_campaign_alert(session, request, campaign, "campaign.scheduled")
     return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value, "prepared": len(assignment_ids)}
 
 
@@ -315,6 +319,7 @@ def test_send_campaign(
 @router.post("/campaigns/{campaign_id}/recall", status_code=status.HTTP_200_OK)
 def recall_campaign(
     campaign_id: str,
+    request: Request,
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
     principal: Principal = Depends(require_capability(Capability.STOP_CAMPAIGN)),
@@ -356,6 +361,7 @@ def recall_campaign(
         detail={"cancelled": len(assignments), "tokens_revoked": len(tokens)},
     )
     session.commit()
+    _queue_campaign_alert(session, request, campaign, "campaign.recalled")
     return {
         "campaign_id": str(campaign.campaign_id),
         "state": campaign.state.value,
@@ -464,14 +470,20 @@ def create_source(
 ) -> dict[str, Any]:
     from kp_database.models import Source as SourceRow
 
-    if body.source_type != dm.SourceType.RSS:
-        raise ValidationError_(f"source type {body.source_type.value} is not implemented; use rss")
+    if body.source_type != dm.SourceType.RSS and body.source_type not in (
+        dm.SourceType.STIX,
+        dm.SourceType.BULK_DOWNLOAD,
+    ):
+        raise ValidationError_(f"source type {body.source_type.value} is not implemented")
+    if not body.fetch_path.startswith("/") or body.fetch_path.startswith("//"):
+        raise ValidationError_("fetch_path must be an absolute path, not a URL")
     source = SourceRow(
         source_id=uuid.uuid4(),
         source_key=str(uuid.uuid4())[:8],
         name=body.name,
         source_type=body.source_type,
         base_domain=body.base_domain,
+        fetch_path=body.fetch_path,
         enabled=False,
     )
     session.add(source)
@@ -500,6 +512,7 @@ def list_sources(
             "name": row.name,
             "source_type": row.source_type.value,
             "base_domain": row.base_domain,
+            "fetch_path": row.fetch_path,
             "enabled": row.enabled,
             "last_success_at": row.last_success_at,
             "last_attempt_at": row.last_attempt_at,
@@ -522,8 +535,8 @@ def enable_source(
     source = session.get(SourceRow, uuid.UUID(source_id))
     if source is None:
         raise NotFoundError("source not found")
-    if source.source_type != dm.SourceType.RSS:
-        raise ValidationError_("only RSS sources can be enabled")
+    if source.source_type not in (dm.SourceType.RSS, dm.SourceType.STIX, dm.SourceType.BULK_DOWNLOAD):
+        raise ValidationError_("source adapter is not implemented")
     source.enabled = True
     session.commit()
     request.app.state.queue.publish("ingest", {"source_id": source_id}, idempotency_key=f"ingest:{source_id}")
@@ -639,7 +652,8 @@ def import_recipients_csv(
 
 class AlertSubscribe(BaseModel):
     campaign_id: str
-    channel: str = Field(default="web", pattern="^(web|email|webhook|teams|slack|siem)$")
+    channel: str = Field(default="web", pattern="^(web|webhook)$")
+    destination_url: str | None = Field(default=None, max_length=2048)
 
 
 @router.post("/alerts/subscriptions", status_code=status.HTTP_201_CREATED)
@@ -650,6 +664,13 @@ def subscribe_alerts(
     principal: Principal = Depends(require_capability(Capability.SUBSCRIBE_ALERTS)),
 ) -> dict[str, Any]:
     campaign = _get_campaign(session, body.campaign_id)
+    if body.channel != "web":
+        parsed = urlparse(body.destination_url or "")
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValidationError_("outbound alert destinations require an HTTPS URL without embedded credentials")
+    elif body.destination_url is not None:
+        raise ValidationError_("web subscriptions do not accept a destination URL")
+    new_secret: str | None = None
     existing = session.scalar(
         select(AlertSubscription).where(
             AlertSubscription.user_id == uuid.UUID(principal.principal_id),
@@ -659,13 +680,21 @@ def subscribe_alerts(
     )
     if existing is not None:
         existing.active = True
+        if body.destination_url and body.destination_url != existing.destination_url:
+            existing.destination_url = body.destination_url
+            new_secret = secrets.token_hex(32)
+            existing.signing_secret = new_secret
         sub = existing
     else:
+        if body.channel != "web":
+            new_secret = secrets.token_hex(32)
         sub = AlertSubscription(
             alert_subscription_id=uuid.uuid4(),
             user_id=uuid.UUID(principal.principal_id),
             campaign_id=campaign.campaign_id,
             channel=body.channel,
+            destination_url=body.destination_url,
+            signing_secret=new_secret,
             active=True,
         )
         session.add(sub)
@@ -677,7 +706,11 @@ def subscribe_alerts(
         detail={"channel": body.channel},
     )
     session.commit()
-    return {"alert_subscription_id": str(sub.alert_subscription_id), "active": sub.active}
+    return {
+        "alert_subscription_id": str(sub.alert_subscription_id),
+        "active": sub.active,
+        "signing_secret": new_secret,
+    }
 
 
 @router.get("/alerts/subscriptions", status_code=status.HTTP_200_OK)
@@ -695,6 +728,9 @@ def list_alert_subscriptions(
             "alert_subscription_id": str(s.alert_subscription_id),
             "campaign_id": str(s.campaign_id),
             "channel": s.channel,
+            "destination_configured": bool(s.destination_url),
+            "last_delivery_at": s.last_delivery_at,
+            "consecutive_failures": s.consecutive_failures,
             "active": s.active,
         }
         for s in rows
@@ -726,6 +762,30 @@ def unsubscribe_alerts(
     )
     session.commit()
     return {"alert_subscription_id": subscription_id, "active": False}
+
+
+def _queue_campaign_alert(session: Session, request: Request, campaign: Campaign, event_type: str) -> int:
+    subscriptions = list(
+        session.scalars(
+            select(AlertSubscription).where(
+                AlertSubscription.campaign_id == campaign.campaign_id,
+                AlertSubscription.active.is_(True),
+                AlertSubscription.channel != "web",
+            )
+        )
+    )
+    for subscription in subscriptions:
+        request.app.state.queue.publish(
+            "alert",
+            {
+                "subscription_id": str(subscription.alert_subscription_id),
+                "campaign_id": str(campaign.campaign_id),
+                "event_type": event_type,
+                "occurred_at": datetime.now(UTC).isoformat(),
+            },
+            idempotency_key=f"alert:{subscription.alert_subscription_id}:{event_type}:{campaign.campaign_id}",
+        )
+    return len(subscriptions)
 
 
 class TemplatePreview(BaseModel):
@@ -872,6 +932,7 @@ class KillSwitchBody(BaseModel):
 @router.post("/kill-switch", status_code=status.HTTP_200_OK)
 def kill_switch(
     body: KillSwitchBody,
+    request: Request,
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
     principal: Principal = Depends(require_capability(Capability.USE_KILL_SWITCH)),
@@ -910,6 +971,10 @@ def kill_switch(
         detail={"cancelled": len(rows), "tokens_revoked": len(tokens), "confirm": body.confirm},
     )
     session.commit()
+    if body.campaign_id is not None:
+        campaign = session.get(Campaign, body.campaign_id)
+        if campaign is not None:
+            _queue_campaign_alert(session, request, campaign, "campaign.kill_switch")
     return {"cancelled": len(rows), "tokens_revoked": len(tokens)}
 
 

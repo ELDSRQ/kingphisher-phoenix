@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import os
 import uuid
+from typing import Self
+from urllib.parse import parse_qs, urlparse
 
+import httpx
 import jwt
 import pytest
 from fastapi.testclient import TestClient
+from kp_authorization.rbac import Principal
+from kp_operator_api import console as console_module
+from kp_operator_api.auth import OidcIdP
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import create_app
 
@@ -125,6 +131,109 @@ def test_console_session_refused_in_oidc_mode(env_file: str) -> None:
     with TestClient(app) as client:
         resp = client.post("/api/v1/console/session", json={"password": CONSOLE_PASSWORD})
         assert resp.status_code == 401
+
+
+def test_oidc_start_uses_pkce_state_and_nonce(env_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(env_file).model_copy(update={"oidc_mode": "oidc"})
+
+    async def metadata(_issuer: str) -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://idp.example/authorize",
+            "token_endpoint": "https://idp.example/token",
+        }
+
+    monkeypatch.setattr(console_module, "_oidc_metadata", metadata)
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/api/v1/console/oidc/start")
+        assert response.status_code == 200
+        query = parse_qs(urlparse(response.json()["authorization_url"]).query)
+        assert query["response_type"] == ["code"]
+        assert query["client_id"] == ["kp-operator-console"]
+        assert query["code_challenge_method"] == ["S256"]
+        assert len(query["code_challenge"][0]) == 43
+        assert query["state"][0]
+        assert query["nonce"][0]
+        cookie = response.cookies.get("kp_oidc_transaction")
+        transaction = jwt.decode(cookie, CONSOLE_JWT, algorithms=["HS256"])
+        assert transaction["state"] == query["state"][0]
+        assert transaction["nonce"] == query["nonce"][0]
+        assert "verifier" in transaction
+
+
+def test_oidc_callback_exchanges_code_validates_nonce_and_sets_session(
+    env_file: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(env_file).model_copy(update={"oidc_mode": "oidc"})
+    transaction: dict[str, str] = {}
+
+    async def metadata(_issuer: str) -> dict[str, str]:
+        return {
+            "authorization_endpoint": "https://idp.example/authorize",
+            "token_endpoint": "https://idp.example/token",
+        }
+
+    class TokenResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, str]:
+            return {"access_token": "access-token", "id_token": "id-token"}
+
+    class FakeClient:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def post(self, url: str, data: dict[str, str]) -> TokenResponse:
+            assert url == "https://idp.example/token"
+            assert data["code_verifier"] == transaction["verifier"]
+            assert data["code"] == "authorization-code"
+            return TokenResponse()
+
+    monkeypatch.setattr(console_module, "_oidc_metadata", metadata)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        OidcIdP,
+        "verify_claims",
+        lambda _self, _token, **_kwargs: {"nonce": transaction["nonce"]},
+    )
+    monkeypatch.setattr(
+        OidcIdP,
+        "verify",
+        lambda _self, _token: Principal(subject_id=str(uuid.uuid4()), roles=set()),
+    )
+    with TestClient(create_app(settings)) as client:
+        start = client.get("/api/v1/console/oidc/start")
+        state = parse_qs(urlparse(start.json()["authorization_url"]).query)["state"][0]
+        transaction.update(jwt.decode(start.cookies["kp_oidc_transaction"], CONSOLE_JWT, algorithms=["HS256"]))
+        response = client.get(
+            "/api/v1/console/oidc/callback",
+            params={"code": "authorization-code", "state": state},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == "/console/"
+        assert response.cookies["kp_oidc_session"] == "access-token"
+
+
+def test_oidc_callback_rejects_state_mismatch(env_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(env_file).model_copy(update={"oidc_mode": "oidc"})
+
+    async def metadata(_issuer: str) -> dict[str, str]:
+        return {"authorization_endpoint": "https://idp.example/authorize"}
+
+    monkeypatch.setattr(console_module, "_oidc_metadata", metadata)
+    with TestClient(create_app(settings)) as client:
+        client.get("/api/v1/console/oidc/start")
+        response = client.get(
+            "/api/v1/console/oidc/callback",
+            params={"code": "code", "state": "attacker-state"},
+        )
+        assert response.status_code == 401
 
 
 def test_console_session_requires_configured_password(tmp_path) -> None:  # noqa: ANN001

@@ -63,18 +63,21 @@ class OidcIdP:
         self._client = PyJWKClient(self._jwks_url, cache_jwk_set=True, lifespan=3600, timeout=http_timeout)
 
     def verify(self, token: str) -> Principal:
+        return _claims_to_principal(self.verify_claims(token))
+
+    def verify_claims(self, token: str, *, audience: str | None = None) -> dict[str, Any]:
         try:
             signing_key = self._client.get_signing_key_from_jwt(token)
             claims = jwt.decode(
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
-                audience=self.audience,
+                audience=audience or self.audience,
                 issuer=self.issuer,
             )
         except (httpx.HTTPError, jwt.PyJWTError) as exc:
             raise AuthenticationError("invalid or expired token") from exc
-        return _claims_to_principal(claims)
+        return claims
 
 
 _ROLE_ALIASES: dict[str, Role] = {
@@ -117,9 +120,14 @@ def make_idp(issuer: str, audience: str, *, mode: str, dev_secret: str) -> OidcI
 def get_principal(request: Request) -> Principal:
     idp: OidcIdP | DevIdP = request.app.state.idp
     authorization = request.headers.get("Authorization", "")
-    if not authorization.startswith("Bearer "):
+    token = (
+        authorization.removeprefix("Bearer ")
+        if authorization.startswith("Bearer ")
+        else request.cookies.get("kp_oidc_session", "")
+    )
+    if not token:
         raise AuthenticationError("missing bearer token")
-    principal = idp.verify(authorization.removeprefix("Bearer "))
+    principal = idp.verify(token)
     user_limiter = request.app.state.user_limiter
     if not user_limiter.allow(principal.subject_id):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate limit exceeded")

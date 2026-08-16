@@ -190,6 +190,7 @@ class Source(BaseEntity):
     name: str
     source_type: SourceType
     base_domain: str
+    fetch_path: str = "/"
     license_state_id: UUID | None = None
     enabled: bool = False
     last_success_at: datetime | None = None

@@ -97,6 +97,29 @@ def test_fetch_pins_connection_to_validated_ip(fetcher_fx: SecureFetcher, monkey
     assert result.content == b"<feed/>"
 
 
+@pytest.mark.parametrize("content_type", ["application/json", "application/stix+json", "text/csv"])
+def test_structured_feed_content_types_are_allowed(
+    fetcher_fx: SecureFetcher, monkeypatch: pytest.MonkeyPatch, content_type: str
+) -> None:
+    monkeypatch.setattr(fetcher.socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("203.0.113.10"))
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def get(self, url: str, **kwargs: object) -> object:
+            return _fake_response(url, content=b"{}", content_type=content_type)
+
+    monkeypatch.setattr(fetcher.httpx, "Client", _Client)
+    assert fetcher_fx.fetch("https://advisory.example.com/feed").content_type == content_type
+
+
 def test_redirect_revalidates_and_pins_each_hop(fetcher_fx: SecureFetcher, monkeypatch: pytest.MonkeyPatch) -> None:
     """Each hop re-resolves and re-pins, so a rebinding host cannot switch to a
     private address between hops."""

@@ -22,6 +22,7 @@ WORKERS = {
     "retention": ("retention", jobs.process_retention),
     "mailbox": ("mailbox", jobs.process_mailbox),
     "reminder": ("remind", jobs.process_reminder),
+    "alert": ("alert", jobs.process_alert),
 }
 
 

@@ -32,7 +32,16 @@ BLOCKED_IP_NETWORKS = [
     ipaddress.ip_network("fe80::/10"),
 ]
 
-_ALLOWED_CONTENT_TYPES = {"text/html", "text/plain", "application/rss+xml", "application/xml", "text/xml"}
+_ALLOWED_CONTENT_TYPES = {
+    "text/html",
+    "text/plain",
+    "text/csv",
+    "application/json",
+    "application/stix+json",
+    "application/rss+xml",
+    "application/xml",
+    "text/xml",
+}
 
 DEFAULT_MAX_SIZE_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_REDIRECTS = 3

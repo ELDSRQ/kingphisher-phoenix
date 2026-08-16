@@ -25,7 +25,13 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from kp_database.models import TrackingEvent, TrackingToken
+from kp_database.models import (
+    RecipientAssignment,
+    TrackingEvent,
+    TrackingToken,
+    TrainingAssignment,
+    TrainingResource,
+)
 from kp_database.privacy import CLIENT_IP_MAX, minimize_ip, minimize_user_agent
 from kp_domain_models import models as dm
 from kp_telemetry.errors import ConflictError, NotFoundError
@@ -200,6 +206,89 @@ class CorrectionBody(BaseModel):
     token_hash: str
     correction: str
     rationale: str
+
+
+@router.post(
+    "/training/{token_hash}/complete",
+    dependencies=[Depends(_token_rate_limited), Depends(_ip_rate_limited), Depends(_global_rate_limited)],
+)
+def complete_training(
+    token_hash: str,
+    session: Session = Depends(_session),
+) -> dict[str, str]:
+    """Complete training using the campaign's expiring recipient token.
+
+    The endpoint stores no cookie or recipient identifier. Replays are
+    idempotent while the token remains active, and revoked/expired tokens fail
+    closed through ``_resolve_active_token``.
+    """
+    token = _resolve_active_token(token_hash, session)
+    if token is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+    # Serialize completion attempts for this recipient/campaign so concurrent
+    # token replays cannot create duplicate training assignments or events.
+    recipient_assignment = session.get(RecipientAssignment, token.recipient_assignment_id, with_for_update=True)
+    if recipient_assignment is None or recipient_assignment.campaign_id != token.campaign_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+    training = session.scalar(
+        select(TrainingAssignment).where(
+            TrainingAssignment.recipient_id == recipient_assignment.recipient_id,
+            TrainingAssignment.campaign_id == token.campaign_id,
+        )
+    )
+    now = datetime.now(UTC)
+    if training is None:
+        resource = session.scalar(
+            select(TrainingResource)
+            .where(
+                TrainingResource.approval_state == dm.TemplateApprovalState.APPROVED,
+                TrainingResource.requires_completion.is_(True),
+            )
+            .order_by(TrainingResource.training_resource_id)
+            .limit(1)
+        )
+        if resource is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="approved training resource unavailable",
+            )
+        training = TrainingAssignment(
+            training_assignment_id=uuid.uuid4(),
+            recipient_id=recipient_assignment.recipient_id,
+            resource_id=resource.training_resource_id,
+            campaign_id=token.campaign_id,
+            assigned_at=now,
+            completed_at=now,
+            status=dm.TrainingAssignmentStatus.COMPLETED,
+        )
+        session.add(training)
+    elif training.completed_at is None:
+        training.completed_at = now
+        training.status = dm.TrainingAssignmentStatus.COMPLETED
+    existing_event = session.scalar(
+        select(TrackingEvent).where(
+            TrackingEvent.token_id == token.token_id,
+            TrackingEvent.event_type == dm.EventType.TRAINING_COMPLETED,
+        )
+    )
+    if existing_event is None:
+        session.add(
+            TrackingEvent(
+                event_id=uuid.uuid4(),
+                event_type=dm.EventType.TRAINING_COMPLETED,
+                token_id=token.token_id,
+                recipient_id=recipient_assignment.recipient_id,
+                campaign_id=token.campaign_id,
+                confidence=dm.Confidence.HIGH,
+                occurred_at=training.completed_at or now,
+                payload={},
+            )
+        )
+    session.commit()
+    return {
+        "training_assignment_id": str(training.training_assignment_id),
+        "status": dm.TrainingAssignmentStatus.COMPLETED.value,
+    }
 
 
 @router.post(

@@ -20,6 +20,13 @@ class WorkerSettings(BaseSettings):
     mock_graph_url: str = "http://localhost:8181"
     mock_ai_url: str = "http://localhost:8282"
     mailpit_smtp: str = "localhost:1025"
+    mailpit_api_url: str = "http://localhost:8025"
+    provider_timeout_seconds: float = 10.0
+    mailbox_poll_limit: int = 50
+    reminder_after_hours: int = 72
+    reminder_batch_size: int = 100
+    reminder_sender: str = "security-awareness@example.com"
+    alert_webhook_domains: str = ""
     tracking_base_url: str = "http://localhost:8001"
     training_base_url: str = "http://localhost:3000/training/awareness"
     training_domains: str = "example.com,training.local"
@@ -48,3 +55,6 @@ class WorkerSettings(BaseSettings):
 
     def training_domain_set(self) -> set[str]:
         return {d.strip().lower() for d in self.training_domains.split(",") if d.strip()}
+
+    def alert_webhook_domain_set(self) -> set[str]:
+        return {d.strip().lower() for d in self.alert_webhook_domains.split(",") if d.strip()}

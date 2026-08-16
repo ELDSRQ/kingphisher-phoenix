@@ -17,22 +17,27 @@ freshly written value takes effect without a process restart.
 
 from __future__ import annotations
 
+import base64
 import datetime
+import hashlib
 import hmac
 import os
+import secrets
 import socket
-import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode, urlparse
 
+import httpx
 import jwt
 from dotenv import dotenv_values, set_key
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from kp_authorization.rbac import Capability, Principal
 from kp_telemetry.errors import AuthenticationError, PermissionDeniedError
 from pydantic import BaseModel, Field
 
-from kp_operator_api.auth import require_capability
+from kp_operator_api.auth import OidcIdP, require_capability
 from kp_operator_api.ratelimit import LoginThrottle
 
 router = APIRouter(prefix="/api/v1/console", tags=["console"])
@@ -43,6 +48,9 @@ CONSOLE_PASSWORD_KEY = "KP_CONSOLE_PASSWORD"  # noqa: S105
 # subject made that raise ValueError (500) and broke self-approval checks.
 CONSOLE_OPERATOR_UUID = "11111111-1111-4111-8111-111111111111"
 _SESSION_TTL_SECONDS = 8 * 60 * 60
+_OIDC_TRANSACTION_TTL_SECONDS = 10 * 60
+_OIDC_TRANSACTION_COOKIE = "kp_oidc_transaction"
+_OIDC_SESSION_COOKIE = "kp_oidc_session"
 
 _SECRET_KEYS: frozenset[str] = frozenset(
     {
@@ -50,6 +58,7 @@ _SECRET_KEYS: frozenset[str] = frozenset(
         "OPERATOR_API_AUDIT_HMAC_KEY",
         "OPERATOR_API_CIPHERTEXT_KEK",
         "OPERATOR_API_CONSOLE_JWT_SECRET",
+        "OPERATOR_API_OIDC_CLIENT_SECRET",
         "KP_WORKER_AUDIT_HMAC_KEY",
         "KP_WORKER_CIPHERTEXT_KEK",
     }
@@ -85,6 +94,174 @@ class SessionResponse(BaseModel):
     auth_mode: str
     principal_id: str
     approval_limited: bool
+
+
+class OidcStartResponse(BaseModel):
+    authorization_url: str
+
+
+@router.get("/auth-mode")
+def auth_mode(request: Request) -> dict[str, str]:
+    """Public, non-sensitive hint used to choose the console login screen."""
+    return {
+        "auth_mode": request.app.state.settings.oidc_mode,
+        "deployment_mode": request.app.state.settings.deployment_mode,
+    }
+
+
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _transaction_secret(request: Request) -> bytes:
+    return bytes(request.app.state.settings.require_console_jwt_secret())
+
+
+async def _oidc_metadata(issuer: str) -> dict[str, Any]:
+    url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+        metadata = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise AuthenticationError("identity provider discovery failed") from exc
+    if not isinstance(metadata, dict) or metadata.get("issuer", "").rstrip("/") != issuer.rstrip("/"):
+        raise AuthenticationError("identity provider discovery returned an invalid issuer")
+    return metadata
+
+
+@router.get("/oidc/start", response_model=OidcStartResponse)
+async def oidc_start(request: Request) -> JSONResponse:
+    settings = request.app.state.settings
+    if settings.oidc_mode != "oidc":
+        raise AuthenticationError("OIDC login is not enabled")
+    metadata = await _oidc_metadata(settings.oidc_issuer)
+    authorization_endpoint = metadata.get("authorization_endpoint")
+    if not isinstance(authorization_endpoint, str):
+        raise AuthenticationError("identity provider has no authorization endpoint")
+    state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(64)
+    now = datetime.datetime.now(datetime.UTC)
+    transaction = jwt.encode(
+        {
+            "state": state,
+            "nonce": nonce,
+            "verifier": verifier,
+            "iat": now,
+            "exp": now + datetime.timedelta(seconds=_OIDC_TRANSACTION_TTL_SECONDS),
+        },
+        _transaction_secret(request),
+        algorithm="HS256",
+    )
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": settings.oidc_client_id,
+            "redirect_uri": settings.oidc_redirect_uri,
+            "scope": settings.oidc_scopes,
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": _b64url(hashlib.sha256(verifier.encode()).digest()),
+            "code_challenge_method": "S256",
+        }
+    )
+    response = OidcStartResponse(authorization_url=f"{authorization_endpoint}?{query}")
+    result = JSONResponse(response.model_dump())
+    result.set_cookie(
+        _OIDC_TRANSACTION_COOKIE,
+        transaction,
+        max_age=_OIDC_TRANSACTION_TTL_SECONDS,
+        httponly=True,
+        secure=urlparse(settings.oidc_redirect_uri).scheme == "https",
+        samesite="lax",
+        path="/api/v1/console/oidc",
+    )
+    return result
+
+
+@router.get("/oidc/callback")
+async def oidc_callback(request: Request, code: str = "", state: str = "", error: str = "") -> RedirectResponse:
+    settings = request.app.state.settings
+    if settings.oidc_mode != "oidc" or error or not code or not state:
+        raise AuthenticationError("identity provider login was not completed")
+    raw_transaction = request.cookies.get(_OIDC_TRANSACTION_COOKIE, "")
+    try:
+        transaction = jwt.decode(raw_transaction, _transaction_secret(request), algorithms=["HS256"])
+    except jwt.PyJWTError as exc:
+        raise AuthenticationError("OIDC transaction is missing or expired") from exc
+    if not hmac.compare_digest(str(transaction.get("state", "")), state):
+        raise AuthenticationError("OIDC state validation failed")
+    metadata = await _oidc_metadata(settings.oidc_issuer)
+    token_endpoint = metadata.get("token_endpoint")
+    if not isinstance(token_endpoint, str):
+        raise AuthenticationError("identity provider has no token endpoint")
+    form = {
+        "grant_type": "authorization_code",
+        "client_id": settings.oidc_client_id,
+        "redirect_uri": settings.oidc_redirect_uri,
+        "code": code,
+        "code_verifier": str(transaction["verifier"]),
+    }
+    if settings.oidc_client_secret:
+        form["client_secret"] = settings.oidc_client_secret
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            token_response = await client.post(token_endpoint, data=form)
+    except httpx.HTTPError as exc:
+        raise AuthenticationError("identity provider token exchange failed") from exc
+    if token_response.status_code != 200:
+        raise AuthenticationError("identity provider rejected the authorization code")
+    try:
+        tokens = token_response.json()
+    except ValueError as exc:
+        raise AuthenticationError("identity provider returned an invalid token response") from exc
+    access_token, id_token = tokens.get("access_token"), tokens.get("id_token")
+    if not isinstance(access_token, str) or not isinstance(id_token, str):
+        raise AuthenticationError("identity provider returned an incomplete token response")
+    idp = request.app.state.idp
+    if not isinstance(idp, OidcIdP):
+        raise AuthenticationError("OIDC verifier is not configured")
+    claims = idp.verify_claims(id_token, audience=settings.oidc_client_id)
+    if not hmac.compare_digest(str(claims.get("nonce", "")), str(transaction.get("nonce", ""))):
+        raise AuthenticationError("OIDC nonce validation failed")
+    # Verify the API access token now as well as on every subsequent request.
+    idp.verify(access_token)
+    response = RedirectResponse(url="/console/", status_code=status.HTTP_303_SEE_OTHER)
+    response.delete_cookie(_OIDC_TRANSACTION_COOKIE, path="/api/v1/console/oidc")
+    response.set_cookie(
+        _OIDC_SESSION_COOKIE,
+        access_token,
+        max_age=_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=urlparse(settings.oidc_redirect_uri).scheme == "https",
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@router.get("/session", response_model=SessionResponse)
+def current_session(request: Request) -> SessionResponse:
+    if request.app.state.settings.oidc_mode != "oidc":
+        raise AuthenticationError("OIDC session lookup is not enabled")
+    raw = request.cookies.get(_OIDC_SESSION_COOKIE, "")
+    if not raw:
+        raise AuthenticationError("missing browser session")
+    principal = request.app.state.idp.verify(raw)
+    return SessionResponse(
+        token="",
+        expires_in=_SESSION_TTL_SECONDS,
+        auth_mode="oidc",
+        principal_id=principal.subject_id,
+        approval_limited=False,
+    )
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout() -> RedirectResponse:
+    response = RedirectResponse(url="/console/", status_code=status.HTTP_204_NO_CONTENT)
+    response.delete_cookie(_OIDC_SESSION_COOKIE, path="/")
+    return response
 
 
 @router.post("/session", response_model=SessionResponse)
@@ -138,6 +315,10 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "OPERATOR_API_OIDC_ISSUER",
         "OPERATOR_API_OIDC_AUDIENCE",
         "OPERATOR_API_OIDC_MODE",
+        "OPERATOR_API_OIDC_CLIENT_ID",
+        "OPERATOR_API_OIDC_CLIENT_SECRET",
+        "OPERATOR_API_OIDC_REDIRECT_URI",
+        "OPERATOR_API_OIDC_SCOPES",
         "OPERATOR_API_LOG_LEVEL",
         "OPERATOR_API_RATE_LIMIT_USER_PER_MIN",
         "OPERATOR_API_RATE_LIMIT_IP_PER_MIN",
@@ -242,7 +423,7 @@ def get_status(
 ) -> StatusResponse:
     run_dir = _run_dir(request.app.state.settings)
     workers: dict[str, bool] = {}
-    for name in ("ingestion", "generation", "delivery", "retention", "mailbox", "reminder"):
+    for name in ("ingestion", "generation", "delivery", "retention", "mailbox", "reminder", "alert"):
         workers[name] = _process_alive(run_dir / f"worker-{name}.pid")
     tracking_health = request.app.state.settings.tracking_base_url.rstrip("/") + "/healthz"
     return StatusResponse(
@@ -296,10 +477,12 @@ def _process_alive(pid_path: Path) -> bool:
 
 
 def _http_ok(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        return False
     try:
-        with urllib.request.urlopen(url, timeout=3) as resp:  # noqa: S310
-            return int(resp.status) == 200
-    except OSError:
+        return httpx.get(url, timeout=3, follow_redirects=False).status_code == 200
+    except httpx.HTTPError:
         return False
 
 

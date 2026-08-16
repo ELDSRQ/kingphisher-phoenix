@@ -24,6 +24,7 @@ from kp_tracking_api.routers import _session
 class _Token:
     token_id = uuid.uuid4()
     campaign_id = uuid.uuid4()
+    recipient_assignment_id = uuid.uuid4()
     status = dm.TokenStatus.ACTIVE
     expires_at = None
 
@@ -37,10 +38,17 @@ class _FakeSession:
 
     def __init__(self, dedup_event: object | None = None) -> None:
         self.dedup_event = dedup_event
+        self.scalar_results: list[object | None] = []
+        self.get_results: dict[object, object] = {}
         self.added: list[object] = []
 
     def scalar(self, stmt: object) -> object | None:  # noqa: ANN001
+        if self.scalar_results:
+            return self.scalar_results.pop(0)
         return self.dedup_event
+
+    def get(self, model: object, identifier: object, **kwargs: object) -> object | None:
+        return self.get_results.get(identifier)
 
     def add(self, obj: object) -> None:
         self.added.append(obj)
@@ -245,3 +253,64 @@ def test_events_use_correct_occurred_at(monkeypatch: pytest.MonkeyPatch) -> None
     after = datetime.now(UTC)
     event = fake.added[0]
     assert before <= event.occurred_at <= after
+
+
+def test_training_completion_creates_assignment_and_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeSession()
+    recipient_id = uuid.uuid4()
+    fake.get_results[_Token.recipient_assignment_id] = type(
+        "RecipientAssignment", (), {"recipient_id": recipient_id, "campaign_id": _Token.campaign_id}
+    )()
+    resource_id = uuid.uuid4()
+    resource = type("TrainingResource", (), {"training_resource_id": resource_id})()
+    fake.scalar_results = [None, resource, None]
+    client = _client(monkeypatch, _settings(), fake)
+    with client:
+        response = client.post("/v1/training/" + "ab" * 32 + "/complete")
+    assert response.status_code == 200, response.text
+    training = next(item for item in fake.added if hasattr(item, "training_assignment_id"))
+    event = next(item for item in fake.added if hasattr(item, "event_id"))
+    assert training.resource_id == resource_id
+    assert training.recipient_id == recipient_id
+    assert training.status == dm.TrainingAssignmentStatus.COMPLETED
+    assert event.event_type == dm.EventType.TRAINING_COMPLETED
+    assert event.recipient_id == recipient_id
+
+
+def test_training_completion_fails_closed_without_approved_resource(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeSession()
+    fake.get_results[_Token.recipient_assignment_id] = type(
+        "RecipientAssignment", (), {"recipient_id": uuid.uuid4(), "campaign_id": _Token.campaign_id}
+    )()
+    fake.scalar_results = [None, None]
+    client = _client(monkeypatch, _settings(), fake)
+    with client:
+        response = client.post("/v1/training/" + "ab" * 32 + "/complete")
+    assert response.status_code == 503
+    assert fake.added == []
+
+
+def test_training_completion_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeSession()
+    recipient_id = uuid.uuid4()
+    fake.get_results[_Token.recipient_assignment_id] = type(
+        "RecipientAssignment", (), {"recipient_id": recipient_id, "campaign_id": _Token.campaign_id}
+    )()
+    completed_at = datetime.now(UTC)
+    training = type(
+        "TrainingAssignment",
+        (),
+        {
+            "training_assignment_id": uuid.uuid4(),
+            "completed_at": completed_at,
+            "status": dm.TrainingAssignmentStatus.COMPLETED,
+        },
+    )()
+    existing_event = object()
+    fake.scalar_results = [training, existing_event]
+    client = _client(monkeypatch, _settings(), fake)
+    with client:
+        response = client.post("/v1/training/" + "ab" * 32 + "/complete")
+    assert response.status_code == 200
+    assert fake.added == []
+    assert training.completed_at == completed_at

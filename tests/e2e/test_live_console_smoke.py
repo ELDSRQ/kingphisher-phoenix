@@ -1,0 +1,217 @@
+"""Opt-in, browserless smoke test for a running local stack.
+
+Set ``KP_E2E_PASSWORD`` to enable the authenticated checks. The test deliberately
+uses only Python's standard library so the release gate does not need a browser
+binary or another package download.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import uuid
+from datetime import UTC, datetime, timedelta
+from urllib.error import HTTPError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+import jwt
+import pytest
+
+OPERATOR_URL = os.getenv("KP_E2E_OPERATOR_URL", "http://127.0.0.1:8000").rstrip("/")
+TRACKING_URL = os.getenv("KP_E2E_TRACKING_URL", "http://127.0.0.1:8001").rstrip("/")
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _require_live_stack() -> None:
+    if not os.getenv("KP_E2E_PASSWORD"):
+        pytest.skip("set KP_E2E_PASSWORD to run live console smoke tests")
+
+
+def _request(path: str, *, base: str = OPERATOR_URL, token: str | None = None) -> tuple[int, bytes, str]:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    request = Request(f"{base}{path}", headers=headers)  # noqa: S310 -- operator-provided HTTP(S) E2E target
+    try:
+        with urlopen(request, timeout=5) as response:  # noqa: S310
+            return response.status, response.read(), response.headers.get_content_type()
+    except HTTPError as error:
+        return error.code, error.read(), error.headers.get_content_type()
+
+
+def _json_request(
+    path: str,
+    *,
+    token: str | None = None,
+    method: str = "GET",
+    body: dict[str, object] | None = None,
+) -> tuple[int, object]:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    data = None
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(body).encode()
+    request = Request(  # noqa: S310 -- guarded, operator-provided HTTP(S) E2E target
+        f"{OPERATOR_URL}{path}", data=data, headers=headers, method=method
+    )
+    try:
+        with urlopen(request, timeout=10) as response:  # noqa: S310
+            return response.status, json.load(response)
+    except HTTPError as error:
+        try:
+            payload: object = json.load(error)
+        except json.JSONDecodeError:
+            payload = error.read().decode(errors="replace")
+        return error.code, payload
+
+
+def _login() -> str:
+    password = os.getenv("KP_E2E_PASSWORD")
+    assert password
+    request = Request(  # noqa: S310 -- operator-provided HTTP(S) E2E target
+        f"{OPERATOR_URL}/api/v1/console/session",
+        data=json.dumps({"password": password}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(request, timeout=5) as response:  # noqa: S310
+        assert response.status == 200
+        body = json.load(response)
+    token = body.get("token")
+    assert isinstance(token, str) and token
+    return token
+
+
+def _principal_token(*roles: str) -> str:
+    secret = os.environ["OPERATOR_API_CONSOLE_JWT_SECRET"]
+    now = datetime.now(UTC)
+    return jwt.encode(
+        {
+            "sub": str(uuid.uuid4()),
+            "iss": os.getenv("OPERATOR_API_OIDC_ISSUER", "http://localhost:8443/realms/kingphisher"),
+            "aud": os.getenv("OPERATOR_API_OIDC_AUDIENCE", "kp-operator-api"),
+            "nbf": now - timedelta(seconds=5),
+            "exp": now + timedelta(minutes=10),
+            "realm_access": {"roles": list(roles)},
+        },
+        secret,
+        algorithm="HS256",
+    )
+
+
+def test_health_endpoints() -> None:
+    assert _request("/healthz")[0] == 200
+    assert _request("/healthz", base=TRACKING_URL)[0] == 200
+
+
+def test_console_shell_and_assets() -> None:
+    status, html, content_type = _request("/console/")
+    assert status == 200
+    assert content_type == "text/html"
+    assert b"/console/app.js" in html and b"/console/styles.css" in html
+
+    js_status, js, js_type = _request("/console/app.js")
+    css_status, css, css_type = _request("/console/styles.css")
+    assert (js_status, css_status) == (200, 200)
+    assert js and css
+    assert js_type in {"text/javascript", "application/javascript"}
+    assert css_type == "text/css"
+
+
+def test_login_and_core_api_authorization() -> None:
+    unauthenticated, _, _ = _request("/api/v1/console/status")
+    assert unauthenticated in {401, 403}
+
+    token = _login()
+    authenticated, payload, content_type = _request("/api/v1/console/status", token=token)
+    assert authenticated == 200
+    assert content_type == "application/json"
+    assert isinstance(json.loads(payload), dict)
+
+
+def test_distinct_principal_campaign_lifecycle_and_alert_health() -> None:
+    """Create and safely future-schedule a seeded campaign on an explicit local stack."""
+    if os.getenv("KP_E2E_LIFECYCLE") != "1":
+        pytest.skip("set KP_E2E_LIFECYCLE=1 to permit local lifecycle mutations")
+    if urlparse(OPERATOR_URL).hostname not in {"127.0.0.1", "localhost", "::1"}:
+        pytest.fail("campaign lifecycle E2E is restricted to a loopback operator API")
+    if not os.getenv("OPERATOR_API_CONSOLE_JWT_SECRET"):
+        pytest.fail("OPERATOR_API_CONSOLE_JWT_SECRET is required to mint local dev principals")
+
+    status, mode = _json_request("/api/v1/console/auth-mode")
+    assert status == 200 and mode == {"auth_mode": "dev", "deployment_mode": "single_tenant"}
+
+    administrator = _login()
+    author = _principal_token("campaign_author", "campaign_operator")
+    security = _principal_token("security_approver")
+    privacy = _principal_token("privacy_approver")
+    operator = _principal_token("campaign_operator")
+
+    patterns_status, patterns = _json_request("/api/v1/patterns", token=administrator)
+    templates_status, templates = _json_request("/api/v1/templates", token=author)
+    recipients_status, recipients = _json_request("/api/v1/recipients", token=administrator)
+    assert patterns_status == templates_status == 200
+    assert recipients_status == 200
+    approved_patterns = [row for row in patterns if row["approval_state"] == "approved"]  # type: ignore[union-attr]
+    approved_templates = [row for row in templates if row["approval_state"] == "approved"]  # type: ignore[union-attr]
+    assert approved_patterns and approved_templates, "seed at least one approved pattern and template"
+
+    start = datetime.now(UTC) + timedelta(days=1)
+    created_status, created = _json_request(
+        "/api/v1/campaigns",
+        token=author,
+        method="POST",
+        body={
+            "pattern_id": approved_patterns[0]["campaign_pattern_id"],
+            "template_version_id": approved_templates[0]["template_version_id"],
+            "title": f"E2E readiness {uuid.uuid4()}",
+            "sender_mailbox": "awareness@example.com",
+            "training_domain": "example.com",
+            "schedule_start": start.isoformat(),
+            "schedule_end": (start + timedelta(hours=1)).isoformat(),
+            "timezone": "UTC",
+            # The campaign engine intentionally fails closed instead of
+            # sampling when eligible recipients exceed the declared cap.
+            "max_recipients": max(1, len(recipients)),  # type: ignore[arg-type]
+        },
+    )
+    assert created_status == 201, created
+    campaign_id = created["campaign_id"]  # type: ignore[index]
+
+    submitted_status, submitted = _json_request(f"/api/v1/campaigns/{campaign_id}/submit", token=author, method="POST")
+    assert submitted_status == 200 and submitted["state"] == "pending_approval"  # type: ignore[index]
+
+    security_status, security_result = _json_request(
+        f"/api/v1/campaigns/{campaign_id}/approvals/security",
+        token=security,
+        method="POST",
+        body={"decision": "approved", "rationale": "E2E security approval"},
+    )
+    assert security_status == 200 and security_result["state"] == "pending_approval"  # type: ignore[index]
+    privacy_status, privacy_result = _json_request(
+        f"/api/v1/campaigns/{campaign_id}/approvals/privacy",
+        token=privacy,
+        method="POST",
+        body={"decision": "approved", "rationale": "E2E privacy approval"},
+    )
+    assert privacy_status == 200 and privacy_result["state"] == "approved"  # type: ignore[index]
+
+    subscription_status, subscription = _json_request(
+        "/api/v1/alerts/subscriptions",
+        token=operator,
+        method="POST",
+        body={"campaign_id": campaign_id, "channel": "web"},
+    )
+    assert subscription_status == 201 and subscription["active"] is True  # type: ignore[index]
+
+    scheduled_status, scheduled = _json_request(
+        f"/api/v1/campaigns/{campaign_id}/schedule", token=operator, method="POST"
+    )
+    assert scheduled_status == 200 and scheduled["state"] == "scheduled"  # type: ignore[index]
+
+    alerts_status, alerts = _json_request(f"/api/v1/alerts/subscriptions?campaign_id={campaign_id}", token=operator)
+    assert alerts_status == 200 and any(item["active"] for item in alerts)  # type: ignore[union-attr]
+    provider_status, provider = _json_request("/api/v1/console/status", token=operator)
+    assert provider_status == 200
+    assert provider["operator_api"] and provider["tracking_api"]  # type: ignore[index]
+    assert provider["postgres"] and provider["redis"]  # type: ignore[index]
+    assert provider["workers"]["alert"]  # type: ignore[index]

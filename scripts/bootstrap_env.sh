@@ -66,6 +66,16 @@ bootstrap_env() {
   _set_line KP_WORKER_REDIS_URL "redis://:${REDIS_PASSWORD}@localhost:6379/0"
   _set_line TRACKING_API_DATABASE_URL "postgresql+psycopg://kingphisher:${POSTGRES_PASSWORD}@localhost:5432/kingphisher"
 
+  # Keep local authentication and deployment topology explicit. Production
+  # operators switch OIDC_MODE and configure their provider values directly.
+  _set_line OPERATOR_API_DEPLOYMENT_MODE "single_tenant"
+  _generate_if_absent OPERATOR_API_OIDC_MODE "dev"
+  _generate_if_absent OPERATOR_API_OIDC_CLIENT_ID "kp-operator-console"
+  _generate_if_absent OPERATOR_API_OIDC_REDIRECT_URI "http://localhost:8000/api/v1/console/oidc/callback"
+  _generate_if_absent OPERATOR_API_OIDC_SCOPES "openid profile"
+  _generate_if_absent KP_WORKER_MAILPIT_SMTP "localhost:1025"
+  _generate_if_absent KP_WORKER_MAILPIT_API_URL "http://localhost:8025"
+
   # Generate secrets once, preserving any value already present in .env.
   # KEK/HMAC must be 256-bit hex (64 chars) — a legacy 128-bit value is
   # rotated, since CipherText/AuditStore now reject it (WS-11 / HIGH-18).

@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PY := uv run
 COMPOSE := docker compose
 
-.PHONY: bootstrap install verify-install dev mock-stack test test-unit test-contract test-e2e lint typecheck security-scan db-migrate db-rollback db-init seed build sbom sign verify-audit
+.PHONY: bootstrap install verify-install operational-readiness dev mock-stack test test-unit test-contract test-e2e lint typecheck security-scan db-migrate db-rollback db-init seed build sbom sign verify-audit
 
 ## One-shot installer: installs all dependencies and starts the full system.
 ## See scripts/install.sh for supported platforms (macOS, Debian/Ubuntu).
@@ -12,6 +12,10 @@ install:
 ## Health-check a running local install (infra, APIs, workers, audit chain).
 verify-install:
 	@bash scripts/verify_install.sh
+
+## Disposable-local deployment gate (configuration, tests, audit, live lifecycle).
+operational-readiness:
+	@bash scripts/operational_readiness.sh
 
 ## Install pinned toolchain and dependencies, start local infra.
 bootstrap:
@@ -39,18 +43,20 @@ test-contract:
 
 ## Run end-to-end tests.
 test-e2e:
-	@$(PY) pytest -m e2e
+	@$(PY) pytest tests/e2e
 
 lint:
 	@$(PY) ruff check .
 	@$(PY) ruff format --check .
+	@command -v node >/dev/null 2>&1 || { echo "node is required to syntax-check the console" >&2; exit 1; }
+	@node --check apps/operator-ui/src/console/app.js
 
 typecheck:
 	@$(PY) mypy packages apps
 
 ## Static security scanning (fail on findings; tools must be installed).
 security-scan:
-	@$(PY) bandit -r packages apps -q
+	@$(PY) bandit -r packages apps -q -x "*/tests/*" -ll
 	@if command -v semgrep >/dev/null 2>&1; then semgrep scan --config=auto --error packages apps; fi
 	@if command -v trivy >/dev/null 2>&1; then trivy fs --scanners vuln,secret .; fi
 

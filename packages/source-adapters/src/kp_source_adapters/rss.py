@@ -15,6 +15,8 @@ from kp_domain_models import models as dm
 from kp_sanitization.fetcher import SecureFetcher
 from kp_sanitization.html_to_text import sanitize_html
 
+from kp_source_adapters.common import source_url
+
 
 class AdapterError(Exception):
     pass
@@ -37,7 +39,7 @@ class RssAdapter:
         self._limit = limit
 
     def fetch(self) -> list[dm.SourceItem]:
-        result = self._fetcher.fetch(f"https://{self._source.base_domain}")
+        result = self._fetcher.fetch(source_url(self._source))
         text = result.content.decode("utf-8", errors="replace")
         plain = sanitize_html(text)
         # Minimal XML-item extraction; the curation step later maps to patterns.

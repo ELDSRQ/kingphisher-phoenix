@@ -224,7 +224,7 @@ cat <<EOF
   What's running
     - Postgres :5432, Redis :6379, Mailpit :1025/:8025, mocks :8443/:8181/:8282
     - operator-api :8000, tracking-api :8001
-    - workers: ingestion, generation, delivery, retention, mailbox, reminder
+    - workers: ingestion, generation, delivery, retention, mailbox, reminder, alert
     - otel-collector :4317/:4318
 
   Useful commands (from the repo root)

@@ -91,7 +91,24 @@ What runs, end to end:
 ```bash
 ./scripts/verify_install.sh   # infra health, API healthz, console auth, worker pidfiles, audit chain
 make verify-audit             # recompute and compare the audit hash chain
+make operational-readiness    # complete disposable-local release/readiness gate
 ```
+
+`operational-readiness` is intended for a provisioned, disposable local stack.
+It validates Compose configuration and migration heads, runs lint (including
+console JavaScript syntax), type checking and tests, verifies the audit chain,
+checks live services/workers, and performs an authenticated HTTP smoke of the
+console. Outside its isolated lifecycle campaign, it does not migrate, seed,
+deliver, delete, restart, or stop services. The gate requires `uv`,
+Docker/Compose, curl, Node, a populated `.env`,
+and the full stack already running. Tests must use a separate
+`DATABASE_URL_TEST`; the script fails if it matches the application database.
+The E2E stage uses seeded approved pattern/template records and creates one
+uniquely named campaign with distinct author, security, privacy, and operator
+principals. It adds a local web-alert subscription and schedules the campaign
+24 hours ahead with `max_recipients=1`; it never contacts an external alert
+provider. Lifecycle mutation is hard-limited to loopback, `dev` authentication,
+and `single_tenant` deployment mode, so run the gate on a disposable local DB.
 
 ---
 

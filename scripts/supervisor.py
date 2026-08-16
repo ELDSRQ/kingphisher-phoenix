@@ -36,6 +36,7 @@ CHILDREN: dict[str, list[str]] = {
     "worker-retention": ["uv", "run", "kp-worker", "retention"],
     "worker-mailbox": ["uv", "run", "kp-worker", "mailbox"],
     "worker-reminder": ["uv", "run", "kp-worker", "reminder"],
+    "worker-alert": ["uv", "run", "kp-worker", "alert"],
 }
 
 POLL_INTERVAL = 2.0

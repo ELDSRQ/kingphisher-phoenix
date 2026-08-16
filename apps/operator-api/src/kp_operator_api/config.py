@@ -6,6 +6,8 @@ defaults in .env.example are for the disposable dev stack only.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +15,7 @@ class OperatorApiSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPERATOR_API_", env_file=".env", extra="ignore")
 
     app_name: str = "kp-operator-api"
+    deployment_mode: Literal["single_tenant"] = "single_tenant"
     host: str = "127.0.0.1"
     port: int = 8000
     database_url: str = "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher"
@@ -24,6 +27,10 @@ class OperatorApiSettings(BaseSettings):
     oidc_mode: str = "dev"
     oidc_issuer: str = "http://localhost:8443/realms/kingphisher"
     oidc_audience: str = "kp-operator-api"
+    oidc_client_id: str = "kp-operator-console"
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = "http://localhost:8000/api/v1/console/oidc/callback"
+    oidc_scopes: str = "openid profile"
     log_level: str = "info"
     rate_limit_user_per_min: int = 120
     rate_limit_ip_per_min: int = 600

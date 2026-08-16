@@ -83,7 +83,20 @@ make typecheck        # mypy (strict)
 make verify-audit     # recompute + verify the audit hash chain
 make security-scan    # bandit / semgrep / trivy (best-effort, non-gating)
 make verify-install   # health-check a running local install
+make operational-readiness # full local release/readiness gate
 ```
+
+`make lint` also runs Node's syntax checker against the browser console. For an
+already provisioned and running local stack, `make operational-readiness`
+validates configuration, migration state, lint/type/tests, audit integrity,
+service health, console assets, login, and authenticated API access. It requires
+the development `.env`, Docker services, APIs, and workers to be running and
+refuses to run tests when `DATABASE_URL_TEST` equals the application database.
+The final smoke creates a uniquely named campaign with separate author,
+security-reviewer, privacy-reviewer, and scheduling principals, subscribes a
+local web alert, and schedules it one day in the future with a one-recipient
+cap. This mutation is permitted only against a loopback API in local dev-auth
+mode; use a disposable seeded development database.
 
 ## Repository layout
 
@@ -92,7 +105,7 @@ apps/operator-api/     Operator API (:8000) + browser console endpoints + SPA mo
 apps/operator-ui/      Vanilla-JS operator console (no build step)
 apps/tracking-api/     Tracking API (:8001): stateless pixel/click endpoints
 apps/workers/          kp-worker CLI: ingestion, generation, delivery,
-                       retention, mailbox, reminder
+                       retention, mailbox, reminder, alert
 packages/              Core packages (domain-models, database, auditing,
                        authorization, contracts, sanitization, safety-validation,
                        telemetry, templating, source-adapters, campaign-patterns,

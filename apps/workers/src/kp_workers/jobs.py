@@ -22,6 +22,7 @@ from kp_campaign_patterns.builder import build_pattern_candidate
 from kp_contracts.queue import JobQueue
 from kp_database.audit_store import AuditStore
 from kp_database.models import (
+    AlertSubscription,
     Campaign,
     CampaignPattern,
     Recipient,
@@ -32,13 +33,14 @@ from kp_database.models import (
     TemplateVersion,
     TrackingEvent,
     TrackingToken,
+    TrainingAssignment,
 )
 from kp_database.models import (
     Source as SourceRow,
 )
 from kp_domain_models import models as dm
 from kp_safety_validation.validator import SafetyValidator
-from kp_source_adapters.rss import RssAdapter
+from kp_source_adapters import BulkDownloadAdapter, RssAdapter, SourceAdapter, StixAdapter
 from kp_telemetry.errors import SafetyRejectionError
 from kp_telemetry.logging import get_logger
 from kp_templating.ics import generate_invite
@@ -49,6 +51,9 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from kp_workers.config import WorkerSettings
+from kp_workers.providers.alerts import SignedWebhookSender
+from kp_workers.providers.mailpit import MailpitReportedMessageProvider
+from kp_workers.providers.reminders import Reminder, ReminderSender, SmtpReminderSender
 
 logger = get_logger("kp_workers.jobs")
 _renderer = MessageRenderer()
@@ -84,16 +89,20 @@ def process_ingestion(ctx: WorkerContext, message: dict[str, Any]) -> None:
             logger.info("source %s disabled; skipping", source_id)
             return
         fetcher = _make_fetcher(source)
-        adapter = RssAdapter(
-            source=dm.Source(
-                source_id=source.source_id,
-                source_key=source.source_key,
-                name=source.name,
-                source_type=source.source_type,
-                base_domain=source.base_domain,
-            ),
-            fetcher=fetcher,
+        source_model = dm.Source(
+            source_id=source.source_id,
+            source_key=source.source_key,
+            name=source.name,
+            source_type=source.source_type,
+            base_domain=source.base_domain,
+            fetch_path=source.fetch_path,
+            license_state_id=source.license_state_id,
+            enabled=source.enabled,
+            last_success_at=source.last_success_at,
+            last_attempt_at=source.last_attempt_at,
+            consecutive_failures=source.consecutive_failures,
         )
+        adapter = _source_adapter(source_model, fetcher)
         items = adapter.fetch()
         inserted = 0
         patterns = 0
@@ -106,14 +115,14 @@ def process_ingestion(ctx: WorkerContext, message: dict[str, Any]) -> None:
             )
             if dup is not None:
                 continue
-            item.source_id = source.source_id
-            session.add(item)
+            session.add(SourceItem(**item.model_dump()))
             inserted += 1
             pattern = build_pattern_candidate(item)
             session.add(pattern)
             patterns += 1
         session.commit()
         source.last_attempt_at = datetime.now(UTC)
+        source.last_success_at = source.last_attempt_at
         source.consecutive_failures = 0
         session.commit()
     ctx.audit_store.record(
@@ -373,17 +382,155 @@ def maybe_publish_retention(ctx: WorkerContext, now: datetime) -> None:
 
 
 def process_mailbox(ctx: WorkerContext, message: dict[str, Any]) -> None:
-    # Mailpit API lists captured messages in the training mailbox. In the
-    # foundation build we record a heartbeat; reply ingestion is wired to
-    # Mailpit's API in a later wave.
+    provider = _mailbox_provider(ctx)
+    reports = provider.poll()
+    recorded = 0
+    unknown = 0
+    with ctx.session_factory() as session:
+        for report in reports:
+            token = session.scalar(select(TrackingToken).where(TrackingToken.token_hash == report.token_hash))
+            if token is None:
+                unknown += 1
+                continue
+            existing = session.scalar(
+                select(TrackingEvent).where(
+                    TrackingEvent.token_id == token.token_id,
+                    TrackingEvent.event_type == dm.EventType.MESSAGE_REPORTED,
+                )
+            )
+            if existing is not None:
+                continue
+            assignment = session.get(RecipientAssignment, token.recipient_assignment_id)
+            session.add(
+                TrackingEvent(
+                    event_id=uuid.uuid4(),
+                    event_type=dm.EventType.MESSAGE_REPORTED,
+                    token_id=token.token_id,
+                    recipient_id=assignment.recipient_id if assignment is not None else None,
+                    campaign_id=token.campaign_id,
+                    confidence=dm.Confidence.HIGH,
+                    occurred_at=report.reported_at,
+                    payload={"provider": "mailpit", "external_id": report.external_id[:128]},
+                )
+            )
+            recorded += 1
+        session.commit()
     ctx.audit_store.record(
-        actor="worker:mailbox", action="mailbox.poll", object_type="system", object_id="training-mailbox", detail={}
+        actor="worker:mailbox",
+        action="mailbox.poll",
+        object_type="system",
+        object_id="training-mailbox",
+        detail={"polled": len(reports), "recorded": recorded, "unknown_tokens": unknown},
     )
 
 
 def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
+    sender = _reminder_sender(ctx)
+    cutoff = datetime.now(UTC) - timedelta(hours=ctx.settings.reminder_after_hours)
+    sent = 0
+    skipped = 0
+    with ctx.session_factory() as session:
+        assignments = list(
+            session.scalars(
+                select(TrainingAssignment)
+                .where(
+                    TrainingAssignment.status.in_(
+                        [dm.TrainingAssignmentStatus.ASSIGNED, dm.TrainingAssignmentStatus.STARTED]
+                    ),
+                    TrainingAssignment.completed_at.is_(None),
+                    TrainingAssignment.followup_sent_at.is_(None),
+                    TrainingAssignment.assigned_at <= cutoff,
+                )
+                .limit(ctx.settings.reminder_batch_size)
+            )
+        )
+        for assignment in assignments:
+            recipient = session.get(Recipient, assignment.recipient_id)
+            if recipient is None or recipient.status != dm.RecipientStatus.ACTIVE or not recipient.mailbox:
+                skipped += 1
+                continue
+            sender.send(
+                Reminder(
+                    recipient=recipient.mailbox,
+                    subject="Security awareness training reminder",
+                    text=f"Please complete your assigned security awareness training: {ctx.settings.training_base_url}",
+                )
+            )
+            assignment.followup_sent_at = datetime.now(UTC)
+            assignment.status = dm.TrainingAssignmentStatus.REMINDED
+            sent += 1
+            session.commit()
     ctx.audit_store.record(
-        actor="worker:reminder", action="training.remind", object_type="system", object_id="training", detail={}
+        actor="worker:reminder",
+        action="training.remind",
+        object_type="system",
+        object_id="training",
+        detail={"sent": sent, "skipped": skipped},
+    )
+
+
+def process_alert(ctx: WorkerContext, message: dict[str, Any]) -> None:
+    payload = message.get("payload", {})
+    subscription_id = payload.get("subscription_id")
+    if not subscription_id:
+        raise ValueError("alert message missing subscription_id")
+    with ctx.session_factory() as session:
+        subscription = session.get(AlertSubscription, uuid.UUID(subscription_id))
+        if subscription is None or not subscription.active:
+            return
+        if payload.get("campaign_id") != str(subscription.campaign_id):
+            raise ValueError("alert campaign does not match subscription")
+        if payload.get("event_type") not in {
+            "campaign.scheduled",
+            "campaign.recalled",
+            "campaign.kill_switch",
+        }:
+            raise ValueError("unsupported alert event type")
+        if not subscription.destination_url or not subscription.signing_secret:
+            raise ValueError("outbound alert subscription is missing delivery configuration")
+        sender = SignedWebhookSender(
+            ctx.settings.alert_webhook_domain_set(), timeout=ctx.settings.provider_timeout_seconds
+        )
+        try:
+            sender.send(
+                subscription.destination_url,
+                subscription.signing_secret,
+                {
+                    "event_type": payload.get("event_type"),
+                    "campaign_id": payload.get("campaign_id"),
+                    "occurred_at": payload.get("occurred_at"),
+                    "subscription_id": subscription_id,
+                },
+            )
+        except Exception:
+            subscription.consecutive_failures += 1
+            session.commit()
+            raise
+        subscription.last_delivery_at = datetime.now(UTC)
+        subscription.consecutive_failures = 0
+        session.commit()
+    ctx.audit_store.record(
+        actor="worker:alert",
+        action="alert.deliver",
+        object_type="alert_subscription",
+        object_id=subscription_id,
+        detail={"event_type": payload.get("event_type")},
+    )
+
+
+def _mailbox_provider(ctx: WorkerContext) -> MailpitReportedMessageProvider:
+    return MailpitReportedMessageProvider(
+        ctx.settings.mailpit_api_url,
+        timeout=ctx.settings.provider_timeout_seconds,
+        limit=ctx.settings.mailbox_poll_limit,
+    )
+
+
+def _reminder_sender(ctx: WorkerContext) -> ReminderSender:
+    return SmtpReminderSender(
+        ctx.settings.mailpit_smtp,
+        sender=ctx.settings.reminder_sender,
+        timeout=ctx.settings.provider_timeout_seconds,
     )
 
 
@@ -391,6 +538,16 @@ def _make_fetcher(source: SourceRow) -> Any:
     from kp_sanitization.fetcher import SecureFetcher
 
     return SecureFetcher(allowlist={source.base_domain.lower()})
+
+
+def _source_adapter(source: dm.Source, fetcher: Any) -> SourceAdapter:
+    if source.source_type in {dm.SourceType.RSS, dm.SourceType.ADVISORY, dm.SourceType.CURATED}:
+        return RssAdapter(source=source, fetcher=fetcher)
+    if source.source_type == dm.SourceType.STIX:
+        return StixAdapter(source=source, fetcher=fetcher)
+    if source.source_type == dm.SourceType.BULK_DOWNLOAD:
+        return BulkDownloadAdapter(source=source, fetcher=fetcher)
+    raise ValueError(f"unsupported source type: {source.source_type}")
 
 
 def _call_ai(ctx: WorkerContext, pattern_id: str) -> dict[str, Any]:

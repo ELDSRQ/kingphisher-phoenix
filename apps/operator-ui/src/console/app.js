@@ -90,7 +90,7 @@ function formatInstant(value) {
 }
 
 /* ---------- login ---------- */
-views.login = (root) => {
+views.login = async (root) => {
   const err = el("div", { class: "login-error" });
   const password = el("input", { id: "console-password", type: "password", placeholder: "Console password", autocomplete: "current-password" });
   password.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
@@ -111,14 +111,32 @@ views.login = (root) => {
       render();
     } catch (e) { err.textContent = e.message; }
   };
-  root.appendChild(el("div", { class: "login-wrap" }, [
+  let authMode = "dev";
+  try {
+    const resp = await fetch(`${API}/console/auth-mode`);
+    if (resp.ok) authMode = (await resp.json()).auth_mode;
+  } catch { /* The password form remains a safe fallback display. */ }
+  const loginControls = authMode === "oidc" ? [
+    el("button", { class: "btn primary", type: "button", onclick: async () => {
+      err.textContent = "";
+      try {
+        const resp = await fetch(`${API}/console/oidc/start`, { credentials: "same-origin" });
+        const body = await resp.json();
+        if (!resp.ok) throw new Error(body.detail || "Unable to start sign-in");
+        location.assign(body.authorization_url);
+      } catch (e) { err.textContent = e.message; }
+    }, text: "Sign in with identity provider" }),
+  ] : [
+    el("label", { for: "console-password", text: "Password" }),
+    password,
+    el("button", { class: "btn primary", type: "button", onclick: submit, text: "Sign in" }),
+  ];
+  root.replaceChildren(el("div", { class: "login-wrap" }, [
     el("div", { class: "login-card" }, [
       el("h1", { text: "Kingphisher-Phoenix" }),
       el("p", { text: "Operator console" }),
-      el("label", { for: "console-password", text: "Password" }),
-      password,
+      ...loginControls,
       err,
-      el("button", { class: "btn primary", type: "button", onclick: submit, text: "Sign in" }),
     ]),
   ]));
 };
@@ -156,7 +174,10 @@ function shell() {
       nav,
       el("div", { class: "footer" }, [
         el("div", { text: info?.authMode === "dev" ? "Signed in as development operator" : "Signed in with OIDC" }),
-        el("button", { text: "Sign out", onclick: () => { clearToken(); render(); } }),
+        el("button", { text: "Sign out", onclick: async () => {
+          await fetch(`${API}/console/logout`, { method: "POST", credentials: "same-origin" });
+          clearToken(); render();
+        } }),
       ]),
     ]),
     content,
@@ -322,6 +343,23 @@ views.campaigns = async (root) => {
             const opened = report.event_counts.opened || 0;
             const clicked = report.event_counts.clicked || 0;
             toast(`Delivered ${sent} · Opened ${opened} · Clicked ${clicked}`, "success");
+          } catch (err) { toast(err.message, "error"); }
+          finally { e.target.disabled = false; }
+        } }));
+        actions.push(el("button", { class: "btn small", text: "Add alert", onclick: async (e) => {
+          const channel = prompt("Alert channel: webhook", "webhook");
+          if (!channel) return;
+          const destination = prompt("HTTPS webhook destination URL:");
+          if (!destination) return;
+          e.target.disabled = true;
+          try {
+            const result = await api("/alerts/subscriptions", { method: "POST", body: JSON.stringify({
+              campaign_id: c.campaign_id, channel: channel.trim().toLowerCase(), destination_url: destination.trim(),
+            }) });
+            if (result.signing_secret) {
+              prompt("Copy this signing secret now; it will not be displayed again:", result.signing_secret);
+            }
+            toast("Alert subscription created", "success");
           } catch (err) { toast(err.message, "error"); }
           finally { e.target.disabled = false; }
         } }));
@@ -525,7 +563,8 @@ views.sources = async (root) => {
       ]),
       el("div", {}, [
         el("label", { for: "s-type", text: "Source type" }),
-        el("select", { id: "s-type" }, ["rss"].map((t) => el("option", { value: t, text: t }))),
+        el("select", { id: "s-type" }, ["rss", "stix", "bulk_download"].map((t) => el("option", { value: t, text: t }))),
+        el("label", { for: "s-path", text: "Feed path" }), el("input", { id: "s-path", value: "/" }),
       ]),
     ]),
     el("div", { class: "btn-row" }, [
@@ -536,6 +575,7 @@ views.sources = async (root) => {
             name: document.getElementById("s-name").value,
             source_type: document.getElementById("s-type").value,
             base_domain: document.getElementById("s-domain").value,
+            fetch_path: document.getElementById("s-path").value,
           }) });
           toast("Source created", "success"); location.reload();
         } catch (err) { toast(err.message, "error"); }
@@ -544,7 +584,7 @@ views.sources = async (root) => {
     ]),
   ]));
   const rows = sources.map((source) => el("tr", {}, [
-    el("td", { text: source.name }), el("td", { text: source.base_domain }),
+    el("td", { text: source.name }), el("td", { text: `${source.base_domain}${source.fetch_path || "/"}` }),
     el("td", { text: source.enabled ? "enabled" : "disabled" }),
     el("td", { text: source.last_success_at || "never" }),
     el("td", {}, source.enabled ? [] : [el("button", { class: "btn small primary", text: "Enable & ingest", onclick: async (e) => {
@@ -702,8 +742,21 @@ views.settings = async (root) => {
 };
 
 /* ---------- boot ---------- */
-function render() {
-  if (!token()) { views.login(document.getElementById("app")); return; }
+let oidcSessionChecked = false;
+async function render() {
+  if (!token() && !oidcSessionChecked) {
+    oidcSessionChecked = true;
+    try {
+      const resp = await fetch(`${API}/console/session`, { credentials: "same-origin" });
+      if (resp.ok) {
+        const data = await resp.json();
+        setSessionInfo({ authMode: data.auth_mode, principalId: data.principal_id, approvalLimited: false });
+        shell();
+        return;
+      }
+    } catch { /* Render login below. */ }
+  }
+  if (!token() && !sessionInfo()) { views.login(document.getElementById("app")); return; }
   shell();
 }
 
