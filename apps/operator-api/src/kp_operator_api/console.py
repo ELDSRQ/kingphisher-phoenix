@@ -23,7 +23,9 @@ import hashlib
 import hmac
 import os
 import secrets
+import smtplib
 import socket
+import ssl
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -61,6 +63,14 @@ _SECRET_KEYS: frozenset[str] = frozenset(
         "OPERATOR_API_OIDC_CLIENT_SECRET",
         "KP_WORKER_AUDIT_HMAC_KEY",
         "KP_WORKER_CIPHERTEXT_KEK",
+        "KP_WORKER_SMTP_PASSWORD",
+        "KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN",
+        "KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD",
+        "KP_WORKER_AI_BEARER_TOKEN",
+        "KP_WORKER_AI_API_KEY",
+        "KP_WORKER_GRAPH_BEARER_TOKEN",
+        "KP_WORKER_GRAPH_API_KEY",
+        "MAILPIT_API_PASSWORD",
     }
 )
 
@@ -336,10 +346,46 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "KP_WORKER_CIPHERTEXT_KEK",
         "KP_WORKER_POLL_SECONDS",
         "KP_WORKER_LOG_LEVEL",
+        "KP_WORKER_MAILPIT_SMTP",
+        "KP_WORKER_MAILPIT_SMTP_TLS",
+        "KP_WORKER_MAILPIT_API_URL",
+        "KP_WORKER_PROVIDER_TIMEOUT_SECONDS",
+        "KP_WORKER_MAILBOX_POLL_LIMIT",
+        "KP_WORKER_REMINDER_AFTER_HOURS",
+        "KP_WORKER_REMINDER_BATCH_SIZE",
+        "KP_WORKER_REMINDER_SENDER",
+        "KP_WORKER_ALERT_WEBHOOK_DOMAINS",
+        "KP_WORKER_ALERT_WEBHOOK_URL",
+        "KP_WORKER_SMTP_ADDRESS",
+        "KP_WORKER_SMTP_USERNAME",
+        "KP_WORKER_SMTP_PASSWORD",
+        "KP_WORKER_SMTP_STARTTLS",
+        "KP_WORKER_SMTP_SSL",
+        "KP_WORKER_SMTP_SENDER",
+        "KP_WORKER_REPORTED_MAILBOX_URL",
+        "KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN",
+        "KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME",
+        "KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD",
+        "KP_WORKER_AI_BASE_URL",
+        "KP_WORKER_AI_BEARER_TOKEN",
+        "KP_WORKER_AI_API_KEY",
+        "KP_WORKER_GRAPH_BASE_URL",
+        "KP_WORKER_GRAPH_BEARER_TOKEN",
+        "KP_WORKER_GRAPH_API_KEY",
+        "KP_WORKER_GRAPH_MAX_USERS",
+        "KP_WORKER_GRAPH_MAX_PAGES",
+        "KP_WORKER_TRAINING_BASE_URL",
+        "KP_WORKER_TRAINING_DOMAINS",
+        "AZURE_GRAPH_TENANT_ID",
+        "AZURE_GRAPH_CLIENT_ID",
+        "AZURE_GRAPH_CERT_PATH",
+        "AZURE_GRAPH_CERT_THUMBPRINT",
+        "OPERATOR_API_ONBOARDING_COMPLETED",
         "MOCK_IDP_URL",
         "MOCK_GRAPH_URL",
         "MOCK_AI_URL",
         "MAILPIT_URL",
+        "MAILPIT_API_PASSWORD",
     }
 )
 # Database DSNs embed credentials and are deliberately NOT exposed or writable
@@ -356,6 +402,422 @@ class ConfigPatch(BaseModel):
 class ConfigResponse(BaseModel):
     values: dict[str, str]
     masked: dict[str, bool]
+
+
+_ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "identity",
+        "title": "Identity provider",
+        "description": (
+            "Use local development login or connect an OpenID Connect provider with separate operator roles."
+        ),
+        "optional": False,
+        "configured_any": (("OPERATOR_API_OIDC_MODE",),),
+        "fields": (
+            ("OPERATOR_API_OIDC_MODE", "Authentication mode", "text", True, False, "dev or oidc"),
+            ("OPERATOR_API_OIDC_ISSUER", "OIDC issuer URL", "url", False, False, "https://id.example/tenant"),
+            ("OPERATOR_API_OIDC_AUDIENCE", "API audience", "text", False, False, "kp-operator-api"),
+            ("OPERATOR_API_OIDC_CLIENT_ID", "Console client ID", "text", False, False, "kp-operator-console"),
+            (
+                "OPERATOR_API_OIDC_CLIENT_SECRET",
+                "Client secret",
+                "password",
+                False,
+                True,
+                "optional for public clients",
+            ),
+            (
+                "OPERATOR_API_OIDC_REDIRECT_URI",
+                "Redirect URI",
+                "url",
+                False,
+                False,
+                "https://console.example/api/v1/console/oidc/callback",
+            ),
+        ),
+    },
+    {
+        "id": "graph",
+        "title": "Employee directory",
+        "description": (
+            "Connect a bounded Microsoft Graph-compatible users endpoint for encrypted recipient synchronization."
+        ),
+        "optional": True,
+        "configured_any": (("KP_WORKER_GRAPH_BASE_URL",), ("MOCK_GRAPH_URL",)),
+        "fields": (
+            ("KP_WORKER_GRAPH_BASE_URL", "Graph base URL", "url", True, False, "https://graph.microsoft.com/v1.0"),
+            ("KP_WORKER_GRAPH_BEARER_TOKEN", "Bearer token", "password", False, True, "short-lived access token"),
+            ("KP_WORKER_GRAPH_API_KEY", "API key", "password", False, True, "optional gateway key"),
+            ("KP_WORKER_GRAPH_MAX_USERS", "Maximum users", "number", False, False, "1000"),
+        ),
+    },
+    {
+        "id": "smtp",
+        "title": "Email delivery",
+        "description": "Connect an SMTP relay. STARTTLS is automatic for non-local hosts unless SSL is selected.",
+        "optional": False,
+        "configured_any": (("KP_WORKER_SMTP_ADDRESS",), ("KP_WORKER_MAILPIT_SMTP",)),
+        "fields": (
+            ("KP_WORKER_SMTP_ADDRESS", "SMTP host and port", "text", True, False, "smtp.example.com:587"),
+            ("KP_WORKER_SMTP_USERNAME", "SMTP username", "text", False, False, "service account"),
+            ("KP_WORKER_SMTP_PASSWORD", "SMTP password", "password", False, True, "leave blank to keep existing"),
+            ("KP_WORKER_SMTP_STARTTLS", "Use STARTTLS", "text", False, False, "true or false"),
+            ("KP_WORKER_SMTP_SSL", "Use implicit TLS", "text", False, False, "true or false"),
+            ("KP_WORKER_SMTP_SENDER", "Sender mailbox", "email", False, False, "awareness@example.com"),
+        ),
+    },
+    {
+        "id": "mailbox",
+        "title": "Reported-message mailbox",
+        "description": "Poll a Mailpit-compatible reporting API for messages explicitly marked as reported.",
+        "optional": True,
+        "configured_any": (("KP_WORKER_REPORTED_MAILBOX_URL",), ("KP_WORKER_MAILPIT_API_URL",)),
+        "fields": (
+            ("KP_WORKER_REPORTED_MAILBOX_URL", "Mailbox API base URL", "url", True, False, "https://mail.example/api"),
+            ("KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN", "Bearer token", "password", False, True, "optional"),
+            ("KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME", "Basic-auth username", "text", False, False, "optional"),
+            ("KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD", "Basic-auth password", "password", False, True, "optional"),
+        ),
+    },
+    {
+        "id": "ai",
+        "title": "Content-generation service",
+        "description": (
+            "Connect a compatible /propose service. Deterministic safety validation remains mandatory after generation."
+        ),
+        "optional": True,
+        "configured_any": (("KP_WORKER_AI_BASE_URL",), ("MOCK_AI_URL",)),
+        "fields": (
+            ("KP_WORKER_AI_BASE_URL", "AI service base URL", "url", True, False, "https://ai-gateway.example"),
+            ("KP_WORKER_AI_BEARER_TOKEN", "Bearer token", "password", False, True, "optional"),
+            ("KP_WORKER_AI_API_KEY", "API key", "password", False, True, "optional"),
+        ),
+    },
+    {
+        "id": "training",
+        "title": "Training experience",
+        "description": "Set the recipient training destination and the exact domains allowed in campaign content.",
+        "optional": False,
+        "configured_any": (("OPERATOR_API_TRAINING_BASE_URL", "OPERATOR_API_TRAINING_DOMAINS"),),
+        "fields": (
+            (
+                "OPERATOR_API_TRAINING_BASE_URL",
+                "Training URL",
+                "url",
+                True,
+                False,
+                "https://training.example/awareness",
+            ),
+            ("OPERATOR_API_TRAINING_DOMAINS", "Allowed training domains", "text", True, False, "training.example"),
+            ("KP_WORKER_TRAINING_BASE_URL", "Worker training URL", "url", False, False, "same training URL"),
+            ("KP_WORKER_TRAINING_DOMAINS", "Worker allowed domains", "text", False, False, "same domain list"),
+        ),
+    },
+    {
+        "id": "webhook",
+        "title": "Operational alerts",
+        "description": "Allowlist HTTPS webhook hosts and test a destination without sending campaign data.",
+        "optional": True,
+        "configured_any": (("KP_WORKER_ALERT_WEBHOOK_DOMAINS",),),
+        "fields": (
+            ("KP_WORKER_ALERT_WEBHOOK_DOMAINS", "Allowed webhook domains", "text", True, False, "hooks.example.com"),
+            (
+                "KP_WORKER_ALERT_WEBHOOK_URL",
+                "Test webhook URL",
+                "url",
+                False,
+                False,
+                "https://hooks.example.com/health",
+            ),
+        ),
+    },
+)
+
+
+class OnboardingPatch(ConfigPatch):
+    completed: bool | None = None
+
+
+class ConnectionTest(BaseModel):
+    component: str
+    values: dict[str, str] = Field(default_factory=dict)
+
+
+def _onboarding_state(path: Path) -> dict[str, Any]:
+    values = _env_values(path)
+    effective_values = dict(values)
+    for preferred, fallback in {
+        "KP_WORKER_GRAPH_BASE_URL": "MOCK_GRAPH_URL",
+        "KP_WORKER_AI_BASE_URL": "MOCK_AI_URL",
+        "KP_WORKER_REPORTED_MAILBOX_URL": "KP_WORKER_MAILPIT_API_URL",
+        "KP_WORKER_SMTP_ADDRESS": "KP_WORKER_MAILPIT_SMTP",
+    }.items():
+        if not effective_values.get(preferred):
+            effective_values[preferred] = effective_values.get(fallback, "")
+    steps = []
+    for definition in _ONBOARDING_STEPS:
+        configured = any(
+            all(bool(values.get(key, "").strip()) for key in key_group) for key_group in definition["configured_any"]
+        )
+        fields = [
+            {
+                "key": key,
+                "label": label,
+                "type": input_type,
+                "required": required,
+                "secret": secret,
+                "placeholder": placeholder,
+                "help": "Stored in the local environment; restart services after changing this value.",
+                "value": "" if secret else effective_values.get(key, ""),
+            }
+            for key, label, input_type, required, secret, placeholder in definition["fields"]
+        ]
+        steps.append(
+            {
+                "id": definition["id"],
+                "component": definition["id"],
+                "title": definition["title"],
+                "description": definition["description"],
+                "optional": definition["optional"],
+                "configured": configured,
+                "ready": configured,
+                "fields": fields,
+            }
+        )
+    complete = values.get("OPERATOR_API_ONBOARDING_COMPLETED", "").lower() == "true"
+    return {
+        "complete": complete,
+        "completed": complete,
+        "steps": steps,
+    }
+
+
+@router.get("/onboarding", response_model=dict[str, Any])
+def get_onboarding(
+    request: Request,
+    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    """Return wizard metadata, non-secret values, and readiness flags."""
+    return _onboarding_state(_env_path(request))
+
+
+def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Principal) -> list[str]:
+    forbidden = set(body.values) - _ALLOWED_KEYS
+    if forbidden:
+        raise PermissionDeniedError(f"rejected configuration keys: {sorted(forbidden)}")
+    desired = dict(body.values)
+    # Training configuration is consumed by both the operator safety gate and
+    # workers. Mirror it here so the wizard cannot leave the two processes on
+    # inconsistent allowlists or destinations.
+    mirrors = {
+        "OPERATOR_API_TRAINING_BASE_URL": "KP_WORKER_TRAINING_BASE_URL",
+        "OPERATOR_API_TRAINING_DOMAINS": "KP_WORKER_TRAINING_DOMAINS",
+    }
+    for source, target in mirrors.items():
+        if source in desired and target not in desired:
+            desired[target] = desired[source]
+    if body.completed is not None:
+        desired["OPERATOR_API_ONBOARDING_COMPLETED"] = str(body.completed).lower()
+    path = _env_path(request)
+    current = _env_values(path)
+    proposed = {**current, **desired}
+    if proposed.get("OPERATOR_API_OIDC_MODE", "dev") not in {"dev", "oidc"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="authentication mode must be dev or oidc",
+        )
+    boolean_keys = ("KP_WORKER_SMTP_STARTTLS", "KP_WORKER_SMTP_SSL")
+    if any(proposed.get(key, "").lower() not in {"", "true", "false"} for key in boolean_keys):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="TLS settings must be true or false",
+        )
+    if (
+        proposed.get("KP_WORKER_SMTP_STARTTLS", "").lower() == "true"
+        and proposed.get("KP_WORKER_SMTP_SSL", "").lower() == "true"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="SMTP SSL and STARTTLS are exclusive",
+        )
+    if body.completed:
+        missing = [
+            definition["title"]
+            for definition in _ONBOARDING_STEPS
+            if not definition["optional"]
+            and not any(
+                all(bool(proposed.get(key, "").strip()) for key in key_group)
+                for key_group in definition["configured_any"]
+            )
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"required setup steps are incomplete: {', '.join(missing)}",
+            )
+    changed: list[str] = []
+    for key, value in desired.items():
+        if key in _SECRET_KEYS and not value:
+            continue
+        if current.get(key, "") == value:
+            continue
+        set_key(str(path), key, value)
+        changed.append(key)
+    request.app.state.audit_store.record(
+        actor=principal.principal_id,
+        action="console.onboarding.update",
+        object_type="system",
+        object_id=".env",
+        detail={"changed": changed},
+    )
+    return changed
+
+
+@router.put("/onboarding", response_model=dict[str, Any])
+def put_onboarding(
+    body: OnboardingPatch,
+    request: Request,
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    changed = _persist_onboarding(body, request, principal)
+    return {"ok": True, "changed": changed, **_onboarding_state(_env_path(request))}
+
+
+def _safe_url(raw: str, *, https_only: bool = False) -> str:
+    parsed = urlparse(raw)
+    schemes = {"https"} if https_only else {"http", "https"}
+    if (
+        parsed.scheme not in schemes
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or parsed.port is not None
+        and not 1 <= parsed.port <= 65535
+    ):
+        raise ValueError("invalid endpoint")
+    return raw
+
+
+def _test_http(url: str, *, headers: dict[str, str] | None = None, reachable_only: bool = False) -> bool:
+    try:
+        response = httpx.get(_safe_url(url), headers=headers, timeout=3.0, follow_redirects=False)
+        if reachable_only:
+            return response.status_code < 500 and response.status_code not in {401, 403}
+        return 200 <= response.status_code < 400
+    except (httpx.HTTPError, ValueError):
+        return False
+
+
+def _test_smtp(
+    address: str,
+    use_tls: bool,
+    *,
+    use_ssl: bool = False,
+    username: str | None = None,
+    password: str | None = None,
+) -> bool:
+    try:
+        host, raw_port = address.rsplit(":", 1)
+        port = int(raw_port)
+        if not host or not 1 <= port <= 65535 or any(char.isspace() for char in host):
+            return False
+        client = (
+            smtplib.SMTP_SSL(host, port, timeout=3, context=ssl.create_default_context())
+            if use_ssl
+            else smtplib.SMTP(host, port, timeout=3)
+        )
+        with client:
+            if use_tls:
+                client.starttls(context=ssl.create_default_context())
+            if username and password:
+                client.login(username, password)
+            client.noop()
+        return True
+    except (OSError, TypeError, ValueError, smtplib.SMTPException):
+        return False
+
+
+def _auth_headers(values: dict[str, str], prefix: str) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    bearer = values.get(f"{prefix}_BEARER_TOKEN", "")
+    api_key = values.get(f"{prefix}_API_KEY", "")
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    if api_key:
+        headers["X-API-Key"] = api_key
+    return headers
+
+
+def _test_webhook(raw: str) -> bool:
+    try:
+        parsed = urlparse(_safe_url(raw, https_only=True))
+        host = parsed.hostname
+        assert host is not None
+        port = parsed.port or 443
+        with (
+            socket.create_connection((host, port), timeout=3) as connection,
+            ssl.create_default_context().wrap_socket(connection, server_hostname=host),
+        ):
+            return True
+    except (OSError, ValueError, ssl.SSLError):
+        return False
+
+
+@router.post("/onboarding/test", response_model=dict[str, Any])
+def test_onboarding_connection(
+    body: ConnectionTest,
+    request: Request,
+    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    forbidden = set(body.values) - _ALLOWED_KEYS
+    if forbidden:
+        raise PermissionDeniedError(f"rejected configuration keys: {sorted(forbidden)}")
+    values = {**_env_values(_env_path(request)), **body.values}
+    component = body.component.lower()
+    if component in {"identity", "oidc"}:
+        endpoint = values.get("OPERATOR_API_OIDC_ISSUER", "").rstrip("/") + "/.well-known/openid-configuration"
+        ok = _test_http(endpoint)
+    elif component == "graph":
+        base = values.get("KP_WORKER_GRAPH_BASE_URL") or values.get("MOCK_GRAPH_URL", "")
+        ok = _test_http(base.rstrip("/") + "/users", headers=_auth_headers(values, "KP_WORKER_GRAPH"))
+    elif component == "ai":
+        base = values.get("KP_WORKER_AI_BASE_URL") or values.get("MOCK_AI_URL", "")
+        ok = _test_http(
+            base.rstrip("/") + "/propose",
+            headers=_auth_headers(values, "KP_WORKER_AI"),
+            reachable_only=True,
+        )
+    elif component == "mailbox":
+        base = values.get("KP_WORKER_REPORTED_MAILBOX_URL") or values.get("KP_WORKER_MAILPIT_API_URL", "")
+        headers = _auth_headers(values, "KP_WORKER_REPORTED_MAILBOX")
+        basic_username = values.get("KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME", "")
+        basic_password = values.get("KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD", "")
+        if basic_username and basic_password:
+            token = base64.b64encode(f"{basic_username}:{basic_password}".encode()).decode()
+            headers["Authorization"] = f"Basic {token}"
+        ok = _test_http(base.rstrip("/") + "/api/v1/messages", headers=headers)
+    elif component == "training":
+        ok = _test_http(values.get("OPERATOR_API_TRAINING_BASE_URL", ""))
+    elif component == "smtp":
+        ok = _test_smtp(
+            values.get("KP_WORKER_SMTP_ADDRESS") or values.get("KP_WORKER_MAILPIT_SMTP", ""),
+            values.get("KP_WORKER_SMTP_STARTTLS", values.get("KP_WORKER_MAILPIT_SMTP_TLS", "false")).lower() == "true",
+            use_ssl=values.get("KP_WORKER_SMTP_SSL", "false").lower() == "true",
+            username=values.get("KP_WORKER_SMTP_USERNAME") or None,
+            password=values.get("KP_WORKER_SMTP_PASSWORD") or None,
+        )
+    elif component == "webhook":
+        ok = _test_webhook(values.get("KP_WORKER_ALERT_WEBHOOK_URL", ""))
+    else:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unsupported component")
+    return {
+        "component": component,
+        "ok": ok,
+        "message": (
+            "Connection successful." if ok else "Connection failed; verify the endpoint, credentials, and TLS settings."
+        ),
+    }
 
 
 @router.get("/config", response_model=ConfigResponse)
@@ -423,7 +885,7 @@ def get_status(
 ) -> StatusResponse:
     run_dir = _run_dir(request.app.state.settings)
     workers: dict[str, bool] = {}
-    for name in ("ingestion", "generation", "delivery", "retention", "mailbox", "reminder", "alert"):
+    for name in ("ingestion", "generation", "delivery", "retention", "mailbox", "reminder", "alert", "directory"):
         workers[name] = _process_alive(run_dir / f"worker-{name}.pid")
     tracking_health = request.app.state.settings.tracking_base_url.rstrip("/") + "/healthz"
     return StatusResponse(

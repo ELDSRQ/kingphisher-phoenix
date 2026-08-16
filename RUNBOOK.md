@@ -62,7 +62,7 @@ What runs, end to end:
 5. Apply DB migrations (`alembic upgrade head`) and seed a reproducible demo
    dataset (idempotent).
 6. Build `Kingphisher Launcher.app` (macOS only).
-7. Start the operator API `:8000`, tracking API `:8001`, and six workers under
+7. Start the operator API `:8000`, tracking API `:8001`, and eight workers under
    `scripts/supervisor.py`.
 8. Print the console URL and password, then open the console.
 
@@ -133,9 +133,29 @@ from `.env`.
 | Patterns | list lure patterns, approve for use |
 | Privacy | view current privacy notice, submit data-subject requests (CCPA), verify, export (`access_export`), fulfill (`deletion`) |
 | Audit | hash-chained event log, "Verify chain", global kill switch with engaged-state indicator |
+| Setup wizard | guided OIDC, Graph-compatible directory, SMTP, reported mailbox, AI, training, and webhook wiring with connection tests |
 | Settings | masked `.env` editor (blank a secret to keep it), Reload, Restart services, Stop services |
 
-### 2.3 Campaign lifecycle (as an operator)
+### 2.3 First-run setup wizard
+
+The console redirects administrators to **Setup wizard** until required local
+or production connections are configured and the review step is completed.
+Non-secret values are prefilled from `.env`; secret fields are always blank and
+leaving an existing secret blank preserves it. Connection tests use three-second
+bounds, do not follow redirects, never include response bodies in results, and
+do not persist transient values. The wizard automatically mirrors training URL
+and domain settings into both operator and worker namespaces.
+
+Optional Graph directory sync is available afterward from **Recipients → Sync
+connected directory**. The directory worker bounds pages/users, validates the
+Graph-style schema, salted-hashes mailbox lookup keys, encrypts identity fields,
+and audits counts without recording identities.
+
+The local fallbacks require no external credentials. Production values normally
+needed later are OIDC client details, SMTP authentication, and provider-specific
+Graph/AI/mailbox tokens. Restart services from the wizard after changing them.
+
+### 2.4 Campaign lifecycle (as an operator)
 
 1. **Create** a campaign from an approved pattern (DRAFT).
 2. **Approve** — needs security + privacy approvals; self-approval is blocked.
@@ -147,7 +167,7 @@ from `.env`.
 5. Outcomes are COMPLETED / EXPIRED; delivered data is purged per the active
    retention policy (default 365 days).
 
-### 2.4 Recipient CSV import format
+### 2.5 Recipient CSV import format
 
 `POST /api/v1/recipients/import` with `{"csv_text": "...", "department": "..."}`
 (what the console sends):
@@ -164,7 +184,7 @@ bob@example.com,Bob Example,
 - Mailboxes are salted-hashed (`OPERATOR_API_RECIPIENT_HASH_SALT`); identity
   fields are AES-256-GCM envelope-encrypted with `OPERATOR_API_CIPHERTEXT_KEK`.
 
-### 2.5 Data-subject requests (CCPA)
+### 2.6 Data-subject requests (CCPA)
 
 Privacy screen → submit request (type, requester mailbox, optional campaign).
 State machine: **opened → in_progress → completed** (45-day SLA deadline shown).
@@ -173,7 +193,7 @@ State machine: **opened → in_progress → completed** (45-day SLA deadline sho
 - `deletion` → Fulfill deletes the subject's data and marks it completed.
 - Every transition is audit-logged; deletion fulfills also purge tracking events.
 
-### 2.6 Kill switch
+### 2.7 Kill switch
 
 - **Global:** Audit screen → "Engage kill switch" (requires confirm). Cancels
   every queued assignment and revokes every active tracking token. One-shot by

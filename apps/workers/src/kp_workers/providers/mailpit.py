@@ -24,7 +24,7 @@ class ReportedMessage:
     reported_at: datetime
 
 
-class MailpitReportedMessageProvider:
+class ReportedMailboxProvider:
     def __init__(
         self,
         base_url: str,
@@ -32,14 +32,25 @@ class MailpitReportedMessageProvider:
         timeout: float = 10.0,
         limit: int = 50,
         transport: httpx.BaseTransport | None = None,
+        bearer_token: str | None = None,
+        basic_username: str | None = None,
+        basic_password: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._limit = limit
         self._transport = transport
+        self._headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
+        self._auth = (basic_username, basic_password or "") if basic_username else None
 
     def poll(self) -> list[ReportedMessage]:
-        with httpx.Client(base_url=self._base_url, timeout=self._timeout, transport=self._transport) as client:
+        with httpx.Client(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            transport=self._transport,
+            headers=self._headers,
+            auth=self._auth,
+        ) as client:
             response = client.get("/api/v1/messages", params={"limit": self._limit})
             response.raise_for_status()
             summaries = response.json().get("messages", [])
@@ -83,3 +94,7 @@ class MailpitReportedMessageProvider:
         if reported_at.tzinfo is None:
             reported_at = reported_at.replace(tzinfo=UTC)
         return ReportedMessage(external_id=external_id, token_hash=token_hash.lower(), reported_at=reported_at)
+
+
+# Backward-compatible public name for existing integrations.
+MailpitReportedMessageProvider = ReportedMailboxProvider

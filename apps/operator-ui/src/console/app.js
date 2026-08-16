@@ -40,6 +40,7 @@ async function api(path, options = {}) {
 
 /* ---------- state ---------- */
 let configCache = null;
+let onboardingChecked = false;
 const views = {};
 
 function toast(message, type = "") {
@@ -55,6 +56,7 @@ function toast(message, type = "") {
 function el(tag, attrs, children) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
     if (k === "class") node.className = v;
     else if (k === "text") node.textContent = v;
     else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
@@ -107,6 +109,7 @@ views.login = async (root) => {
         principalId: data.principal_id,
         approvalLimited: Boolean(data.approval_limited),
       });
+      onboardingChecked = false;
       toast("Signed in", "success");
       render();
     } catch (e) { err.textContent = e.message; }
@@ -143,6 +146,7 @@ views.login = async (root) => {
 
 /* ---------- shell ---------- */
 const NAV = [
+  ["onboarding", "Setup wizard"],
   ["dashboard", "Dashboard"],
   ["campaigns", "Campaigns"],
   ["recipients", "Recipients"],
@@ -200,6 +204,148 @@ function statusPills(state) {
   }
   return row;
 }
+
+/* ---------- onboarding ---------- */
+views.onboarding = async (root) => {
+  root.appendChild(el("h2", { text: "Setup wizard" }));
+  root.appendChild(el("p", { class: "sub", text: "Connect and verify the services used by Kingphisher." }));
+
+  let onboarding;
+  try { onboarding = await api("/console/onboarding"); } catch (e) {
+    root.appendChild(el("div", { class: "card", role: "alert", text: `Failed to load setup: ${e.message}` }));
+    return;
+  }
+
+  const steps = Array.isArray(onboarding.steps) ? onboarding.steps : [];
+  let current = 0;
+  const savedValues = {};
+  const stage = el("div", { class: "onboarding-stage" });
+  root.appendChild(stage);
+
+  const renderStep = () => {
+    const review = current === steps.length;
+    const progress = el("ol", { class: "wizard-progress", "aria-label": "Setup progress" });
+    steps.forEach((step, index) => {
+      const item = el("li", {
+        class: `${index === current ? "current" : ""} ${index < current || step.configured ? "done" : ""}`.trim(),
+        "aria-current": index === current ? "step" : null,
+      }, [el("span", { class: "step-number", text: index + 1 }), el("span", { text: step.title })]);
+      progress.appendChild(item);
+    });
+    progress.appendChild(el("li", {
+      class: review ? "current" : "",
+      "aria-current": review ? "step" : null,
+    }, [el("span", { class: "step-number", text: steps.length + 1 }), el("span", { text: "Review" })]));
+
+    if (review) {
+      const summary = el("dl", { class: "wizard-summary" });
+      steps.forEach((step) => {
+        const visible = (step.fields || []).filter((field) => !field.secret).map((field) => {
+          const value = savedValues[step.id]?.[field.key];
+          return value !== undefined && value !== "" ? `${field.label}: ${value}` : null;
+        }).filter(Boolean);
+        summary.appendChild(el("dt", { text: step.title }));
+        summary.appendChild(el("dd", { text: visible.join(" · ") || (step.configured ? "Configured" : "No non-secret values entered") }));
+      });
+      const finish = el("button", { class: "btn primary", type: "button", text: "Finish setup", onclick: async () => {
+        finish.disabled = true;
+        try {
+          await api("/console/onboarding", { method: "PUT", body: JSON.stringify({ values: {}, completed: true }) });
+          onboarding.complete = true;
+          toast("Setup complete", "success");
+          location.hash = "dashboard";
+        } catch (e) { toast(e.message, "error"); finish.disabled = false; }
+      } });
+      stage.replaceChildren(progress, el("section", { class: "card wizard-card", "aria-labelledby": "wizard-title" }, [
+        el("h3", { id: "wizard-title", tabindex: "-1", text: "Review setup" }),
+        el("p", { text: "Confirm the connections you configured. Secret values are never displayed." }),
+        summary,
+        el("div", { class: "btn-row wizard-actions" }, [
+          el("button", { class: "btn", type: "button", text: "Back", onclick: () => { current--; renderStep(); } }), finish,
+        ]),
+      ]));
+      stage.querySelector("#wizard-title").focus();
+      return;
+    }
+
+    const step = steps[current];
+    if (!step) {
+      stage.replaceChildren(el("div", { class: "card", text: "No setup steps are currently required." }));
+      return;
+    }
+    const inputs = {};
+    const form = el("form", { class: "wizard-form" });
+    (step.fields || []).forEach((field, fieldIndex) => {
+      const id = `onboarding-${current}-${fieldIndex}`;
+      const inputType = field.secret ? "password" : (field.type || "text");
+      const input = el("input", {
+        id, name: field.key, type: inputType, placeholder: field.placeholder || "",
+        autocomplete: field.secret ? "new-password" : "off",
+        required: field.required && !(field.secret && step.configured) ? "" : null,
+        "aria-describedby": field.help ? `${id}-help` : null,
+      });
+      if (!field.secret) {
+        input.value = savedValues[step.id]?.[field.key] ?? field.value ?? "";
+      }
+      inputs[field.key] = input;
+      form.appendChild(el("div", { class: "wizard-field" }, [
+        el("label", { for: id, text: `${field.label}${field.required ? " *" : ""}` }), input,
+        ...(field.help ? [el("div", { id: `${id}-help`, class: "field-help", text: field.help })] : []),
+      ]));
+    });
+    const feedback = el("div", { class: "wizard-feedback", role: "status", "aria-live": "polite" });
+    const values = () => Object.fromEntries(Object.entries(inputs).filter(([, input]) => input.value !== "").map(([key, input]) => [key, input.value]));
+    const save = async () => {
+      if (!form.reportValidity()) return false;
+      const submitted = values();
+      await api("/console/onboarding", { method: "PUT", body: JSON.stringify({ values: submitted }) });
+      savedValues[step.id] = { ...(savedValues[step.id] || {}), ...submitted };
+      step.configured = true;
+      return true;
+    };
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = event.submitter; if (button) button.disabled = true;
+      try {
+        if (await save()) { toast(`${step.title} saved`, "success"); current++; renderStep(); }
+      } catch (e) { feedback.textContent = e.message; }
+      finally { if (button?.isConnected) button.disabled = false; }
+    });
+    const testButton = el("button", { class: "btn", type: "button", text: "Test connection", onclick: async () => {
+      if (!form.reportValidity()) return;
+      testButton.disabled = true; feedback.textContent = "Testing connection…";
+      try {
+        const result = await api("/console/onboarding/test", { method: "POST", body: JSON.stringify({ component: step.id, values: values() }) });
+        feedback.className = `wizard-feedback ${result.ok ? "success" : "error"}`;
+        feedback.textContent = result.message || (result.ok ? "Connection successful." : "Connection failed.");
+      } catch (e) { feedback.className = "wizard-feedback error"; feedback.textContent = e.message; }
+      finally { testButton.disabled = false; }
+    } });
+    const actions = [
+      el("button", { class: "btn", type: "button", text: "Back", disabled: current === 0 ? "" : null, onclick: () => { current--; renderStep(); } }),
+      testButton,
+    ];
+    if (step.optional) actions.push(el("button", { class: "btn", type: "button", text: "Skip for now", onclick: () => { current++; renderStep(); } }));
+    actions.push(el("button", { class: "btn primary", type: "submit", text: "Save and continue" }));
+    form.append(feedback, el("div", { class: "btn-row wizard-actions" }, actions));
+    const restart = el("div", { class: "notice wizard-restart", role: "note" }, [
+      el("span", { text: "Connection changes may require the services to restart. " }),
+      el("button", { class: "btn small", type: "button", text: "Restart services", onclick: async (event) => {
+        event.target.disabled = true;
+        try { await api("/console/restart", { method: "POST" }); toast("Restart requested", "success"); }
+        catch (e) { toast(e.message, "error"); event.target.disabled = false; }
+      } }),
+    ]);
+    stage.replaceChildren(progress, el("section", { class: "card wizard-card", "aria-labelledby": "wizard-title" }, [
+      el("h3", { id: "wizard-title", tabindex: "-1", text: step.title }),
+      el("p", { class: "wizard-description", text: step.description || "Enter the connection details below." }),
+      step.configured ? el("p", { class: "configured-label", text: "Already configured. Leave secret fields blank to keep their current values." }) : el("span"),
+      form, restart,
+    ]));
+    stage.querySelector("#wizard-title").focus();
+  };
+  renderStep();
+};
 
 /* ---------- dashboard ---------- */
 views.dashboard = async (root) => {
@@ -412,6 +558,16 @@ views.campaigns = async (root) => {
 views.recipients = async (root) => {
   root.appendChild(el("h2", { text: "Recipients" }));
   root.appendChild(el("p", { class: "sub", text: "Import and review training recipients." }));
+  root.appendChild(el("div", { class: "btn-row" }, [
+    el("button", { class: "btn", type: "button", text: "Sync connected directory", onclick: async (event) => {
+      event.target.disabled = true;
+      try {
+        await api("/recipients/sync-directory", { method: "POST" });
+        toast("Directory sync queued. Refresh shortly to see imported recipients.", "success");
+      } catch (e) { toast(e.message, "error"); }
+      finally { event.target.disabled = false; }
+    } }),
+  ]));
   let recipients;
   try { recipients = await api("/recipients"); } catch (e) {
     root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` })); return;
@@ -751,12 +907,19 @@ async function render() {
       if (resp.ok) {
         const data = await resp.json();
         setSessionInfo({ authMode: data.auth_mode, principalId: data.principal_id, approvalLimited: false });
-        shell();
-        return;
+        onboardingChecked = false;
       }
     } catch { /* Render login below. */ }
   }
   if (!token() && !sessionInfo()) { views.login(document.getElementById("app")); return; }
+  if (!onboardingChecked) {
+    onboardingChecked = true;
+    try {
+      const onboarding = await api("/console/onboarding");
+      if (!onboarding.complete) location.hash = "onboarding";
+    } catch (e) { toast(`Unable to check setup status: ${e.message}`, "error"); }
+    if (!token() && !sessionInfo()) return;
+  }
   shell();
 }
 

@@ -3,7 +3,7 @@
 #
 # Installs every dependency needed for a fresh clone and delivers a fully
 # operational local system: infrastructure (Postgres, Redis, Mailpit, mocks),
-# a seeded database, the operator/tracking APIs and all six workers running
+# a seeded database, the operator/tracking APIs and all eight workers running
 # under the supervisor, and (on macOS) the double-clickable
 # "Kingphisher Launcher.app". The operator console opens in the browser.
 #
@@ -194,7 +194,7 @@ fi
 if [ -f data/run/operator-api.pid ] && kill -0 "$(cat data/run/operator-api.pid)" 2>/dev/null; then
   step "stack already running"
 else
-  step "starting operator API, tracking API, and the six workers"
+  step "starting operator API, tracking API, and the eight workers"
   nohup bash scripts/run_console.sh >/tmp/kingphisher-install.log 2>&1 &
   ok "launcher started (log: /tmp/kingphisher-install.log)"
 fi
@@ -224,7 +224,7 @@ cat <<EOF
   What's running
     - Postgres :5432, Redis :6379, Mailpit :1025/:8025, mocks :8443/:8181/:8282
     - operator-api :8000, tracking-api :8001
-    - workers: ingestion, generation, delivery, retention, mailbox, reminder, alert
+    - workers: ingestion, generation, delivery, retention, mailbox, reminder, alert, directory
     - otel-collector :4317/:4318
 
   Useful commands (from the repo root)

@@ -332,6 +332,139 @@ def test_console_config_requires_admin_token(env_file: str) -> None:
         assert resp.status_code == 403
 
 
+def test_onboarding_state_returns_only_nonsecret_values(env_file: str) -> None:
+    app = _app(env_file)
+    with TestClient(app) as client:
+        token = _login(client)
+        response = client.get("/api/v1/console/onboarding", headers=_auth(token))
+        assert response.status_code == 200
+        body = response.json()
+        assert body["completed"] is False
+        assert body["complete"] is False
+        assert {step["component"] for step in body["steps"]} >= {"identity", "graph", "smtp"}
+        assert CONSOLE_PASSWORD not in response.text
+        assert "values" not in body
+        secret_fields = [field for step in body["steps"] for field in step["fields"] if field["secret"]]
+        assert secret_fields and all(field["value"] == "" for field in secret_fields)
+
+
+def test_onboarding_write_persists_allowlisted_keys_and_audits_names_only(env_file: str) -> None:
+    audit = FakeAuditStore()
+    app = _app(env_file, fake_audit=audit)
+    secret = "not-returned-or-audited"
+    with TestClient(app) as client:
+        token = _login(client)
+        response = client.put(
+            "/api/v1/console/onboarding",
+            headers=_auth(token),
+            json={
+                "values": {
+                    "OPERATOR_API_OIDC_CLIENT_SECRET": secret,
+                    "MOCK_AI_URL": "http://ai.local:8282",
+                },
+                "completed": False,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["changed"] == [
+            "OPERATOR_API_OIDC_CLIENT_SECRET",
+            "MOCK_AI_URL",
+            "OPERATOR_API_ONBOARDING_COMPLETED",
+        ]
+        assert secret not in response.text
+        event = next(event for event in audit.events if event["action"] == "console.onboarding.update")
+        assert secret not in str(event)
+        assert event["detail"] == {"changed": response.json()["changed"]}
+
+
+def test_onboarding_write_rejects_unknown_keys(env_file: str) -> None:
+    with TestClient(_app(env_file)) as client:
+        token = _login(client)
+        response = client.put(
+            "/api/v1/console/onboarding",
+            headers=_auth(token),
+            json={"values": {"DATABASE_URL": "postgresql://credential@example/x"}},
+        )
+        assert response.status_code == 403
+
+
+def test_onboarding_completion_requires_required_connections(env_file: str) -> None:
+    with TestClient(_app(env_file)) as client:
+        token = _login(client)
+        response = client.put(
+            "/api/v1/console/onboarding",
+            headers=_auth(token),
+            json={"values": {}, "completed": True},
+        )
+        assert response.status_code == 422
+        assert "required setup steps" in response.json()["detail"]
+
+
+def test_onboarding_training_values_are_mirrored_to_workers(env_file: str) -> None:
+    with TestClient(_app(env_file)) as client:
+        token = _login(client)
+        response = client.put(
+            "/api/v1/console/onboarding",
+            headers=_auth(token),
+            json={
+                "values": {
+                    "OPERATOR_API_TRAINING_BASE_URL": "https://training.example/course",
+                    "OPERATOR_API_TRAINING_DOMAINS": "training.example",
+                }
+            },
+        )
+        assert response.status_code == 200
+        persisted = console_module._env_values(console_module.Path(env_file))
+        assert persisted["KP_WORKER_TRAINING_BASE_URL"] == "https://training.example/course"
+        assert persisted["KP_WORKER_TRAINING_DOMAINS"] == "training.example"
+
+
+def test_onboarding_http_test_uses_transient_value_without_persisting(
+    env_file: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requested: list[str] = []
+
+    def fake_get(url: str, **_kwargs: object) -> httpx.Response:
+        requested.append(url)
+        return httpx.Response(204)
+
+    monkeypatch.setattr(console_module.httpx, "get", fake_get)
+    with TestClient(_app(env_file)) as client:
+        token = _login(client)
+        response = client.post(
+            "/api/v1/console/onboarding/test",
+            headers=_auth(token),
+            json={"component": "ai", "values": {"MOCK_AI_URL": "https://ai.example/health"}},
+        )
+        assert response.json() == {"component": "ai", "ok": True, "message": "Connection successful."}
+        assert requested == ["https://ai.example/health/propose"]
+        assert "ai.example" not in console_module.Path(env_file).read_text(encoding="utf-8")
+
+
+def test_onboarding_test_rejects_credentials_and_unsupported_components(
+    env_file: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(console_module.httpx, "get", lambda *_args, **_kwargs: pytest.fail("network called"))
+    with TestClient(_app(env_file)) as client:
+        token = _login(client)
+        bad_url = client.post(
+            "/api/v1/console/onboarding/test",
+            headers=_auth(token),
+            json={"component": "graph", "values": {"MOCK_GRAPH_URL": "https://user:secret@example.test"}},
+        )
+        assert bad_url.json() == {
+            "component": "graph",
+            "ok": False,
+            "message": "Connection failed; verify the endpoint, credentials, and TLS settings.",
+        }
+        unsupported = client.post(
+            "/api/v1/console/onboarding/test",
+            headers=_auth(token),
+            json={"component": "shell", "values": {}},
+        )
+        assert unsupported.status_code == 422
+
+
 def test_console_rejects_unrecognized_roles_fail_closed(env_file: str) -> None:
     """HIGH-01: unknown roles must not default to CAMPAIGN_OPERATOR."""
     app = _app(env_file)

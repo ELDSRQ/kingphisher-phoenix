@@ -135,9 +135,12 @@ Capabilities: `Capability` enum in `kp_operator_api.auth`; multi-role routes use
 (`kp_operator_api` error module) — `NotFoundError`, `ConflictError`,
 `AuthenticationError`, `ValidationError_`, etc. Never raise HTTPException raw.
 
-Routes (all under `/api/v1`): `/console/session|config|status|restart|stop`;
+Routes (all under `/api/v1`): `/console/session|config|status|restart|stop`,
+`/console/onboarding` (GET state, PUT allowlisted wiring) and
+`/console/onboarding/test` (bounded transient connection checks);
 `/campaigns` (CRUD + preview + send); `/campaigns/{id}/approve` patterns;
-`/recipients`, `/recipients/import` (CSV text body); `/recipients/{id}` DELETE
+`/recipients`, `/recipients/import` (CSV text body),
+`/recipients/sync-directory` (queue bounded Graph-compatible sync); `/recipients/{id}` DELETE
 (DSR path); `/sources` (**POST-only**, create); `/patterns`,
 `/patterns/{campaign_pattern_id}/approve`; `/templates`; `/privacy/notice`,
 `/privacy/requests` (submit, list, `/{id}/verify`, `/{id}/export` **GET**,
@@ -154,8 +157,11 @@ audit event → `{engaged, engaged_at, actor, last_cancelled, last_tokens_revoke
   JWT with `realm_access: ["administrator"]`.
 - `GET /api/v1/console/config` — masked `.env` read (secrets blanked + `masked`
   map); `PUT` — allowlist-only keys (`_ALLOWED_KEYS`).
+- `GET/PUT /api/v1/console/onboarding` — secret-safe connector metadata and
+  allowlisted persistence; `POST /onboarding/test` — bounded OIDC, Graph, AI,
+  SMTP, mailbox, training, and webhook checks.
 - `GET /api/v1/console/status` — pidfile-based alive flags for the APIs +
-  six workers; `POST /restart` / `POST /stop` — marker files in `data/run/`.
+  eight workers; `POST /restart` / `POST /stop` — marker files in `data/run/`.
 
 ### 4.3 Tracking API (`kp_tracking_api/`)
 

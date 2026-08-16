@@ -40,7 +40,8 @@ check "console session enforces auth" '[ "$(curl -s -o /dev/null -w "%{http_code
 step "workers (pidfiles)"
 for name in operator-api tracking-api \
             worker-ingestion worker-generation worker-delivery \
-            worker-retention worker-mailbox worker-reminder worker-alert; do
+            worker-retention worker-mailbox worker-reminder worker-alert \
+            worker-directory; do
   pidfile="data/run/$name.pid"
   if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     ok "$name (pid $(cat "$pidfile"))"

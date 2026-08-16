@@ -9,7 +9,6 @@ and it always targets the sandboxed SMTP relay (mailpit in dev).
 from __future__ import annotations
 
 import hashlib
-import smtplib
 import time
 import uuid
 from collections.abc import Callable
@@ -38,6 +37,7 @@ from kp_database.models import (
 from kp_database.models import (
     Source as SourceRow,
 )
+from kp_database.privacy import hash_mailbox
 from kp_domain_models import models as dm
 from kp_safety_validation.validator import SafetyValidator
 from kp_source_adapters import BulkDownloadAdapter, RssAdapter, SourceAdapter, StixAdapter
@@ -52,8 +52,10 @@ from sqlalchemy.orm import Session
 
 from kp_workers.config import WorkerSettings
 from kp_workers.providers.alerts import SignedWebhookSender
+from kp_workers.providers.graph import GraphDirectoryProvider
 from kp_workers.providers.mailpit import MailpitReportedMessageProvider
 from kp_workers.providers.reminders import Reminder, ReminderSender, SmtpReminderSender
+from kp_workers.providers.smtp import SmtpSender
 
 logger = get_logger("kp_workers.jobs")
 _renderer = MessageRenderer()
@@ -424,6 +426,57 @@ def process_mailbox(ctx: WorkerContext, message: dict[str, Any]) -> None:
     )
 
 
+def process_directory_sync(ctx: WorkerContext, message: dict[str, Any]) -> None:
+    payload = message.get("payload", {})
+    job_id = str(payload.get("job_id") or "graph")
+    provider = GraphDirectoryProvider(
+        ctx.settings.effective_graph_base_url,
+        bearer_token=ctx.settings.graph_bearer_token,
+        api_key=ctx.settings.graph_api_key,
+        timeout=ctx.settings.provider_timeout_seconds,
+        max_users=ctx.settings.graph_max_users,
+        max_pages=ctx.settings.graph_max_pages,
+    )
+    users = provider.users()
+    salt = ctx.settings.require_recipient_hash_salt()
+    created = 0
+    updated = 0
+    with ctx.session_factory() as session:
+        for user in users:
+            digest = hash_mailbox(user.mailbox, salt)
+            recipient = session.scalar(
+                select(Recipient).where(Recipient.mailbox_sha256 == digest, Recipient.deleted_at.is_(None))
+            )
+            if recipient is None:
+                recipient = Recipient(
+                    recipient_id=uuid.uuid4(),
+                    employee_key=user.employee_key,
+                    mailbox=user.mailbox,
+                    mailbox_sha256=digest,
+                    display_name=user.display_name,
+                    department=user.department,
+                    status=dm.RecipientStatus.ACTIVE,
+                    last_snapshot_source="graph",
+                )
+                session.add(recipient)
+                created += 1
+            else:
+                recipient.employee_key = user.employee_key
+                recipient.mailbox = user.mailbox
+                recipient.display_name = user.display_name
+                recipient.department = user.department
+                recipient.last_snapshot_source = "graph"
+                updated += 1
+        session.commit()
+    ctx.audit_store.record(
+        actor="worker:directory",
+        action="directory.sync",
+        object_type="system",
+        object_id=job_id,
+        detail={"fetched": len(users), "created": created, "updated": updated},
+    )
+
+
 def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
     sender = _reminder_sender(ctx)
     cutoff = datetime.now(UTC) - timedelta(hours=ctx.settings.reminder_after_hours)
@@ -520,17 +573,24 @@ def process_alert(ctx: WorkerContext, message: dict[str, Any]) -> None:
 
 def _mailbox_provider(ctx: WorkerContext) -> MailpitReportedMessageProvider:
     return MailpitReportedMessageProvider(
-        ctx.settings.mailpit_api_url,
+        ctx.settings.effective_reported_mailbox_url,
         timeout=ctx.settings.provider_timeout_seconds,
         limit=ctx.settings.mailbox_poll_limit,
+        bearer_token=ctx.settings.reported_mailbox_bearer_token,
+        basic_username=ctx.settings.reported_mailbox_basic_username,
+        basic_password=ctx.settings.reported_mailbox_basic_password,
     )
 
 
 def _reminder_sender(ctx: WorkerContext) -> ReminderSender:
     return SmtpReminderSender(
-        ctx.settings.mailpit_smtp,
-        sender=ctx.settings.reminder_sender,
+        ctx.settings.effective_smtp_address,
+        sender=ctx.settings.effective_smtp_sender,
         timeout=ctx.settings.provider_timeout_seconds,
+        username=ctx.settings.smtp_username,
+        password=ctx.settings.smtp_password,
+        starttls=ctx.settings.effective_smtp_starttls,
+        use_ssl=ctx.settings.smtp_ssl,
     )
 
 
@@ -554,9 +614,10 @@ def _call_ai(ctx: WorkerContext, pattern_id: str) -> dict[str, Any]:
     import httpx
 
     resp = httpx.post(
-        f"{ctx.settings.mock_ai_url}/propose",
+        f"{ctx.settings.effective_ai_base_url.rstrip('/')}/propose",
         json={"pattern_id": pattern_id},
-        timeout=10.0,
+        headers=_provider_headers(ctx.settings.ai_bearer_token, ctx.settings.ai_api_key),
+        timeout=ctx.settings.provider_timeout_seconds,
     )
     resp.raise_for_status()
     return dict(resp.json())
@@ -635,8 +696,23 @@ def _send_email(
         msg.add_attachment(
             ics_text.encode("utf-8"), maintype="text", subtype="calendar", filename=f"invite-{uid[:12]}.ics"
         )
-    with smtplib.SMTP(ctx.settings.mailpit_smtp, timeout=5) as smtp:
-        smtp.send_message(msg)
+    SmtpSender(
+        ctx.settings.effective_smtp_address,
+        username=ctx.settings.smtp_username,
+        password=ctx.settings.smtp_password,
+        starttls=ctx.settings.effective_smtp_starttls,
+        use_ssl=ctx.settings.smtp_ssl,
+        timeout=ctx.settings.provider_timeout_seconds,
+    ).send(msg)
+
+
+def _provider_headers(bearer_token: str | None, api_key: str | None) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    if api_key:
+        headers["X-API-Key"] = api_key
+    return headers
 
 
 def _render_or_plain(

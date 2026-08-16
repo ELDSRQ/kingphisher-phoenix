@@ -103,8 +103,15 @@ bootstrap_env() {
     _set_line OPERATOR_API_CONSOLE_JWT_SECRET "$JWT_SECRET"
   fi
   _generate_if_absent OPERATOR_API_RECIPIENT_HASH_SALT "$(openssl rand -hex 32)"  # mailbox_sha256 salt (WS-12)
+  if ! grep -q '^KP_WORKER_RECIPIENT_HASH_SALT=' "$ENV_FILE" || [ -z "$(grep '^KP_WORKER_RECIPIENT_HASH_SALT=' "$ENV_FILE" | cut -d= -f2-)" ]; then
+    _set_line KP_WORKER_RECIPIENT_HASH_SALT "$(grep '^OPERATOR_API_RECIPIENT_HASH_SALT=' "$ENV_FILE" | cut -d= -f2-)"
+  fi
   _generate_if_absent TRACKING_API_CORRECTIONS_SECRET "$(openssl rand -hex 32)"  # corrections bearer secret (WS-9)
   _generate_if_absent MAILPIT_API_PASSWORD "$(openssl rand -base64 18 | tr -d '/+=')"  # Mailpit UI/API auth (WS-16)
+  _generate_if_absent KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME "admin"
+  if ! grep -q '^KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD=' "$ENV_FILE" || [ -z "$(grep '^KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" ]; then
+    _set_line KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD "$(grep '^MAILPIT_API_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+  fi
   if ! grep -q '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" || [ -z "$(grep '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" ]; then
     PASSWORD="$(openssl rand -base64 12 | tr -d '/+=' )"
     grep -q '^KP_CONSOLE_PASSWORD=' "$ENV_FILE" \

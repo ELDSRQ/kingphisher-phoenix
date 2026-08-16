@@ -1,5 +1,5 @@
 """Worker entry point: `kp-worker <name>` where name is one of
-ingestion, generation, delivery, retention, mailbox, reminder."""
+ingestion, generation, delivery, retention, mailbox, reminder, directory."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ WORKERS = {
     "mailbox": ("mailbox", jobs.process_mailbox),
     "reminder": ("remind", jobs.process_reminder),
     "alert": ("alert", jobs.process_alert),
+    "directory": ("directory", jobs.process_directory_sync),
 }
 
 

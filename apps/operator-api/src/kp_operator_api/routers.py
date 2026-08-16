@@ -650,6 +650,29 @@ def import_recipients_csv(
     return {"created": created, "skipped": skipped, "errors": errors[:20]}
 
 
+@router.post("/recipients/sync-directory", status_code=status.HTTP_202_ACCEPTED)
+def sync_recipients_from_directory(
+    request: Request,
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_RECIPIENTS)),
+) -> dict[str, Any]:
+    """Queue a bounded, encrypted directory synchronization."""
+    job_id = str(uuid.uuid4())
+    request.app.state.queue.publish(
+        "directory",
+        {"requested_by": principal.principal_id, "job_id": job_id},
+        idempotency_key=f"directory:{job_id}",
+    )
+    audit.record(
+        actor=principal.principal_id,
+        action="directory.sync.request",
+        object_type="system",
+        object_id=job_id,
+        detail={},
+    )
+    return {"queued": True, "job_id": job_id}
+
+
 class AlertSubscribe(BaseModel):
     campaign_id: str
     channel: str = Field(default="web", pattern="^(web|webhook)$")

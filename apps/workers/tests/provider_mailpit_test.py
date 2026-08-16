@@ -40,3 +40,16 @@ def test_mailpit_provider_rejects_malformed_contract() -> None:
         assert "malformed" in str(exc)
     else:
         raise AssertionError("expected malformed response to fail closed")
+
+
+def test_reported_mailbox_sends_bearer_auth() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"messages": []})
+
+    MailpitReportedMessageProvider(
+        "https://mailbox.test", bearer_token="secret", transport=httpx.MockTransport(handler)
+    ).poll()
+    assert requests[0].headers["authorization"] == "Bearer secret"

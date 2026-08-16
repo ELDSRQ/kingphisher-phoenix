@@ -42,11 +42,19 @@ What the installer does, end to end:
 3. Starts Postgres, Redis, Mailpit, the mocks, and the OTel collector.
 4. Applies database migrations and seeds a reproducible demo dataset.
 5. Builds `Kingphisher Launcher.app` (macOS).
-6. Starts the operator API, tracking API, and the six workers.
+6. Starts the operator API, tracking API, and all eight workers.
 7. Opens the operator console and prints the login password.
 
 The console password is generated into `.env` (`KP_CONSOLE_PASSWORD`); the
 installer prints it. You can change it from the console Settings page at any time.
+
+On first sign-in, **Setup wizard** opens automatically. It walks an administrator
+through identity, employee directory, SMTP delivery, reported-message intake,
+content generation, training, and signed-alert connections. Each step can test
+transient credentials before saving; secrets are write-only and never returned
+to the browser. Local Mailpit and mock services are prefilled, so the complete
+wizard can be exercised without external credentials. Production connections
+take effect after the guided service restart.
 
 Re-running `./scripts/install.sh` is safe (idempotent). To health-check a
 running install, use `./scripts/verify_install.sh`.
@@ -81,7 +89,7 @@ make test             # full pytest suite
 make lint             # ruff check + format check
 make typecheck        # mypy (strict)
 make verify-audit     # recompute + verify the audit hash chain
-make security-scan    # bandit / semgrep / trivy (best-effort, non-gating)
+make security-scan    # gating Bandit / Semgrep / Trivy scan
 make verify-install   # health-check a running local install
 make operational-readiness # full local release/readiness gate
 ```
@@ -94,8 +102,8 @@ the development `.env`, Docker services, APIs, and workers to be running and
 refuses to run tests when `DATABASE_URL_TEST` equals the application database.
 The final smoke creates a uniquely named campaign with separate author,
 security-reviewer, privacy-reviewer, and scheduling principals, subscribes a
-local web alert, and schedules it one day in the future with a one-recipient
-cap. This mutation is permitted only against a loopback API in local dev-auth
+local web alert, and schedules it one day in the future with a cap matching the
+seeded active recipients. This mutation is permitted only against a loopback API in local dev-auth
 mode; use a disposable seeded development database.
 
 ## Repository layout

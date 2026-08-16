@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from urllib.error import HTTPError
@@ -214,4 +215,40 @@ def test_distinct_principal_campaign_lifecycle_and_alert_health() -> None:
     assert provider_status == 200
     assert provider["operator_api"] and provider["tracking_api"]  # type: ignore[index]
     assert provider["postgres"] and provider["redis"]  # type: ignore[index]
-    assert provider["workers"]["alert"]  # type: ignore[index]
+    assert provider["workers"]["alert"] and provider["workers"]["directory"]  # type: ignore[index]
+
+
+def test_onboarding_contract_and_local_connectors() -> None:
+    administrator = _login()
+    status, onboarding = _json_request("/api/v1/console/onboarding", token=administrator)
+    assert status == 200
+    assert isinstance(onboarding, dict)
+    assert isinstance(onboarding.get("complete"), bool)
+    steps = onboarding.get("steps")
+    assert isinstance(steps, list)
+    assert {step["id"] for step in steps} >= {"identity", "graph", "smtp", "mailbox", "ai", "training"}
+    assert all(field.get("value", "") == "" for step in steps for field in step["fields"] if field["secret"])
+
+    for component in ("identity", "graph", "ai", "smtp"):
+        test_status, result = _json_request(
+            "/api/v1/console/onboarding/test",
+            token=administrator,
+            method="POST",
+            body={"component": component, "values": {}},
+        )
+        assert test_status == 200 and result["ok"] is True, (component, result)  # type: ignore[index]
+
+    sync_status, sync = _json_request("/api/v1/recipients/sync-directory", token=administrator, method="POST")
+    assert sync_status == 202 and sync["queued"] is True  # type: ignore[index]
+    job_id = sync["job_id"]  # type: ignore[index]
+    for _ in range(10):
+        audit_status, events = _json_request("/api/v1/audit", token=administrator)
+        assert audit_status == 200
+        if any(
+            event.get("action") == "directory.sync" and event.get("object_id") == job_id
+            for event in events  # type: ignore[union-attr]
+        ):
+            break
+        time.sleep(0.5)
+    else:
+        pytest.fail("directory worker did not record a completed sync")

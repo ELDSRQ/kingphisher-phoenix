@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import smtplib
 from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Protocol
+
+from kp_workers.providers.smtp import SmtpSender
 
 
 @dataclass(frozen=True)
@@ -20,14 +21,26 @@ class ReminderSender(Protocol):
 
 
 class SmtpReminderSender:
-    def __init__(self, address: str, *, sender: str, timeout: float = 5.0) -> None:
-        host, separator, port_text = address.rpartition(":")
-        if not separator or not host:
-            raise ValueError("SMTP address must use host:port format")
-        self._host = host
-        self._port = int(port_text)
+    def __init__(
+        self,
+        address: str,
+        *,
+        sender: str,
+        timeout: float = 5.0,
+        username: str | None = None,
+        password: str | None = None,
+        starttls: bool = False,
+        use_ssl: bool = False,
+    ) -> None:
         self._sender = sender
-        self._timeout = timeout
+        self._transport = SmtpSender(
+            address,
+            timeout=timeout,
+            username=username,
+            password=password,
+            starttls=starttls,
+            use_ssl=use_ssl,
+        )
 
     def send(self, reminder: Reminder) -> None:
         message = EmailMessage()
@@ -35,5 +48,4 @@ class SmtpReminderSender:
         message["From"] = self._sender
         message["To"] = reminder.recipient
         message.set_content(reminder.text)
-        with smtplib.SMTP(self._host, self._port, timeout=self._timeout) as smtp:
-            smtp.send_message(message)
+        self._transport.send(message)
