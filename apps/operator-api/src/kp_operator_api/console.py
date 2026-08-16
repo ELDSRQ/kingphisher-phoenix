@@ -82,6 +82,9 @@ class SessionRequest(BaseModel):
 class SessionResponse(BaseModel):
     token: str
     expires_in: int
+    auth_mode: str
+    principal_id: str
+    approval_limited: bool
 
 
 @router.post("/session", response_model=SessionResponse)
@@ -115,7 +118,16 @@ def create_session(
         "realm_access": {"roles": ["administrator"]},
     }
     token = jwt.encode(claims, settings.require_console_jwt_secret(), algorithm="HS256")
-    return SessionResponse(token=token, expires_in=_SESSION_TTL_SECONDS)
+    return SessionResponse(
+        token=token,
+        expires_in=_SESSION_TTL_SECONDS,
+        auth_mode="dev",
+        principal_id=CONSOLE_OPERATOR_UUID,
+        # Password login intentionally represents one fixed development
+        # principal.  The UI uses this flag to explain that campaigns created
+        # by this identity require a different OIDC principal for approval.
+        approval_limited=True,
+    )
 
 
 _ALLOWED_KEYS: frozenset[str] = frozenset(

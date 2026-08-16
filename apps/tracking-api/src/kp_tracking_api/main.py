@@ -21,8 +21,13 @@ def create_app(settings: TrackingApiSettings | None = None) -> FastAPI:
     app = FastAPI(title=settings.app_name, version="0.1.0")
     app.state.settings = settings
     app.state.session_factory = make_session_factory(engine)
-    app.state.ip_limiter = RateLimiter(limit=settings.rate_limit_ip_per_min, window_seconds=60.0)
-    app.state.token_limiter = RateLimiter(limit=settings.rate_limit_token_per_min, window_seconds=60.0)
+    app.state.ip_limiter = RateLimiter(
+        limit=settings.rate_limit_ip_per_min, window_seconds=60.0, max_keys=settings.rate_limit_max_keys
+    )
+    app.state.token_limiter = RateLimiter(
+        limit=settings.rate_limit_token_per_min, window_seconds=60.0, max_keys=settings.rate_limit_max_keys
+    )
+    app.state.global_limiter = RateLimiter(limit=settings.rate_limit_global_per_min, window_seconds=60.0, max_keys=1)
 
     app.include_router(router)
 

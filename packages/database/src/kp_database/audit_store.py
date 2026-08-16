@@ -33,18 +33,6 @@ class AuditStore:
         self._writer = AuditWriter()
         self._hmac_key = hmac_key
 
-    def _resume_chain(self) -> None:
-        """Link into the persisted chain head so multiple processes (operator
-        API + each worker) append to the same hash chain instead of each
-        starting from genesis."""
-        head: str | None = None
-        with self._engine.connect() as conn:
-            head = conn.execute(
-                text("SELECT event_hash FROM audit_events ORDER BY occurred_at DESC, event_hash DESC LIMIT 1")
-            ).scalar()
-        if head is not None:
-            self._writer.reset_to(head)
-
     def record(
         self,
         *,
@@ -55,21 +43,31 @@ class AuditStore:
         detail: dict[str, Any] | None = None,
         occurred_at: datetime | None = None,
     ) -> AuditRecord:
-        self._resume_chain()
         detail = detail or {}
         occurred_at = occurred_at or datetime.now(UTC)
-        record = self._writer.append(
-            actor=actor,
-            action=action,
-            object_type=object_type,
-            object_id=object_id,
-            outcome="success",
-            detail=detail,
-            occurred_at=occurred_at,
-        )
-        signature = self.sign_head(record.event_hash) if self._hmac_key is not None else None
         try:
             with self._engine.begin() as conn:
+                # All API and worker processes share this transaction-scoped
+                # lock. Reading the head and appending while holding it prevents
+                # concurrent writers from creating two children of one head.
+                conn.execute(text("SELECT pg_advisory_xact_lock(1263551049)"))
+                head = conn.execute(
+                    text(
+                        "SELECT h.event_hash FROM audit_chain_head h WHERE h.id = 1 "
+                        "AND EXISTS (SELECT 1 FROM audit_events e WHERE e.event_hash = h.event_hash)"
+                    )
+                ).scalar()
+                self._writer.reset_to(head or GENESIS_HASH)
+                record = self._writer.append(
+                    actor=actor,
+                    action=action,
+                    object_type=object_type,
+                    object_id=object_id,
+                    outcome="success",
+                    detail=detail,
+                    occurred_at=occurred_at,
+                )
+                signature = self.sign_head(record.event_hash) if self._hmac_key is not None else None
                 conn.execute(
                     text(
                         "INSERT INTO audit_events "
@@ -132,10 +130,9 @@ class AuditStore:
         """Recompute the chain and report mismatches, including a missing or
         tampered persisted head signature.
 
-        Rows are ordered by `occurred_at, event_hash` as a deterministic proxy
-        for insertion order (there is no monotonic column). Checks that the
-        first row links to the genesis hash, every row's `prev_hash` equals the
-        prior row's `event_hash`, and every row's `event_hash` is recomputable.
+        Chain order is reconstructed from hash links rather than timestamps.
+        This detects forks, disconnected rows, cycles, and missing ancestors
+        without assuming clocks provide insertion order.
         """
         problems: list[str] = []
         with self._engine.connect() as conn:
@@ -143,7 +140,7 @@ class AuditStore:
                 conn.execute(
                     text(
                         "SELECT actor, action, object_type, object_id, occurred_at, detail, "
-                        "prev_hash, event_hash, nonce FROM audit_events ORDER BY occurred_at, event_hash"
+                        "prev_hash, event_hash, nonce FROM audit_events"
                     )
                 )
                 .mappings()
@@ -156,13 +153,9 @@ class AuditStore:
             )
         if not rows:
             return problems
-        prev = GENESIS_HASH
+        by_prev: dict[str, list[Any]] = {}
         for row in rows:
-            if row["prev_hash"] != prev:
-                problems.append(
-                    f"prev_hash mismatch at {row['occurred_at']} {row['actor']}:{row['action']} "
-                    f"(expected {prev}, got {row['prev_hash']})"
-                )
+            by_prev.setdefault(row["prev_hash"], []).append(row)
             body = canonical_bytes(
                 actor=row["actor"],
                 action=row["action"],
@@ -178,14 +171,30 @@ class AuditStore:
             )
             if recomputed != row["event_hash"]:
                 problems.append(f"hash mismatch at {row['occurred_at']} {row['actor']}:{row['action']}")
-            prev = row["event_hash"]
+        current = GENESIS_HASH
+        visited: set[str] = set()
+        while True:
+            children = by_prev.get(current, [])
+            if not children:
+                break
+            if len(children) != 1:
+                problems.append(f"audit chain fork after {current}: {len(children)} children")
+                break
+            child = children[0]
+            if child["event_hash"] in visited:
+                problems.append(f"audit chain cycle at {child['event_hash']}")
+                break
+            visited.add(child["event_hash"])
+            current = child["event_hash"]
+        if len(visited) != len(rows):
+            problems.append(f"audit chain has {len(rows) - len(visited)} disconnected row(s)")
         if head is None:
             problems.append("no persisted signed audit head")
         elif head["signature"] is None:
             problems.append("audit head signature missing")
         else:
-            if head["event_hash"] != prev:
-                problems.append(f"audit head references {head['event_hash']} but chain ends at {prev}")
+            if head["event_hash"] != current:
+                problems.append(f"audit head references {head['event_hash']} but chain ends at {current}")
             if self._hmac_key is not None and not verify_head_signature(
                 head["event_hash"], head["signature"], self._hmac_key
             ):

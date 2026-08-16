@@ -18,6 +18,7 @@ Security posture (HIGH-04 / WS-9):
 from __future__ import annotations
 
 import ipaddress
+import re
 import secrets
 import uuid
 from collections.abc import Iterator
@@ -35,6 +36,7 @@ from sqlalchemy.orm import Session
 router = APIRouter(prefix="/v1")
 
 GIF_BYTES = b"\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"  # noqa: E501
+TOKEN_HASH_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
 def _session(request: Request) -> Iterator[Session]:
@@ -81,12 +83,21 @@ def _token_rate_limited(request: Request, token_hash: str) -> None:
     `token_hash` is a path parameter, so FastAPI injects it into this
     dependency; the key lives in memory only and is never logged.
     """
-    if not request.app.state.token_limiter.allow(token_hash):
+    # Reject attacker-controlled high-cardinality strings before allocating a
+    # limiter bucket or querying storage. Token hashes are SHA-256 hex values.
+    if TOKEN_HASH_RE.fullmatch(token_hash) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+    if not request.app.state.token_limiter.allow(token_hash.lower()):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate limit exceeded")
 
 
 def _ip_rate_limited(request: Request) -> None:
     if not request.app.state.ip_limiter.allow(_client_ip(request) or "unknown"):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate limit exceeded")
+
+
+def _global_rate_limited(request: Request) -> None:
+    if not request.app.state.global_limiter.allow("tracking"):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate limit exceeded")
 
 
@@ -109,7 +120,10 @@ def _resolve_active_token(token_hash: str, session: Session) -> TrackingToken | 
     return token
 
 
-@router.get("/track/open/{token_hash}", dependencies=[Depends(_token_rate_limited)])
+@router.get(
+    "/track/open/{token_hash}",
+    dependencies=[Depends(_token_rate_limited), Depends(_ip_rate_limited), Depends(_global_rate_limited)],
+)
 def record_open(
     token_hash: str,
     request: Request,
@@ -143,7 +157,10 @@ def record_open(
     return Response(content=GIF_BYTES, media_type="image/gif", headers={"Cache-Control": "no-store"})
 
 
-@router.get("/track/click/{token_hash}", dependencies=[Depends(_token_rate_limited)])
+@router.get(
+    "/track/click/{token_hash}",
+    dependencies=[Depends(_token_rate_limited), Depends(_ip_rate_limited), Depends(_global_rate_limited)],
+)
 def record_click(
     token_hash: str,
     request: Request,

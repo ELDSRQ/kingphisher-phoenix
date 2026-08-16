@@ -39,9 +39,11 @@ def redact_value(value: Any) -> Any:
 
 
 def redact_processor(logger: Any, method_name: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
-    for key in ("event", "msg", "detail", "payload", "error", "request", "response"):
-        if key in event_dict:
-            event_dict[key] = redact_value(event_dict[key])
+    # Structured context is extensible, so an allow-list of field names is not
+    # a safe redaction boundary.  Process every value, including values bound
+    # by middleware and third-party integrations.
+    for key, value in event_dict.items():
+        event_dict[key] = redact_value(value)
     return event_dict
 
 
@@ -90,6 +92,18 @@ class AccessLogMiddleware:
         self.app = app
         self.logger = get_logger(logger_name)
 
+    @staticmethod
+    def _route_template(scope: Any) -> str:
+        """Return a non-identifying route name, never the request path.
+
+        Starlette attaches the matched route to the scope while dispatching.
+        Unmatched paths are deliberately collapsed so attacker-controlled URL
+        data cannot become an access-log side channel.
+        """
+        route = scope.get("route")
+        template = getattr(route, "path", None)
+        return template if isinstance(template, str) else "<unmatched>"
+
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -105,15 +119,14 @@ class AccessLogMiddleware:
         try:
             await self.app(scope, receive, _send)
         except Exception:
-            self.logger.exception("request_failed", method=scope.get("method"), path=scope.get("path"))
+            self.logger.exception("request_failed", method=scope.get("method"), route=self._route_template(scope))
             raise
         finally:
             duration_ms = (time.perf_counter() - start) * 1000
             self.logger.info(
                 "request",
                 method=scope.get("method"),
-                path=scope.get("path"),
+                route=self._route_template(scope),
                 status=status_holder[0],
                 duration_ms=round(duration_ms, 2),
-                client=scope.get("client", (None,))[0],
             )

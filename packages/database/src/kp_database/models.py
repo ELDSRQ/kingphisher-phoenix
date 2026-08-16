@@ -373,12 +373,16 @@ class PrivacyRequest(Base):
     )
     requester_key: Mapped[str] = mapped_column(CipherText)
     campaign_id = mapped_column(UUID(as_uuid=True), nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="open")
+    status: Mapped[str] = mapped_column(String(32), default="opened")
     opened_at = mapped_column(DateTime(timezone=True), nullable=False)
     # CCPA regs §7024: complete DSRs within 45 days of the request.
     sla_deadline = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at = mapped_column(DateTime(timezone=True), nullable=True)
     completion_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verified_at = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_method: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verification_evidence_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    exported_at = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PrivacyNotice(Base):

@@ -27,7 +27,7 @@ from kp_database.models import (
 from kp_database.session import create_db_engine, make_session_factory
 from kp_domain_models import models as dm
 from kp_workers.config import WorkerSettings
-from kp_workers.jobs import WorkerContext, maybe_publish_retention, process_retention
+from kp_workers.jobs import WorkerContext, maybe_publish_retention, process_retention, reconcile_campaign_lifecycle
 from sqlalchemy import select
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
@@ -79,9 +79,9 @@ def _make_ctx(queue: StubQueue) -> WorkerContext:
     return WorkerContext(settings, session_factory, audit_store, queue)
 
 
-def _seed_assignments() -> tuple[str, str]:
+def _seed_assignments() -> tuple[str, str, str]:
     """Seed one campaign with two DELIVERED assignments (old + recent) and one
-    QUEUED old assignment. Returns (old_delivered_id, recent_delivered_id)."""
+    QUEUED old assignment. Returns all three assignment identifiers."""
     session = make_session_factory(create_db_engine(TEST_URL))()
     try:
         pattern = CampaignPattern(
@@ -140,7 +140,11 @@ def _seed_assignments() -> tuple[str, str]:
         )
         session.add_all([old_delivered, recent_delivered, old_queued])
         session.commit()
-        return str(old_delivered.recipient_assignment_id), str(recent_delivered.recipient_assignment_id)
+        return (
+            str(old_delivered.recipient_assignment_id),
+            str(recent_delivered.recipient_assignment_id),
+            str(old_queued.recipient_assignment_id),
+        )
     finally:
         session.close()
 
@@ -164,8 +168,8 @@ def _setup() -> None:
 
 
 @requires_db
-def test_retention_deletes_only_old_delivered_assignments() -> None:
-    old_id, recent_id = _seed_assignments()
+def test_retention_deletes_all_old_assignments() -> None:
+    old_id, recent_id, old_queued_id = _seed_assignments()
     session = make_session_factory(create_db_engine(TEST_URL))()
     try:
         session.add(
@@ -187,14 +191,15 @@ def test_retention_deletes_only_old_delivered_assignments() -> None:
 
     remaining = _remaining_assignments()
     assert old_id not in remaining
+    assert old_queued_id not in remaining
     assert recent_id in remaining
 
     session = make_session_factory(create_db_engine(TEST_URL))()
     try:
         action = session.scalar(select(RetentionAction).order_by(RetentionAction.executed_at.desc()).limit(1))
         assert action is not None
-        assert action.target_table == "recipient_assignments"
-        assert action.row_count_deleted == 1
+        assert action.target_table == "linked_campaign_data"
+        assert action.row_count_deleted == 2
     finally:
         session.close()
 
@@ -209,3 +214,49 @@ def test_maybe_publish_retention_self_publishes() -> None:
     assert topic == "retention"
     assert message["retention_policy_id"] == "default"
     assert message["idempotency_key"].startswith("retention-self-")
+
+
+@requires_db
+def test_reconcile_campaign_lifecycle_closes_elapsed_windows() -> None:
+    session = make_session_factory(create_db_engine(TEST_URL))()
+    try:
+        pattern = CampaignPattern(
+            campaign_pattern_id=uuid4(),
+            lure_category=dm.LureCategory.INVOICE,
+            confidence=dm.Confidence.HIGH,
+        )
+        session.add(pattern)
+        session.flush()
+        now = datetime.now(UTC)
+        active = Campaign(
+            campaign_id=uuid4(),
+            pattern_id=pattern.campaign_pattern_id,
+            title="Active elapsed",
+            state=dm.CampaignState.ACTIVE,
+            sender_mailbox="drills@example.com",
+            training_domain="training.local",
+            schedule_end=now - timedelta(minutes=1),
+            timezone="UTC",
+            max_recipients=1,
+            expires_at=now - timedelta(minutes=1),
+        )
+        scheduled = Campaign(
+            campaign_id=uuid4(),
+            pattern_id=pattern.campaign_pattern_id,
+            title="Never launched",
+            state=dm.CampaignState.SCHEDULED,
+            sender_mailbox="drills@example.com",
+            training_domain="training.local",
+            schedule_end=now - timedelta(minutes=1),
+            timezone="UTC",
+            max_recipients=1,
+            expires_at=now - timedelta(minutes=1),
+        )
+        session.add_all([active, scheduled])
+        session.flush()
+        assert reconcile_campaign_lifecycle(session, now) == {"completed": 1, "expired": 1}
+        session.commit()
+        assert active.state == dm.CampaignState.COMPLETED
+        assert scheduled.state == dm.CampaignState.EXPIRED
+    finally:
+        session.close()

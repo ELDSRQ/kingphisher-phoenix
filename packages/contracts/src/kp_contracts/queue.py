@@ -19,7 +19,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import redis
 
@@ -27,9 +27,10 @@ logger = logging.getLogger(__name__)
 
 
 class JobQueue:
-    def __init__(self, redis_url: str, *, prefix: str = "kp:queue:") -> None:
+    def __init__(self, redis_url: str, *, prefix: str = "kp:queue:", max_message_bytes: int = 1_000_000) -> None:
         self._client = redis.Redis.from_url(redis_url, decode_responses=True)
         self._prefix = prefix
+        self._max_message_bytes = max_message_bytes
 
     def _topic(self, topic: str) -> str:
         return self._prefix + topic
@@ -40,12 +41,22 @@ class JobQueue:
     def _dlq(self, topic: str) -> str:
         return self._prefix + "dlq:" + topic
 
+    def _delayed(self, topic: str) -> str:
+        return self._prefix + "delayed:" + topic
+
     def _as_str(self, value: bytes | str) -> str:
         if isinstance(value, str):
             return value
         return value.decode("utf-8")
 
-    def publish(self, topic: str, payload: dict[str, Any], *, idempotency_key: str | None = None) -> str:
+    def publish(
+        self,
+        topic: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+        available_at: float | None = None,
+    ) -> str:
         job_id = str(uuid.uuid4())
         message: dict[str, Any] = {
             "id": job_id,
@@ -53,10 +64,25 @@ class JobQueue:
             "retry": 0,
             "payload": payload,
         }
-        self._client.rpush(self._topic(topic), json.dumps(message))
+        encoded = json.dumps(message)
+        if len(encoded.encode("utf-8")) > self._max_message_bytes:
+            raise ValueError("queue message exceeds maximum size")
+        if available_at is not None and available_at > time.time():
+            self._client.zadd(self._delayed(topic), {encoded: available_at})
+        else:
+            self._client.rpush(self._topic(topic), encoded)
         return job_id
 
+    def _promote_due(self, topic: str) -> None:
+        """Move due delayed jobs into the ready list before a blocking pop."""
+        delayed = self._delayed(topic)
+        for raw in self._client.zrangebyscore(delayed, "-inf", time.time(), start=0, num=100):
+            raw_str = self._as_str(cast(bytes | str, raw))
+            if self._client.zrem(delayed, raw_str):
+                self._client.rpush(self._topic(topic), raw_str)
+
     def pop(self, topic: str, *, timeout: int = 5) -> dict[str, Any] | None:
+        self._promote_due(topic)
         try:
             raw = self._client.brpoplpush(self._topic(topic), self._processing(topic), timeout=timeout)
         except redis.TimeoutError:
@@ -100,7 +126,7 @@ class JobQueue:
             logger.error("message %s exhausted %d retries; moving to DLQ", message.get("id"), max_retries)
             self._client.rpush(self._dlq(topic), json.dumps(message))
 
-    def recover_stale(self, topic: str, *, visibility_seconds: int = 60) -> int:
+    def recover_stale(self, topic: str, *, visibility_seconds: int = 60, max_retries: int = 3) -> int:
         """Re-queue messages in :processing that exceed the visibility window.
 
         Handles a worker that died between pop and ack. Returns the number of
@@ -123,7 +149,10 @@ class JobQueue:
             retries = int(message.get("retry", 0)) + 1
             message["retry"] = retries
             message.pop("started_at", None)
-            self._client.rpush(self._topic(topic), json.dumps(message))
+            destination = self._topic(topic) if retries < max_retries else self._dlq(topic)
+            if retries >= max_retries:
+                logger.error("stale message %s exhausted retries; moving to DLQ", message.get("id"))
+            self._client.rpush(destination, json.dumps(message))
             recovered += 1
         return recovered
 

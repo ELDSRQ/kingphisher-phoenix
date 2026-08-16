@@ -74,9 +74,9 @@ def _make_context(namespace: str, allowed: frozenset[str], values: dict[str, Any
     return {namespace: _ScopedProxy(allowed, values)}
 
 
-def make_environment() -> Environment:
+def make_environment(*, autoescape: bool = False) -> Environment:
     env = SandboxedEnvironment(
-        autoescape=False,
+        autoescape=autoescape,
         undefined=StrictUndefined,
         trim_blocks=True,
         lstrip_blocks=True,
@@ -91,10 +91,11 @@ class MessageRenderer:
     """Renders a stored template against per-recipient context."""
 
     def __init__(self) -> None:
-        self._env = make_environment()
+        self._text_env = make_environment()
+        self._html_env = make_environment(autoescape=True)
 
     def _validate_names(self, source: str) -> None:
-        ast = self._env.parse(source)
+        ast = self._text_env.parse(source)
         allowed = {
             "recipient": _RECIPIENT_FIELDS,
             "campaign": _CAMPAIGN_FIELDS,
@@ -127,6 +128,7 @@ class MessageRenderer:
         campaign: CampaignContext,
         tracking: TrackingContext,
         sender_email: str,
+        html_context: bool = False,
     ) -> str:
         self._validate_names(source)
         context: dict[str, Any] = {}
@@ -165,7 +167,7 @@ class MessageRenderer:
             )
         )
         context.update(_make_context("sender", _SENDER_FIELDS, {"email": sender_email}))
-        template = self._env.from_string(source)
+        template = (self._html_env if html_context else self._text_env).from_string(source)
         return template.render(**context)
 
 

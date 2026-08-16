@@ -10,15 +10,31 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 
 
 class RateLimiter:
-    def __init__(self, *, limit: int, window_seconds: float = 60.0) -> None:
+    def __init__(self, *, limit: int, window_seconds: float = 60.0, max_keys: int = 10_000) -> None:
+        if limit < 1 or window_seconds <= 0 or max_keys < 1:
+            raise ValueError("limit, window_seconds, and max_keys must be positive")
         self._limit = limit
         self._window = window_seconds
-        self._hits: dict[str, deque[float]] = {}
+        self._max_keys = max_keys
+        self._hits: OrderedDict[str, deque[float]] = OrderedDict()
         self._lock = threading.Lock()
+
+    def _evict(self, cutoff: float) -> None:
+        while self._hits:
+            _, hits = next(iter(self._hits.items()))
+            if hits and hits[-1] >= cutoff:
+                break
+            self._hits.popitem(last=False)
+
+        # If all keys are active, discard the least recently used key. This
+        # keeps attacker-controlled cardinality bounded at a deterministic
+        # memory cost while preserving limits for the most recent callers.
+        while len(self._hits) >= self._max_keys:
+            self._hits.popitem(last=False)
 
     def allow(self, key: str, *, now: float | None = None) -> bool:
         now = now if now is not None else time.monotonic()
@@ -26,6 +42,7 @@ class RateLimiter:
         with self._lock:
             hits = self._hits.get(key)
             if hits is None:
+                self._evict(cutoff)
                 self._hits[key] = deque([now])
                 return True
             while hits and hits[0] < cutoff:
@@ -33,7 +50,14 @@ class RateLimiter:
             if len(hits) >= self._limit:
                 return False
             hits.append(now)
+            self._hits.move_to_end(key)
             return True
+
+    @property
+    def key_count(self) -> int:
+        """Current allocation count, exposed for metrics and verification."""
+        with self._lock:
+            return len(self._hits)
 
     def clear(self) -> None:
         with self._lock:

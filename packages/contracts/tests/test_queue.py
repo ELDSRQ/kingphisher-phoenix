@@ -9,6 +9,7 @@ client, so the unit suite stays runnable anywhere.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 import redis
@@ -20,6 +21,7 @@ class _MemoryClient:
 
     def __init__(self) -> None:
         self.lists: dict[str, list[str]] = {}
+        self.sorted_sets: dict[str, dict[str, float]] = {}
         self.timeout_error = False
 
     def rpush(self, key: str, value: str) -> int:
@@ -66,6 +68,22 @@ class _MemoryClient:
     def lrange(self, key: str, start: int, stop: int) -> list[str]:
         values = self.lists.get(key, [])
         return values[start:] if stop == -1 else values[start : stop + 1]
+
+    def zadd(self, key: str, values: dict[str, float]) -> int:
+        self.sorted_sets.setdefault(key, {}).update(values)
+        return len(values)
+
+    def zrangebyscore(self, key: str, minimum: str, maximum: float, *, start: int, num: int) -> list[str]:
+        del minimum
+        due = [value for value, score in self.sorted_sets.get(key, {}).items() if score <= maximum]
+        return due[start : start + num]
+
+    def zrem(self, key: str, value: str) -> int:
+        values = self.sorted_sets.get(key, {})
+        if value not in values:
+            return 0
+        del values[value]
+        return 1
 
     def close(self) -> None:
         return None
@@ -144,3 +162,37 @@ def test_recover_stale_leaves_fresh_claims_alone(queue: JobQueue) -> None:
     assert queue.recover_stale("generation", visibility_seconds=600) == 0
     client = queue._client  # type: ignore[attr-defined]
     assert len(client.lists.get("kp:queue:generation:processing", [])) == 1
+
+
+def test_recover_stale_moves_exhausted_claim_to_dlq(queue: JobQueue) -> None:
+    queue.publish("generation", {"pattern_id": "p1"})
+    message = queue.pop("generation", timeout=1)
+    assert message is not None
+    message["started_at"] = 0.0
+    message["retry"] = 2
+    client = queue._client  # type: ignore[attr-defined]
+    client.lrem("kp:queue:generation:processing", 0, message["_raw"])
+    client.rpush("kp:queue:generation:processing", json.dumps(message))
+
+    assert queue.recover_stale("generation", visibility_seconds=60, max_retries=3) == 1
+    assert client.lists.get("kp:queue:generation", []) == []
+    assert len(client.lists.get("kp:queue:dlq:generation", [])) == 1
+
+
+def test_publish_rejects_oversized_message() -> None:
+    queue = JobQueue("redis://localhost:6379/0", max_message_bytes=100)
+    queue._client = _MemoryClient()  # noqa: SLF001 - test seam
+    with pytest.raises(ValueError, match="maximum size"):
+        queue.publish("deliver", {"value": "x" * 500})
+
+
+def test_delayed_message_is_not_visible_until_due(queue: JobQueue, monkeypatch: pytest.MonkeyPatch) -> None:
+    now = time.time()
+    monkeypatch.setattr("kp_contracts.queue.time.time", lambda: now)
+    queue.publish("deliver", {"campaign_id": "c1"}, available_at=now + 60)
+    assert queue.pop("deliver", timeout=0) is None
+
+    monkeypatch.setattr("kp_contracts.queue.time.time", lambda: now + 61)
+    message = queue.pop("deliver", timeout=0)
+    assert message is not None
+    assert message["payload"]["campaign_id"] == "c1"

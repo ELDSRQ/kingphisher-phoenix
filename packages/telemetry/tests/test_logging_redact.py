@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from kp_database.privacy import hash_mailbox, minimize_ip, minimize_user_agent
-from kp_telemetry.logging import redact_value
+from kp_telemetry.logging import configure_logging, get_logger, redact_processor, redact_value
 
 
 def test_redacts_43_char_token() -> None:
@@ -28,6 +29,29 @@ def test_redacts_nested_dict_and_list() -> None:
     out = redact_value(payload)
     assert out["detail"]["recipient"] == "[REDACTED]"
     assert out["detail"]["hashes"] == ["[REDACTED]"]
+
+
+def test_redacts_every_structured_field() -> None:
+    digest = "a" * 64
+    event = {"path": f"/track/{digest}", "client": "203.0.113.7", "custom": {"email": "a@example.com"}}
+    out = redact_processor(None, "info", event)
+    assert out == {
+        "path": "/track/[REDACTED]",
+        "client": "[REDACTED]",
+        "custom": {"email": "[REDACTED]"},
+    }
+
+
+def test_serialized_log_redacts_arbitrary_context(capsys: object) -> None:
+    configure_logging()
+    token_hash = "b" * 64
+    get_logger("redaction-test").info("request", path=f"/v1/track/open/{token_hash}", client="198.51.100.20")
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    record = json.loads(output)
+    assert token_hash not in output
+    assert "198.51.100.20" not in output
+    assert record["path"] == "/v1/track/open/[REDACTED]"
+    assert record["client"] == "[REDACTED]"
 
 
 def test_hash_mailbox_is_salted_and_deterministic() -> None:

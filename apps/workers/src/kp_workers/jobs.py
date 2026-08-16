@@ -15,7 +15,8 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
+from urllib.parse import urlparse
 
 from kp_campaign_patterns.builder import build_pattern_candidate
 from kp_contracts.queue import JobQueue
@@ -29,6 +30,7 @@ from kp_database.models import (
     RetentionPolicy,
     SourceItem,
     TemplateVersion,
+    TrackingEvent,
     TrackingToken,
 )
 from kp_database.models import (
@@ -42,7 +44,8 @@ from kp_telemetry.logging import get_logger
 from kp_templating.ics import generate_invite
 from kp_templating.render import CampaignContext, MessageRenderer, RecipientContext, TrackingContext
 from kp_templating.spf import check_spf_for_mailbox
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from kp_workers.config import WorkerSettings
@@ -165,18 +168,27 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
     assignment_ids = payload.get("recipient_assignment_ids", [])
     template_hash = payload.get("template_hash")
     campaign_id = payload.get("campaign_id")
+    test_send = bool(payload.get("test_send", False))
     with ctx.session_factory() as session:
         campaign = session.get(Campaign, uuid.UUID(campaign_id)) if campaign_id else None
         if campaign is None:
             logger.error("delivery message references unknown campaign")
             return
-        if campaign.state not in (dm.CampaignState.SCHEDULED, dm.CampaignState.ACTIVE, dm.CampaignState.SENDING):
+        if not test_send and campaign.state not in (
+            dm.CampaignState.SCHEDULED,
+            dm.CampaignState.ACTIVE,
+            dm.CampaignState.SENDING,
+        ):
             logger.info("campaign %s not deliverable (state=%s); skipping", campaign_id, campaign.state.value)
             return
         template = session.get(TemplateVersion, campaign.current_template_id) if campaign.current_template_id else None
         if template is None:
             logger.error("campaign %s has no approved template; refusing to deliver", campaign_id)
             return
+        if not test_send and template.approval_state != dm.TemplateApprovalState.APPROVED:
+            raise SafetyRejectionError("delivery requires an approved template")
+        if template_hash != campaign.manifest_hash:
+            raise SafetyRejectionError("delivery manifest does not match the approved campaign")
         pattern = session.get(CampaignPattern, campaign.pattern_id) if campaign.pattern_id else None
         spf = check_spf_for_mailbox(campaign.sender_mailbox)
         if not spf.has_spf:
@@ -185,7 +197,11 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         failed = 0
         for assignment_id in assignment_ids:
             assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
-            if assignment is None or assignment.send_state != dm.SendState.QUEUED:
+            if (
+                assignment is None
+                or assignment.campaign_id != campaign.campaign_id
+                or assignment.send_state != dm.SendState.QUEUED
+            ):
                 continue
             token = session.scalar(
                 select(TrackingToken).where(TrackingToken.recipient_assignment_id == assignment.recipient_assignment_id)
@@ -205,7 +221,8 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                 assignment.send_state = dm.SendState.FAILED
                 failed += 1
             session.commit()
-        campaign.state = dm.CampaignState.ACTIVE
+        if not test_send:
+            campaign.state = dm.CampaignState.ACTIVE
         session.commit()
     ctx.audit_store.record(
         actor="worker:delivery",
@@ -227,6 +244,7 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
     policy_id = payload.get("retention_policy_id", "default")
     with ctx.session_factory() as session:
         now = datetime.now(UTC)
+        lifecycle = reconcile_campaign_lifecycle(session, now)
         if policy_id != "default":
             policy = session.get(RetentionPolicy, uuid.UUID(policy_id))
         else:
@@ -236,21 +254,58 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
         rows = list(
             session.execute(
                 select(RecipientAssignment).where(
-                    RecipientAssignment.send_state == dm.SendState.DELIVERED,
                     RecipientAssignment.created_at < cutoff,
                 )
             )
             .scalars()
             .all()[:1000]
         )
-        for row in rows:
-            session.delete(row)
+        assignment_ids = [row.recipient_assignment_id for row in rows]
+        token_ids: list[uuid.UUID] = []
+        if assignment_ids:
+            token_ids = list(
+                session.scalars(
+                    select(TrackingToken.token_id).where(TrackingToken.recipient_assignment_id.in_(assignment_ids))
+                )
+            )
+        event_filter = TrackingEvent.occurred_at < cutoff
+        if token_ids:
+            # A recipient may also participate in a recent campaign, so do not
+            # purge by recipient_id here.  The token is the assignment-scoped
+            # linkage; unlinked events are retained strictly by occurred_at.
+            event_filter = event_filter | TrackingEvent.token_id.in_(token_ids)
+        events_deleted = (
+            cast(CursorResult[Any], session.execute(delete(TrackingEvent).where(event_filter))).rowcount or 0
+        )
+        tokens_deleted = 0
+        assignments_deleted = 0
+        if assignment_ids:
+            tokens_deleted = (
+                cast(
+                    CursorResult[Any],
+                    session.execute(
+                        delete(TrackingToken).where(TrackingToken.recipient_assignment_id.in_(assignment_ids))
+                    ),
+                ).rowcount
+                or 0
+            )
+            assignments_deleted = (
+                cast(
+                    CursorResult[Any],
+                    session.execute(
+                        delete(RecipientAssignment).where(
+                            RecipientAssignment.recipient_assignment_id.in_(assignment_ids)
+                        )
+                    ),
+                ).rowcount
+                or 0
+            )
         action = RetentionAction(
             retention_action_id=uuid.uuid4(),
             retention_policy_id=policy.retention_policy_id if policy is not None else None,
             executed_at=now,
-            target_table="recipient_assignments",
-            row_count_deleted=len(rows),
+            target_table="linked_campaign_data",
+            row_count_deleted=assignments_deleted + tokens_deleted + events_deleted,
             idempotency_key=message["idempotency_key"],
         )
         session.add(action)
@@ -260,8 +315,44 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
         action="retention.run",
         object_type="system",
         object_id=str(policy_id),
-        detail={"deleted": len(rows), "retention_days": retention_days},
+        detail={
+            "assignments_deleted": assignments_deleted,
+            "tokens_deleted": tokens_deleted,
+            "events_deleted": events_deleted,
+            "retention_days": retention_days,
+            "campaigns_completed": lifecycle["completed"],
+            "campaigns_expired": lifecycle["expired"],
+        },
     )
+
+
+def reconcile_campaign_lifecycle(session: Session, now: datetime) -> dict[str, int]:
+    """Close campaigns whose configured assessment window has ended."""
+    rows = list(
+        session.scalars(
+            select(Campaign).where(
+                Campaign.schedule_end.is_not(None),
+                Campaign.schedule_end <= now,
+                Campaign.state.in_(
+                    [
+                        dm.CampaignState.SCHEDULED,
+                        dm.CampaignState.SENDING,
+                        dm.CampaignState.ACTIVE,
+                    ]
+                ),
+            )
+        )
+    )
+    completed = 0
+    expired = 0
+    for campaign in rows:
+        if campaign.state == dm.CampaignState.SCHEDULED:
+            campaign.state = dm.CampaignState.EXPIRED
+            expired += 1
+        else:
+            campaign.state = dm.CampaignState.COMPLETED
+            completed += 1
+    return {"completed": completed, "expired": expired}
 
 
 def maybe_publish_retention(ctx: WorkerContext, now: datetime) -> None:
@@ -348,8 +439,22 @@ def _send_email(
         ctx, template.plain_text or "", recipient_ctx, campaign_ctx, tracking, recipient.mailbox or ""
     )
     html = _render_or_plain(
-        ctx, template.safe_html or "", recipient_ctx, campaign_ctx, tracking, recipient.mailbox or ""
+        ctx,
+        template.safe_html or "",
+        recipient_ctx,
+        campaign_ctx,
+        tracking,
+        recipient.mailbox or "",
+        html_context=True,
     )
+    allowed_domains = ctx.settings.training_domain_set()
+    for configured_url in (ctx.settings.tracking_base_url, ctx.settings.training_base_url):
+        host = urlparse(configured_url).hostname
+        if host:
+            allowed_domains.add(host)
+    verdict = SafetyValidator(training_domains=allowed_domains).validate(subject, plain_text, html)
+    if not verdict.allowed:
+        raise SafetyRejectionError(f"final rendered message rejected: {verdict.reasons}")
     pixel_tag = f'<img src="{tracking.open_url}" width="1" height="1" style="display:none" alt="" />'
     if html and "</body>" in html.lower():
         html = html.replace("</body>", f"{pixel_tag}</body>", 1)
@@ -384,10 +489,17 @@ def _render_or_plain(
     campaign_ctx: CampaignContext,
     tracking: TrackingContext,
     sender_email: str,
+    *,
+    html_context: bool = False,
 ) -> str:
     try:
         return _renderer.render(
-            source, recipient=recipient_ctx, campaign=campaign_ctx, tracking=tracking, sender_email=sender_email
+            source,
+            recipient=recipient_ctx,
+            campaign=campaign_ctx,
+            tracking=tracking,
+            sender_email=sender_email,
+            html_context=html_context,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the delivery loop, which
         # marks the recipient FAILED and continues; never silently dropped
@@ -410,7 +522,11 @@ def run_loop(ctx: WorkerContext, topic: str, process: Callable[[WorkerContext, d
             if message is None:
                 polls_since_recovery += 1
                 if polls_since_recovery >= ctx.settings.recovery_every_polls:
-                    recovered = ctx.queue.recover_stale(topic, visibility_seconds=ctx.settings.visibility_seconds)
+                    recovered = ctx.queue.recover_stale(
+                        topic,
+                        visibility_seconds=ctx.settings.visibility_seconds,
+                        max_retries=ctx.settings.max_retries,
+                    )
                     if recovered:
                         logger.warning("recovered %d stale claims on %s", recovered, topic)
                     polls_since_recovery = 0

@@ -4,12 +4,20 @@
 const API = "/api/v1";
 
 const TOKEN_KEY = "kp_console_token";
+const SESSION_KEY = "kp_console_session";
 
 /* Session-scoped, not persisted to disk: the admin JWT must not survive the
    tab (MED-07 / WS-15). */
 function token() { return sessionStorage.getItem(TOKEN_KEY) || ""; }
 function setToken(t) { sessionStorage.setItem(TOKEN_KEY, t); }
-function clearToken() { sessionStorage.removeItem(TOKEN_KEY); }
+function sessionInfo() {
+  try { return JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null"); } catch { return null; }
+}
+function setSessionInfo(info) { sessionStorage.setItem(SESSION_KEY, JSON.stringify(info)); }
+function clearToken() {
+  sessionStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(SESSION_KEY);
+}
 
 async function api(path, options = {}) {
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
@@ -37,6 +45,8 @@ const views = {};
 function toast(message, type = "") {
   const el = document.createElement("div");
   el.className = `toast ${type}`;
+  el.setAttribute("role", type === "error" ? "alert" : "status");
+  el.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
   el.textContent = message;
   document.body.appendChild(el);
   setTimeout(() => el.remove(), 5000);
@@ -62,10 +72,27 @@ function escapeHtml(s) {
   }[c]));
 }
 
+function browserTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function localDateTimeToIso(value, label) {
+  if (!value) throw new Error(`${label} date and time are required`);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`${label} date and time are invalid`);
+  return parsed.toISOString();
+}
+
+function formatInstant(value) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Invalid date";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "long" }).format(parsed);
+}
+
 /* ---------- login ---------- */
 views.login = (root) => {
   const err = el("div", { class: "login-error" });
-  const password = el("input", { type: "password", placeholder: "Console password" });
+  const password = el("input", { id: "console-password", type: "password", placeholder: "Console password", autocomplete: "current-password" });
   password.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
   const submit = async () => {
     err.textContent = "";
@@ -75,6 +102,11 @@ views.login = (root) => {
         body: JSON.stringify({ password: password.value }),
       });
       setToken(data.token);
+      setSessionInfo({
+        authMode: data.auth_mode,
+        principalId: data.principal_id,
+        approvalLimited: Boolean(data.approval_limited),
+      });
       toast("Signed in", "success");
       render();
     } catch (e) { err.textContent = e.message; }
@@ -83,7 +115,7 @@ views.login = (root) => {
     el("div", { class: "login-card" }, [
       el("h1", { text: "Kingphisher-Phoenix" }),
       el("p", { text: "Operator console" }),
-      el("label", { text: "Password" }),
+      el("label", { for: "console-password", text: "Password" }),
       password,
       err,
       el("button", { class: "btn primary", type: "button", onclick: submit, text: "Sign in" }),
@@ -114,6 +146,7 @@ function shell() {
     }));
   }
   const content = el("div", { class: "content" });
+  const info = sessionInfo();
   const root = el("div", { class: "shell" }, [
     el("aside", { class: "sidebar" }, [
       el("div", { class: "brand" }, [
@@ -122,7 +155,7 @@ function shell() {
       ]),
       nav,
       el("div", { class: "footer" }, [
-        el("div", { text: "Signed in as console-operator" }),
+        el("div", { text: info?.authMode === "dev" ? "Signed in as development operator" : "Signed in with OIDC" }),
         el("button", { text: "Sign out", onclick: () => { clearToken(); render(); } }),
       ]),
     ]),
@@ -180,8 +213,8 @@ views.dashboard = async (root) => {
     el("tbody", {}, campaigns.length ? campaigns.map((c) => el("tr", {}, [
       el("td", { text: c.title }),
       el("td", { text: c.state }),
-      el("td", { class: "mono", text: String(c.schedule_start).slice(0, 16) }),
-      el("td", { class: "mono", text: String(c.schedule_end).slice(0, 16) }),
+      el("td", { class: "mono", text: formatInstant(c.schedule_start) }),
+      el("td", { class: "mono", text: formatInstant(c.schedule_end) }),
     ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 4, text: "No campaigns yet." })])]),
   ]);
   root.appendChild(el("div", { class: "card" }, [el("h3", { text: "Campaigns" }), table]));
@@ -191,6 +224,12 @@ views.dashboard = async (root) => {
 views.campaigns = async (root) => {
   root.appendChild(el("h2", { text: "Campaigns" }));
   root.appendChild(el("p", { class: "sub", text: "Create, approve, schedule and manage campaigns." }));
+  if (sessionInfo()?.approvalLimited) {
+    root.appendChild(el("div", { class: "notice", role: "note" }, [
+      el("strong", { text: "Development identity limitation. " }),
+      el("span", { text: "Password login uses one fixed identity. It cannot approve a campaign it created. Use separately authenticated security and privacy approvers through the configured identity provider; self-approval remains prohibited." }),
+    ]));
+  }
 
   let campaigns;
   try { campaigns = await api("/campaigns"); } catch (e) {
@@ -206,31 +245,36 @@ views.campaigns = async (root) => {
     el("legend", { text: "New campaign" }),
     el("div", { class: "form-grid" }, [
       el("div", {}, [
-        el("label", { text: "Title" }), el("input", { id: "c-title" }),
-        el("label", { text: "Sender mailbox" }), el("input", { id: "c-sender", value: "security-drills@example.com" }),
-        el("label", { text: "Training domain" }), el("input", { id: "c-tdomain", value: "training.local" }),
-        el("label", { text: "Max recipients" }), el("input", { id: "c-max", type: "number", value: "1000" }),
+        el("label", { for: "c-title", text: "Title" }), el("input", { id: "c-title" }),
+        el("label", { for: "c-sender", text: "Sender mailbox" }), el("input", { id: "c-sender", value: "security-drills@example.com" }),
+        el("label", { for: "c-tdomain", text: "Training domain" }), el("input", { id: "c-tdomain", value: "training.local" }),
+        el("label", { for: "c-max", text: "Max recipients" }), el("input", { id: "c-max", type: "number", min: "1", max: "100000", value: "1000" }),
       ]),
       el("div", {}, [
-        el("label", { text: "Pattern" }),
+        el("label", { for: "c-pattern", text: "Pattern" }),
         el("select", { id: "c-pattern" }, patterns.map((p) => el("option", { value: p.campaign_pattern_id, text: `${p.lure_category} (${p.approval_state})` }))),
-        el("label", { text: "Template version" }),
+        el("label", { for: "c-template", text: "Template version" }),
         el("select", { id: "c-template" }, templates.map((t) => el("option", { value: t.template_version_id, text: `${t.version} ${t.subject}` }))),
-        el("label", { text: "Start" }), el("input", { id: "c-start", type: "datetime-local" }),
-        el("label", { text: "End" }), el("input", { id: "c-end", type: "datetime-local" }),
+        el("label", { for: "c-start", text: "Start (your local time)" }), el("input", { id: "c-start", type: "datetime-local" }),
+        el("label", { for: "c-end", text: "End (your local time)" }), el("input", { id: "c-end", type: "datetime-local" }),
+        el("p", { class: "field-help", text: `Times will be stored as absolute instants. Browser timezone: ${browserTimeZone()}.` }),
       ]),
     ]),
     el("div", { class: "btn-row" }, [
       el("button", { class: "btn primary", text: "Create campaign", onclick: async (e) => {
         const btn = e.target; btn.disabled = true;
         try {
+          const start = localDateTimeToIso(document.getElementById("c-start").value, "Start");
+          const end = localDateTimeToIso(document.getElementById("c-end").value, "End");
+          if (new Date(end) <= new Date(start)) throw new Error("End must be after start");
           await api("/campaigns", { method: "POST", body: JSON.stringify({
             pattern_id: document.getElementById("c-pattern").value,
             title: document.getElementById("c-title").value,
             sender_mailbox: document.getElementById("c-sender").value,
             training_domain: document.getElementById("c-tdomain").value,
-            schedule_start: document.getElementById("c-start").value,
-            schedule_end: document.getElementById("c-end").value,
+            schedule_start: start,
+            schedule_end: end,
+            timezone: browserTimeZone(),
             max_recipients: Number(document.getElementById("c-max").value),
             template_version_id: document.getElementById("c-template").value,
           }) });
@@ -252,8 +296,13 @@ views.campaigns = async (root) => {
       el("td", {}, (() => {
         const actions = [];
         if (c.state === "draft") actions.push(el("button", { class: "btn small", text: "Submit", onclick: act(`/campaigns/${c.campaign_id}/submit`, "Submitted") }));
-        if (c.state === "pending_approval") actions.push(el("button", { class: "btn small", text: "Approve", onclick: act(`/campaigns/${c.campaign_id}/approvals/security`, "Approved") }));
-        if (c.state === "approved") actions.push(el("button", { class: "btn small primary", text: "Schedule", onclick: act(`/campaigns/${c.campaign_id}/schedule`, "Scheduled") }));
+        if (c.state === "pending_approval") {
+          for (const type of ["security", "privacy"]) {
+            actions.push(el("button", { class: "btn small", text: `Approve ${type}`, onclick: approvalAct(c, type, "approved") }));
+            actions.push(el("button", { class: "btn small danger", text: `Reject ${type}`, onclick: approvalAct(c, type, "rejected") }));
+          }
+        }
+        if (c.state === "approved") actions.push(el("button", { class: "btn small primary", text: "Schedule", onclick: scheduleAct(c) }));
         if (c.state === "scheduled") actions.push(el("button", { class: "btn small", text: "Test send", onclick: act(`/campaigns/${c.campaign_id}/test-send`, "Test send queued") }));
         if (["scheduled", "approved"].includes(c.state)) actions.push(el("button", { class: "btn small danger", text: "Recall", onclick: act(`/campaigns/${c.campaign_id}/recall`, "Recall initiated") }));
         if (["scheduled", "sending", "active"].includes(c.state)) actions.push(el("button", { class: "btn small danger", text: "Kill switch", onclick: (async (e) => {
@@ -265,6 +314,17 @@ views.campaigns = async (root) => {
           } catch (err) { toast(err.message, "error"); }
           finally { e.target.disabled = false; }
         }) }));
+        actions.push(el("button", { class: "btn small", text: "Report", onclick: async (e) => {
+          e.target.disabled = true;
+          try {
+            const report = await api(`/campaigns/${c.campaign_id}/report`);
+            const sent = report.send_counts.delivered || 0;
+            const opened = report.event_counts.opened || 0;
+            const clicked = report.event_counts.clicked || 0;
+            toast(`Delivered ${sent} · Opened ${opened} · Clicked ${clicked}`, "success");
+          } catch (err) { toast(err.message, "error"); }
+          finally { e.target.disabled = false; }
+        } }));
         return actions;
       })()),
     ]))),
@@ -279,6 +339,33 @@ views.campaigns = async (root) => {
       try { await api(path, { method: "POST" }); toast(successMsg, "success"); location.reload(); }
       catch (err) { toast(err.message, "error"); }
       finally { btn.disabled = false; }
+    };
+  }
+
+  function approvalAct(campaign, approvalType, decision) {
+    return async (e) => {
+      const rationale = prompt(`${decision === "approved" ? "Approval" : "Rejection"} rationale for ${approvalType} review:`);
+      if (rationale === null) return;
+      if (!rationale.trim()) { toast("A rationale is required", "error"); return; }
+      const btn = e.target; btn.disabled = true;
+      try {
+        await api(`/campaigns/${campaign.campaign_id}/approvals/${approvalType}`, {
+          method: "POST",
+          body: JSON.stringify({ decision, rationale: rationale.trim() }),
+        });
+        toast(`${approvalType} review recorded as ${decision}`, "success");
+        location.reload();
+      } catch (err) { toast(err.message, "error"); }
+      finally { btn.disabled = false; }
+    };
+  }
+
+  function scheduleAct(campaign) {
+    return async (e) => {
+      const start = formatInstant(campaign.schedule_start);
+      const end = formatInstant(campaign.schedule_end);
+      if (!confirm(`Schedule "${campaign.title}"?\n\nStart: ${start}\nEnd: ${end}\n\nThese are shown in ${browserTimeZone()}.`)) return;
+      return act(`/campaigns/${campaign.campaign_id}/schedule`, "Scheduled")(e);
     };
   }
 };
@@ -374,22 +461,26 @@ views.privacy = async (root) => {
     const actions = el("td", {});
     if (r.status === "opened") {
       actions.appendChild(el("button", { class: "btn small", text: "Verify", onclick: async (e) => {
+        const evidence = prompt("Verification evidence reference (ticket, IdP event, or case ID):");
+        if (!evidence || !evidence.trim()) { toast("Verification evidence is required", "error"); return; }
         e.target.disabled = true;
-        try { await api(`/privacy/requests/${r.privacy_request_id}/verify`, { method: "POST" }); toast("Verified", "success"); location.reload(); }
+        try { await api(`/privacy/requests/${r.privacy_request_id}/verify`, { method: "POST", body: JSON.stringify({ method: "operator_verified", evidence_ref: evidence.trim() }) }); toast("Verified", "success"); location.reload(); }
         catch (err) { toast(err.message, "error"); }
       } }));
     }
-    if (r.status === "in_progress" && r.request_type === "access_export") {
+    if (["verified", "in_progress"].includes(r.status) && r.request_type === "access_export") {
       actions.appendChild(el("button", { class: "btn small", text: "Export", onclick: async (e) => {
         e.target.disabled = true;
         try {
           const res = await api(`/privacy/requests/${r.privacy_request_id}/export`);
-          const preview = (res.records || []).slice(0, 5).map((rec) => rec.mailbox).join(", ");
-          toast(`Export: ${(res.records || []).length} record(s)` + (preview ? ` — ${preview}` : ""), "success");
+          const blob = new Blob([JSON.stringify(res, null, 2)], { type: "application/json" });
+          const link = document.createElement("a"); link.href = URL.createObjectURL(blob);
+          link.download = `privacy-request-${r.privacy_request_id}.json`; link.click(); URL.revokeObjectURL(link.href);
+          toast(`Downloaded ${(res.records || []).length} recipient record(s)`, "success");
         } catch (err) { toast(err.message, "error"); }
       } }));
     }
-    if (r.status === "in_progress" && r.request_type === "deletion") {
+    if (["verified", "in_progress"].includes(r.status) && r.request_type === "deletion") {
       actions.appendChild(el("button", { class: "btn small primary", text: "Fulfill", onclick: async (e) => {
         e.target.disabled = true;
         try { await api(`/privacy/requests/${r.privacy_request_id}/fulfill`, { method: "POST", body: JSON.stringify({}) }); toast("Request fulfilled", "success"); location.reload(); }
@@ -420,7 +511,11 @@ views.privacy = async (root) => {
 /* ---------- sources ---------- */
 views.sources = async (root) => {
   root.appendChild(el("h2", { text: "Sources" }));
-  root.appendChild(el("p", { class: "sub", text: "Register intelligence sources." }));
+  root.appendChild(el("p", { class: "sub", text: "Register, enable, and monitor RSS intelligence sources." }));
+  let sources;
+  try { sources = await api("/sources"); } catch (e) {
+    root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` })); return;
+  }
   root.appendChild(el("div", { class: "card" }, [
     el("h3", { text: "New source" }),
     el("div", { class: "form-grid" }, [
@@ -429,8 +524,8 @@ views.sources = async (root) => {
         el("label", { text: "Base domain" }), el("input", { id: "s-domain", value: "example.com" }),
       ]),
       el("div", {}, [
-        el("label", { text: "Source type" }),
-        el("select", { id: "s-type" }, ["advisory", "rss", "stix", "bulk_download", "curated"].map((t) => el("option", { value: t, text: t }))),
+        el("label", { for: "s-type", text: "Source type" }),
+        el("select", { id: "s-type" }, ["rss"].map((t) => el("option", { value: t, text: t }))),
       ]),
     ]),
     el("div", { class: "btn-row" }, [
@@ -442,12 +537,26 @@ views.sources = async (root) => {
             source_type: document.getElementById("s-type").value,
             base_domain: document.getElementById("s-domain").value,
           }) });
-          toast("Source created", "success");
+          toast("Source created", "success"); location.reload();
         } catch (err) { toast(err.message, "error"); }
         finally { btn.disabled = false; }
       } }),
     ]),
   ]));
+  const rows = sources.map((source) => el("tr", {}, [
+    el("td", { text: source.name }), el("td", { text: source.base_domain }),
+    el("td", { text: source.enabled ? "enabled" : "disabled" }),
+    el("td", { text: source.last_success_at || "never" }),
+    el("td", {}, source.enabled ? [] : [el("button", { class: "btn small primary", text: "Enable & ingest", onclick: async (e) => {
+      e.target.disabled = true;
+      try { await api(`/sources/${source.source_id}/enable`, { method: "POST" }); toast("Ingestion queued", "success"); location.reload(); }
+      catch (err) { toast(err.message, "error"); }
+    } })]),
+  ]));
+  root.appendChild(el("div", { class: "card" }, [el("h3", { text: "Configured sources" }), el("table", {}, [
+    el("thead", {}, [el("tr", {}, ["Name", "Domain", "Status", "Last success", "Actions"].map((name) => el("th", { text: name })))]),
+    el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", { class: "empty", colspan: 5, text: "No sources." })])]),
+  ])]));
 };
 
 /* ---------- patterns ---------- */

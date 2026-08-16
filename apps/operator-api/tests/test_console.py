@@ -88,6 +88,11 @@ def test_console_session_mints_admin_token(env_file: str) -> None:
         )
         assert claims["realm_access"]["roles"] == ["administrator"]
 
+        session = client.post("/api/v1/console/session", json={"password": CONSOLE_PASSWORD}).json()
+        assert session["auth_mode"] == "dev"
+        assert session["principal_id"] == "11111111-1111-4111-8111-111111111111"
+        assert session["approval_limited"] is True
+
 
 def test_console_session_mints_valid_uuid_subject(env_file: str) -> None:
     """HIGH-02: the console principal id must be a valid UUID (uuid.UUID() 500s)."""

@@ -10,9 +10,32 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+from datetime import datetime
+from enum import StrEnum
+from uuid import UUID, uuid4
+
+from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
 
 CLIENT_IP_MAX = 45
 USER_AGENT_MAX_LENGTH = 128
+
+
+class PrivacyRequestStatus(StrEnum):
+    """Persisted DSR workflow states.
+
+    Only VERIFIED requests may disclose or mutate subject data.  IN_PROGRESS
+    means fulfillment has begun; COMPLETED is terminal.
+    """
+
+    OPENED = "opened"
+    VERIFIED = "verified"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    REFUSED = "refused"
+
+
+VERIFIED_PRIVACY_STATES = frozenset({PrivacyRequestStatus.VERIFIED.value, PrivacyRequestStatus.IN_PROGRESS.value})
 
 
 def minimize_ip(value: str | None) -> str | None:
@@ -48,3 +71,56 @@ def hash_mailbox(mailbox: str, salt: bytes) -> str:
     """
     inner = hashlib.sha256(mailbox.lower().encode("utf-8")).digest()
     return hashlib.sha256(salt + inner).hexdigest()
+
+
+def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: datetime) -> bool:
+    """Erase a recipient and all directly linked behavioral data.
+
+    The recipient row is retained as an anonymous tombstone so historic
+    aggregate/audit references remain structurally valid.  The random mailbox
+    digest prevents later linkage or dictionary recovery.
+    """
+    from kp_database.models import (
+        Recipient,
+        RecipientAssignment,
+        RecipientExclusion,
+        TrackingEvent,
+        TrackingToken,
+        TrainingAssignment,
+    )
+
+    recipient = session.get(Recipient, recipient_id)
+    if recipient is None or recipient.deleted_at is not None:
+        return False
+    assignment_ids = list(
+        session.scalars(
+            select(RecipientAssignment.recipient_assignment_id).where(RecipientAssignment.recipient_id == recipient_id)
+        )
+    )
+    token_ids: list[UUID] = []
+    if assignment_ids:
+        token_ids = list(
+            session.scalars(
+                select(TrackingToken.token_id).where(TrackingToken.recipient_assignment_id.in_(assignment_ids))
+            )
+        )
+        if token_ids:
+            session.execute(delete(TrackingEvent).where(TrackingEvent.token_id.in_(token_ids)))
+        session.execute(delete(TrackingToken).where(TrackingToken.recipient_assignment_id.in_(assignment_ids)))
+    session.execute(delete(TrackingEvent).where(TrackingEvent.recipient_id == recipient_id))
+    session.execute(delete(TrainingAssignment).where(TrainingAssignment.recipient_id == recipient_id))
+    session.execute(delete(RecipientExclusion).where(RecipientExclusion.recipient_id == recipient_id))
+    if assignment_ids:
+        session.execute(
+            delete(RecipientAssignment).where(RecipientAssignment.recipient_assignment_id.in_(assignment_ids))
+        )
+
+    marker = f"erased-{uuid4()}"
+    recipient.employee_key = marker
+    recipient.mailbox = marker
+    recipient.mailbox_sha256 = hashlib.sha256(marker.encode()).hexdigest()
+    recipient.display_name = None
+    recipient.department = None
+    recipient.last_snapshot_source = None
+    recipient.deleted_at = erased_at
+    return True

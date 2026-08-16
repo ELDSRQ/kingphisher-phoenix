@@ -7,6 +7,7 @@ dependency is overridden with a scripted fake so no live Postgres is needed.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -63,6 +64,8 @@ def _settings(
         training_base_url="http://train.local/awareness",
         rate_limit_ip_per_min=int(kw.get("rate_limit_ip_per_min", 60)),
         rate_limit_token_per_min=int(kw.get("rate_limit_token_per_min", 5)),
+        rate_limit_global_per_min=int(kw.get("rate_limit_global_per_min", 3000)),
+        rate_limit_max_keys=int(kw.get("rate_limit_max_keys", 10_000)),
     )
 
 
@@ -165,6 +168,51 @@ def test_track_endpoints_rate_limited_per_token(monkeypatch: pytest.MonkeyPatch)
         assert client.get(url).status_code == 200
         assert client.get(url).status_code == 200
         assert client.get(url).status_code == 429
+
+
+def test_malformed_token_rejected_before_limiter_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, _settings(rate_limit_max_keys=2), _FakeSession())
+    with client:
+        for index in range(100):
+            assert client.get(f"/v1/track/open/not-a-hash-{index}").status_code == 404
+        assert client.app.state.token_limiter.key_count == 0
+
+
+def test_track_endpoints_rate_limited_per_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, _settings(rate_limit_ip_per_min=2), _FakeSession())
+    with client:
+        assert client.get("/v1/track/open/" + "ab" * 32).status_code == 200
+        assert client.get("/v1/track/open/" + "cd" * 32).status_code == 200
+        assert client.get("/v1/track/open/" + "ef" * 32).status_code == 429
+
+
+def test_track_endpoints_have_global_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(
+        monkeypatch,
+        _settings(rate_limit_ip_per_min=100, rate_limit_global_per_min=2),
+        _FakeSession(),
+    )
+    with client:
+        assert client.get("/v1/track/open/" + "ab" * 32).status_code == 200
+        assert client.get("/v1/track/open/" + "cd" * 32).status_code == 200
+        assert client.get("/v1/track/open/" + "ef" * 32).status_code == 429
+
+
+def test_access_log_contains_route_template_not_token_or_client(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = _client(monkeypatch, _settings(), _FakeSession())
+    token_hash = "ab" * 32
+    with client:
+        assert client.get(f"/v1/track/open/{token_hash}").status_code == 200
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    access = next(record for record in records if record.get("event") == "request")
+    serialized = json.dumps(access)
+    assert token_hash not in serialized
+    assert "testclient" not in serialized
+    assert access["route"] == "/v1/track/open/{token_hash}"
+    assert "path" not in access
+    assert "client" not in access
 
 
 def test_unknown_token_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:

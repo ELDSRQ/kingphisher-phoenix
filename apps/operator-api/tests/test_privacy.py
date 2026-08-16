@@ -188,9 +188,13 @@ def test_privacy_request_lifecycle_and_deletion(client: TestClient) -> None:
     assert listing.status_code == 200
     assert any(r["privacy_request_id"] == request_id and r["requester_mailbox"] == mailbox for r in listing.json())
 
-    verify = client.post(f"/api/v1/privacy/requests/{request_id}/verify", headers=PRIVACY_HEADERS)
+    verify = client.post(
+        f"/api/v1/privacy/requests/{request_id}/verify",
+        headers=PRIVACY_HEADERS,
+        json={"method": "authenticated_hr_record", "evidence_ref": "case-123"},
+    )
     assert verify.status_code == 200, verify.text
-    assert verify.json()["status"] == "in_progress"
+    assert verify.json()["status"] == "verified"
 
     export = client.get(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
     assert export.status_code == 200, export.text
@@ -204,6 +208,9 @@ def test_privacy_request_lifecycle_and_deletion(client: TestClient) -> None:
     try:
         recipient = session.get(Recipient, __import__("uuid").UUID(recipient_id))
         assert recipient is not None and recipient.deleted_at is not None
+        assert recipient.display_name is None
+        assert recipient.department is None
+        assert recipient.mailbox.startswith("erased-")
     finally:
         session.close()
 
@@ -233,5 +240,56 @@ def test_default_retention_policy_seeded(client: TestClient) -> None:
         )
         assert policy is not None
         assert policy.retention_days == 365
+    finally:
+        session.close()
+
+
+@requires_db
+def test_unverified_request_cannot_export_or_fulfill(client: TestClient) -> None:
+    mailbox = "privacy.unverified@example.com"
+    _seed_recipient(mailbox)
+    submitted = client.post(
+        "/api/v1/privacy/requests",
+        headers=PRIVACY_HEADERS,
+        json={"request_type": "access_export", "requester_mailbox": mailbox},
+    )
+    request_id = submitted.json()["privacy_request_id"]
+
+    export = client.get(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
+    fulfill = client.post(f"/api/v1/privacy/requests/{request_id}/fulfill", headers=PRIVACY_HEADERS, json={})
+    assert export.status_code == 409
+    assert fulfill.status_code == 409
+
+
+@requires_db
+def test_correction_updates_supported_fields(client: TestClient) -> None:
+    mailbox = "privacy.correct@example.com"
+    recipient_id = _seed_recipient(mailbox)
+    submitted = client.post(
+        "/api/v1/privacy/requests",
+        headers=PRIVACY_HEADERS,
+        json={"request_type": "correction", "requester_mailbox": mailbox},
+    )
+    request_id = submitted.json()["privacy_request_id"]
+    verified = client.post(
+        f"/api/v1/privacy/requests/{request_id}/verify",
+        headers=PRIVACY_HEADERS,
+        json={"method": "authenticated_hr_record", "evidence_ref": "case-456"},
+    )
+    assert verified.status_code == 200
+    fulfilled = client.post(
+        f"/api/v1/privacy/requests/{request_id}/fulfill",
+        headers=PRIVACY_HEADERS,
+        json={"corrections": {"display_name": "Correct Name", "department": "Legal"}},
+    )
+    assert fulfilled.status_code == 200, fulfilled.text
+    assert fulfilled.json()["corrected"] == 1
+
+    session = make_session_factory(create_db_engine(TEST_URL))()
+    try:
+        recipient = session.get(Recipient, __import__("uuid").UUID(recipient_id))
+        assert recipient is not None
+        assert recipient.display_name == "Correct Name"
+        assert recipient.department == "Legal"
     finally:
         session.close()

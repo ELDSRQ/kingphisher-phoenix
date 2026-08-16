@@ -25,12 +25,47 @@ from kp_telemetry.errors import (
 from kp_telemetry.logging import AccessLogMiddleware, configure_logging
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from kp_operator_api.auth import make_idp
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.console import router as console_router
 from kp_operator_api.ratelimit import LoginThrottle, RateLimiter
 from kp_operator_api.routers import router
+
+
+class _BodyTooLarge(Exception):
+    pass
+
+
+class BodyLimitMiddleware:
+    """Enforce the body cap while streaming, including chunked requests."""
+
+    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        received = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _BodyTooLarge:
+            response = JSONResponse(status_code=413, content={"detail": "request body too large"})
+            await response(scope, limited_receive, send)
+
 
 _ERROR_STATUS: dict[type[KpError], int] = {
     AuthenticationError: 401,
@@ -82,6 +117,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     # Structured access logging replaces uvicorn's plain-text access log
     # (MED-04 / WS-12); uvicorn runs with access_log=False in __main__.
     app.add_middleware(AccessLogMiddleware, logger_name="kp.access.operator")
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes)
 
     @app.middleware("http")
     async def security_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:

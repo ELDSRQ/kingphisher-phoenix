@@ -16,10 +16,25 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"]
+    user: "999:999"
+    command:
+      [
+        "redis-server",
+        "--requirepass",
+        "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}",
+        "--save",
+        "",
+        "--appendonly",
+        "no",
+      ]
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -27,6 +42,17 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /data:uid=999,gid=999,mode=0700
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 128
 
   mailpit:
     image: axllent/mailpit:v1.20
@@ -41,6 +67,16 @@ services:
       timeout: 10s
       retries: 10
       start_period: 10s
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 128
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.107.0
@@ -48,29 +84,69 @@ services:
     volumes:
       - ./infrastructure/containers/otel-collector.yaml:/etc/otel-collector.yaml:ro
     ports:
-      - "4317:4317"
-      - "4318:4318"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 128
 
   mock-idp:
     build:
       context: ./infrastructure/mock-services
     command: ["python", "-m", "uvicorn", "mock_idp:app", "--host", "0.0.0.0", "--port", "8443"]
     ports:
-      - "8443:8443"
+      - "127.0.0.1:8443:8443"
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 128
 
   mock-graph:
     build:
       context: ./infrastructure/mock-services
     command: ["python", "-m", "uvicorn", "mock_graph:app", "--host", "0.0.0.0", "--port", "8181"]
     ports:
-      - "8181:8181"
+      - "127.0.0.1:8181:8181"
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 128
 
   mock-ai:
     build:
       context: ./infrastructure/mock-services
     command: ["python", "-m", "uvicorn", "mock_ai:app", "--host", "0.0.0.0", "--port", "8282"]
     ports:
-      - "8282:8282"
+      - "127.0.0.1:8282:8282"
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 128
 
 volumes:
   postgres_data:
