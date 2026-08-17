@@ -137,7 +137,9 @@ Capabilities: `Capability` enum in `kp_operator_api.auth`; multi-role routes use
 
 Routes (all under `/api/v1`): `/console/session|config|status|restart|stop`,
 `/console/onboarding` (GET state, PUT allowlisted wiring) and
-`/console/onboarding/test` (bounded transient connection checks);
+`/console/onboarding/test` (bounded transient connection checks),
+`/console/help` (curated glossary/topics), and `/console/onboarding/assist`
+(privacy-filtered advisory AI with deterministic fallback);
 `/campaigns` (CRUD + preview + send); `/campaigns/{id}/approve` patterns;
 `/recipients`, `/recipients/import` (CSV text body),
 `/recipients/sync-directory` (queue bounded Graph-compatible sync); `/recipients/{id}` DELETE
@@ -160,6 +162,11 @@ audit event → `{engaged, engaged_at, actor, last_cancelled, last_tokens_revoke
 - `GET/PUT /api/v1/console/onboarding` — secret-safe connector metadata and
   allowlisted persistence; `POST /onboarding/test` — bounded OIDC, Graph, AI,
   SMTP, mailbox, training, and webhook checks.
+- `GET /api/v1/console/help` — curated plain-language terminology and setup
+  topics. `POST /onboarding/assist` — sends only allowlisted non-secret values
+  to the configured `/setup-assist` provider, validates its bounded response,
+  filters cross-step/credential suggestions, and falls back to local guidance.
+  It never persists prompts, answers, or suggestions and never applies changes.
 - `GET /api/v1/console/status` — pidfile-based alive flags for the APIs +
   eight workers; `POST /restart` / `POST /stop` — marker files in `data/run/`.
 

@@ -134,17 +134,29 @@ from `.env`.
 | Privacy | view current privacy notice, submit data-subject requests (CCPA), verify, export (`access_export`), fulfill (`deletion`) |
 | Audit | hash-chained event log, "Verify chain", global kill switch with engaged-state indicator |
 | Setup wizard | guided OIDC, Graph-compatible directory, SMTP, reported mailbox, AI, training, and webhook wiring with connection tests |
+| Help | searchable plain-language setup topics and definitions for terms such as OIDC, SMTP, and webhooks |
 | Settings | masked `.env` editor (blank a secret to keep it), Reload, Restart services, Stop services |
 
 ### 2.3 First-run setup wizard
 
 The console redirects administrators to **Setup wizard** until required local
 or production connections are configured and the review step is completed.
+The wizard explains why each connection is needed, labels required and optional
+fields, provides examples, and includes contextual help. The searchable **Help**
+view defines provider terminology; for example, OIDC (OpenID Connect) is the
+standard used to sign operators in through the organization's identity provider.
 Non-secret values are prefilled from `.env`; secret fields are always blank and
 leaving an existing secret blank preserves it. Connection tests use three-second
 bounds, do not follow redirects, never include response bodies in results, and
 do not persist transient values. The wizard automatically mirrors training URL
 and domain settings into both operator and worker namespaces.
+
+Each step also offers an AI setup assistant. It is advisory: secret fields and
+credential-like text are removed before a request leaves the operator API,
+suggestions are constrained to non-secret fields in the current step, and the
+operator must explicitly apply, test, and save every suggestion. If the configured
+AI provider is unavailable, the API returns deterministic local guidance. Prompts
+and answers are neither persisted nor written to the audit log.
 
 Optional Graph directory sync is available afterward from **Recipients → Sync
 connected directory**. The directory worker bounds pages/users, validates the

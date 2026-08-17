@@ -346,6 +346,116 @@ def test_onboarding_state_returns_only_nonsecret_values(env_file: str) -> None:
         assert "values" not in body
         secret_fields = [field for step in body["steps"] for field in step["fields"] if field["secret"]]
         assert secret_fields and all(field["value"] == "" for field in secret_fields)
+        identity = next(step for step in body["steps"] if step["component"] == "identity")
+        audience = next(field for field in identity["fields"] if field["key"] == "OPERATOR_API_OIDC_AUDIENCE")
+        assert "identifier" in audience["help"]
+        assert audience["example"] == "api://phishing-awareness-platform"
+
+
+def test_console_help_explains_setup_terms_and_requires_admin(env_file: str) -> None:
+    with TestClient(_app(env_file)) as client:
+        assert client.get("/api/v1/console/help").status_code == 401
+        body = client.get("/api/v1/console/help", headers=_auth(_login(client))).json()
+        terms = {entry["term"] for entry in body["glossary"]}
+        assert {"OIDC", "Audience", "Client ID", "SMTP", "STARTTLS", "API key", "Webhook"} <= terms
+        assert "Never paste" in body["safety_note"]
+
+
+def test_setup_assist_falls_back_without_ai_and_does_not_audit(env_file: str) -> None:
+    audit = FakeAuditStore()
+    with TestClient(_app(env_file, fake_audit=audit)) as client:
+        response = client.post(
+            "/api/v1/console/onboarding/assist",
+            headers=_auth(_login(client)),
+            json={"component": "smtp", "question": "Which TLS option should I use?", "values": {}},
+        )
+        assert response.status_code == 200
+        assert response.json()["source"] == "curated"
+        assert "587" in response.json()["answer"]
+        assert response.json()["suggestions"] == {}
+        assert audit.events == []
+
+
+def test_setup_assist_redacts_secrets_and_filters_ai_suggestions(
+    env_file: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    console_module.set_key(env_file, "KP_WORKER_AI_BASE_URL", "https://ai.example")
+    console_module.set_key(env_file, "KP_WORKER_AI_API_KEY", "stored-super-secret-key")
+    captured: dict[str, object] = {}
+
+    class AssistResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "answer": "Use your registered application values.",
+                "suggestions": {
+                    "OPERATOR_API_OIDC_AUDIENCE": "api://awareness",
+                    "OPERATOR_API_OIDC_CLIENT_SECRET": "do-not-accept",
+                    "KP_WORKER_SMTP_ADDRESS": "smtp.wrong-step.example:587",
+                },
+            }
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured["client_kwargs"] = kwargs
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        async def post(self, url: str, **kwargs: object) -> AssistResponse:
+            captured["url"] = url
+            captured.update(kwargs)
+            return AssistResponse()
+
+    monkeypatch.setattr(console_module.httpx, "AsyncClient", FakeClient)
+    with TestClient(_app(env_file)) as client:
+        response = client.post(
+            "/api/v1/console/onboarding/assist",
+            headers=_auth(_login(client)),
+            json={
+                "component": "identity",
+                "question": "My token=question-secret, sk-standalonekey9, and stored-super-secret-key fail. Why?",
+                "values": {
+                    "OPERATOR_API_OIDC_AUDIENCE": "api://awareness",
+                    "OPERATOR_API_OIDC_CLIENT_SECRET": "submitted-secret",
+                    "KP_WORKER_SMTP_ADDRESS": "smtp.example:587",
+                },
+            },
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source"] == "configured-ai"
+    assert body["suggestions"] == {"OPERATOR_API_OIDC_AUDIENCE": "api://awareness"}
+    sent = str(captured["json"])
+    assert "question-secret" not in sent
+    assert "sk-standalonekey9" not in sent
+    assert "stored-super-secret-key" not in sent
+    assert "submitted-secret" not in sent
+    assert "smtp.example" not in sent
+    assert captured["url"] == "https://ai.example/setup-assist"
+    assert captured["client_kwargs"] == {"timeout": 5.0, "follow_redirects": False}
+
+
+def test_setup_assist_rejects_unsupported_component_and_overlong_question(env_file: str) -> None:
+    with TestClient(_app(env_file)) as client:
+        headers = _auth(_login(client))
+        unsupported = client.post(
+            "/api/v1/console/onboarding/assist",
+            headers=headers,
+            json={"component": "shell", "question": "help", "values": {}},
+        )
+        assert unsupported.status_code == 422
+        overlong = client.post(
+            "/api/v1/console/onboarding/assist",
+            headers=headers,
+            json={"component": "smtp", "question": "x" * 1001, "values": {}},
+        )
+        assert overlong.status_code == 422
 
 
 def test_onboarding_write_persists_allowlisted_keys_and_audits_names_only(env_file: str) -> None:

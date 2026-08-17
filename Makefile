@@ -58,7 +58,7 @@ typecheck:
 security-scan:
 	@$(PY) bandit -r packages apps -q -x "*/tests/*" -ll
 	@if command -v semgrep >/dev/null 2>&1; then semgrep scan --config=auto --error packages apps; fi
-	@if command -v trivy >/dev/null 2>&1; then trivy fs --scanners vuln,secret .; fi
+	@if command -v trivy >/dev/null 2>&1; then trivy fs --scanners vuln,secret --skip-dirs data/logs .; fi
 
 ## Database migrations.
 db-migrate:

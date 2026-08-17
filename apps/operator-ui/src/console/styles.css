@@ -174,6 +174,16 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 .wizard-progress li.current .step-number { border-color: var(--accent); background: var(--accent); color: #fff; }
 .wizard-progress li.done .step-number { border-color: var(--accent-2); color: var(--accent-2); }
 .wizard-card h3:focus { outline: 0; }
+.wizard-welcome { padding: 28px; }
+.wizard-welcome h3 { font-size: 22px; margin-top: 5px; }
+.eyebrow { color: var(--accent-2); font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+.welcome-facts { padding-left: 20px; line-height: 1.8; color: var(--muted); }
+.step-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.step-heading h3 { margin-bottom: 6px; }
+.step-kind, .requirement { border-radius: 999px; padding: 3px 8px; font-size: 10px; font-weight: 600; }
+.step-kind.required, .requirement.required { color: #b9d2ff; background: rgba(79,140,255,.15); }
+.step-kind.optional, .requirement.optional { color: var(--muted); background: var(--panel-2); }
+.wizard-field label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .wizard-description { color: var(--muted); margin-top: -4px; }
 .wizard-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
 .wizard-field { min-width: 0; }
@@ -181,10 +191,31 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 .wizard-feedback { min-height: 20px; margin-top: 10px; color: var(--muted); }
 .wizard-feedback.success, .configured-label { color: var(--accent-2); }
 .wizard-feedback.error { color: var(--danger); }
+.wizard-feedback.testing { color: #b9d2ff; }
 .wizard-restart { margin: 18px 0 0; }
 .wizard-summary { display: grid; grid-template-columns: minmax(140px, 1fr) 2fr; gap: 10px 16px; }
 .wizard-summary dt { font-weight: 600; }
 .wizard-summary dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.context-help, .setup-assistant { border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; margin: 12px 0; background: rgba(28,36,64,.5); }
+.context-help summary, .setup-assistant summary { cursor: pointer; color: #b9d2ff; font-weight: 600; }
+.context-help p { color: var(--muted); line-height: 1.55; }
+.link-button { border: 0; padding: 0; color: #8bb4ff; background: transparent; cursor: pointer; text-decoration: underline; }
+.setup-assistant textarea { margin-top: 8px; min-height: 58px; font-family: inherit; }
+.assistant-answer { margin: 12px 0; line-height: 1.55; color: var(--muted); white-space: pre-wrap; }
+.assistant-suggestions { display: grid; gap: 8px; }
+.suggestion-preview { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 9px; border: 1px solid var(--border); border-radius: 8px; overflow-wrap: anywhere; }
+
+/* Help center */
+.help-search { max-width: 680px; margin-bottom: 22px; padding: 11px 13px; }
+.help-results > section { margin-bottom: 26px; }
+.help-results > section > h3 { font-size: 14px; }
+.help-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.help-card { margin: 0; }
+.help-card p, .help-card li { color: var(--muted); line-height: 1.55; }
+.glossary-list { display: grid; grid-template-columns: minmax(130px, 1fr) 3fr; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.glossary-list dt, .glossary-list dd { padding: 12px; border-bottom: 1px solid var(--border); }
+.glossary-list dt { font-weight: 600; }
+.glossary-list dd { margin: 0; color: var(--muted); }
 
 /* Forms */
 label { display: block; color: var(--muted); margin: 10px 0 4px; font-size: 12px; }
@@ -233,5 +264,9 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   .content { padding: 20px 16px; overflow-x: auto; }
   .form-grid, .kv { grid-template-columns: 1fr; }
   .wizard-form, .wizard-summary { grid-template-columns: 1fr; }
+  .help-grid, .glossary-list { grid-template-columns: 1fr; }
+  .glossary-list dt { padding-bottom: 2px; border-bottom: 0; }
+  .glossary-list dd { padding-top: 3px; }
+  .suggestion-preview { align-items: flex-start; flex-direction: column; }
   .wizard-summary dd { margin-bottom: 10px; }
 }

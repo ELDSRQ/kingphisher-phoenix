@@ -147,6 +147,7 @@ views.login = async (root) => {
 /* ---------- shell ---------- */
 const NAV = [
   ["onboarding", "Setup wizard"],
+  ["help", "Help"],
   ["dashboard", "Dashboard"],
   ["campaigns", "Campaigns"],
   ["recipients", "Recipients"],
@@ -207,8 +208,8 @@ function statusPills(state) {
 
 /* ---------- onboarding ---------- */
 views.onboarding = async (root) => {
-  root.appendChild(el("h2", { text: "Setup wizard" }));
-  root.appendChild(el("p", { class: "sub", text: "Connect and verify the services used by Kingphisher." }));
+  root.appendChild(el("h2", { text: "Let’s set up Kingphisher" }));
+  root.appendChild(el("p", { class: "sub", text: "A guided, plain-language setup for each service Kingphisher uses." }));
 
   let onboarding;
   try { onboarding = await api("/console/onboarding"); } catch (e) {
@@ -217,12 +218,33 @@ views.onboarding = async (root) => {
   }
 
   const steps = Array.isArray(onboarding.steps) ? onboarding.steps : [];
-  let current = 0;
+  let current = -1;
   const savedValues = {};
+  let restartNeeded = false;
   const stage = el("div", { class: "onboarding-stage" });
   root.appendChild(stage);
 
   const renderStep = () => {
+    if (current < 0) {
+      const requiredCount = steps.filter((step) => !step.optional).length;
+      stage.replaceChildren(el("section", { class: "card wizard-card wizard-welcome", "aria-labelledby": "wizard-title" }, [
+        el("div", { class: "eyebrow", text: "WELCOME" }),
+        el("h3", { id: "wizard-title", tabindex: "-1", text: "Get connected with confidence" }),
+        el("p", { text: "We’ll explain what each connection does, help you find the right values, and test it before anything is saved." }),
+        el("ul", { class: "welcome-facts" }, [
+          el("li", { text: `About ${Math.max(5, steps.length * 3)}–${Math.max(10, steps.length * 5)} minutes` }),
+          el("li", { text: `${requiredCount} required connection${requiredCount === 1 ? "" : "s"}; optional items can be skipped` }),
+          el("li", { text: "You can leave and return without losing saved connections" }),
+        ]),
+        el("div", { class: "notice", role: "note", text: "Have provider admin pages and credentials nearby. Passwords and API keys are hidden and are never shared with the setup assistant." }),
+        el("div", { class: "btn-row" }, [
+          el("button", { class: "btn primary", type: "button", text: "Start guided setup", onclick: () => { current = 0; renderStep(); } }),
+          el("button", { class: "btn", type: "button", text: "Browse help first", onclick: () => { location.hash = "help"; } }),
+        ]),
+      ]));
+      stage.querySelector("#wizard-title").focus();
+      return;
+    }
     const review = current === steps.length;
     const progress = el("ol", { class: "wizard-progress", "aria-label": "Setup progress" });
     steps.forEach((step, index) => {
@@ -258,10 +280,15 @@ views.onboarding = async (root) => {
       } });
       stage.replaceChildren(progress, el("section", { class: "card wizard-card", "aria-labelledby": "wizard-title" }, [
         el("h3", { id: "wizard-title", tabindex: "-1", text: "Review setup" }),
-        el("p", { text: "Confirm the connections you configured. Secret values are never displayed." }),
+        el("p", { text: "Confirm your connections. Passwords and keys are never displayed here." }),
         summary,
         el("div", { class: "btn-row wizard-actions" }, [
-          el("button", { class: "btn", type: "button", text: "Back", onclick: () => { current--; renderStep(); } }), finish,
+          el("button", { class: "btn", type: "button", text: "Back", onclick: () => { current--; renderStep(); } }),
+          ...(restartNeeded ? [el("button", { class: "btn", type: "button", text: "Restart services now", onclick: async (event) => {
+            event.target.disabled = true;
+            try { await api("/console/restart", { method: "POST" }); restartNeeded = false; toast("Restart requested", "success"); renderStep(); }
+            catch (e) { toast(e.message, "error"); event.target.disabled = false; }
+          } })] : []), finish,
         ]),
       ]));
       stage.querySelector("#wizard-title").focus();
@@ -282,25 +309,35 @@ views.onboarding = async (root) => {
         id, name: field.key, type: inputType, placeholder: field.placeholder || "",
         autocomplete: field.secret ? "new-password" : "off",
         required: field.required && !(field.secret && step.configured) ? "" : null,
-        "aria-describedby": field.help ? `${id}-help` : null,
+        "aria-describedby": (field.help || field.explanation || field.example) ? `${id}-help` : null,
       });
       if (!field.secret) {
         input.value = savedValues[step.id]?.[field.key] ?? field.value ?? "";
       }
       inputs[field.key] = input;
       form.appendChild(el("div", { class: "wizard-field" }, [
-        el("label", { for: id, text: `${field.label}${field.required ? " *" : ""}` }), input,
-        ...(field.help ? [el("div", { id: `${id}-help`, class: "field-help", text: field.help })] : []),
+        el("label", { for: id }, [el("span", { text: field.label }), el("span", { class: `requirement ${field.required ? "required" : "optional"}`, text: field.required ? "Required" : "Optional" })]), input,
+        ...((field.help || field.explanation || field.example) ? [el("div", { id: `${id}-help`, class: "field-help", text: [field.explanation || field.help, field.example ? `Example: ${field.example}` : ""].filter(Boolean).join(" · ") })] : []),
       ]));
     });
     const feedback = el("div", { class: "wizard-feedback", role: "status", "aria-live": "polite" });
     const values = () => Object.fromEntries(Object.entries(inputs).filter(([, input]) => input.value !== "").map(([key, input]) => [key, input.value]));
+    const changedValues = () => Object.fromEntries((step.fields || []).filter((field) => {
+      const entered = inputs[field.key]?.value || "";
+      return field.secret ? Boolean(entered) : entered !== (field.value ?? "");
+    }).map((field) => [field.key, inputs[field.key].value]));
+    const saveButton = el("button", { class: "btn primary", type: "submit", text: step.configured ? "Continue" : "Save and continue" });
+    const updateSaveLabel = () => { saveButton.textContent = Object.keys(changedValues()).length ? "Save and continue" : (step.configured ? "Continue" : "Save and continue"); };
+    Object.values(inputs).forEach((input) => input.addEventListener("input", updateSaveLabel));
     const save = async () => {
       if (!form.reportValidity()) return false;
       const submitted = values();
-      await api("/console/onboarding", { method: "PUT", body: JSON.stringify({ values: submitted }) });
+      const changed = changedValues();
+      if (step.configured && !Object.keys(changed).length) return true;
+      const result = await api("/console/onboarding", { method: "PUT", body: JSON.stringify({ values: submitted }) });
       savedValues[step.id] = { ...(savedValues[step.id] || {}), ...submitted };
       step.configured = true;
+      restartNeeded = restartNeeded || Boolean(result?.restart_required ?? result?.changed?.length);
       return true;
     };
     form.addEventListener("submit", async (event) => {
@@ -313,12 +350,12 @@ views.onboarding = async (root) => {
     });
     const testButton = el("button", { class: "btn", type: "button", text: "Test connection", onclick: async () => {
       if (!form.reportValidity()) return;
-      testButton.disabled = true; feedback.textContent = "Testing connection…";
+      testButton.disabled = true; feedback.className = "wizard-feedback testing"; feedback.textContent = "Testing securely… This can take a few seconds.";
       try {
         const result = await api("/console/onboarding/test", { method: "POST", body: JSON.stringify({ component: step.id, values: values() }) });
         feedback.className = `wizard-feedback ${result.ok ? "success" : "error"}`;
-        feedback.textContent = result.message || (result.ok ? "Connection successful." : "Connection failed.");
-      } catch (e) { feedback.className = "wizard-feedback error"; feedback.textContent = e.message; }
+        feedback.textContent = result.message || (result.ok ? "Connected successfully. You can save and continue." : "We couldn’t connect. Check the address and credentials, then try again.");
+      } catch (e) { feedback.className = "wizard-feedback error"; feedback.textContent = `${e.message} Check the values above and your provider’s access settings, then try again.`; }
       finally { testButton.disabled = false; }
     } });
     const actions = [
@@ -326,25 +363,80 @@ views.onboarding = async (root) => {
       testButton,
     ];
     if (step.optional) actions.push(el("button", { class: "btn", type: "button", text: "Skip for now", onclick: () => { current++; renderStep(); } }));
-    actions.push(el("button", { class: "btn primary", type: "submit", text: "Save and continue" }));
+    actions.push(saveButton);
     form.append(feedback, el("div", { class: "btn-row wizard-actions" }, actions));
-    const restart = el("div", { class: "notice wizard-restart", role: "note" }, [
-      el("span", { text: "Connection changes may require the services to restart. " }),
-      el("button", { class: "btn small", type: "button", text: "Restart services", onclick: async (event) => {
-        event.target.disabled = true;
-        try { await api("/console/restart", { method: "POST" }); toast("Restart requested", "success"); }
-        catch (e) { toast(e.message, "error"); event.target.disabled = false; }
-      } }),
+    const assistantAnswer = el("div", { class: "assistant-answer", role: "status", "aria-live": "polite", text: "Ask a question about this connection. Suggestions are only applied when you approve them." });
+    const assistantQuestion = el("textarea", { rows: "2", placeholder: "For example: Where do I find my issuer URL?", "aria-label": `Question about ${step.title}` });
+    const suggestionsBox = el("div", { class: "assistant-suggestions" });
+    const askAssistant = el("button", { class: "btn small", type: "button", text: "Ask setup assistant", onclick: async () => {
+      if (!assistantQuestion.value.trim()) { assistantQuestion.focus(); return; }
+      askAssistant.disabled = true; assistantAnswer.textContent = "Thinking…"; suggestionsBox.replaceChildren();
+      const safeValues = Object.fromEntries((step.fields || []).filter((field) => !field.secret && inputs[field.key]?.value).map((field) => [field.key, inputs[field.key].value]));
+      try {
+        const result = await api("/console/onboarding/assist", { method: "POST", body: JSON.stringify({ component: step.id, question: assistantQuestion.value.trim(), values: safeValues }) });
+        assistantAnswer.textContent = result.answer || "No guidance was returned.";
+        if (result.warnings?.length) suggestionsBox.appendChild(el("div", { class: "notice", text: result.warnings.join(" ") }));
+        const suggestions = Array.isArray(result.suggestions) ? result.suggestions : Object.entries(result.suggestions || {}).map(([field, value]) => ({ field, value }));
+        suggestions.forEach((suggestion) => {
+          const key = suggestion.field || suggestion.key;
+          if (!key || !inputs[key] || (step.fields || []).find((field) => field.key === key)?.secret) return;
+          suggestionsBox.appendChild(el("div", { class: "suggestion-preview" }, [
+            el("span", { text: `${(step.fields || []).find((field) => field.key === key)?.label || key}: ${suggestion.value}` }),
+            el("button", { class: "btn small", type: "button", text: "Apply to form", onclick: () => { inputs[key].value = suggestion.value ?? ""; inputs[key].dispatchEvent(new Event("input")); toast("Suggestion applied to the form. Review it before saving.", "success"); } }),
+          ]));
+        });
+      } catch (e) { assistantAnswer.textContent = `Assistant unavailable: ${e.message}`; }
+      finally { askAssistant.disabled = false; }
+    } });
+    const assistant = el("details", { class: "setup-assistant" }, [
+      el("summary", { text: "Ask the AI setup assistant" }),
+      el("p", { class: "field-help", text: "It can explain provider screens and suggest non-secret form values. Nothing is applied or saved automatically." }),
+      assistantQuestion, el("div", { class: "btn-row" }, [askAssistant]), assistantAnswer, suggestionsBox,
     ]);
     stage.replaceChildren(progress, el("section", { class: "card wizard-card", "aria-labelledby": "wizard-title" }, [
-      el("h3", { id: "wizard-title", tabindex: "-1", text: step.title }),
-      el("p", { class: "wizard-description", text: step.description || "Enter the connection details below." }),
+      el("div", { class: "step-heading" }, [el("h3", { id: "wizard-title", tabindex: "-1", text: step.title }), el("span", { class: `step-kind ${step.optional ? "optional" : "required"}`, text: step.optional ? "Optional" : "Required" })]),
+      el("p", { class: "wizard-description", text: step.explanation || step.description || "Enter the connection details below." }),
+      el("details", { class: "context-help" }, [el("summary", { text: "Help with this step" }), el("p", { text: step.learn_more || `This connection lets Kingphisher use ${step.title}. You can ask the setup assistant for guidance tailored to your provider.` }), el("button", { class: "link-button", type: "button", text: "Open all help topics", onclick: () => { location.hash = "help"; } })]),
       step.configured ? el("p", { class: "configured-label", text: "Already configured. Leave secret fields blank to keep their current values." }) : el("span"),
-      form, restart,
+      form, assistant,
     ]));
     stage.querySelector("#wizard-title").focus();
   };
   renderStep();
+};
+
+/* ---------- help ---------- */
+views.help = async (root) => {
+  root.appendChild(el("h2", { text: "Help center" }));
+  root.appendChild(el("p", { class: "sub", text: "Plain-language setup guides and definitions, all in one place." }));
+  const search = el("input", { type: "search", class: "help-search", placeholder: "Search topics and terms (for example, OIDC)", "aria-label": "Search help" });
+  const results = el("div", { class: "help-results", "aria-live": "polite" });
+  root.append(search, results);
+  let help;
+  try { help = await api("/console/help"); }
+  catch (e) { results.replaceChildren(el("div", { class: "card", role: "alert", text: `Help is unavailable: ${e.message}` })); return; }
+  const topics = Array.isArray(help?.topics) ? help.topics : Object.entries(help?.topics || {}).map(([title, body]) => ({ title, body }));
+  const glossary = Array.isArray(help?.glossary) ? help.glossary : Object.entries(help?.glossary || {}).map(([term, definition]) => ({ term, definition }));
+  const draw = () => {
+    const query = search.value.trim().toLowerCase();
+    const topicMatches = topics.filter((topic) => `${topic.title || topic.name || ""} ${topic.summary || topic.body || topic.content || ""}`.toLowerCase().includes(query));
+    const termMatches = glossary.filter((item) => `${item.term || item.name || ""} ${item.meaning || item.definition || item.description || ""}`.toLowerCase().includes(query));
+    const topicGrid = el("div", { class: "help-grid" }, topicMatches.map((topic) => el("article", { class: "card help-card" }, [
+      el("h3", { text: topic.title || topic.name || "Help topic" }),
+      el("p", { text: topic.summary || topic.body || topic.content || "" }),
+      ...(topic.steps?.length ? [el("ol", {}, topic.steps.map((step) => el("li", { text: typeof step === "string" ? step : step.text || step.title })))] : []),
+    ])));
+    const glossaryList = el("dl", { class: "glossary-list" });
+    termMatches.forEach((item) => {
+      glossaryList.append(el("dt", { text: item.term || item.name }), el("dd", { text: item.meaning || item.definition || item.description }));
+    });
+    results.replaceChildren(
+      el("section", { "aria-labelledby": "help-topics" }, [el("h3", { id: "help-topics", text: `Setup topics (${topicMatches.length})` }), topicMatches.length ? topicGrid : el("p", { class: "empty", text: "No setup topics match your search." })]),
+      el("section", { "aria-labelledby": "help-glossary" }, [el("h3", { id: "help-glossary", text: `Glossary (${termMatches.length})` }), termMatches.length ? glossaryList : el("p", { class: "empty", text: "No glossary terms match your search." })]),
+    );
+  };
+  search.addEventListener("input", draw);
+  draw();
 };
 
 /* ---------- dashboard ---------- */

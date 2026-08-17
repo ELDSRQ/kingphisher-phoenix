@@ -22,6 +22,7 @@ import datetime
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import smtplib
 import socket
@@ -543,6 +544,146 @@ class ConnectionTest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
 
+class SetupAssistRequest(BaseModel):
+    component: str = Field(min_length=1, max_length=32, pattern=r"^[a-zA-Z0-9_-]+$")
+    question: str = Field(min_length=1, max_length=1000)
+    values: dict[str, str] = Field(default_factory=dict)
+
+
+class SetupAssistResponse(BaseModel):
+    answer: str
+    suggestions: dict[str, str]
+    source: str
+    warnings: list[str]
+
+
+_FIELD_HELP: dict[str, tuple[str, str]] = {
+    "OPERATOR_API_OIDC_MODE": (
+        "Choose 'dev' only for local testing. Choose 'oidc' to let employees sign in through your identity provider.",
+        "oidc",
+    ),
+    "OPERATOR_API_OIDC_ISSUER": (
+        "The trusted sign-in authority. Copy the issuer exactly from your provider's OpenID Connect metadata; "
+        "it is usually a tenant-specific HTTPS URL.",
+        "https://login.microsoftonline.com/your-tenant-id/v2.0",
+    ),
+    "OPERATOR_API_OIDC_AUDIENCE": (
+        "The identifier written into access tokens to show they were issued for this API. It must match the "
+        "audience configured for the API in your identity provider.",
+        "api://phishing-awareness-platform",
+    ),
+    "OPERATOR_API_OIDC_CLIENT_ID": (
+        "The public identifier assigned to the browser console application by your identity provider. "
+        "It is not a secret.",
+        "00000000-0000-0000-0000-000000000000",
+    ),
+    "OPERATOR_API_OIDC_CLIENT_SECRET": (
+        "A private credential for a confidential OIDC client. Leave blank for a public PKCE client and never "
+        "paste it into support messages.",
+        "Leave blank to keep the existing secret",
+    ),
+    "OPERATOR_API_OIDC_REDIRECT_URI": (
+        "The exact URL the identity provider returns users to after sign-in. Register this same value with "
+        "the provider.",
+        "https://awareness.example/api/v1/console/oidc/callback",
+    ),
+    "KP_WORKER_GRAPH_BASE_URL": (
+        "The root URL of a Microsoft Graph-compatible employee directory. The platform reads its /users "
+        "collection in bounded pages.",
+        "https://graph.microsoft.com/v1.0",
+    ),
+    "KP_WORKER_GRAPH_MAX_USERS": (
+        "A safety ceiling on employees imported in one synchronization. Start near your expected workforce "
+        "size and raise deliberately.",
+        "5000",
+    ),
+    "KP_WORKER_SMTP_ADDRESS": (
+        "The mail relay hostname followed by its port. Port 587 normally uses STARTTLS; port 465 normally uses "
+        "implicit TLS.",
+        "smtp.example.com:587",
+    ),
+    "KP_WORKER_SMTP_STARTTLS": (
+        "Upgrades a normal SMTP connection to encrypted TLS. Usually true on port 587 and false when implicit "
+        "TLS is enabled.",
+        "true",
+    ),
+    "KP_WORKER_SMTP_SSL": (
+        "Starts SMTP inside TLS immediately, normally on port 465. Do not enable this and STARTTLS together.",
+        "false",
+    ),
+    "KP_WORKER_AI_API_KEY": (
+        "A private credential used to authenticate to your AI gateway. It is masked, never returned, and must "
+        "not be included in assistant questions.",
+        "Leave blank to keep the existing key",
+    ),
+    "KP_WORKER_ALERT_WEBHOOK_DOMAINS": (
+        "A comma-separated allowlist of hosts that may receive signed operational alerts. This prevents alerts "
+        "from being sent to arbitrary destinations.",
+        "hooks.example.com,events.example.net",
+    ),
+    "KP_WORKER_ALERT_WEBHOOK_URL": (
+        "An HTTPS endpoint used only for the connection test. Webhooks are signed so the receiver can verify "
+        "their origin.",
+        "https://hooks.example.com/awareness-health",
+    ),
+}
+
+_GLOSSARY: tuple[dict[str, str], ...] = (
+    {
+        "term": "OIDC",
+        "meaning": "OpenID Connect: a standard that lets this console use your organization's existing "
+        "sign-in service.",
+    },
+    {"term": "Issuer", "meaning": "The identity provider URL that signs and identifies trusted login tokens."},
+    {
+        "term": "Audience",
+        "meaning": "The API identifier a token is intended for; it prevents a token for another service being "
+        "reused here.",
+    },
+    {"term": "Client ID", "meaning": "A non-secret identifier assigned to an application by an identity provider."},
+    {
+        "term": "Microsoft Graph",
+        "meaning": "Microsoft's API for directory data such as users. This platform uses a bounded, read-only "
+        "users interface.",
+    },
+    {"term": "SMTP", "meaning": "The standard protocol used to hand campaign email to your approved mail relay."},
+    {
+        "term": "STARTTLS",
+        "meaning": "A command that upgrades an SMTP connection to encrypted TLS, commonly on port 587.",
+    },
+    {
+        "term": "API key",
+        "meaning": "A private credential sent to a service. Treat it like a password and rotate it if exposed.",
+    },
+    {"term": "Webhook", "meaning": "An HTTPS endpoint that receives automatic event notifications from this platform."},
+)
+
+_TOPICS: tuple[dict[str, str], ...] = (
+    {
+        "id": "identity",
+        "title": "Sign-in and roles",
+        "summary": "Register the console and API with your identity provider, then map separate operator and "
+        "approval roles.",
+    },
+    {
+        "id": "email",
+        "title": "Email delivery",
+        "summary": "Use a dedicated SMTP relay account, require TLS, and authorize the configured sender address.",
+    },
+    {
+        "id": "secrets",
+        "title": "Handling credentials",
+        "summary": "Enter credentials only in masked fields. Blank secret fields preserve their existing values.",
+    },
+    {
+        "id": "testing",
+        "title": "Connection tests",
+        "summary": "Test each connection before completing setup. Tests use entered values transiently and do "
+        "not save them.",
+    },
+)
+
+
 def _onboarding_state(path: Path) -> dict[str, Any]:
     values = _env_values(path)
     effective_values = dict(values)
@@ -566,8 +707,12 @@ def _onboarding_state(path: Path) -> dict[str, Any]:
                 "type": input_type,
                 "required": required,
                 "secret": secret,
-                "placeholder": placeholder,
-                "help": "Stored in the local environment; restart services after changing this value.",
+                "placeholder": _FIELD_HELP.get(key, ("", placeholder))[1],
+                "help": _FIELD_HELP.get(
+                    key,
+                    ("Stored in the local environment; restart services after changing this value.", placeholder),
+                )[0],
+                "example": _FIELD_HELP.get(key, ("", placeholder))[1],
                 "value": "" if secret else effective_values.get(key, ""),
             }
             for key, label, input_type, required, secret, placeholder in definition["fields"]
@@ -599,6 +744,161 @@ def get_onboarding(
 ) -> dict[str, Any]:
     """Return wizard metadata, non-secret values, and readiness flags."""
     return _onboarding_state(_env_path(request))
+
+
+@router.get("/help", response_model=dict[str, Any])
+def get_console_help(
+    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    """Return curated setup help without exposing environment configuration."""
+    return {
+        "glossary": list(_GLOSSARY),
+        "topics": list(_TOPICS),
+        "safety_note": "Never paste passwords, tokens, API keys, or client secrets into the setup assistant.",
+    }
+
+
+def _component_nonsecret_keys(component: str) -> frozenset[str]:
+    for definition in _ONBOARDING_STEPS:
+        if definition["id"] == component:
+            return frozenset(field[0] for field in definition["fields"] if not field[4])
+    return frozenset()
+
+
+_CREDENTIAL_KEY = re.compile(r"(?:password|secret|token|api[_-]?key|credential|authorization)", re.IGNORECASE)
+_CREDENTIAL_VALUE = re.compile(
+    r"(?:bearer\s+[A-Za-z0-9._~+/=-]{8,}|(?:password|secret|token|api[_-]?key)\s*[:=]\s*\S+|"
+    r"sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})",
+    re.IGNORECASE,
+)
+
+
+def _safe_assist_question(question: str, values: dict[str, str], environment: dict[str, str]) -> str:
+    result = _CREDENTIAL_VALUE.sub("[credential removed]", question.strip())
+    possible_secrets = [
+        value
+        for key, value in {**environment, **values}.items()
+        if value and (_CREDENTIAL_KEY.search(key) or key in _SECRET_KEYS) and len(value) >= 4
+    ]
+    for secret in sorted(possible_secrets, key=len, reverse=True):
+        result = result.replace(secret, "[credential removed]")
+    return result
+
+
+def _curated_assistance(component: str) -> str:
+    guidance = {
+        "identity": (
+            "Start with your identity provider's application registration page. Register the exact redirect URI, "
+            "identify the issuer and API audience, and use separate people for campaign creation and approval."
+        ),
+        "graph": (
+            "Use a read-only directory application with permission to list users. Set a conservative import "
+            "limit, test the /users connection, and review the first synchronization before scheduling it."
+        ),
+        "smtp": (
+            "Ask your mail administrator for the relay host, port, service account, TLS mode, and approved "
+            "sender. Port 587 normally uses STARTTLS; port 465 normally uses implicit TLS."
+        ),
+        "mailbox": (
+            "Provide the reporting API base URL and the least-privileged credential able to read reported "
+            "messages. Test access before enabling polling."
+        ),
+        "ai": (
+            "Connect a compatible /propose gateway. AI output remains advisory and is still checked by "
+            "deterministic safety rules before use."
+        ),
+        "training": (
+            "Choose the exact HTTPS training destination and allowlist only domains your organization controls "
+            "or has approved."
+        ),
+        "webhook": (
+            "Allowlist the receiving HTTPS host, test reachability, and configure the receiver to verify the "
+            "platform's HMAC signature."
+        ),
+    }
+    return guidance.get(component, "Choose a setup component and use its field help and connection test before saving.")
+
+
+def _validated_ai_assistance(payload: Any, allowed_keys: frozenset[str]) -> tuple[str, dict[str, str], list[str]]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("answer"), str):
+        raise ValueError("invalid setup assistant response")
+    answer = payload["answer"].strip()
+    if not answer or len(answer) > 4000:
+        raise ValueError("invalid setup assistant answer")
+    raw_suggestions = payload.get("suggestions", {})
+    if not isinstance(raw_suggestions, dict):
+        raise ValueError("invalid setup assistant suggestions")
+    suggestions: dict[str, str] = {}
+    warnings: list[str] = []
+    for key, value in raw_suggestions.items():
+        if key not in allowed_keys or _CREDENTIAL_KEY.search(str(key)):
+            warnings.append("The AI returned a suggestion outside this setup step; it was ignored.")
+            continue
+        if not isinstance(value, str) or len(value) > 2048 or _CREDENTIAL_VALUE.search(value):
+            warnings.append(f"An unsafe suggestion for {key} was ignored.")
+            continue
+        suggestions[key] = value
+    raw_warnings = payload.get("warnings", [])
+    if isinstance(raw_warnings, list):
+        warnings.extend(str(item)[:500] for item in raw_warnings[:5] if isinstance(item, str))
+    return answer, suggestions, warnings
+
+
+@router.post("/onboarding/assist", response_model=SetupAssistResponse)
+async def assist_onboarding(
+    body: SetupAssistRequest,
+    request: Request,
+    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> SetupAssistResponse:
+    """Provide advisory setup guidance without persisting or auditing prompt content."""
+    component = body.component.lower()
+    allowed_keys = _component_nonsecret_keys(component)
+    if not allowed_keys:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unsupported component")
+    forbidden = set(body.values) - _ALLOWED_KEYS
+    if forbidden:
+        raise PermissionDeniedError(f"rejected configuration keys: {sorted(forbidden)}")
+    environment = _env_values(_env_path(request))
+    safe_values = {
+        key: value
+        for key, value in body.values.items()
+        if key in allowed_keys
+        and not _CREDENTIAL_KEY.search(key)
+        and len(value) <= 2048
+        and not _CREDENTIAL_VALUE.search(value)
+        and not (urlparse(value).username or urlparse(value).password)
+    }
+    safe_question = _safe_assist_question(body.question, body.values, environment)
+    base_url = environment.get("KP_WORKER_AI_BASE_URL") or environment.get("MOCK_AI_URL", "")
+    warnings = ["AI suggestions are advisory. Review them and run the connection test before saving."]
+    if base_url:
+        headers = _auth_headers(environment, "KP_WORKER_AI")
+        try:
+            endpoint = _safe_url(base_url.rstrip("/") + "/setup-assist")
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+                response = await client.post(
+                    endpoint,
+                    headers=headers,
+                    json={"component": component, "question": safe_question, "values": safe_values},
+                )
+                response.raise_for_status()
+            answer, suggestions, provider_warnings = _validated_ai_assistance(response.json(), allowed_keys)
+            return SetupAssistResponse(
+                answer=answer,
+                suggestions=suggestions,
+                source="configured-ai",
+                warnings=warnings + provider_warnings,
+            )
+        except (httpx.HTTPError, ValueError):
+            warnings.append(
+                "The configured AI service was unavailable or returned an invalid response; local guidance is "
+                "shown instead."
+            )
+    else:
+        warnings.append("No AI setup service is configured; local guidance is shown instead.")
+    return SetupAssistResponse(
+        answer=_curated_assistance(component), suggestions={}, source="curated", warnings=warnings
+    )
 
 
 def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Principal) -> list[str]:

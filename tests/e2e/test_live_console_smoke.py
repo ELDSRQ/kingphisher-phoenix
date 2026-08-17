@@ -252,3 +252,21 @@ def test_onboarding_contract_and_local_connectors() -> None:
         time.sleep(0.5)
     else:
         pytest.fail("directory worker did not record a completed sync")
+
+
+def test_setup_help_and_assistant() -> None:
+    administrator = _login()
+    help_status, help_content = _json_request("/api/v1/console/help", token=administrator)
+    assert help_status == 200
+    assert any(item["term"] == "OIDC" for item in help_content["glossary"])  # type: ignore[index]
+
+    assist_status, assistance = _json_request(
+        "/api/v1/console/onboarding/assist",
+        token=administrator,
+        method="POST",
+        body={"component": "identity", "question": "What is OIDC?", "values": {}},
+    )
+    assert assist_status == 200
+    assert isinstance(assistance["answer"], str) and assistance["answer"]  # type: ignore[index]
+    assert assistance["source"] in {"configured-ai", "curated"}  # type: ignore[index]
+    assert assistance["warnings"]  # type: ignore[index]
