@@ -347,9 +347,19 @@ def test_onboarding_state_returns_only_nonsecret_values(env_file: str) -> None:
         secret_fields = [field for step in body["steps"] for field in step["fields"] if field["secret"]]
         assert secret_fields and all(field["value"] == "" for field in secret_fields)
         identity = next(step for step in body["steps"] if step["component"] == "identity")
+        assert identity["estimated_minutes"] > 0
+        assert identity["prerequisites"]
+        mode = next(field for field in identity["fields"] if field["key"] == "OPERATOR_API_OIDC_MODE")
+        assert {choice["value"] for choice in mode["choices"]} == {"dev", "oidc"}
         audience = next(field for field in identity["fields"] if field["key"] == "OPERATOR_API_OIDC_AUDIENCE")
         assert "identifier" in audience["help"]
         assert audience["example"] == "api://phishing-awareness-platform"
+        assert "API registration" in audience["where_to_find"]
+        training = next(step for step in body["steps"] if step["component"] == "training")
+        assert {field["key"] for field in training["fields"]} == {
+            "OPERATOR_API_TRAINING_BASE_URL",
+            "OPERATOR_API_TRAINING_DOMAINS",
+        }
 
 
 def test_console_help_explains_setup_terms_and_requires_admin(env_file: str) -> None:

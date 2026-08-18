@@ -413,6 +413,12 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "Use local development login or connect an OpenID Connect provider with separate operator roles."
         ),
         "optional": False,
+        "estimated_minutes": 8,
+        "prerequisites": (
+            "Identity-provider administrator access",
+            "Permission to register a browser application and API",
+            "The public HTTPS address operators will use for this console",
+        ),
         "configured_any": (("OPERATOR_API_OIDC_MODE",),),
         "fields": (
             ("OPERATOR_API_OIDC_MODE", "Authentication mode", "text", True, False, "dev or oidc"),
@@ -444,6 +450,12 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "Connect a bounded Microsoft Graph-compatible users endpoint for encrypted recipient synchronization."
         ),
         "optional": True,
+        "estimated_minutes": 5,
+        "prerequisites": (
+            "A read-only directory application or gateway",
+            "Permission to read the users collection",
+            "An expected upper bound for employee records",
+        ),
         "configured_any": (("KP_WORKER_GRAPH_BASE_URL",), ("MOCK_GRAPH_URL",)),
         "fields": (
             ("KP_WORKER_GRAPH_BASE_URL", "Graph base URL", "url", True, False, "https://graph.microsoft.com/v1.0"),
@@ -457,6 +469,12 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
         "title": "Email delivery",
         "description": "Connect an SMTP relay. STARTTLS is automatic for non-local hosts unless SSL is selected.",
         "optional": False,
+        "estimated_minutes": 5,
+        "prerequisites": (
+            "An approved SMTP relay or service account",
+            "The sender mailbox authorized by that relay",
+            "The relay's TLS requirement and port",
+        ),
         "configured_any": (("KP_WORKER_SMTP_ADDRESS",), ("KP_WORKER_MAILPIT_SMTP",)),
         "fields": (
             ("KP_WORKER_SMTP_ADDRESS", "SMTP host and port", "text", True, False, "smtp.example.com:587"),
@@ -472,6 +490,11 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
         "title": "Reported-message mailbox",
         "description": "Poll a Mailpit-compatible reporting API for messages explicitly marked as reported.",
         "optional": True,
+        "estimated_minutes": 4,
+        "prerequisites": (
+            "A Mailpit-compatible reported-message API",
+            "One supported authentication method: bearer token or basic authentication",
+        ),
         "configured_any": (("KP_WORKER_REPORTED_MAILBOX_URL",), ("KP_WORKER_MAILPIT_API_URL",)),
         "fields": (
             ("KP_WORKER_REPORTED_MAILBOX_URL", "Mailbox API base URL", "url", True, False, "https://mail.example/api"),
@@ -487,6 +510,11 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "Connect a compatible /propose service. Deterministic safety validation remains mandatory after generation."
         ),
         "optional": True,
+        "estimated_minutes": 4,
+        "prerequisites": (
+            "A compatible service exposing /propose and /setup-assist",
+            "A dedicated, least-privilege credential if authentication is required",
+        ),
         "configured_any": (("KP_WORKER_AI_BASE_URL",), ("MOCK_AI_URL",)),
         "fields": (
             ("KP_WORKER_AI_BASE_URL", "AI service base URL", "url", True, False, "https://ai-gateway.example"),
@@ -499,6 +527,11 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
         "title": "Training experience",
         "description": "Set the recipient training destination and the exact domains allowed in campaign content.",
         "optional": False,
+        "estimated_minutes": 3,
+        "prerequisites": (
+            "The exact training landing-page URL",
+            "Every domain that may host approved training content",
+        ),
         "configured_any": (("OPERATOR_API_TRAINING_BASE_URL", "OPERATOR_API_TRAINING_DOMAINS"),),
         "fields": (
             (
@@ -510,8 +543,6 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
                 "https://training.example/awareness",
             ),
             ("OPERATOR_API_TRAINING_DOMAINS", "Allowed training domains", "text", True, False, "training.example"),
-            ("KP_WORKER_TRAINING_BASE_URL", "Worker training URL", "url", False, False, "same training URL"),
-            ("KP_WORKER_TRAINING_DOMAINS", "Worker allowed domains", "text", False, False, "same domain list"),
         ),
     },
     {
@@ -519,6 +550,11 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
         "title": "Operational alerts",
         "description": "Allowlist HTTPS webhook hosts and test a destination without sending campaign data.",
         "optional": True,
+        "estimated_minutes": 4,
+        "prerequisites": (
+            "An HTTPS receiver for operational alerts",
+            "The receiver hostname approved for the outbound allowlist",
+        ),
         "configured_any": (("KP_WORKER_ALERT_WEBHOOK_DOMAINS",),),
         "fields": (
             ("KP_WORKER_ALERT_WEBHOOK_DOMAINS", "Allowed webhook domains", "text", True, False, "hooks.example.com"),
@@ -628,6 +664,95 @@ _FIELD_HELP: dict[str, tuple[str, str]] = {
     ),
 }
 
+_FIELD_LOCATIONS: dict[str, str] = {
+    "OPERATOR_API_OIDC_MODE": "Use 'dev' only on this computer. For production, choose 'oidc'.",
+    "OPERATOR_API_OIDC_ISSUER": (
+        "Identity provider → application or tenant settings → OpenID Connect metadata → issuer."
+    ),
+    "OPERATOR_API_OIDC_AUDIENCE": "Identity provider → API registration → application ID URI or audience.",
+    "OPERATOR_API_OIDC_CLIENT_ID": (
+        "Identity provider → app registrations → your console application → client/application ID."
+    ),
+    "OPERATOR_API_OIDC_CLIENT_SECRET": (
+        "Identity provider → console application → credentials or client secrets. Create a dedicated secret "
+        "only if the provider requires a confidential client."
+    ),
+    "OPERATOR_API_OIDC_REDIRECT_URI": (
+        "Copy the suggested console callback URL here, then register the identical value under the provider "
+        "application's redirect URIs."
+    ),
+    "KP_WORKER_GRAPH_BASE_URL": (
+        "Microsoft Graph normally uses https://graph.microsoft.com/v1.0. For a gateway, copy its documented "
+        "API base URL."
+    ),
+    "KP_WORKER_GRAPH_BEARER_TOKEN": (
+        "Identity provider → directory application → token/credential flow. Request only the read-only user "
+        "permission needed by your directory policy."
+    ),
+    "KP_WORKER_GRAPH_API_KEY": (
+        "Your API gateway → application credentials or subscriptions. Leave blank when the gateway does not "
+        "require a key."
+    ),
+    "KP_WORKER_GRAPH_MAX_USERS": (
+        "Use your HR or directory count, rounded up modestly; this is a safety ceiling, not a license limit."
+    ),
+    "KP_WORKER_SMTP_ADDRESS": (
+        "Mail provider administration → SMTP relay or authenticated SMTP settings → server name and port."
+    ),
+    "KP_WORKER_SMTP_USERNAME": (
+        "Mail provider → SMTP service account. This is often a mailbox address or generated account name."
+    ),
+    "KP_WORKER_SMTP_PASSWORD": (
+        "Mail provider → SMTP service account → app password or credential. Never use a personal password."
+    ),
+    "KP_WORKER_SMTP_STARTTLS": "Mail provider's encryption instructions. Port 587 usually uses STARTTLS.",
+    "KP_WORKER_SMTP_SSL": "Mail provider's encryption instructions. Enable for implicit TLS, usually on port 465.",
+    "KP_WORKER_SMTP_SENDER": (
+        "Mail provider → approved senders. Use the exact mailbox or address authorized for the relay account."
+    ),
+    "KP_WORKER_REPORTED_MAILBOX_URL": (
+        "Reported-mail provider → API or integration settings → base URL, without a message identifier."
+    ),
+    "KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN": "Reported-mail provider → API credentials → bearer/access token.",
+    "KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME": "Reported-mail provider → API basic-auth credentials → username.",
+    "KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD": "Reported-mail provider → API basic-auth credentials → password.",
+    "KP_WORKER_AI_BASE_URL": (
+        "AI gateway administration → API endpoints. Enter the base before /propose or /setup-assist."
+    ),
+    "KP_WORKER_AI_BEARER_TOKEN": "AI gateway → service accounts or API credentials → bearer token.",
+    "KP_WORKER_AI_API_KEY": "AI gateway → API keys. Create a dedicated restricted key for this platform.",
+    "OPERATOR_API_TRAINING_BASE_URL": (
+        "Training provider → course publication or share settings → learner landing-page URL."
+    ),
+    "OPERATOR_API_TRAINING_DOMAINS": (
+        "Take the hostname from every approved training URL; enter hostnames only, separated by commas."
+    ),
+    "KP_WORKER_TRAINING_BASE_URL": "Filled automatically from the training URL when this step is saved.",
+    "KP_WORKER_TRAINING_DOMAINS": "Filled automatically from the allowed training domains when this step is saved.",
+    "KP_WORKER_ALERT_WEBHOOK_DOMAINS": (
+        "Alert receiver URL → copy only its hostname. Add multiple approved hosts as a comma-separated list."
+    ),
+    "KP_WORKER_ALERT_WEBHOOK_URL": (
+        "Alerting or automation provider → incoming webhook → HTTPS endpoint used for testing."
+    ),
+}
+
+_FIELD_CHOICES: dict[str, tuple[dict[str, str], ...]] = {
+    "OPERATOR_API_OIDC_MODE": (
+        {"value": "dev", "label": "Local development login"},
+        {"value": "oidc", "label": "Organization identity provider (OIDC)"},
+    ),
+    "KP_WORKER_SMTP_STARTTLS": (
+        {"value": "", "label": "Automatic (recommended)"},
+        {"value": "true", "label": "Require STARTTLS"},
+        {"value": "false", "label": "Do not use STARTTLS"},
+    ),
+    "KP_WORKER_SMTP_SSL": (
+        {"value": "false", "label": "No implicit TLS"},
+        {"value": "true", "label": "Use implicit TLS"},
+    ),
+}
+
 _GLOSSARY: tuple[dict[str, str], ...] = (
     {
         "term": "OIDC",
@@ -713,6 +838,10 @@ def _onboarding_state(path: Path) -> dict[str, Any]:
                     ("Stored in the local environment; restart services after changing this value.", placeholder),
                 )[0],
                 "example": _FIELD_HELP.get(key, ("", placeholder))[1],
+                "where_to_find": _FIELD_LOCATIONS.get(
+                    key, "See the provider's administration or integration documentation."
+                ),
+                "choices": list(_FIELD_CHOICES.get(key, ())),
                 "value": "" if secret else effective_values.get(key, ""),
             }
             for key, label, input_type, required, secret, placeholder in definition["fields"]
@@ -724,6 +853,8 @@ def _onboarding_state(path: Path) -> dict[str, Any]:
                 "title": definition["title"],
                 "description": definition["description"],
                 "optional": definition["optional"],
+                "estimated_minutes": definition["estimated_minutes"],
+                "prerequisites": list(definition["prerequisites"]),
                 "configured": configured,
                 "ready": configured,
                 "fields": fields,

@@ -305,12 +305,15 @@ views.onboarding = async (root) => {
     (step.fields || []).forEach((field, fieldIndex) => {
       const id = `onboarding-${current}-${fieldIndex}`;
       const inputType = field.secret ? "password" : (field.type || "text");
-      const input = el("input", {
-        id, name: field.key, type: inputType, placeholder: field.placeholder || "",
+      const inputAttrs = {
+        id, name: field.key, placeholder: field.placeholder || "",
         autocomplete: field.secret ? "new-password" : "off",
         required: field.required && !(field.secret && step.configured) ? "" : null,
-        "aria-describedby": (field.help || field.explanation || field.example) ? `${id}-help` : null,
-      });
+        "aria-describedby": (field.help || field.explanation || field.example || field.where_to_find) ? `${id}-help` : null,
+      };
+      const input = field.choices?.length
+        ? el("select", inputAttrs, field.choices.map((choice) => el("option", { value: choice.value, text: choice.label })))
+        : el("input", { ...inputAttrs, type: inputType });
       if (!field.secret) {
         input.value = savedValues[step.id]?.[field.key] ?? field.value ?? "";
       }
@@ -318,6 +321,7 @@ views.onboarding = async (root) => {
       form.appendChild(el("div", { class: "wizard-field" }, [
         el("label", { for: id }, [el("span", { text: field.label }), el("span", { class: `requirement ${field.required ? "required" : "optional"}`, text: field.required ? "Required" : "Optional" })]), input,
         ...((field.help || field.explanation || field.example) ? [el("div", { id: `${id}-help`, class: "field-help", text: [field.explanation || field.help, field.example ? `Example: ${field.example}` : ""].filter(Boolean).join(" · ") })] : []),
+        ...(field.where_to_find ? [el("details", { class: "field-location" }, [el("summary", { text: "Where do I find this?" }), el("p", { text: field.where_to_find })])] : []),
       ]));
     });
     const feedback = el("div", { class: "wizard-feedback", role: "status", "aria-live": "polite" });
@@ -326,8 +330,8 @@ views.onboarding = async (root) => {
       const entered = inputs[field.key]?.value || "";
       return field.secret ? Boolean(entered) : entered !== (field.value ?? "");
     }).map((field) => [field.key, inputs[field.key].value]));
-    const saveButton = el("button", { class: "btn primary", type: "submit", text: step.configured ? "Continue" : "Save and continue" });
-    const updateSaveLabel = () => { saveButton.textContent = Object.keys(changedValues()).length ? "Save and continue" : (step.configured ? "Continue" : "Save and continue"); };
+    const saveButton = el("button", { class: "btn primary", type: "submit", text: step.configured ? "Continue" : "Test, save and continue" });
+    const updateSaveLabel = () => { saveButton.textContent = Object.keys(changedValues()).length ? "Test, save and continue" : (step.configured ? "Continue" : "Test, save and continue"); };
     Object.values(inputs).forEach((input) => input.addEventListener("input", updateSaveLabel));
     const save = async () => {
       if (!form.reportValidity()) return false;
@@ -340,23 +344,30 @@ views.onboarding = async (root) => {
       restartNeeded = restartNeeded || Boolean(result?.restart_required ?? result?.changed?.length);
       return true;
     };
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const button = event.submitter; if (button) button.disabled = true;
-      try {
-        if (await save()) { toast(`${step.title} saved`, "success"); current++; renderStep(); }
-      } catch (e) { feedback.textContent = e.message; }
-      finally { if (button?.isConnected) button.disabled = false; }
-    });
-    const testButton = el("button", { class: "btn", type: "button", text: "Test connection", onclick: async () => {
+    const testConnection = async () => {
       if (!form.reportValidity()) return;
-      testButton.disabled = true; feedback.className = "wizard-feedback testing"; feedback.textContent = "Testing securely… This can take a few seconds.";
+      feedback.className = "wizard-feedback testing"; feedback.textContent = "Testing securely… This can take a few seconds.";
       try {
         const result = await api("/console/onboarding/test", { method: "POST", body: JSON.stringify({ component: step.id, values: values() }) });
         feedback.className = `wizard-feedback ${result.ok ? "success" : "error"}`;
         feedback.textContent = result.message || (result.ok ? "Connected successfully. You can save and continue." : "We couldn’t connect. Check the address and credentials, then try again.");
-      } catch (e) { feedback.className = "wizard-feedback error"; feedback.textContent = `${e.message} Check the values above and your provider’s access settings, then try again.`; }
-      finally { testButton.disabled = false; }
+        return Boolean(result.ok);
+      } catch (e) { feedback.className = "wizard-feedback error"; feedback.textContent = `${e.message} Check the values above and your provider’s access settings, then try again.`; return false; }
+    };
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const button = event.submitter; if (button) button.disabled = true;
+      try {
+        const hasChanges = Boolean(Object.keys(changedValues()).length);
+        if (hasChanges && !(await testConnection())) return;
+        if (await save()) { toast(hasChanges ? `${step.title} tested and saved` : `${step.title} unchanged`, "success"); current++; renderStep(); }
+      } catch (e) { feedback.textContent = e.message; }
+      finally { if (button?.isConnected) button.disabled = false; }
+    });
+    const testButton = el("button", { class: "btn", type: "button", text: "Test connection", onclick: async () => {
+      testButton.disabled = true;
+      await testConnection();
+      testButton.disabled = false;
     } });
     const actions = [
       el("button", { class: "btn", type: "button", text: "Back", disabled: current === 0 ? "" : null, onclick: () => { current--; renderStep(); } }),
@@ -391,12 +402,22 @@ views.onboarding = async (root) => {
     const assistant = el("details", { class: "setup-assistant" }, [
       el("summary", { text: "Ask the AI setup assistant" }),
       el("p", { class: "field-help", text: "It can explain provider screens and suggest non-secret form values. Nothing is applied or saved automatically." }),
+      el("div", { class: "quick-questions", "aria-label": "Suggested questions" }, [
+        ...["Where do I find these values?", "What permissions are required?", "How should I troubleshoot a failed test?"].map((question) => el("button", { class: "btn small", type: "button", text: question, onclick: () => { assistantQuestion.value = question; askAssistant.click(); } })),
+      ]),
       assistantQuestion, el("div", { class: "btn-row" }, [askAssistant]), assistantAnswer, suggestionsBox,
+    ]);
+    const contextHelp = el("details", { class: "context-help", open: "" }, [
+      el("summary", { text: "Setup help and prerequisites" }),
+      el("p", { text: step.learn_more || `This connection lets Kingphisher use ${step.title}. Gather the items below before testing.` }),
+      ...(step.prerequisites?.length ? [el("ul", { class: "prerequisite-list" }, step.prerequisites.map((item) => el("li", { text: item })))] : []),
+      el("p", { class: "field-help", text: `Typical time: about ${step.estimated_minutes || 5} minutes. You can ask the setup assistant for provider-specific guidance without sharing credentials.` }),
+      el("button", { class: "link-button", type: "button", text: "Open searchable help center", onclick: () => { location.hash = "help"; } }),
     ]);
     stage.replaceChildren(progress, el("section", { class: "card wizard-card", "aria-labelledby": "wizard-title" }, [
       el("div", { class: "step-heading" }, [el("h3", { id: "wizard-title", tabindex: "-1", text: step.title }), el("span", { class: `step-kind ${step.optional ? "optional" : "required"}`, text: step.optional ? "Optional" : "Required" })]),
       el("p", { class: "wizard-description", text: step.explanation || step.description || "Enter the connection details below." }),
-      el("details", { class: "context-help" }, [el("summary", { text: "Help with this step" }), el("p", { text: step.learn_more || `This connection lets Kingphisher use ${step.title}. You can ask the setup assistant for guidance tailored to your provider.` }), el("button", { class: "link-button", type: "button", text: "Open all help topics", onclick: () => { location.hash = "help"; } })]),
+      contextHelp,
       step.configured ? el("p", { class: "configured-label", text: "Already configured. Leave secret fields blank to keep their current values." }) : el("span"),
       form, assistant,
     ]));

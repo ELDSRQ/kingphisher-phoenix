@@ -228,6 +228,8 @@ def test_onboarding_contract_and_local_connectors() -> None:
     assert isinstance(steps, list)
     assert {step["id"] for step in steps} >= {"identity", "graph", "smtp", "mailbox", "ai", "training"}
     assert all(field.get("value", "") == "" for step in steps for field in step["fields"] if field["secret"])
+    assert all(step.get("prerequisites") and step.get("estimated_minutes") for step in steps)
+    assert all(field.get("where_to_find") for step in steps for field in step["fields"])
 
     for component in ("identity", "graph", "ai", "smtp"):
         test_status, result = _json_request(

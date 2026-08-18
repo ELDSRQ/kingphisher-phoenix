@@ -142,7 +142,12 @@ from `.env`.
 The console redirects administrators to **Setup wizard** until required local
 or production connections are configured and the review step is completed.
 The wizard explains why each connection is needed, labels required and optional
-fields, provides examples, and includes contextual help. The searchable **Help**
+fields, lists prerequisites, provides examples, and shows where each value is
+found in the provider's administration screens. Constrained settings such as
+authentication mode and SMTP TLS use explicit choices instead of free text.
+Changed connections are tested automatically before the wizard saves and
+continues; the separate **Test connection** action remains available for
+troubleshooting. The searchable **Help**
 view defines provider terminology; for example, OIDC (OpenID Connect) is the
 standard used to sign operators in through the organization's identity provider.
 Non-secret values are prefilled from `.env`; secret fields are always blank and
@@ -155,7 +160,9 @@ Each step also offers an AI setup assistant. It is advisory: secret fields and
 credential-like text are removed before a request leaves the operator API,
 suggestions are constrained to non-secret fields in the current step, and the
 operator must explicitly apply, test, and save every suggestion. If the configured
-AI provider is unavailable, the API returns deterministic local guidance. Prompts
+AI provider is unavailable, the API returns deterministic local guidance. Common
+safe questions about locating values, permissions, and failed tests are available
+directly in each step. Prompts
 and answers are neither persisted nor written to the audit log.
 
 Optional Graph directory sync is available afterward from **Recipients → Sync
