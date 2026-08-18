@@ -54,8 +54,8 @@ from kp_workers.config import WorkerSettings
 from kp_workers.providers.alerts import SignedWebhookSender
 from kp_workers.providers.graph import GraphDirectoryProvider
 from kp_workers.providers.mailpit import MailpitReportedMessageProvider
-from kp_workers.providers.reminders import Reminder, ReminderSender, SmtpReminderSender
-from kp_workers.providers.smtp import SmtpSender
+from kp_workers.providers.reminders import ProviderReminderSender, Reminder, ReminderSender
+from kp_workers.providers.smtp import make_email_sender
 
 logger = get_logger("kp_workers.jobs")
 
@@ -594,14 +594,19 @@ def _mailbox_provider(ctx: WorkerContext) -> MailpitReportedMessageProvider:
 
 
 def _reminder_sender(ctx: WorkerContext) -> ReminderSender:
-    return SmtpReminderSender(
-        ctx.settings.effective_smtp_address,
+    return ProviderReminderSender(
+        make_email_sender(
+            provider=ctx.settings.email_provider,
+            smtp_address=ctx.settings.effective_smtp_address,
+            smtp_username=ctx.settings.smtp_username,
+            smtp_password=ctx.settings.smtp_password,
+            smtp_starttls=ctx.settings.effective_smtp_starttls,
+            smtp_ssl=ctx.settings.smtp_ssl,
+            acs_endpoint=ctx.settings.acs_email_endpoint,
+            acs_connection_string=ctx.settings.acs_email_connection_string,
+            timeout=ctx.settings.provider_timeout_seconds,
+        ),
         sender=ctx.settings.effective_smtp_sender,
-        timeout=ctx.settings.provider_timeout_seconds,
-        username=ctx.settings.smtp_username,
-        password=ctx.settings.smtp_password,
-        starttls=ctx.settings.effective_smtp_starttls,
-        use_ssl=ctx.settings.smtp_ssl,
     )
 
 
@@ -692,7 +697,11 @@ def _send_email(
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = campaign.sender_mailbox
+    msg["From"] = (
+        ctx.settings.effective_smtp_sender
+        if ctx.settings.email_provider == "azure_communication_services"
+        else campaign.sender_mailbox
+    )
     msg["To"] = recipient.mailbox or f"recipient-{assignment.recipient_id}@example.com"
     msg.set_content(plain_text or subject)
     if html:
@@ -707,12 +716,15 @@ def _send_email(
         msg.add_attachment(
             ics_text.encode("utf-8"), maintype="text", subtype="calendar", filename=f"invite-{uid[:12]}.ics"
         )
-    SmtpSender(
-        ctx.settings.effective_smtp_address,
-        username=ctx.settings.smtp_username,
-        password=ctx.settings.smtp_password,
-        starttls=ctx.settings.effective_smtp_starttls,
-        use_ssl=ctx.settings.smtp_ssl,
+    make_email_sender(
+        provider=ctx.settings.email_provider,
+        smtp_address=ctx.settings.effective_smtp_address,
+        smtp_username=ctx.settings.smtp_username,
+        smtp_password=ctx.settings.smtp_password,
+        smtp_starttls=ctx.settings.effective_smtp_starttls,
+        smtp_ssl=ctx.settings.smtp_ssl,
+        acs_endpoint=ctx.settings.acs_email_endpoint,
+        acs_connection_string=ctx.settings.acs_email_connection_string,
         timeout=ctx.settings.provider_timeout_seconds,
     ).send(msg)
 

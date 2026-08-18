@@ -19,6 +19,15 @@ htmlcov/
 build/
 dist/
 
+# Terraform local state and plans (remote state is required for Azure)
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+!infrastructure/terraform/environments/*.tfvars
+
 # Virtualenvs / toolchain
 .venv/
 venv/

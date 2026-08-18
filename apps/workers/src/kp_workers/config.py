@@ -1,3 +1,4 @@
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, model_validator
@@ -55,6 +56,9 @@ class WorkerSettings(BaseSettings):
     smtp_starttls: bool | None = None
     smtp_ssl: bool = False
     smtp_sender: str | None = None
+    email_provider: Literal["smtp", "azure_communication_services"] = "smtp"
+    acs_email_endpoint: str | None = None
+    acs_email_connection_string: str | None = None
     reported_mailbox_url: str | None = None
     reported_mailbox_bearer_token: str | None = None
     reported_mailbox_basic_username: str | None = None
@@ -75,6 +79,9 @@ class WorkerSettings(BaseSettings):
             raise ValueError("SMTP SSL and STARTTLS cannot both be enabled")
         if bool(self.smtp_username) != bool(self.smtp_password):
             raise ValueError("SMTP username and password must be configured together")
+        if self.email_provider == "azure_communication_services" and not self.acs_email_endpoint:
+            raise ValueError("ACS email endpoint is required for the Azure Communication Services provider")
+        _validate_provider_url("ACS email endpoint", self.acs_email_endpoint)
         basic_values = (self.reported_mailbox_basic_username, self.reported_mailbox_basic_password)
         if any(basic_values) and not all(basic_values):
             raise ValueError("reported mailbox basic username and password must be configured together")

@@ -1,0 +1,5 @@
+resource_group_name  = "rg-kp-terraform-state"
+storage_account_name = "kptfstateREPLACE"
+container_name       = "tfstate"
+key                  = "kingphisher/staging.tfstate"
+use_azuread_auth     = true

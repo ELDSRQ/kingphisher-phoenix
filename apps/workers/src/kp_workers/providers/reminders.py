@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from email.message import EmailMessage
 from typing import Protocol
 
-from kp_workers.providers.smtp import SmtpSender
+from kp_workers.providers.smtp import EmailSender, SmtpSender
 
 
 @dataclass(frozen=True)
@@ -41,6 +41,20 @@ class SmtpReminderSender:
             starttls=starttls,
             use_ssl=use_ssl,
         )
+
+    def send(self, reminder: Reminder) -> None:
+        message = EmailMessage()
+        message["Subject"] = reminder.subject
+        message["From"] = self._sender
+        message["To"] = reminder.recipient
+        message.set_content(reminder.text)
+        self._transport.send(message)
+
+
+class ProviderReminderSender:
+    def __init__(self, transport: EmailSender, *, sender: str) -> None:
+        self._transport = transport
+        self._sender = sender
 
     def send(self, reminder: Reminder) -> None:
         message = EmailMessage()

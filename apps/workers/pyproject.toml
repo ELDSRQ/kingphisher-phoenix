@@ -8,6 +8,8 @@ dependencies = [
     "httpx>=0.27",
     "cryptography>=42.0",
     "pydantic-settings>=2.4",
+    "azure-communication-email>=1.0.0",
+    "azure-identity>=1.17.0",
     "kp-domain-models",
     "kp-database",
     "kp-contracts",

@@ -129,6 +129,15 @@ Kingphisher Launcher.app   macOS double-click launcher (buildable artifact)
 See `docs/architecture/` for the service and zone matrix, and
 `scripts/verify_audit.py` for audit integrity.
 
+## Azure deployment
+
+A production-oriented, single-tenant Azure deployment is automated with
+Terraform and the manually approved GitHub Actions workflow. It uses Container
+Apps, private PostgreSQL and Managed Redis, ACR, Key Vault references, managed
+identity, Azure Communication Services Email, and explicitly bounded Azure
+logging. See [docs/AZURE_DEPLOYMENT.md](docs/AZURE_DEPLOYMENT.md) for bootstrap,
+DNS, deployment, qualification, rollback, and secret-state requirements.
+
 ## Security model
 
 Non-negotiable boundaries enforced in code:

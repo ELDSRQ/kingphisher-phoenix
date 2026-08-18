@@ -7,7 +7,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 COPY packages ./packages
 COPY apps ./apps
-RUN uv sync --frozen --no-dev --package kp-tracking-api
+RUN uv sync --frozen --no-dev --no-editable --package kp-tracking-api
 
 FROM python:3.13-slim
 WORKDIR /app

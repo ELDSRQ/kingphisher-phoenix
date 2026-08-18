@@ -1,0 +1,109 @@
+name: Azure deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        required: true
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --all-packages
+      - run: make lint
+      - run: make typecheck
+      - run: uv run pytest -q
+
+  deploy:
+    needs: qualify
+    environment: ${{ inputs.environment }}
+    runs-on: [self-hosted, linux, azure-vnet]
+    env:
+      TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_operator_fqdn: ${{ vars.OPERATOR_FQDN }}
+      TF_VAR_tracking_fqdn: ${{ vars.TRACKING_FQDN }}
+      TF_VAR_entra_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+      TF_VAR_entra_client_id: ${{ vars.ENTRA_APPLICATION_CLIENT_ID }}
+      TF_VAR_ai_endpoint: ${{ vars.AI_GATEWAY_ENDPOINT }}
+      TF_VAR_alert_webhook_domains: ${{ vars.ALERT_WEBHOOK_DOMAINS }}
+      TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+      TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+      TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Initialize Terraform
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform init
+          -backend-config="resource_group_name=$TF_STATE_RESOURCE_GROUP"
+          -backend-config="storage_account_name=$TF_STATE_STORAGE_ACCOUNT"
+          -backend-config="container_name=$TF_STATE_CONTAINER"
+          -backend-config="key=${{ inputs.environment }}/kingphisher.tfstate"
+          -backend-config="use_azuread_auth=true"
+      - name: Provision foundation
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform apply -auto-approve
+          -var-file="environments/${{ inputs.environment }}.tfvars"
+          -var="deploy_workloads=false"
+      - name: Build immutable images on the private runner
+        id: images
+        shell: bash
+        run: |
+          registry="$(terraform -chdir=infrastructure/terraform output -raw container_registry_name)"
+          login_server="$(terraform -chdir=infrastructure/terraform output -raw container_registry_login_server)"
+          tag="sha-${GITHUB_SHA}"
+          az acr login --name "$registry"
+          docker build -t "$login_server/operator-api:$tag" -f infrastructure/containers/Dockerfile.operator-api .
+          docker build -t "$login_server/tracking-api:$tag" -f infrastructure/containers/Dockerfile.tracking-api .
+          docker build -t "$login_server/worker:$tag" -f infrastructure/containers/Dockerfile.worker .
+          docker build -t "$login_server/migration:$tag" -f infrastructure/containers/Dockerfile.migration .
+          docker push "$login_server/operator-api:$tag"
+          docker push "$login_server/tracking-api:$tag"
+          docker push "$login_server/worker:$tag"
+          docker push "$login_server/migration:$tag"
+          echo "registry=$login_server" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Plan workloads
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform plan -out=release.tfplan
+          -var-file="environments/${{ inputs.environment }}.tfvars"
+          -var="deploy_workloads=true"
+          -var="operator_image=${{ steps.images.outputs.registry }}/operator-api:${{ steps.images.outputs.tag }}"
+          -var="tracking_image=${{ steps.images.outputs.registry }}/tracking-api:${{ steps.images.outputs.tag }}"
+          -var="worker_image=${{ steps.images.outputs.registry }}/worker:${{ steps.images.outputs.tag }}"
+          -var="migration_image=${{ steps.images.outputs.registry }}/migration:${{ steps.images.outputs.tag }}"
+      - name: Apply workloads
+        working-directory: infrastructure/terraform
+        run: terraform apply -auto-approve release.tfplan
+      - name: Migrate and qualify
+        shell: bash
+        run: |
+          export AZURE_RESOURCE_GROUP="$(terraform -chdir=infrastructure/terraform output -raw resource_group_name)"
+          export AZURE_MIGRATION_JOB="$(terraform -chdir=infrastructure/terraform output -raw migration_job_name)"
+          export AZURE_OPERATOR_URL="https://$(terraform -chdir=infrastructure/terraform output -raw operator_default_hostname)"
+          export AZURE_TRACKING_URL="https://$(terraform -chdir=infrastructure/terraform output -raw tracking_default_hostname)"
+          ./scripts/azure_release.sh
