@@ -1,4 +1,4 @@
-# Next AI Session Handoff — 2026-08-17
+# Next AI Session Handoff — 2026-08-18
 
 ## Start here
 
@@ -6,127 +6,105 @@ Repository: `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 
 Branch: `main`
 
-Current head: `ad7e557 Improve setup guidance and AI assistance`
+Expected head after this handoff is committed: see the newest `git log -1 --oneline` entry titled
+`Update session handoff documentation`.
 
-The worktree was clean when this handoff was written. Read `README.md`,
-`RUNBOOK.md`, and `docs/AI_HANDOFF.md` before changing architecture or operator
-behavior. Preserve unrelated user changes if the tree is no longer clean.
+The worktree was clean before this documentation update. First inspect `git status`, preserve any user changes, then read this file,
+`README.md`, `RUNBOOK.md`, `docs/AI_HANDOFF.md`, `docs/REMEDIATION_PLAN.md`, and `docs/AZURE_DEPLOYMENT.md` completely.
 
 ## Current outcome
 
-The original security-analyst, red-team, and CCPA review findings have been
-remediated in four commits:
+The platform is operational locally and now includes:
 
-- `d9c800a` — security, privacy, and operator workflow remediation
-- `37b41bc` — operational security and provider integration remediation
-- `3c0117a` — guided external-service onboarding
-- `ad7e557` — friendlier help and privacy-safe AI setup assistance
+- The remediated security/privacy campaign lifecycle, dual security and privacy approval, and no self-approval.
+- Accessible, human-friendly integration onboarding with searchable Help, contextual field guidance, privacy-filtered advisory AI,
+  connection tests, review, and explicit saving.
+- A native ntfy-compatible signed alert-webhook integration with bounded retry and DLQ behavior.
+- Bounded worker logging. The former roughly 16 GB growth was caused by tight-loop Redis connection-error logging; supervisors now
+  rotate logs and workers back off. Current `data/logs` size was about 180 KB on 2026-08-18. Do not delete logs without explicit
+  authorization.
+- Automated, production-oriented, single-tenant Azure infrastructure in `infrastructure/terraform`, container publication and a
+  protected `.github/workflows/azure-deploy.yml` workflow.
+- A four-stage **Azure deployment** GUI wizard that gathers only non-secret Azure, Entra, DNS, integration, runner, and Terraform
+  backend values; explains where each value is found; validates them; and exports Terraform/GitHub configuration files.
+- Optional AI assistance in every Azure stage. Only current-step non-secret values are eligible. AI cannot save, deploy, bypass
+  validation, or approve a release.
 
-The browser console now supports a complete campaign approval lifecycle with
-distinct OIDC principals, dual security/privacy approval, directory ingestion,
-SMTP delivery, reported-message intake, reminders, training completion,
-retention/DSR workflows, alerts, and a first-run integration wizard.
+Relevant commits immediately preceding this handoff:
 
-The setup wizard now provides:
+- `44afb4a` — bound worker log growth
+- `73e6827` — improve guided integration setup
+- `d4d01ce` — fix setup assistant field guidance
+- `90ed2a4` — add ntfy alert integration
+- `f183fbb` — fix dashboard audit verification request
+- `6013a89` — automate secure Azure deployment
+- `f97bb56` — add guided Azure deployment wizard
 
-- Plain-language explanations, examples, and required/optional labels.
-- Contextual help and a searchable Help center defining OIDC, issuer, audience,
-  SMTP, STARTTLS, Graph, API keys, and webhooks.
-- Per-step connection tests and explicit save/restart behavior.
-- Advisory AI guidance through `/api/v1/console/onboarding/assist`.
-- Strict removal of secrets and credential-like prompt text before an AI call.
-- Suggestions restricted to non-secret fields owned by the current step.
-- Explicit operator review and **Apply to form**; AI never saves automatically.
-- Deterministic local guidance if the configured AI service is unavailable.
+## Verified runtime state
 
-The local mock AI implements the bounded `/setup-assist` contract. Prompts,
-answers, and suggestions are not persisted or written to the audit log.
+Docker Desktop and all local services were healthy on 2026-08-18. The application is available at
+`http://localhost:8000/console/`. The supervisor was running:
 
-## Last verification
+- operator API and tracking API
+- ingestion, generation, delivery, retention, mailbox, reminder, alert, and directory workers
+- Postgres, Redis, Mailpit, mock IdP, mock Graph, and rebuilt mock AI containers
 
-The following passed on 2026-08-17:
+The following passed against the current implementation:
 
 ```bash
 node --check apps/operator-ui/src/console/app.js
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy apps/operator-api/src infrastructure/mock-services/mock_ai.py
-uv run pytest -q
-make security-scan
-```
-
-The full pytest suite passed; only opt-in/live tests were skipped. Semgrep
-reported zero findings and Trivy reported zero vulnerabilities. The authenticated
-live `test_setup_help_and_assistant` test passed against the restarted local API.
-
-`Makefile` now excludes generated `data/logs` from Trivy. Do not revert that:
-the existing worker logs total about 16 GB and caused filesystem scanning to
-stall. No logs were deleted during the previous session.
-
-## Runtime state and known environmental limitation
-
-At handoff time, the operator API responded on `127.0.0.1:8000` and had been
-restarted after the latest code changes. Docker Desktop was not running:
-
-```text
-Cannot connect to the Docker daemon at unix:///Users/edierks/.docker/run/docker.sock
-```
-
-Consequently, the updated mock-AI image and the full live connector test were
-not rebuilt/executed. This is an environment limitation, not a failing contract:
-the mock-AI tests, operator API tests, worker/provider tests, and focused live
-Help/assistant test passed.
-
-When Docker becomes available, run:
-
-```bash
-docker compose build mock-ai
-docker compose up -d --force-recreate mock-ai
+make lint
+make typecheck
+uv run pytest -q                         # 182 passed
+make security-scan                       # Semgrep 0; dependency/secret scan 0
+terraform fmt -check -recursive infrastructure/terraform
+terraform -chdir=infrastructure/terraform validate
+trivy config --exit-code 1 --severity HIGH,CRITICAL infrastructure/terraform
 ./scripts/verify_install.sh
-make operational-readiness
+make operational-readiness               # 7 live tests passed
 ```
 
-The operational-readiness gate expects a disposable seeded local database and
-may create a uniquely named future campaign as audit evidence. Read its guard
-messages before enabling the lifecycle option.
+The readiness gate intentionally leaves uniquely named local campaign evidence. The audit chain verified successfully.
 
-## Suggested next actions
+## Remaining qualification item
 
-1. Start Docker Desktop and run the four commands above.
-2. Exercise the wizard visually at `http://127.0.0.1:8000/console`:
-   search Help for “OIDC,” open contextual help, ask the assistant a provider
-   question, apply a non-secret suggestion, test the connection, and confirm no
-   value is saved until the explicit save action.
-3. Verify that secret-looking text is removed by asking a question containing a
-   disposable fake credential; do not use real credentials in testing.
-4. Investigate and rotate/compress the 2 GB-per-worker runtime logs. Treat
-   deletion as a separate, explicitly authorized operational action.
-5. If production deployment is next, supply real OIDC, SMTP, directory,
-   reported-mailbox, AI, training, and webhook configuration through the wizard,
-   then complete external security/privacy/legal review. The repository cannot
-   certify vendor contracts, production TLS/DNS, backups, incident response, or
-   organization-specific CCPA decisions by itself.
+Visual browser automation of the Azure wizard remains outstanding because the Codex Browser plugin updated while the prior agent
+session was active. The user opened the in-app Browser, but that session did not expose the updated controller. This is an agent-tool
+attachment issue, not an application defect. The plugin moved from cached version `26.623.141536` to `26.727.51351`.
 
-## Important implementation locations
+In a fresh Codex session:
 
-- Wizard and Help UI: `apps/operator-ui/src/console/app.js`, `styles.css`
-- Onboarding/help/AI API: `apps/operator-api/src/kp_operator_api/console.py`
-- Mock setup assistant: `infrastructure/mock-services/mock_ai.py`
-- API tests: `apps/operator-api/tests/test_console.py`
-- Mock-AI tests: `infrastructure/mock-services/test_mock_ai.py`
-- Live setup smoke: `tests/e2e/test_live_console_smoke.py`
-- Operator instructions: `RUNBOOK.md`
-- Remediation task ledger: `docs/REMEDIATION_PLAN.md`
+1. Confirm `git status` is clean and the local app is still healthy with `./scripts/verify_install.sh`.
+2. Use the in-app Browser skill and the already-open or newly opened `http://localhost:8000/console/` tab.
+3. Test login, **Azure deployment**, all four stages, each contextual “Where do I find this?” disclosure, searchable Azure Help,
+   keyboard/focus behavior, AI questions, validation errors, successful validation, and both downloads.
+4. Use disposable fake credential text to reconfirm filtering. Never use a real secret or connection string.
+5. Confirm AI guidance never changes a field, saves configuration, starts Azure work, or bypasses protected workflow approval.
+6. Fix genuine application defects with regression tests; report browser/tool failures separately.
 
-## Safety invariants to preserve
+No real Azure deployment has been executed. Production qualification still requires organization-owned Azure/Entra/DNS values,
+approved GitHub environment reviewers, a private runner with VNet access, vendor/legal review, backup/restore evidence, and an
+authorized deployment window.
 
-- Never send secret fields, credentials, or raw connection strings to AI.
-- AI output remains advisory and outside deterministic validation/safety gates.
-- Never let AI suggestions persist without explicit operator review and save.
-- Keep dual security/privacy approval and creator self-approval prohibition.
-- Keep tracking-token paths and client IPs out of access logs.
-- Keep tracking rate-limit storage bounded and validate hashes before lookup.
-- Keep DSR completion evidence-based; exception requests require legal review.
-- Maintain single-tenant enforcement unless tenant isolation is implemented
-  across schema, tokens, queues, authorization, encryption, and tests.
-- Do not delete runtime logs or other user data without explicit authorization.
+## Important locations
+
+- Azure wizard UI: `apps/operator-ui/src/console/app.js`
+- Azure wizard schema, validation, Help, and AI filtering: `apps/operator-api/src/kp_operator_api/console.py`
+- Azure infrastructure and validation: `infrastructure/terraform/`
+- Deployment workflow: `.github/workflows/azure-deploy.yml`
+- Deployment documentation: `docs/AZURE_DEPLOYMENT.md`
+- Console/API regression tests: `apps/operator-api/tests/test_console.py`
+- Live console tests: `tests/e2e/test_live_console_smoke.py`
+- ntfy/webhook worker: `apps/workers/src/kp_workers/alert.py`
+- Log bounding: `scripts/supervisor.py`, worker runtime/backoff code, and `RUNBOOK.md`
+
+## Safety invariants
+
+- Never send secrets, credentials, or raw connection strings to AI.
+- AI suggestions are advisory and require explicit operator review; AI never saves or deploys.
+- Preserve dual security/privacy approval and prohibit creator self-approval.
+- Do not log tracking tokens or client IP addresses.
+- Keep tracking rate-limit storage bounded and validate token hashes before lookup.
+- Keep DSR fulfillment evidence-based; exception requests require legal review.
+- Do not weaken single-tenant enforcement without complete tenant isolation across data, auth, queues, encryption, and tests.
+- Do not delete logs, state, infrastructure, or user data without explicit authorization.

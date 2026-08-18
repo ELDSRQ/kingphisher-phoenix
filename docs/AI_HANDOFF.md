@@ -9,14 +9,17 @@ is verified against the current `main`.
 
 ## 0. One-paragraph summary
 
-A threat-informed phishing-awareness platform: an operator drives campaigns
+A production-oriented, explicitly single-tenant phishing-awareness platform: an operator drives campaigns
 through a browser-only console (vanilla-JS SPA served by the operator API), the
 backend ingests threat intel from sources, deterministically generates/sanitizes
 campaign content, delivers personalized HTML mail with tracking tokens through a
 local SMTP relay, tracks opens/clicks via a stateless pixel API, and logs every
 mutation into an append-only hash-chained audit. It is GUI-only, offline-first
 (Postgres/Redis/Mailpit/mocks in Docker), Python 3.13 + FastAPI + SQLAlchemy 2 +
-uv workspaces, with six Redis-queue workers and a fail-closed security model.
+uv workspaces, with eight Redis-queue workers and a fail-closed security model.
+Azure deployment is automated through Terraform and a protected GitHub workflow;
+the console includes non-secret, optionally AI-assisted integration and Azure
+deployment wizards.
 
 ---
 
@@ -26,14 +29,14 @@ uv workspaces, with six Redis-queue workers and a fail-closed security model.
 apps/operator-api/   FastAPI :8000 — control plane + console endpoints + SPA mount (/console)
 apps/operator-ui/    Vanilla-JS console (NO build step — edit app.js/styles.css directly)
 apps/tracking-api/   FastAPI :8001 — stateless pixel/click/correction endpoints
-apps/workers/        kp-worker CLI, six roles: ingestion, generation, delivery,
-                     retention, mailbox, reminder (consume Redis queues)
+apps/workers/        kp-worker CLI, eight roles: ingestion, generation, delivery,
+                     retention, mailbox, reminder, alert, directory
 packages/            domain-models, contracts, database, auditing, authorization,
                      sanitization, safety-validation, templating, source-adapters,
                      campaign-patterns, telemetry, test-fixtures
 scripts/             install.sh, run_console.sh, verify_install.sh, supervisor.py,
                      bootstrap_env.sh, seed.py, verify_audit.py, build_launcher_app.sh
-infrastructure/      docker-compose services, postgres role bootstrap, mocks, otel
+infrastructure/      Docker services, Azure Terraform, Postgres bootstrap, mocks, otel
 docs/                architecture/ (service/zone matrix), AI_HANDOFF.md (this file)
 RUNBOOK.md           operator runbook (install/ops/troubleshoot)
 QA_TASKS.md          QA findings from the 2026-08-04 console pass (bugs, all fixed)
@@ -63,8 +66,9 @@ Apps depend only on packages — **never import across apps**. Keep it that way.
 - structlog (telemetry), Jinja2 (sandboxed templating), PyJWT (console HS256).
 - Docker Compose: postgres, redis, mailpit (SMTP relay + UI), otel-collector,
   mock-idp :8443, mock-graph :8181, mock-ai :8282.
-- Gate: `make test` (pytest, 111 tests), `make lint` (ruff), `make typecheck`
-  (mypy strict, 62 files), `make verify-audit`.
+- Gate: `uv run pytest -q` (182 tests), `make lint` (Ruff plus console syntax),
+  `make typecheck` (mypy strict, 74 files), `make security-scan`, and
+  `make operational-readiness` (7 live tests at the 2026-08-18 handoff).
 
 ---
 
@@ -94,7 +98,7 @@ ORM entities (`kp_database/models.py`):
 | `PrivacyRequest`, `PrivacyNotice`, `RetentionPolicy`, `RetentionAction` | CCPA + retention (0005) |
 | `AuditEvent` | append-only hash chain; INSERT-only role `audit_writer` |
 
-Migrations: `packages/database/alembic/versions/0001..0005_ccpa_retention.py`.
+Migrations: `packages/database/alembic/versions/0001..0008_source_fetch_path.py`.
 `0001` is `Base.metadata.create_all` (fresh installs already contain later
 objects), so every later migration is written **idempotently** with inspector
 guards (`_has_table/_has_column/_has_constraint/_has_fk_to/_has_index`) and
@@ -167,6 +171,11 @@ audit event → `{engaged, engaged_at, actor, last_cancelled, last_tokens_revoke
   to the configured `/setup-assist` provider, validates its bounded response,
   filters cross-step/credential suggestions, and falls back to local guidance.
   It never persists prompts, answers, or suggestions and never applies changes.
+- `GET /api/v1/console/azure-deployment` — four-stage non-secret Azure setup
+  schema with prerequisites and per-field source guidance; `POST
+  /azure-deployment/validate` — deterministic validation for Azure, Entra, DNS,
+  AI gateway, webhook-domain, runner, and Terraform-state values. Neither route
+  persists configuration or starts a deployment.
 - `GET /api/v1/console/status` — pidfile-based alive flags for the APIs +
   eight workers; `POST /restart` / `POST /stop` — marker files in `data/run/`.
 
@@ -216,6 +225,15 @@ Roles:
 - `mailbox` — simulated inbox behavior for mocks; `reminder` — nudges.
 - Worker settings all `KP_WORKER_*` (DSNs, HMAC key, KEK, SMTP, base URLs,
   poll seconds). Test pattern in `apps/workers/tests/test_retention.py`.
+- `alert` — validates allowlisted webhook destinations, signs deliveries,
+  retries transient failures, and dead-letters exhausted messages. ntfy works
+  through the same generic HTTPS webhook contract.
+- `directory` — performs bounded Graph-compatible directory synchronization.
+
+Worker logs are size-bounded, rotated, and compressed by the supervisor.
+Redis/provider connection failures back off; do not reintroduce tight-loop
+exception logging. Treat manual log deletion as destructive and obtain explicit
+authorization first.
 
 ---
 
@@ -242,13 +260,16 @@ Roles:
 ## 8. Testing & gate
 
 ```bash
-make test            # 111 passed — includes apps/operator-api/tests/test_privacy.py,
-                     # apps/workers/tests/test_retention.py
+make test            # 182 passed at the 2026-08-18 handoff
 make lint            # ruff check + format plus node --check for console JavaScript
-make typecheck       # mypy strict (62 files)
+make typecheck       # mypy strict (74 files at handoff)
 make verify-audit    # recompute audit chain
 make verify-install  # health-check a live install (infra, APIs, console auth, pidfiles)
 make operational-readiness # disposable-local full gate plus live HTTP E2E smoke
+make security-scan   # Semgrep plus Trivy dependency/secret scanning
+terraform fmt -check -recursive infrastructure/terraform
+terraform -chdir=infrastructure/terraform validate
+trivy config --exit-code 1 --severity HIGH,CRITICAL infrastructure/terraform
 ```
 
 The readiness E2E is dependency-free HTTP coverage. It logs in, validates
@@ -265,7 +286,7 @@ module-scope `drop_all/create_all` + a skip-if-no-DB guard.
 
 ---
 
-## 9. Environment quirks & gotchas (all real, verified 2026-08-04)
+## 9. Environment quirks & gotchas (verified through 2026-08-18)
 
 1. **Docker CLI wedge (macOS Docker Desktop) — RESOLVED via context**
    The default `~/.docker/run/docker.sock` wedged (proxy held ~10 leaked
@@ -288,13 +309,23 @@ module-scope `drop_all/create_all` + a skip-if-no-DB guard.
 8. `.env` DSNs embed the rotated credentials — editing `.env` by hand must keep
    `OPERATOR_API_*`/`KP_WORKER_*`/`TRACKING_API_*` DSNs in sync (bootstrap_env
    does this; prefer it over manual edits).
+9. Docker's default CLI socket may not respond even while the engine socket is
+   healthy. Repository scripts detect and use Docker Desktop's engine socket;
+   `verify_install.sh` reports this fallback explicitly.
+10. Azure production applies require the protected GitHub environment, its
+    required reviewers, workload identity, an initialized remote-state backend,
+    and a private runner with VNet access. The console wizard exports non-secret
+    inputs only and intentionally cannot apply infrastructure.
+11. Visual Azure-wizard qualification remains pending because the in-app Browser
+    plugin updated during the previous agent session. Retry it in a fresh Codex
+    session and report controller attachment failures separately from app bugs.
 
 ---
 
 ## 10. Suggested next enhancements (roughly ordered)
 
-1. Unit tests for the new `GET /api/v1/kill-switch` (engaged + not-engaged
-   paths) in `apps/operator-api/tests/`.
+1. Complete in-app-browser visual qualification of the Azure deployment wizard,
+   including help, AI privacy filtering, keyboard focus, validation, and exports.
 2. Console: tracking-events drill-down per campaign (assignments → opens/clicks
    from `TrackingEvent`), export-to-CSV.
 3. Console: retention policy + privacy notice editing UI (models exist; only
@@ -303,8 +334,8 @@ module-scope `drop_all/create_all` + a skip-if-no-DB guard.
 4. `mailbox`/`reminder` workers: flesh out mock inbox handling and reminder
    cadence (currently minimal).
 5. Source adapters: add STIX/bulk_download importers (enum values exist).
-6. E2E: extend the dependency-free live HTTP smoke with Playwright when browser
-   interaction coverage justifies adding and maintaining the browser runtime.
+6. Perform organization-specific Azure production qualification: identity/DNS,
+   private networking, backups/restore, legal/vendor review, and release approval.
 7. OTel collector wiring: confirm worker/API traces reach :4317 and add a
    dashboard note.
 
