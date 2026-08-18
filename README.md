@@ -135,8 +135,11 @@ A production-oriented, single-tenant Azure deployment is automated with
 Terraform and the manually approved GitHub Actions workflow. It uses Container
 Apps, private PostgreSQL and Managed Redis, ACR, Key Vault references, managed
 identity, Azure Communication Services Email, and explicitly bounded Azure
-logging. See [docs/AZURE_DEPLOYMENT.md](docs/AZURE_DEPLOYMENT.md) for bootstrap,
-DNS, deployment, qualification, rollback, and secret-state requirements.
+logging. The console’s **Azure deployment** wizard identifies required values,
+shows where to obtain them, validates them, provides secret-filtered AI help,
+and exports the workflow configuration. See
+[docs/AZURE_DEPLOYMENT.md](docs/AZURE_DEPLOYMENT.md) for bootstrap, DNS,
+deployment, qualification, rollback, and secret-state requirements.
 
 ## Security model
 

@@ -147,6 +147,7 @@ views.login = async (root) => {
 /* ---------- shell ---------- */
 const NAV = [
   ["onboarding", "Setup wizard"],
+  ["azure-deployment", "Azure deployment"],
   ["help", "Help"],
   ["dashboard", "Dashboard"],
   ["campaigns", "Campaigns"],
@@ -424,6 +425,163 @@ views.onboarding = async (root) => {
     stage.querySelector("#wizard-title").focus();
   };
   renderStep();
+};
+
+/* ---------- Azure deployment wizard ---------- */
+views["azure-deployment"] = async (root) => {
+  root.appendChild(el("h2", { text: "Deploy Kingphisher to Azure" }));
+  root.appendChild(el("p", { class: "sub", text: "Gather, validate, and export the non-secret values used by the protected Azure deployment workflow." }));
+  let schema;
+  try { schema = await api("/console/azure-deployment"); } catch (e) {
+    root.appendChild(el("div", { class: "card", role: "alert", text: `Failed to load Azure deployment guidance: ${e.message}` }));
+    return;
+  }
+  const steps = Array.isArray(schema.steps) ? schema.steps : [];
+  const collected = {};
+  let current = -1;
+  const stage = el("div", { class: "onboarding-stage" });
+  root.appendChild(stage);
+
+  const download = (name, content) => {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+    link.download = name;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  };
+  const render = () => {
+    if (current < 0) {
+      stage.replaceChildren(el("section", { class: "card wizard-card wizard-welcome", "aria-labelledby": "azure-wizard-title" }, [
+        el("div", { class: "eyebrow", text: "AZURE DEPLOYMENT" }),
+        el("h3", { id: "azure-wizard-title", tabindex: "-1", text: "Prepare a secure, automated deployment" }),
+        el("p", { text: "This wizard explains every identifier, hostname, and governance choice required by the deployment automation. It validates your entries before producing a configuration handoff." }),
+        el("ul", { class: "welcome-facts" }, [
+          el("li", { text: "No Azure password, client secret, access key, or Terraform state is requested" }),
+          el("li", { text: "Nothing is provisioned until an authorized operator runs and approves the GitHub workflow" }),
+          el("li", { text: "Production remains protected by the GitHub environment’s required reviewers" }),
+        ]),
+        el("div", { class: "notice", role: "note", text: schema.safety_note }),
+        el("div", { class: "btn-row" }, [
+          el("button", { class: "btn primary", type: "button", text: "Start Azure deployment setup", onclick: () => { current = 0; render(); } }),
+          el("button", { class: "btn", type: "button", text: "Read deployment guide", onclick: () => { location.hash = "help"; } }),
+        ]),
+      ]));
+      stage.querySelector("#azure-wizard-title").focus();
+      return;
+    }
+    const review = current === steps.length;
+    const progress = el("ol", { class: "wizard-progress", "aria-label": "Azure deployment progress" });
+    steps.forEach((step, index) => progress.appendChild(el("li", {
+      class: `${index === current ? "current" : ""} ${index < current ? "done" : ""}`.trim(),
+      "aria-current": index === current ? "step" : null,
+    }, [el("span", { class: "step-number", text: index + 1 }), el("span", { text: step.title })])));
+    progress.appendChild(el("li", { class: review ? "current" : "", "aria-current": review ? "step" : null }, [
+      el("span", { class: "step-number", text: steps.length + 1 }), el("span", { text: "Validate" }),
+    ]));
+
+    if (review) {
+      const resultBox = el("div", { class: "wizard-feedback", role: "status", "aria-live": "polite", text: "Select Validate configuration to run the readiness checks." });
+      const exports = el("div", { class: "btn-row" });
+      const validateButton = el("button", { class: "btn primary", type: "button", text: "Validate configuration", onclick: async () => {
+        validateButton.disabled = true; exports.replaceChildren(); resultBox.textContent = "Validating non-secret deployment values…";
+        try {
+          const result = await api("/console/azure-deployment/validate", { method: "POST", body: JSON.stringify({ values: collected }) });
+          if (!result.ok) {
+            resultBox.className = "wizard-feedback error";
+            resultBox.textContent = Object.entries(result.errors || {}).map(([key, message]) => `${key}: ${message}`).join(" ");
+            return;
+          }
+          resultBox.className = "wizard-feedback success";
+          resultBox.textContent = ["Configuration is structurally ready.", ...(result.warnings || [])].join(" ");
+          const terraformKeys = ["subscription_id", "environment", "location", "name_prefix", "operator_fqdn", "tracking_fqdn", "entra_tenant_id", "entra_client_id", "communication_data_location", "ai_endpoint", "alert_webhook_domains"];
+          const tfvars = terraformKeys.filter((key) => collected[key] !== undefined).map((key) => `${key} = ${JSON.stringify(collected[key])}`).join("\n") + "\n";
+          const workflowValues = {
+            AZURE_SUBSCRIPTION_ID: collected.subscription_id,
+            AZURE_TENANT_ID: collected.entra_tenant_id,
+            ENTRA_APPLICATION_CLIENT_ID: collected.entra_client_id,
+            OPERATOR_FQDN: collected.operator_fqdn,
+            TRACKING_FQDN: collected.tracking_fqdn,
+            AI_GATEWAY_ENDPOINT: collected.ai_endpoint || "",
+            ALERT_WEBHOOK_DOMAINS: collected.alert_webhook_domains || "",
+            TF_STATE_RESOURCE_GROUP: collected.tf_state_resource_group,
+            TF_STATE_STORAGE_ACCOUNT: collected.tf_state_storage_account,
+            TF_STATE_CONTAINER: collected.tf_state_container,
+          };
+          exports.append(
+            el("button", { class: "btn", type: "button", text: "Download Terraform values", onclick: () => download(`${collected.environment}.auto.tfvars`, tfvars) }),
+            el("button", { class: "btn", type: "button", text: "Download GitHub variables", onclick: () => download("github-environment-variables.json", JSON.stringify(workflowValues, null, 2) + "\n") }),
+          );
+        } catch (e) { resultBox.className = "wizard-feedback error"; resultBox.textContent = e.message; }
+        finally { validateButton.disabled = false; }
+      } });
+      const summary = el("dl", { class: "wizard-summary" });
+      steps.forEach((step) => {
+        summary.append(el("dt", { text: step.title }), el("dd", { text: (step.fields || []).map((field) => `${field.label}: ${collected[field.key] || "Not entered"}`).join(" · ") }));
+      });
+      stage.replaceChildren(progress, el("section", { class: "card wizard-card", "aria-labelledby": "azure-wizard-title" }, [
+        el("h3", { id: "azure-wizard-title", tabindex: "-1", text: "Validate and hand off deployment" }),
+        el("p", { text: "Review the non-secret values below. Validation does not contact Azure or deploy resources." }),
+        summary, resultBox, exports,
+        el("div", { class: "notice", role: "note", text: "After adding these values to the protected GitHub environment, an authorized operator runs Azure deployment. The workflow plans, requires environment approval, applies, migrates, and health-checks the release." }),
+        el("div", { class: "btn-row wizard-actions" }, [
+          el("button", { class: "btn", type: "button", text: "Back", onclick: () => { current--; render(); } }), validateButton,
+        ]),
+      ]));
+      stage.querySelector("#azure-wizard-title").focus();
+      return;
+    }
+
+    const step = steps[current];
+    const inputs = {};
+    const form = el("form", { class: "wizard-form" });
+    (step.fields || []).forEach((field, index) => {
+      const id = `azure-${current}-${index}`;
+      const attrs = { id, name: field.key, required: field.required ? "" : null, placeholder: field.placeholder || "", autocomplete: "off", "aria-describedby": `${id}-help` };
+      const input = field.choices?.length
+        ? el("select", attrs, field.choices.map((choice) => el("option", { value: choice.value, text: choice.label })))
+        : el("input", { ...attrs, type: field.type === "url" ? "url" : "text" });
+      input.value = collected[field.key] ?? (field.choices?.[0]?.value || ""); inputs[field.key] = input;
+      form.appendChild(el("div", { class: "wizard-field" }, [
+        el("label", { for: id }, [el("span", { text: field.label }), el("span", { class: `requirement ${field.required ? "required" : "optional"}`, text: field.required ? "Required" : "Optional" })]), input,
+        el("details", { id: `${id}-help`, class: "field-location" }, [el("summary", { text: "Where do I find this?" }), el("p", { text: field.where_to_find })]),
+      ]));
+    });
+    form.addEventListener("submit", (event) => {
+      event.preventDefault(); if (!form.reportValidity()) return;
+      Object.entries(inputs).forEach(([key, input]) => { collected[key] = input.value.trim(); }); current++; render();
+    });
+    form.appendChild(el("div", { class: "btn-row wizard-actions" }, [
+      el("button", { class: "btn", type: "button", text: "Back", onclick: () => { current--; render(); } }),
+      el("button", { class: "btn primary", type: "submit", text: "Save in this wizard and continue" }),
+    ]));
+    const answer = el("div", { class: "assistant-answer", role: "status", "aria-live": "polite", text: "Ask where to find a value or why it is required. Nothing is changed automatically." });
+    const question = el("textarea", { rows: "2", placeholder: "For example: Where do I find my tenant ID?", "aria-label": `Question about ${step.title}` });
+    const ask = el("button", { class: "btn small", type: "button", text: "Ask setup assistant", onclick: async () => {
+      if (!question.value.trim()) { question.focus(); return; } ask.disabled = true; answer.textContent = "Thinking…";
+      const values = Object.fromEntries(Object.entries(inputs).filter(([, input]) => input.value).map(([key, input]) => [key, input.value]));
+      try {
+        const result = await api("/console/onboarding/assist", { method: "POST", body: JSON.stringify({ component: step.id, question: question.value.trim(), values }) });
+        answer.textContent = [result.answer, ...(result.warnings || [])].filter(Boolean).join(" ");
+      } catch (e) { answer.textContent = `Assistant unavailable: ${e.message}`; }
+      finally { ask.disabled = false; }
+    } });
+    const assistant = el("details", { class: "setup-assistant" }, [
+      el("summary", { text: "Ask the AI setup assistant" }),
+      el("p", { class: "field-help", text: "Only the non-secret fields on this page are eligible for assistance. AI cannot deploy or save settings." }),
+      question, el("div", { class: "btn-row" }, [ask]), answer,
+    ]);
+    stage.replaceChildren(progress, el("section", { class: "card wizard-card", "aria-labelledby": "azure-wizard-title" }, [
+      el("div", { class: "step-heading" }, [el("h3", { id: "azure-wizard-title", tabindex: "-1", text: step.title }), el("span", { class: "step-kind required", text: "Deployment" })]),
+      el("p", { class: "wizard-description", text: step.description }),
+      el("details", { class: "context-help", open: "" }, [
+        el("summary", { text: "Prerequisites for this step" }),
+        el("ul", { class: "prerequisite-list" }, (step.prerequisites || []).map((item) => el("li", { text: item }))),
+        el("p", { class: "field-help", text: `Typical time: about ${step.estimated_minutes || 5} minutes.` }),
+      ]), form, assistant,
+    ]));
+    stage.querySelector("#azure-wizard-title").focus();
+  };
+  render();
 };
 
 /* ---------- help ---------- */

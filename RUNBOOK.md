@@ -134,6 +134,7 @@ from `.env`.
 | Privacy | view current privacy notice, submit data-subject requests (CCPA), verify, export (`access_export`), fulfill (`deletion`) |
 | Audit | hash-chained event log, "Verify chain", global kill switch with engaged-state indicator |
 | Setup wizard | guided OIDC, Graph-compatible directory, SMTP, reported mailbox, AI, training, and webhook wiring with connection tests |
+| Azure deployment | guided Azure, Entra, DNS, email-residency, private-runner, and Terraform-state preparation with validation and configuration export |
 | Help | searchable plain-language setup topics and definitions for terms such as OIDC, SMTP, and webhooks |
 | Settings | masked `.env` editor (blank a secret to keep it), Reload, Restart services, Stop services |
 

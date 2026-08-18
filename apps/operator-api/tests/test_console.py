@@ -367,8 +367,93 @@ def test_console_help_explains_setup_terms_and_requires_admin(env_file: str) -> 
         assert client.get("/api/v1/console/help").status_code == 401
         body = client.get("/api/v1/console/help", headers=_auth(_login(client))).json()
         terms = {entry["term"] for entry in body["glossary"]}
-        assert {"OIDC", "Audience", "Client ID", "SMTP", "STARTTLS", "API key", "Webhook"} <= terms
+        assert {
+            "OIDC",
+            "Audience",
+            "Client ID",
+            "SMTP",
+            "STARTTLS",
+            "API key",
+            "Webhook",
+            "Azure subscription ID",
+            "Tenant ID",
+            "Terraform state",
+            "Workload identity",
+        } <= terms
+        assert any(topic["id"] == "azure-deployment" for topic in body["topics"])
         assert "Never paste" in body["safety_note"]
+
+
+def test_azure_deployment_wizard_is_nonsecret_and_guided(env_file: str) -> None:
+    with TestClient(_app(env_file)) as client:
+        assert client.get("/api/v1/console/azure-deployment").status_code == 401
+        body = client.get("/api/v1/console/azure-deployment", headers=_auth(_login(client))).json()
+    assert len(body["steps"]) == 4
+    fields = [field for step in body["steps"] for field in step["fields"]]
+    assert fields and all(field["secret"] is False for field in fields)
+    assert all(field["where_to_find"] for field in fields)
+    assert "never asks" in body["safety_note"]
+    assert {step["id"] for step in body["steps"]} == {
+        "azure_foundation",
+        "azure_identity_dns",
+        "azure_integrations",
+        "azure_automation",
+    }
+
+
+def test_azure_deployment_validation_accepts_safe_values_and_rejects_bad_hosts(env_file: str) -> None:
+    valid = {
+        "subscription_id": "11111111-1111-1111-1111-111111111111",
+        "environment": "staging",
+        "location": "eastus2",
+        "name_prefix": "kp",
+        "entra_tenant_id": "22222222-2222-2222-2222-222222222222",
+        "entra_client_id": "33333333-3333-3333-3333-333333333333",
+        "operator_fqdn": "awareness.example.com",
+        "tracking_fqdn": "awareness-track.example.com",
+        "communication_data_location": "United States",
+        "ai_endpoint": "https://ai-gateway.example.com",
+        "alert_webhook_domains": "ntfy.example.com,hooks.example.com",
+        "tf_state_resource_group": "rg-kp-state",
+        "tf_state_storage_account": "kptfstateprod",
+        "tf_state_container": "tfstate",
+        "runner_label": "azure-vnet",
+    }
+    with TestClient(_app(env_file)) as client:
+        headers = _auth(_login(client))
+        response = client.post("/api/v1/console/azure-deployment/validate", headers=headers, json={"values": valid})
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "errors": {}, "warnings": []}
+        invalid = dict(
+            valid, tracking_fqdn="https://awareness.example.com/path", ai_endpoint="https://user:pass@ai.example"
+        )
+        response = client.post("/api/v1/console/azure-deployment/validate", headers=headers, json={"values": invalid})
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert {"tracking_fqdn", "ai_endpoint"} <= response.json()["errors"].keys()
+        forbidden = client.post(
+            "/api/v1/console/azure-deployment/validate",
+            headers=headers,
+            json={"values": {**valid, "client_secret": "never-accepted"}},
+        )
+        assert forbidden.status_code == 403
+
+
+def test_azure_deployment_assistance_is_advisory_and_nonsecret(env_file: str) -> None:
+    with TestClient(_app(env_file)) as client:
+        response = client.post(
+            "/api/v1/console/onboarding/assist",
+            headers=_auth(_login(client)),
+            json={
+                "component": "azure_identity_dns",
+                "question": "Where do I find the tenant and application IDs? password=disposable-fake-secret",
+                "values": {"entra_tenant_id": "22222222-2222-2222-2222-222222222222"},
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["suggestions"] == {}
+    assert "Entra" in response.json()["answer"]
+    assert "disposable-fake-secret" not in response.text
 
 
 def test_setup_assist_falls_back_without_ai_and_does_not_audit(env_file: str) -> None:

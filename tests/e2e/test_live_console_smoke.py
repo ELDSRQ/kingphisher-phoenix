@@ -270,11 +270,50 @@ def test_onboarding_contract_and_local_connectors() -> None:
         pytest.fail("directory worker did not record a completed sync")
 
 
+def test_azure_deployment_wizard_contract() -> None:
+    administrator = _login()
+    status, wizard = _json_request("/api/v1/console/azure-deployment", token=administrator)
+    assert status == 200
+    steps = wizard["steps"]  # type: ignore[index]
+    assert {step["id"] for step in steps} == {
+        "azure_foundation",
+        "azure_identity_dns",
+        "azure_integrations",
+        "azure_automation",
+    }
+    assert all(field["secret"] is False for step in steps for field in step["fields"])
+    assert all(field["where_to_find"] for step in steps for field in step["fields"])
+    values = {
+        "subscription_id": "11111111-1111-1111-1111-111111111111",
+        "environment": "staging",
+        "location": "eastus2",
+        "name_prefix": "kp",
+        "entra_tenant_id": "22222222-2222-2222-2222-222222222222",
+        "entra_client_id": "33333333-3333-3333-3333-333333333333",
+        "operator_fqdn": "awareness.example.com",
+        "tracking_fqdn": "awareness-track.example.com",
+        "communication_data_location": "United States",
+        "tf_state_resource_group": "rg-kp-state",
+        "tf_state_storage_account": "kptfstateprod",
+        "tf_state_container": "tfstate",
+        "runner_label": "azure-vnet",
+    }
+    validation_status, validation = _json_request(
+        "/api/v1/console/azure-deployment/validate",
+        token=administrator,
+        method="POST",
+        body={"values": values},
+    )
+    assert validation_status == 200 and validation["ok"] is True  # type: ignore[index]
+
+
 def test_setup_help_and_assistant() -> None:
     administrator = _login()
     help_status, help_content = _json_request("/api/v1/console/help", token=administrator)
     assert help_status == 200
     assert any(item["term"] == "OIDC" for item in help_content["glossary"])  # type: ignore[index]
+    assert any(item["term"] == "Terraform state" for item in help_content["glossary"])  # type: ignore[index]
+    assert any(item["id"] == "azure-deployment" for item in help_content["topics"])  # type: ignore[index]
 
     assist_status, assistance = _json_request(
         "/api/v1/console/onboarding/assist",

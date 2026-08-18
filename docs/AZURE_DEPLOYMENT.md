@@ -4,6 +4,20 @@ The Terraform stack in `infrastructure/terraform` deploys a single-tenant,
 Azure-contained runtime. It is deliberately separate from the disposable local
 Docker Compose installation.
 
+## Guided setup
+
+Open the operator console and select **Azure deployment**. The four-stage GUI
+wizard explains every non-secret value, provides a “Where do I find this?” link
+beside each field, and offers privacy-filtered AI guidance. It validates Azure
+IDs, hostnames, endpoint safety, environment choices, and Terraform-state names
+before enabling configuration downloads.
+
+The wizard never asks for passwords, client secrets, access keys, federated
+tokens, or Terraform state. It does not silently save or deploy anything. After
+review, it generates Terraform values and the GitHub environment-variable
+handoff used by the protected workflow. An authorized operator must still start
+the workflow, review the plan, and approve the target GitHub environment.
+
 ## Architecture
 
 - Azure Container Apps: operator API/UI, tracking API, eight continuously

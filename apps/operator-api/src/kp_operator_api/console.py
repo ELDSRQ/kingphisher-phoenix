@@ -593,6 +593,298 @@ class SetupAssistResponse(BaseModel):
     warnings: list[str]
 
 
+class AzureDeploymentValidationRequest(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+
+
+_AZURE_DEPLOYMENT_STEPS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "azure_foundation",
+        "title": "Azure account and environment",
+        "description": "Choose the Azure subscription, region, environment, and short resource-name prefix.",
+        "estimated_minutes": 5,
+        "prerequisites": (
+            "Azure subscription Owner or an approved deployment identity",
+            "A region approved for organizational data residency",
+            "A separate staging environment before production",
+        ),
+        "fields": (
+            (
+                "subscription_id",
+                "Azure subscription ID",
+                "text",
+                True,
+                "00000000-0000-0000-0000-000000000000",
+                "Azure portal → Subscriptions → select the target subscription → Subscription ID.",
+            ),
+            (
+                "environment",
+                "Environment",
+                "select",
+                True,
+                "staging",
+                "Choose staging for the first deployment. Production enables HA and stronger retention controls.",
+            ),
+            (
+                "location",
+                "Azure region",
+                "text",
+                True,
+                "eastus2",
+                "Azure portal → a permitted resource group → Location, or ask the cloud governance team.",
+            ),
+            (
+                "name_prefix",
+                "Resource prefix",
+                "text",
+                True,
+                "kp",
+                "Choose 2–11 lowercase letters, numbers, or hyphens used to recognize these resources.",
+            ),
+        ),
+    },
+    {
+        "id": "azure_identity_dns",
+        "title": "Identity and public addresses",
+        "description": "Connect the deployment to Microsoft Entra and choose the two public HTTPS hostnames.",
+        "estimated_minutes": 10,
+        "prerequisites": (
+            "Microsoft Entra permission to register an application",
+            "Two DNS names in a domain the organization controls",
+            "Approval for an operator console hostname and a separate tracking hostname",
+        ),
+        "fields": (
+            (
+                "entra_tenant_id",
+                "Microsoft Entra tenant ID",
+                "text",
+                True,
+                "00000000-0000-0000-0000-000000000000",
+                "Azure portal → Microsoft Entra ID → Overview → Tenant ID.",
+            ),
+            (
+                "entra_client_id",
+                "Entra application client ID",
+                "text",
+                True,
+                "00000000-0000-0000-0000-000000000000",
+                "Microsoft Entra ID → App registrations → the console application → Application (client) ID.",
+            ),
+            (
+                "operator_fqdn",
+                "Operator console hostname",
+                "text",
+                True,
+                "awareness.example.com",
+                "DNS provider → the organization's approved zone. Create a dedicated hostname for administrators.",
+            ),
+            (
+                "tracking_fqdn",
+                "Tracking hostname",
+                "text",
+                True,
+                "awareness-track.example.com",
+                "DNS provider → the same approved zone. Keep this separate from the operator console hostname.",
+            ),
+        ),
+    },
+    {
+        "id": "azure_integrations",
+        "title": "Azure services and optional integrations",
+        "description": "Choose email data residency and optional private AI and alert endpoints.",
+        "estimated_minutes": 5,
+        "prerequisites": (
+            "Organizational data-residency policy",
+            "An approved Azure-hosted AI gateway if AI guidance is required",
+            "An authenticated Azure-hosted webhook or ntfy service if alerts are required",
+        ),
+        "fields": (
+            (
+                "communication_data_location",
+                "Email data location",
+                "select",
+                True,
+                "United States",
+                "Choose the geography approved for Azure Communication Services email data.",
+            ),
+            (
+                "ai_endpoint",
+                "AI gateway endpoint",
+                "url",
+                False,
+                "https://ai-gateway.example.com",
+                "Azure-hosted gateway → Overview → endpoint. It must expose /propose and /setup-assist.",
+            ),
+            (
+                "alert_webhook_domains",
+                "Allowed alert hostnames",
+                "text",
+                False,
+                "ntfy.example.com",
+                "Copy hostname only from each approved Azure-hosted HTTPS webhook; separate multiple hosts "
+                "with commas.",
+            ),
+        ),
+    },
+    {
+        "id": "azure_automation",
+        "title": "Deployment automation",
+        "description": "Identify the private Terraform-state location and confirm the protected deployment runner.",
+        "estimated_minutes": 8,
+        "prerequisites": (
+            "Azure Storage account with blob versioning and RBAC",
+            "A private self-hosted GitHub runner attached to the deployment network",
+            "GitHub staging and production environments with required production reviewers",
+        ),
+        "fields": (
+            (
+                "tf_state_resource_group",
+                "Terraform-state resource group",
+                "text",
+                True,
+                "rg-kp-terraform-state",
+                "Azure portal → Resource groups → the dedicated infrastructure-state resource group.",
+            ),
+            (
+                "tf_state_storage_account",
+                "Terraform-state storage account",
+                "text",
+                True,
+                "kptfstateprod",
+                "Azure portal → Storage accounts → the private account holding the tfstate container.",
+            ),
+            (
+                "tf_state_container",
+                "Terraform-state container",
+                "text",
+                True,
+                "tfstate",
+                "Storage account → Data storage → Containers → the private state container.",
+            ),
+            (
+                "runner_label",
+                "Private runner label",
+                "text",
+                True,
+                "azure-vnet",
+                "GitHub repository → Settings → Actions → Runners → labels. The workflow expects azure-vnet.",
+            ),
+        ),
+    },
+)
+
+
+def _azure_deployment_schema() -> dict[str, Any]:
+    select_choices = {
+        "environment": [
+            {"value": "staging", "label": "Staging (recommended first)"},
+            {"value": "production", "label": "Production"},
+        ],
+        "communication_data_location": [
+            {"value": value, "label": value}
+            for value in ("United States", "Canada", "Europe", "UK", "Australia", "Asia Pacific")
+        ],
+    }
+    return {
+        "steps": [
+            {
+                **{key: value for key, value in step.items() if key != "fields"},
+                "fields": [
+                    {
+                        "key": key,
+                        "label": label,
+                        "type": input_type,
+                        "required": required,
+                        "secret": False,
+                        "placeholder": placeholder,
+                        "where_to_find": location,
+                        "choices": select_choices.get(key, []),
+                    }
+                    for key, label, input_type, required, placeholder, location in step["fields"]
+                ],
+            }
+            for step in _AZURE_DEPLOYMENT_STEPS
+        ],
+        "safety_note": "This wizard never asks for Azure passwords, client secrets, access keys, or Terraform state.",
+        "workflow": ".github/workflows/azure-deploy.yml",
+    }
+
+
+@router.get("/azure-deployment", response_model=dict[str, Any])
+def get_azure_deployment(
+    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    return _azure_deployment_schema()
+
+
+@router.post("/azure-deployment/validate", response_model=dict[str, Any])
+def validate_azure_deployment(
+    body: AzureDeploymentValidationRequest,
+    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    allowed = {field[0] for step in _AZURE_DEPLOYMENT_STEPS for field in step["fields"]}
+    unknown = set(body.values) - allowed
+    if unknown:
+        raise PermissionDeniedError(f"rejected Azure deployment keys: {sorted(unknown)}")
+    values = {key: value.strip() for key, value in body.values.items()}
+    errors: dict[str, str] = {}
+    uuid_keys = ("subscription_id", "entra_tenant_id", "entra_client_id")
+    uuid_pattern = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+    for key in uuid_keys:
+        if not uuid_pattern.fullmatch(values.get(key, "")):
+            errors[key] = "Enter the complete UUID shown in Azure or Microsoft Entra."
+    if values.get("environment") not in {"staging", "production"}:
+        errors["environment"] = "Choose staging or production."
+    if not re.fullmatch(r"[a-z][a-z0-9-]{1,10}", values.get("name_prefix", "")):
+        errors["name_prefix"] = "Use 2–11 lowercase letters, numbers, or hyphens."
+    if not re.fullmatch(r"[a-z0-9]+", values.get("location", "")):
+        errors["location"] = "Enter the Azure region code, such as eastus2."
+    hostname_pattern = re.compile(r"^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+    for key in ("operator_fqdn", "tracking_fqdn"):
+        if not hostname_pattern.fullmatch(values.get(key, "").lower()):
+            errors[key] = "Enter a hostname only, without https:// or a path."
+    if values.get("operator_fqdn", "").lower() == values.get("tracking_fqdn", "").lower():
+        errors["tracking_fqdn"] = "Use a hostname separate from the operator console."
+    endpoint = values.get("ai_endpoint", "")
+    if endpoint:
+        parsed = urlparse(endpoint)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            errors["ai_endpoint"] = "Use an HTTPS base URL without credentials or query parameters."
+    domains = [item.strip().lower() for item in values.get("alert_webhook_domains", "").split(",") if item.strip()]
+    if any(not hostname_pattern.fullmatch(domain) for domain in domains):
+        errors["alert_webhook_domains"] = "Enter hostnames only, separated by commas."
+    if not re.fullmatch(r"[a-z0-9]{3,24}", values.get("tf_state_storage_account", "")):
+        errors["tf_state_storage_account"] = "Use the 3–24 character lowercase Azure Storage account name."
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?", values.get("tf_state_container", "")):
+        errors["tf_state_container"] = "Enter the lowercase blob container name."
+    if values.get("communication_data_location") not in {
+        "United States",
+        "Canada",
+        "Europe",
+        "UK",
+        "Australia",
+        "Asia Pacific",
+    }:
+        errors["communication_data_location"] = "Choose one of the supported data locations."
+    required = {field[0] for step in _AZURE_DEPLOYMENT_STEPS for field in step["fields"] if field[3]}
+    for key in required:
+        if not values.get(key):
+            errors.setdefault(key, "This value is required.")
+    warnings = []
+    if not endpoint:
+        warnings.append("No AI gateway is configured; deterministic local setup guidance will remain available.")
+    if values.get("runner_label") != "azure-vnet":
+        warnings.append("The checked-in workflow currently selects the azure-vnet runner label.")
+    return {"ok": not errors, "errors": errors, "warnings": warnings}
+
+
 _FIELD_HELP: dict[str, tuple[str, str]] = {
     "OPERATOR_API_OIDC_MODE": (
         "Choose 'dev' only for local testing. Choose 'oidc' to let employees sign in through your identity provider.",
@@ -781,6 +1073,24 @@ _GLOSSARY: tuple[dict[str, str], ...] = (
         "meaning": "A private credential sent to a service. Treat it like a password and rotate it if exposed.",
     },
     {"term": "Webhook", "meaning": "An HTTPS endpoint that receives automatic event notifications from this platform."},
+    {
+        "term": "Azure subscription ID",
+        "meaning": "The non-secret identifier for the Azure subscription that will own the deployment resources.",
+    },
+    {
+        "term": "Tenant ID",
+        "meaning": "The non-secret identifier for your Microsoft Entra directory; find it on the Entra overview page.",
+    },
+    {
+        "term": "Terraform state",
+        "meaning": "Terraform's record of deployed resources. Store it in the dedicated, access-controlled "
+        "Azure Storage backend prepared before deployment.",
+    },
+    {
+        "term": "Workload identity",
+        "meaning": "A short-lived, federated identity used by deployment automation instead of a stored Azure "
+        "client secret.",
+    },
 )
 
 _TOPICS: tuple[dict[str, str], ...] = (
@@ -805,6 +1115,13 @@ _TOPICS: tuple[dict[str, str], ...] = (
         "title": "Connection tests",
         "summary": "Test each connection before completing setup. Tests use entered values transiently and do "
         "not save them.",
+    },
+    {
+        "id": "azure-deployment",
+        "title": "Azure deployment preparation",
+        "summary": "Use Azure deployment to collect and validate non-secret subscription, Entra, DNS, integration, "
+        "and Terraform backend values. Export them for the protected GitHub workflow; the wizard never requests "
+        "Azure credentials, saves values on the server, or starts a deployment.",
     },
 )
 
@@ -893,6 +1210,9 @@ def _component_nonsecret_keys(component: str) -> frozenset[str]:
     for definition in _ONBOARDING_STEPS:
         if definition["id"] == component:
             return frozenset(field[0] for field in definition["fields"] if not field[4])
+    for definition in _AZURE_DEPLOYMENT_STEPS:
+        if definition["id"] == component:
+            return frozenset(field[0] for field in definition["fields"])
     return frozenset()
 
 
@@ -937,6 +1257,22 @@ def _curated_assistance(component: str) -> str:
         "ai": (
             "Connect a compatible /propose gateway. AI output remains advisory and is still checked by "
             "deterministic safety rules before use."
+        ),
+        "azure_foundation": (
+            "Open Azure portal → Subscriptions to copy the subscription ID, then confirm the approved Azure "
+            "region with your cloud governance team. Start with staging and use a short lowercase prefix."
+        ),
+        "azure_identity_dns": (
+            "Find the tenant ID under Microsoft Entra ID → Overview and the client ID under App registrations. "
+            "Ask the DNS administrator for separate operator and tracking hostnames; never paste a client secret."
+        ),
+        "azure_integrations": (
+            "Choose the ACS data geography required by policy. An AI value must be an approved Azure-hosted "
+            "gateway exposing /propose and /setup-assist, not a raw model endpoint. Use hostnames only for alerts."
+        ),
+        "azure_automation": (
+            "Use a dedicated private Storage container for Terraform state and a self-hosted GitHub runner with "
+            "the azure-vnet label. Configure deployment identity through OIDC; do not create a CI client secret."
         ),
         "training": (
             "Choose the exact HTTPS training destination and allowlist only domains your organization controls "
@@ -989,7 +1325,8 @@ async def assist_onboarding(
     allowed_keys = _component_nonsecret_keys(component)
     if not allowed_keys:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unsupported component")
-    forbidden = set(body.values) - _ALLOWED_KEYS
+    azure_assist_keys = {field[0] for step in _AZURE_DEPLOYMENT_STEPS for field in step["fields"]}
+    forbidden = set(body.values) - (_ALLOWED_KEYS | azure_assist_keys)
     if forbidden:
         raise PermissionDeniedError(f"rejected configuration keys: {sorted(forbidden)}")
     environment = _env_values(_env_path(request))
