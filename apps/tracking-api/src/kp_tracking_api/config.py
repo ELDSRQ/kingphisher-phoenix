@@ -8,7 +8,7 @@ class TrackingApiSettings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8001
     database_url: str = "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher"
-    training_base_url: str = "http://localhost:3000"
+    training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
     rate_limit_ip_per_min: int = 60
     rate_limit_token_per_min: int = 5
     rate_limit_global_per_min: int = 3000

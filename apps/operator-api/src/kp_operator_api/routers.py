@@ -3,7 +3,7 @@ patterns, templates, audit.
 
 Every mutating endpoint records a hash-chained audit event and enforces
 RBAC. Deterministic checks (safety validation, approval requirements,
-self-approval block, manifest hashing) happen here, in-process, so they cannot
+self-approval checks on legacy review routes, manifest hashing) happen here, in-process, so they cannot
 be bypassed by the client.
 """
 
@@ -243,14 +243,14 @@ def schedule_campaign(
     principal: Principal = Depends(require_capability(Capability.SCHEDULE_CAMPAIGN)),
 ) -> dict[str, Any]:
     campaign = _get_campaign(session, campaign_id)
-    if campaign.state not in (dm.CampaignState.APPROVED, dm.CampaignState.SCHEDULED):
-        raise ConflictError("campaign must be APPROVED before scheduling")
+    if campaign.state not in (dm.CampaignState.DRAFT, dm.CampaignState.APPROVED, dm.CampaignState.SCHEDULED):
+        raise ConflictError("only draft or approved campaigns can be scheduled")
     if campaign.schedule_start is None:
         raise ValidationError_("campaign requires a schedule start")
     schedule_start = campaign.schedule_start
     if schedule_start.tzinfo is None:
         raise ValidationError_("schedule start must include a timezone offset")
-    first_schedule = campaign.state == dm.CampaignState.APPROVED
+    first_schedule = campaign.state != dm.CampaignState.SCHEDULED
     campaign.state = dm.CampaignState.SCHEDULED
     # prepare_campaign commits assignments and the SCHEDULED state together.
     # Publishing only after that commit closes the consumer/state race. A

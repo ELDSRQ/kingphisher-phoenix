@@ -110,6 +110,15 @@ def test_click_is_deduplicated_like_open(monkeypatch: pytest.MonkeyPatch) -> Non
         assert len(fake.added) == 1
 
 
+def test_local_training_awareness_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, _settings(), _FakeSession())
+    with client:
+        response = client.get("/v1/training/awareness")
+    assert response.status_code == 200
+    assert "security awareness simulation" in response.text
+    assert response.headers["cache-control"] == "no-store"
+
+
 def test_open_records_minimized_ip_and_truncated_ua(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeSession()
     client = _client(monkeypatch, _settings(), fake)

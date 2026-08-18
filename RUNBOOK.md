@@ -104,8 +104,8 @@ Docker/Compose, curl, Node, a populated `.env`,
 and the full stack already running. Tests must use a separate
 `DATABASE_URL_TEST`; the script fails if it matches the application database.
 The E2E stage uses seeded approved pattern/template records and creates one
-uniquely named campaign with distinct author, security, privacy, and operator
-principals. It adds a local web-alert subscription and schedules the campaign
+uniquely named campaign with the local administrator. It adds a local web-alert
+subscription and schedules the campaign
 24 hours ahead with `max_recipients=1`; it never contacts an external alert
 provider. Lifecycle mutation is hard-limited to loopback, `dev` authentication,
 and `single_tenant` deployment mode, so run the gate on a disposable local DB.
@@ -186,14 +186,21 @@ Graph/AI/mailbox tokens. Restart services from the wizard after changing them.
 ### 2.4 Campaign lifecycle (as an operator)
 
 1. **Create** a campaign from an approved pattern (DRAFT).
-2. **Approve** — needs security + privacy approvals; self-approval is blocked.
-3. **Schedule / send** — becomes SCHEDULED → ACTIVE; the delivery worker sends
+2. **Schedule / send** — an authenticated campaign operator can schedule the
+   draft directly; it becomes SCHEDULED → ACTIVE and the delivery worker sends
    personalized HTML mail through Mailpit's SMTP relay (local) with tracking
    pixel + click-redirect tokens.
 4. **Monitor** the dashboard; use the **kill switch** (global, or scoped to a
    campaign) to revoke queued deliveries and tracking tokens immediately.
 5. Outcomes are COMPLETED / EXPIRED; delivered data is purged per the active
    retention policy (default 365 days).
+
+For the no-credential local path, messages are captured by Mailpit at
+`http://127.0.0.1:8025/`. Seeded messages use their unique tracking click URL;
+the tracking API records the event and redirects to its built-in awareness page
+at `http://127.0.0.1:8001/v1/training/awareness`. Previously delivered messages
+retain the URL embedded when they were rendered, so create a new campaign after
+changing delivery or training-link configuration.
 
 ### 2.5 Recipient CSV import format
 
@@ -372,7 +379,7 @@ behavior.
 - **Never commit `.env`.** It is gitignored; secrets live only on the machine.
 - Audit is append-only and hash-chained (`make verify-audit`); do not add
   UPDATE/DELETE paths to `audit_events`.
-- RBAC enforces a hard no-self-approval rule; do not weaken it.
+- RBAC restricts campaign scheduling to authorized campaign operators.
 - Safety validation is deterministic and outside any AI model (GEN-004 gate);
   campaign content must pass it at save and before delivery.
 - The console JWT lives in `sessionStorage` (never `localStorage`) and expires

@@ -208,6 +208,19 @@ def _seed_pattern(session: Session, source_id: UUID) -> CampaignPattern:
 def _seed_template(session: Session) -> TemplateVersion:
     existing = session.scalar(select(TemplateVersion).where(TemplateVersion.idempotency_key == "seed-template"))
     if existing is not None:
+        # Earlier local seeds hard-coded training.local and bypassed click attribution.
+        existing.safe_html = (
+            "<p>Dear {{ recipient.first_name }}, our records show an outstanding invoice "
+            "that requires review.</p>"
+            "<p>This is a training simulation. "
+            '<a href="{{ tracking.click_url }}">Complete the awareness module</a>.</p>'
+        )
+        existing.plain_text = (
+            "Dear {{ recipient.first_name }}, our records show an outstanding invoice "
+            "that requires review. This is a training simulation — "
+            "learn more at {{ tracking.click_url }}."
+        )
+        session.commit()
         return existing
     template = TemplateVersion(
         template_version_id=uuid5(NAMESPACE_URL, "seed-template"),
@@ -235,12 +248,12 @@ def _seed_template(session: Session) -> TemplateVersion:
             "<p>Dear {{ recipient.first_name }}, our records show an outstanding invoice "
             "that requires review.</p>"
             "<p>This is a training simulation. "
-            '<a href="https://training.local/awareness">Complete the awareness module</a>.</p>'
+            '<a href="{{ tracking.click_url }}">Complete the awareness module</a>.</p>'
         ),
         plain_text=(
             "Dear {{ recipient.first_name }}, our records show an outstanding invoice "
             "that requires review. This is a training simulation — "
-            "learn more at https://training.local/awareness."
+            "learn more at {{ tracking.click_url }}."
         ),
         subject="Invoice requires immediate review",
         synthetic_sender_display="Accounts Payable",

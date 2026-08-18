@@ -661,13 +661,7 @@ views.dashboard = async (root) => {
 /* ---------- campaigns ---------- */
 views.campaigns = async (root) => {
   root.appendChild(el("h2", { text: "Campaigns" }));
-  root.appendChild(el("p", { class: "sub", text: "Create, approve, schedule and manage campaigns." }));
-  if (sessionInfo()?.approvalLimited) {
-    root.appendChild(el("div", { class: "notice", role: "note" }, [
-      el("strong", { text: "Development identity limitation. " }),
-      el("span", { text: "Password login uses one fixed identity. It cannot approve a campaign it created. Use separately authenticated security and privacy approvers through the configured identity provider; self-approval remains prohibited." }),
-    ]));
-  }
+  root.appendChild(el("p", { class: "sub", text: "Create, schedule and manage campaigns from one administrator account." }));
 
   let campaigns;
   try { campaigns = await api("/campaigns"); } catch (e) {
@@ -685,7 +679,7 @@ views.campaigns = async (root) => {
       el("div", {}, [
         el("label", { for: "c-title", text: "Title" }), el("input", { id: "c-title" }),
         el("label", { for: "c-sender", text: "Sender mailbox" }), el("input", { id: "c-sender", value: "security-drills@example.com" }),
-        el("label", { for: "c-tdomain", text: "Training domain" }), el("input", { id: "c-tdomain", value: "training.local" }),
+        el("label", { for: "c-tdomain", text: "Training domain" }), el("input", { id: "c-tdomain", value: "127.0.0.1" }),
         el("label", { for: "c-max", text: "Max recipients" }), el("input", { id: "c-max", type: "number", min: "1", max: "100000", value: "1000" }),
       ]),
       el("div", {}, [
@@ -733,7 +727,7 @@ views.campaigns = async (root) => {
       el("td", { text: c.state }),
       el("td", {}, (() => {
         const actions = [];
-        if (c.state === "draft") actions.push(el("button", { class: "btn small", text: "Submit", onclick: act(`/campaigns/${c.campaign_id}/submit`, "Submitted") }));
+        if (c.state === "draft") actions.push(el("button", { class: "btn small primary", text: "Schedule", onclick: scheduleAct(c) }));
         if (c.state === "pending_approval") {
           for (const type of ["security", "privacy"]) {
             actions.push(el("button", { class: "btn small", text: `Approve ${type}`, onclick: approvalAct(c, type, "approved") }));

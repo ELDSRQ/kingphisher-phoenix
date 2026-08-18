@@ -33,7 +33,7 @@ Apps depend only on packages (no cross-app imports).
 
 ## Data lifecycle
 
-- Campaign lifecycle: DRAFT → PENDING_APPROVAL (security + privacy approvals, no self-approval) → SCHEDULED → ACTIVE → COMPLETED/EXPIRED; kill-switch revokes queued sends + tokens.
+- Campaign lifecycle: DRAFT → SCHEDULED → ACTIVE → COMPLETED/EXPIRED; an authorized operator can schedule directly, and the kill-switch revokes queued sends + tokens.
 - Retention: policy-driven purge of delivered assignments, tokens, and (per DSR) recipient/event data (see `privacy_requests`).
 - DSR pipeline: RECEIVED → VERIFYING → IN_PROGRESS → COMPLETED with 45-day SLA fields; export + delete fulfilled by operator-api, audited.
 

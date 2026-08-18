@@ -9,12 +9,12 @@ CLI workflow. Built from the reconstructed build specification
 
 - **One-click operation.** On macOS, double-click `Kingphisher Launcher.app`; on
   any platform, run the installer. Everything starts: infrastructure, APIs, and
-  six background workers.
+  eight background workers.
 - **Browser operator console** at `http://127.0.0.1:8000/console` — dashboard,
   campaigns, recipients, sources, patterns, audit, and settings (including
   Restart / Stop). Secrets are masked; every change is audited.
 - **Deterministic safety model** enforced in code: append-only hash-chained
-  audit, RBAC with a no-self-approval rule, deterministic safety validation
+  audit, role-based access, deterministic safety validation
   outside the AI model, allowlisted sanitized fetching, and a kill switch.
 - **Local mock stack** (Postgres, Redis, Mailpit, mock IdP/Graph/AI) so a full
   campaign lifecycle runs offline — including real email delivery into Mailpit.
@@ -100,8 +100,8 @@ validates configuration, migration state, lint/type/tests, audit integrity,
 service health, console assets, login, and authenticated API access. It requires
 the development `.env`, Docker services, APIs, and workers to be running and
 refuses to run tests when `DATABASE_URL_TEST` equals the application database.
-The final smoke creates a uniquely named campaign with separate author,
-security-reviewer, privacy-reviewer, and scheduling principals, subscribes a
+The final smoke creates a uniquely named campaign with the local administrator,
+subscribes a
 local web alert, and schedules it one day in the future with a cap matching the
 seeded active recipients. This mutation is permitted only against a loopback API in local dev-auth
 mode; use a disposable seeded development database.
@@ -147,7 +147,7 @@ Non-negotiable boundaries enforced in code:
 
 - Append-only, hash-chained audit (`kp_auditing`) — chain integrity verifiable
   with `make verify-audit`
-- RBAC roles with a hard no-self-approval rule (`kp_authorization`)
+- Role-based access for campaign operation and administration (`kp_authorization`)
 - Deterministic safety validation outside any AI model (`kp_safety_validation`)
 - Sanitization: allowlisted HTTPS fetching, HTML→plain-text, instruction/Unicode
   neutralization (`kp_sanitization`)

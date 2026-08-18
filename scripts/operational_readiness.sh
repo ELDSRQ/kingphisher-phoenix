@@ -57,7 +57,7 @@ run "type-check application" make typecheck
 run "run automated tests against the dedicated test database" make test
 run "verify append-only audit chain" make verify-audit
 run "verify running infrastructure, APIs, workers, and console auth" make verify-install
-run "exercise live console/API and distinct-principal campaign lifecycle" env \
+run "exercise live console/API and single-administrator campaign lifecycle" env \
   KP_E2E_PASSWORD="$KP_CONSOLE_PASSWORD" KP_E2E_LIFECYCLE=1 uv run pytest -q tests/e2e
 
 printf '\nOperational readiness gate passed. Lifecycle evidence remains in the local database.\n'

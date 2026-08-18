@@ -88,8 +88,8 @@ ORM entities (`kp_database/models.py`):
 | `Source`, `SourceTerms`, `SourceItem` | threat intel; items flow to generation |
 | `CampaignPattern` | lure pattern (category, review state) |
 | `TemplateVersion` | sandboxed campaign templates (versioned) |
-| `Campaign` | lifecycle + pattern link + approvals |
-| `CampaignApproval` | security/privacy; **no self-approval** (authorization pkg) |
+| `Campaign` | direct operator lifecycle + pattern link; legacy approval states remain readable |
+| `CampaignApproval` | compatibility record for legacy security/privacy review routes |
 | `Recipient` | identity fields AES-256-GCM encrypted via `CipherText` type; `mailbox_sha256` = salted hash (`hash_mailbox`) |
 | `RecipientExclusion`, `TrainingAssignment` | suppression / training links |
 | `TrackingToken` | 256-bit token stored hashed; `status`, `revoked_at/reason`; `recipient_assignment_id` |
@@ -242,8 +242,9 @@ authorization first.
 1. **Audit** — INSERT-only (`audit_writer` role), SHA-256 hash chain + HMAC head
    (`kp_auditing`, `AuditStore`); verify via `make verify-audit` /
    `POST /audit/verify`. Never add UPDATE/DELETE paths to `audit_events`.
-2. **RBAC** — capabilities + hard **no-self-approval** (`kp_authorization`).
-   Never weaken.
+2. **RBAC** — capability checks restrict campaign scheduling and administration.
+   The normal SMB console path allows one authorized administrator to create and
+   schedule a draft directly; legacy approval routes remain for compatibility.
 3. **Safety** — deterministic validation outside any AI model
    (`kp_safety_validation`); gates save and pre-delivery.
 4. **Sanitization** — allowlisted fetching + HTML→plain-text + instruction/
@@ -260,7 +261,7 @@ authorization first.
 ## 8. Testing & gate
 
 ```bash
-make test            # 182 passed at the 2026-08-18 handoff
+make test            # 183 passed at the 2026-08-18 handoff
 make lint            # ruff check + format plus node --check for console JavaScript
 make typecheck       # mypy strict (74 files at handoff)
 make verify-audit    # recompute audit chain
@@ -273,9 +274,9 @@ trivy config --exit-code 1 --severity HIGH,CRITICAL infrastructure/terraform
 ```
 
 The readiness E2E is dependency-free HTTP coverage. It logs in, validates
-assets/auth/provider status, then (only on loopback dev auth) uses distinct JWT
-principals to create, submit, security-approve, privacy-approve, alert-subscribe,
-and future-schedule a one-recipient campaign. It requires seeded approved
+assets/auth/provider status, then (only on loopback dev auth) uses the local
+administrator to create, alert-subscribe, and future-schedule a one-recipient
+campaign directly from DRAFT. It requires seeded approved
 pattern/template records and intentionally leaves the uniquely named campaign
 as audit evidence in the disposable local database.
 

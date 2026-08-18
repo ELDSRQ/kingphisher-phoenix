@@ -25,6 +25,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.responses import HTMLResponse
 from kp_database.models import (
     RecipientAssignment,
     TrackingEvent,
@@ -43,6 +44,30 @@ router = APIRouter(prefix="/v1")
 
 GIF_BYTES = b"\x47\x49\x46\x38\x39\x61\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"  # noqa: E501
 TOKEN_HASH_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
+
+
+@router.get("/training/awareness", response_class=HTMLResponse)
+def training_awareness() -> HTMLResponse:
+    """Local, dependency-free landing page for development simulations."""
+    return HTMLResponse(
+        """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Security awareness training</title>
+<style>
+body{font:18px/1.5 system-ui,sans-serif;max-width:48rem;margin:4rem auto;padding:0 1.5rem;color:#172033}
+main{border:1px solid #ccd4e0;border-radius:12px;padding:2rem}
+h1{line-height:1.2;color:#174a7e}li{margin:.7rem 0}
+</style>
+</head><body><main><h1>This was a security awareness simulation</h1>
+<p>No credentials were collected. The link click was recorded for the campaign report.</p>
+<h2>Warning signs to remember</h2><ul>
+<li>Unexpected urgency or pressure</li>
+<li>An unfamiliar sender or destination</li>
+<li>Requests to open a link before independently verifying the message</li>
+</ul>
+<p>When in doubt, report the message to your IT or security contact.</p></main></body></html>""",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def _session(request: Request) -> Iterator[Session]:

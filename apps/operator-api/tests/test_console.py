@@ -97,7 +97,7 @@ def test_console_session_mints_admin_token(env_file: str) -> None:
         session = client.post("/api/v1/console/session", json={"password": CONSOLE_PASSWORD}).json()
         assert session["auth_mode"] == "dev"
         assert session["principal_id"] == "11111111-1111-4111-8111-111111111111"
-        assert session["approval_limited"] is True
+        assert session["approval_limited"] is False
 
 
 def test_console_session_mints_valid_uuid_subject(env_file: str) -> None:

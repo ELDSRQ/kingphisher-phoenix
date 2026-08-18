@@ -37,8 +37,8 @@ class OperatorApiSettings(BaseSettings):
     max_body_bytes: int = 1_000_000
     redis_url: str = "redis://localhost:6379/0"
     tracking_base_url: str = "http://localhost:8001"
-    training_base_url: str = "http://localhost:3000/training/awareness"
-    training_domains: str = "example.com,training.local"
+    training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
+    training_domains: str = "example.com,127.0.0.1"
     env_file: str = ".env"
     console_static_dir: str = "apps/operator-ui/src/console"
 

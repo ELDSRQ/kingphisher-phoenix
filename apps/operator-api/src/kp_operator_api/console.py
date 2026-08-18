@@ -311,10 +311,7 @@ def create_session(
         expires_in=_SESSION_TTL_SECONDS,
         auth_mode="dev",
         principal_id=CONSOLE_OPERATOR_UUID,
-        # Password login intentionally represents one fixed development
-        # principal.  The UI uses this flag to explain that campaigns created
-        # by this identity require a different OIDC principal for approval.
-        approval_limited=True,
+        approval_limited=False,
     )
 
 

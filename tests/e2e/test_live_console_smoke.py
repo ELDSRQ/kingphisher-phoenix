@@ -131,8 +131,8 @@ def test_login_and_core_api_authorization() -> None:
     assert isinstance(json.loads(payload), dict)
 
 
-def test_distinct_principal_campaign_lifecycle_and_alert_health() -> None:
-    """Create and safely future-schedule a seeded campaign on an explicit local stack."""
+def test_single_administrator_campaign_lifecycle_and_alert_health() -> None:
+    """Create and safely future-schedule a draft campaign with one local operator."""
     if os.getenv("KP_E2E_LIFECYCLE") != "1":
         pytest.skip("set KP_E2E_LIFECYCLE=1 to permit local lifecycle mutations")
     if urlparse(OPERATOR_URL).hostname not in {"127.0.0.1", "localhost", "::1"}:
@@ -144,13 +144,9 @@ def test_distinct_principal_campaign_lifecycle_and_alert_health() -> None:
     assert status == 200 and mode == {"auth_mode": "dev", "deployment_mode": "single_tenant"}
 
     administrator = _login()
-    author = _principal_token("campaign_author", "campaign_operator")
-    security = _principal_token("security_approver")
-    privacy = _principal_token("privacy_approver")
-    operator = _principal_token("campaign_operator")
 
     patterns_status, patterns = _json_request("/api/v1/patterns", token=administrator)
-    templates_status, templates = _json_request("/api/v1/templates", token=author)
+    templates_status, templates = _json_request("/api/v1/templates", token=administrator)
     recipients_status, recipients = _json_request("/api/v1/recipients", token=administrator)
     assert patterns_status == templates_status == 200
     assert recipients_status == 200
@@ -161,7 +157,7 @@ def test_distinct_principal_campaign_lifecycle_and_alert_health() -> None:
     start = datetime.now(UTC) + timedelta(days=1)
     created_status, created = _json_request(
         "/api/v1/campaigns",
-        token=author,
+        token=administrator,
         method="POST",
         body={
             "pattern_id": approved_patterns[0]["campaign_pattern_id"],
@@ -180,42 +176,26 @@ def test_distinct_principal_campaign_lifecycle_and_alert_health() -> None:
     assert created_status == 201, created
     campaign_id = created["campaign_id"]  # type: ignore[index]
 
-    submitted_status, submitted = _json_request(f"/api/v1/campaigns/{campaign_id}/submit", token=author, method="POST")
-    assert submitted_status == 200 and submitted["state"] == "pending_approval"  # type: ignore[index]
-
-    security_status, security_result = _json_request(
-        f"/api/v1/campaigns/{campaign_id}/approvals/security",
-        token=security,
-        method="POST",
-        body={"decision": "approved", "rationale": "E2E security approval"},
-    )
-    assert security_status == 200 and security_result["state"] == "pending_approval"  # type: ignore[index]
-    privacy_status, privacy_result = _json_request(
-        f"/api/v1/campaigns/{campaign_id}/approvals/privacy",
-        token=privacy,
-        method="POST",
-        body={"decision": "approved", "rationale": "E2E privacy approval"},
-    )
-    assert privacy_status == 200 and privacy_result["state"] == "approved"  # type: ignore[index]
-
     subscription_status, subscription = _json_request(
         "/api/v1/alerts/subscriptions",
-        token=operator,
+        token=administrator,
         method="POST",
         body={"campaign_id": campaign_id, "channel": "web"},
     )
     assert subscription_status == 201 and subscription["active"] is True  # type: ignore[index]
 
     scheduled_status, scheduled = _json_request(
-        f"/api/v1/campaigns/{campaign_id}/schedule", token=operator, method="POST"
+        f"/api/v1/campaigns/{campaign_id}/schedule", token=administrator, method="POST"
     )
     assert scheduled_status == 200 and scheduled["state"] == "scheduled"  # type: ignore[index]
 
-    alerts_status, alerts = _json_request(f"/api/v1/alerts/subscriptions?campaign_id={campaign_id}", token=operator)
+    alerts_status, alerts = _json_request(
+        f"/api/v1/alerts/subscriptions?campaign_id={campaign_id}", token=administrator
+    )
     assert alerts_status == 200 and any(item["active"] for item in alerts)  # type: ignore[union-attr]
     ntfy_status, ntfy = _json_request(
         "/api/v1/alerts/subscriptions",
-        token=operator,
+        token=administrator,
         method="POST",
         body={
             "campaign_id": campaign_id,
@@ -225,7 +205,7 @@ def test_distinct_principal_campaign_lifecycle_and_alert_health() -> None:
     )
     assert ntfy_status == 201 and ntfy["active"] is True  # type: ignore[index]
     assert isinstance(ntfy["signing_secret"], str) and ntfy["signing_secret"]  # type: ignore[index]
-    provider_status, provider = _json_request("/api/v1/console/status", token=operator)
+    provider_status, provider = _json_request("/api/v1/console/status", token=administrator)
     assert provider_status == 200
     assert provider["operator_api"] and provider["tracking_api"]  # type: ignore[index]
     assert provider["postgres"] and provider["redis"]  # type: ignore[index]

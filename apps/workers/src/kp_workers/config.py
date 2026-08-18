@@ -70,8 +70,8 @@ class WorkerSettings(BaseSettings):
     reminder_sender: str = "security-awareness@example.com"
     alert_webhook_domains: str = ""
     tracking_base_url: str = "http://localhost:8001"
-    training_base_url: str = "http://localhost:3000/training/awareness"
-    training_domains: str = "example.com,training.local"
+    training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
+    training_domains: str = "example.com,127.0.0.1"
 
     @model_validator(mode="after")
     def validate_provider_credentials(self) -> "WorkerSettings":
