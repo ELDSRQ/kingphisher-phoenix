@@ -116,6 +116,8 @@ def test_console_shell_and_assets() -> None:
     assert js and css
     assert js_type in {"text/javascript", "application/javascript"}
     assert css_type == "text/css"
+    assert b'api("/audit/verify"),' not in js
+    assert js.count(b'api("/audit/verify", { method: "POST" })') >= 2
 
 
 def test_login_and_core_api_authorization() -> None:

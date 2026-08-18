@@ -467,7 +467,7 @@ views.dashboard = async (root) => {
   let status, campaigns, audit;
   try {
     [status, campaigns, audit] = await Promise.all([
-      api("/console/status"), api("/campaigns"), api("/audit/verify"),
+      api("/console/status"), api("/campaigns"), api("/audit/verify", { method: "POST" }),
     ]);
   } catch (e) {
     root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` }));
