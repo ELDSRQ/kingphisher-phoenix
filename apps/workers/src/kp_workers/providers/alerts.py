@@ -31,6 +31,37 @@ class SignedWebhookSender:
         self._resolver = resolver
 
     def send(self, destination: str, signing_secret: str, payload: dict[str, Any]) -> None:
+        self._send_json(destination, signing_secret, payload)
+
+    def send_ntfy(
+        self,
+        destination: str,
+        signing_secret: str,
+        payload: dict[str, Any],
+    ) -> None:
+        parsed = urlparse(destination)
+        topic = parsed.path.strip("/")
+        if not topic or "/" in topic or parsed.query or parsed.fragment:
+            raise ValueError("ntfy destination must be an HTTPS topic URL with one path segment")
+        publish_url = parsed._replace(path="/", params="", query="", fragment="").geturl()
+        event_type = str(payload.get("event_type", "campaign.event"))
+        campaign_id = str(payload.get("campaign_id", "unknown"))
+        ntfy_payload = {
+            "topic": topic,
+            "title": "Kingphisher operational alert",
+            "message": f"{event_type} for campaign {campaign_id}",
+            "tags": ["warning", "shield"],
+        }
+        self._send_json(publish_url, signing_secret, ntfy_payload)
+
+    def _send_json(
+        self,
+        destination: str,
+        signing_secret: str,
+        payload: dict[str, Any],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         parsed = urlparse(destination)
         host, port, ips = self._resolver(destination, self._allowed_domains)
         timestamp = str(int(time.time()))
@@ -45,6 +76,7 @@ class SignedWebhookSender:
                     "Host": parsed.hostname or host,
                     "X-KP-Timestamp": timestamp,
                     "X-KP-Signature-256": f"sha256={signature}",
+                    **(extra_headers or {}),
                 },
                 extensions={"sni_hostname": host},
             )

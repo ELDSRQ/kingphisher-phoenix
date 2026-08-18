@@ -606,9 +606,9 @@ views.campaigns = async (root) => {
           finally { e.target.disabled = false; }
         } }));
         actions.push(el("button", { class: "btn small", text: "Add alert", onclick: async (e) => {
-          const channel = prompt("Alert channel: webhook", "webhook");
+          const channel = prompt("Alert channel: webhook or ntfy", "webhook");
           if (!channel) return;
-          const destination = prompt("HTTPS webhook destination URL:");
+          const destination = prompt(channel.trim().toLowerCase() === "ntfy" ? "ntfy HTTPS topic URL (for example, https://ntfy.sh/my-private-topic):" : "HTTPS webhook destination URL:");
           if (!destination) return;
           e.target.disabled = true;
           try {

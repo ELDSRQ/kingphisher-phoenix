@@ -675,7 +675,7 @@ def sync_recipients_from_directory(
 
 class AlertSubscribe(BaseModel):
     campaign_id: str
-    channel: str = Field(default="web", pattern="^(web|webhook)$")
+    channel: str = Field(default="web", pattern="^(web|webhook|ntfy)$")
     destination_url: str | None = Field(default=None, max_length=2048)
 
 
@@ -691,6 +691,10 @@ def subscribe_alerts(
         parsed = urlparse(body.destination_url or "")
         if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
             raise ValidationError_("outbound alert destinations require an HTTPS URL without embedded credentials")
+        if body.channel == "ntfy" and (
+            not parsed.path.strip("/") or "/" in parsed.path.strip("/") or parsed.query or parsed.fragment
+        ):
+            raise ValidationError_("ntfy destinations must be an HTTPS topic URL with one path segment")
     elif body.destination_url is not None:
         raise ValidationError_("web subscriptions do not accept a destination URL")
     new_secret: str | None = None

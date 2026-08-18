@@ -552,16 +552,20 @@ def process_alert(ctx: WorkerContext, message: dict[str, Any]) -> None:
             ctx.settings.alert_webhook_domain_set(), timeout=ctx.settings.provider_timeout_seconds
         )
         try:
-            sender.send(
-                subscription.destination_url,
-                subscription.signing_secret,
-                {
-                    "event_type": payload.get("event_type"),
-                    "campaign_id": payload.get("campaign_id"),
-                    "occurred_at": payload.get("occurred_at"),
-                    "subscription_id": subscription_id,
-                },
-            )
+            alert_payload = {
+                "event_type": payload.get("event_type"),
+                "campaign_id": payload.get("campaign_id"),
+                "occurred_at": payload.get("occurred_at"),
+                "subscription_id": subscription_id,
+            }
+            if subscription.channel == "ntfy":
+                sender.send_ntfy(
+                    subscription.destination_url,
+                    subscription.signing_secret,
+                    alert_payload,
+                )
+            else:
+                sender.send(subscription.destination_url, subscription.signing_secret, alert_payload)
         except Exception:
             subscription.consecutive_failures += 1
             session.commit()

@@ -165,6 +165,14 @@ safe questions about locating values, permissions, and failed tests are availabl
 directly in each step. Prompts
 and answers are neither persisted nor written to the audit log.
 
+Operational alerts support generic signed webhooks and ntfy. For ntfy, allowlist
+the service hostname (for example, `ntfy.sh`), then create a campaign alert
+subscription with channel `ntfy` and an HTTPS topic URL such as
+`https://ntfy.sh/my-disposable-random-topic`. The worker translates campaign
+events into ntfy's JSON publish format. This initial integration deliberately
+does not forward authentication credentials; use it only with a disposable,
+unguessable test topic and never put credentials in the URL.
+
 Optional Graph directory sync is available afterward from **Recipients → Sync
 connected directory**. The directory worker bounds pages/users, validates the
 Graph-style schema, salted-hashes mailbox lookup keys, encrypts identity fields,

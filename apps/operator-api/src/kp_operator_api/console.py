@@ -560,7 +560,7 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             ("KP_WORKER_ALERT_WEBHOOK_DOMAINS", "Allowed webhook domains", "text", True, False, "hooks.example.com"),
             (
                 "KP_WORKER_ALERT_WEBHOOK_URL",
-                "Test webhook URL",
+                "Test webhook or ntfy topic URL",
                 "url",
                 False,
                 False,

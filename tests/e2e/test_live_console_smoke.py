@@ -211,6 +211,18 @@ def test_distinct_principal_campaign_lifecycle_and_alert_health() -> None:
 
     alerts_status, alerts = _json_request(f"/api/v1/alerts/subscriptions?campaign_id={campaign_id}", token=operator)
     assert alerts_status == 200 and any(item["active"] for item in alerts)  # type: ignore[union-attr]
+    ntfy_status, ntfy = _json_request(
+        "/api/v1/alerts/subscriptions",
+        token=operator,
+        method="POST",
+        body={
+            "campaign_id": campaign_id,
+            "channel": "ntfy",
+            "destination_url": f"https://ntfy.sh/kp-disposable-{campaign_id}",
+        },
+    )
+    assert ntfy_status == 201 and ntfy["active"] is True  # type: ignore[index]
+    assert isinstance(ntfy["signing_secret"], str) and ntfy["signing_secret"]  # type: ignore[index]
     provider_status, provider = _json_request("/api/v1/console/status", token=operator)
     assert provider_status == 200
     assert provider["operator_api"] and provider["tracking_api"]  # type: ignore[index]
