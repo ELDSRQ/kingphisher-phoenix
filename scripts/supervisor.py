@@ -19,6 +19,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -41,6 +42,8 @@ CHILDREN: dict[str, list[str]] = {
 }
 
 POLL_INTERVAL = 2.0
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
 
 
 def _log(message: str) -> None:
@@ -48,17 +51,54 @@ def _log(message: str) -> None:
     sys.stdout.flush()
 
 
+def _rotate_logs(log_path: Path) -> None:
+    oldest = log_path.with_suffix(f"{log_path.suffix}.{LOG_BACKUP_COUNT}")
+    oldest.unlink(missing_ok=True)
+    for index in range(LOG_BACKUP_COUNT - 1, 0, -1):
+        source = log_path.with_suffix(f"{log_path.suffix}.{index}")
+        if source.exists():
+            source.replace(log_path.with_suffix(f"{log_path.suffix}.{index + 1}"))
+    if log_path.exists():
+        log_path.replace(log_path.with_suffix(f"{log_path.suffix}.1"))
+
+
+def _pump_output(stream: object, log_path: Path) -> None:
+    source = stream
+    log = log_path.open("ab", buffering=0)
+    try:
+        log_path.chmod(0o600)
+        size = log.tell()
+        while chunk := source.read(min(64 * 1024, LOG_MAX_BYTES)):  # type: ignore[attr-defined]
+            if size + len(chunk) > LOG_MAX_BYTES:
+                log.close()
+                _rotate_logs(log_path)
+                log = log_path.open("ab", buffering=0)  # noqa: PLW2901
+                log_path.chmod(0o600)
+                size = 0
+            log.write(chunk)
+            size += len(chunk)
+    finally:
+        log.close()
+
+
 def _spawn(name: str, argv: list[str]) -> subprocess.Popen[bytes]:
     log_path = LOG_DIR / f"{name}.log"
-    with log_path.open("ab") as log:
-        proc = subprocess.Popen(  # noqa: S603 - argv is a hardcoded constant list above
-            argv,
-            cwd=PROJECT_ROOT,
-            stdout=log,
-            stderr=log,
-            stdin=subprocess.DEVNULL,
-            env=os.environ.copy(),
-        )
+    proc = subprocess.Popen(  # noqa: S603 - argv is a hardcoded constant list above
+        argv,
+        cwd=PROJECT_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        env=os.environ.copy(),
+    )
+    if proc.stdout is None:  # pragma: no cover - PIPE guarantees stdout
+        raise RuntimeError("child output pipe was not created")
+    threading.Thread(
+        target=_pump_output,
+        args=(proc.stdout, log_path),
+        name=f"log-{name}",
+        daemon=True,
+    ).start()
     (RUN_DIR / f"{name}.pid").write_text(str(proc.pid), encoding="utf-8")
     _log(f"started {name} (pid {proc.pid})")
     return proc

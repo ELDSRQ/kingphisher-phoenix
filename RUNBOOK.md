@@ -225,6 +225,11 @@ State machine: **opened → in_progress → completed** (45-day SLA deadline sho
   alive flags from pidfiles.
 - Worker/API logs: `data/logs/*.log` (per-process), supervisor:
   `data/run/supervisor-qa.log` style files (see `data/run/`).
+- Supervised process logs rotate automatically at 10 MB with three backups
+  (`.log.1` through `.log.3`), bounding the normal local footprint to about
+  40 MB per process. Repeated worker infrastructure failures use exponential
+  backoff capped at 30 seconds so an unavailable dependency cannot create a
+  high-rate traceback loop.
 - Mailpit web UI: `http://127.0.0.1:8025` (password `MAILPIT_API_PASSWORD`;
   admin username is arbitrary under HTTP Basic). SMTP relay `127.0.0.1:1025`.
 - OTel collector: `:4317/:4318`.

@@ -270,3 +270,22 @@ def test_setup_help_and_assistant() -> None:
     assert isinstance(assistance["answer"], str) and assistance["answer"]  # type: ignore[index]
     assert assistance["source"] in {"configured-ai", "curated"}  # type: ignore[index]
     assert assistance["warnings"]  # type: ignore[index]
+
+    fake_token = "FAKE-DISPOSABLE-token=not-a-real-credential"
+    fake_api_key = "sk-disposable-only-123456789"
+    filtered_status, filtered = _json_request(
+        "/api/v1/console/onboarding/assist",
+        token=administrator,
+        method="POST",
+        body={
+            "component": "identity",
+            "question": f"Why do {fake_token} and {fake_api_key} fail?",
+            "values": {"OPERATOR_API_OIDC_CLIENT_SECRET": "fake-submitted-secret"},
+        },
+    )
+    assert filtered_status == 200
+    assert filtered["warnings"]  # type: ignore[index]
+    response_text = str(filtered)
+    assert fake_token not in response_text
+    assert fake_api_key not in response_text
+    assert "fake-submitted-secret" not in response_text

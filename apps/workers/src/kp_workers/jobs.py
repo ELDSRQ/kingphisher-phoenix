@@ -58,6 +58,13 @@ from kp_workers.providers.reminders import Reminder, ReminderSender, SmtpReminde
 from kp_workers.providers.smtp import SmtpSender
 
 logger = get_logger("kp_workers.jobs")
+
+
+def _retry_delay(consecutive_errors: int) -> float:
+    """Return bounded exponential backoff for repeated infrastructure errors."""
+    return float(min(30.0, 0.5 * (2 ** min(max(consecutive_errors - 1, 0), 6))))
+
+
 _renderer = MessageRenderer()
 _DEFAULT_RETENTION_DAYS = 365
 
@@ -744,6 +751,7 @@ def run_loop(ctx: WorkerContext, topic: str, process: Callable[[WorkerContext, d
     logger.info("worker %s listening on %s", ctx.settings.worker_name, topic)
     polls_since_recovery = 0
     last_self_publish = 0.0
+    consecutive_errors = 0
     while True:
         now_monotonic = time.monotonic()
         if topic == "retention" and (now_monotonic - last_self_publish >= ctx.settings.retention_interval_seconds):
@@ -766,12 +774,21 @@ def run_loop(ctx: WorkerContext, topic: str, process: Callable[[WorkerContext, d
                 continue
             process(ctx, message)
             ctx.queue.ack(topic, message)
+            consecutive_errors = 0
         except SafetyRejectionError:
             logger.error("safety rejection in %s; rejecting message", topic, exc_info=True)
             if message is not None:
                 ctx.queue.reject(topic, message, max_retries=ctx.settings.max_retries)
         except Exception:  # noqa: BLE001 - keep the worker alive, surface the failure
-            logger.exception("unhandled error in %s; rejecting message", topic)
+            consecutive_errors += 1
+            retry_delay = _retry_delay(consecutive_errors)
+            logger.exception(
+                "unhandled error in %s; retrying in %.1fs",
+                topic,
+                retry_delay,
+            )
             if message is not None:
                 ctx.queue.reject(topic, message, max_retries=ctx.settings.max_retries)
+            time.sleep(retry_delay)
+            continue
         time.sleep(0.1)

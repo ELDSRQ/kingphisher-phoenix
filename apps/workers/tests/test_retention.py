@@ -71,10 +71,12 @@ def _make_ctx(queue: StubQueue) -> WorkerContext:
     session_factory = make_session_factory(create_db_engine(TEST_URL))
     audit_store = AuditStore(create_db_engine(TEST_URL), hmac_key=bytes.fromhex(HMAC))
     settings = WorkerSettings(
+        _env_file=None,
         audit_hmac_key=HMAC,
         ciphertext_kek=KEK,
         database_url=TEST_URL,
         audit_database_url=TEST_URL,
+        reported_mailbox_url="http://localhost:8025",
     )
     return WorkerContext(settings, session_factory, audit_store, queue)
 

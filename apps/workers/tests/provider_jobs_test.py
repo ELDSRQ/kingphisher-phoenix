@@ -51,7 +51,8 @@ def _context(session: _Session) -> tuple[WorkerContext, _Audit]:
         yield session
 
     audit = _Audit()
-    context = WorkerContext(WorkerSettings(), factory, audit, SimpleNamespace())  # type: ignore[arg-type]
+    settings = WorkerSettings(_env_file=None, reported_mailbox_url="http://localhost:8025")
+    context = WorkerContext(settings, factory, audit, SimpleNamespace())  # type: ignore[arg-type]
     return context, audit
 
 
