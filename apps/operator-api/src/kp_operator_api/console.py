@@ -943,8 +943,9 @@ def _curated_assistance(component: str) -> str:
             "or has approved."
         ),
         "webhook": (
-            "Allowlist the receiving HTTPS host, test reachability, and configure the receiver to verify the "
-            "platform's HMAC signature."
+            "The allowed webhook domain is the hostname of an approved HTTPS application that receives signed "
+            "operational alerts. It is not an email destination and does not require an MTA or mail relay. "
+            "Test reachability and configure the receiver to verify the platform's HMAC signature."
         ),
     }
     return guidance.get(component, "Choose a setup component and use its field help and connection test before saving.")
@@ -963,7 +964,9 @@ def _validated_ai_assistance(payload: Any, allowed_keys: frozenset[str]) -> tupl
     warnings: list[str] = []
     for key, value in raw_suggestions.items():
         if key not in allowed_keys or _CREDENTIAL_KEY.search(str(key)):
-            warnings.append("The AI returned a suggestion outside this setup step; it was ignored.")
+            warning = "The AI returned a suggestion outside this setup step; it was ignored."
+            if warning not in warnings:
+                warnings.append(warning)
             continue
         if not isinstance(value, str) or len(value) > 2048 or _CREDENTIAL_VALUE.search(value):
             warnings.append(f"An unsafe suggestion for {key} was ignored.")

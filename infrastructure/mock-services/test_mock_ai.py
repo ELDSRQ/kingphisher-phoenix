@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-@pytest.mark.parametrize("component", ["oidc", "graph", "smtp", "mailbox", "ai", "training", "webhook"])
+@pytest.mark.parametrize("component", ["identity", "graph", "smtp", "mailbox", "ai", "training", "webhook"])
 def test_setup_assist_covers_supported_components_without_echoing_context(component: str) -> None:
     marker = "private-customer-host.example"
     with TestClient(mock_ai.app) as client:
@@ -23,7 +23,7 @@ def test_setup_assist_covers_supported_components_without_echoing_context(compon
     assert response.status_code == 200
     body = response.json()
     assert isinstance(body["answer"], str) and body["answer"]
-    assert isinstance(body["suggestions"], dict) and body["suggestions"]
+    assert isinstance(body["suggestions"], dict)
     assert marker not in response.text
 
 
@@ -35,7 +35,20 @@ def test_setup_assist_returns_safe_generic_guidance_for_unknown_component() -> N
         )
 
     assert response.status_code == 200
-    assert response.json()["suggestions"]["verification"] == "test connection"
+    assert response.json()["suggestions"] == {}
+
+
+def test_webhook_guidance_distinguishes_https_receiver_from_mail_relay() -> None:
+    with TestClient(mock_ai.app) as client:
+        response = client.post(
+            "/setup-assist",
+            json={"component": "webhook", "question": "Do I need an MTA?", "values": {}},
+        )
+
+    assert response.status_code == 200
+    answer = response.json()["answer"]
+    assert "does not require an MTA or mail relay" in answer
+    assert response.json()["suggestions"] == {}
 
 
 @pytest.mark.parametrize(

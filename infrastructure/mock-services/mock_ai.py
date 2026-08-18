@@ -77,40 +77,41 @@ class SetupAssistRequest(BaseModel):
 
 
 _SETUP_GUIDANCE: dict[str, tuple[str, dict[str, str]]] = {
-    "oidc": (
+    "identity": (
         "OIDC is the sign-in standard that lets your identity provider authenticate operators. "
         "Register this application, then copy its issuer, client ID, and redirect URL into setup.",
-        {"next_field": "issuer URL", "safe_example": "https://login.example.com/tenant/v2.0"},
+        {"OPERATOR_API_OIDC_MODE": "oidc"},
     ),
     "graph": (
         "The directory connection imports employee names and work addresses from a Graph-compatible API. "
         "Confirm the base URL and grant the application read-only user access.",
-        {"next_field": "directory base URL", "permission": "read-only users"},
+        {"KP_WORKER_GRAPH_BASE_URL": "https://graph.microsoft.com/v1.0"},
     ),
     "smtp": (
         "SMTP delivers simulations and reminders. Use your mail relay host, port, sender address, "
         "and the encryption mode required by your mail team.",
-        {"typical_port": "587", "encryption": "STARTTLS"},
+        {"KP_WORKER_SMTP_STARTTLS": "true"},
     ),
     "mailbox": (
         "The reported-message mailbox lets employees submit suspicious messages for analysis. "
         "Use a dedicated mailbox API URL and a read-only service identity.",
-        {"access": "read-only mailbox", "purpose": "reported messages"},
+        {},
     ),
     "ai": (
         "The AI connection proposes training content; deterministic safety checks still approve every result. "
         "Enter the provider endpoint and model name, then test before saving.",
-        {"next_field": "provider endpoint", "control": "deterministic validation"},
+        {},
     ),
     "training": (
         "The training URL is where learners go after a simulation. Use an approved HTTPS course URL "
         "and verify that completion callbacks reach this application.",
-        {"next_field": "HTTPS course URL", "verify": "completion callback"},
+        {},
     ),
     "webhook": (
-        "Webhooks send signed campaign events to an approved HTTPS destination. Allowlist its hostname "
-        "and verify signatures in the receiving system.",
-        {"transport": "HTTPS", "verification": "HMAC signature"},
+        "The allowed webhook domain is the hostname of an approved HTTPS application that receives signed "
+        "operational alerts. It is not an email destination and does not require an MTA or mail relay. "
+        "Allowlist the receiver's hostname and verify HMAC signatures in that application.",
+        {},
     ),
 }
 
@@ -124,7 +125,7 @@ async def setup_assist(body: SetupAssistRequest) -> dict[str, object]:
         (
             "Review the component documentation, enter only non-secret connection details here, "
             "and use the connection test before saving. Keep credentials in the designated secret fields.",
-            {"next_step": "review documentation", "verification": "test connection"},
+            {},
         ),
     )
     return {"answer": answer, "suggestions": suggestions}

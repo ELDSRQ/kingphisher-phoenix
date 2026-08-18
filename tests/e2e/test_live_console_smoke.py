@@ -291,3 +291,20 @@ def test_setup_help_and_assistant() -> None:
     assert fake_token not in response_text
     assert fake_api_key not in response_text
     assert "fake-submitted-secret" not in response_text
+
+    webhook_status, webhook_help = _json_request(
+        "/api/v1/console/onboarding/assist",
+        token=administrator,
+        method="POST",
+        body={
+            "component": "webhook",
+            "question": "What is an allowed webhook domain, and do I need an MTA or mail relay?",
+            "values": {},
+        },
+    )
+    assert webhook_status == 200
+    assert "does not require an MTA or mail relay" in webhook_help["answer"]  # type: ignore[index]
+    assert webhook_help["suggestions"] == {}  # type: ignore[index]
+    assert webhook_help["warnings"] == [  # type: ignore[index]
+        "AI suggestions are advisory. Review them and run the connection test before saving."
+    ]

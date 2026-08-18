@@ -468,6 +468,16 @@ def test_setup_assist_rejects_unsupported_component_and_overlong_question(env_fi
         assert overlong.status_code == 422
 
 
+def test_setup_assist_deduplicates_ignored_cross_step_warnings() -> None:
+    answer, suggestions, warnings = console_module._validated_ai_assistance(
+        {"answer": "Use an HTTPS receiver.", "suggestions": {"transport": "HTTPS", "verification": "HMAC"}},
+        frozenset({"KP_WORKER_ALERT_WEBHOOK_DOMAINS"}),
+    )
+    assert answer == "Use an HTTPS receiver."
+    assert suggestions == {}
+    assert warnings == ["The AI returned a suggestion outside this setup step; it was ignored."]
+
+
 def test_onboarding_write_persists_allowlisted_keys_and_audits_names_only(env_file: str) -> None:
     audit = FakeAuditStore()
     app = _app(env_file, fake_audit=audit)
