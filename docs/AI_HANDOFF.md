@@ -66,9 +66,9 @@ Apps depend only on packages — **never import across apps**. Keep it that way.
 - structlog (telemetry), Jinja2 (sandboxed templating), PyJWT (console HS256).
 - Docker Compose: postgres, redis, mailpit (SMTP relay + UI), otel-collector,
   mock-idp :8443, mock-graph :8181, mock-ai :8282.
-- Gate: `uv run pytest -q` (182 tests), `make lint` (Ruff plus console syntax),
+- Gate: `uv run pytest -q` (183 tests), `make lint` (Ruff plus console syntax),
   `make typecheck` (mypy strict, 74 files), `make security-scan`, and
-  `make operational-readiness` (7 live tests at the 2026-08-18 handoff).
+  `make operational-readiness` (7 live tests at the 2026-08-18 full gate).
 
 ---
 
@@ -261,7 +261,7 @@ authorization first.
 ## 8. Testing & gate
 
 ```bash
-make test            # 183 passed at the 2026-08-18 handoff
+make test            # 183 passed at the 2026-08-18 full gate
 make lint            # ruff check + format plus node --check for console JavaScript
 make typecheck       # mypy strict (74 files at handoff)
 make verify-audit    # recompute audit chain
@@ -287,7 +287,7 @@ module-scope `drop_all/create_all` + a skip-if-no-DB guard.
 
 ---
 
-## 9. Environment quirks & gotchas (verified through 2026-08-18)
+## 9. Environment quirks & gotchas (verified through 2026-08-20)
 
 1. **Docker CLI wedge (macOS Docker Desktop) — RESOLVED via context**
    The default `~/.docker/run/docker.sock` wedged (proxy held ~10 leaked

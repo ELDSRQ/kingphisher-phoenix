@@ -1,4 +1,4 @@
-# Next AI Session Handoff — 2026-08-18
+# Next AI Session Handoff — 2026-08-20
 
 ## Start here
 
@@ -7,7 +7,7 @@ Repository: `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 Branch: `main`
 
 Expected head after this handoff is committed: see the newest `git log -1 --oneline` entry titled
-`Update session handoff documentation`.
+`Refresh build continuation handoff`.
 
 The worktree was clean before this documentation update. First inspect `git status`, preserve any user changes, then read this file,
 `README.md`, `RUNBOOK.md`, `docs/AI_HANDOFF.md`, `docs/REMEDIATION_PLAN.md`, and `docs/AZURE_DEPLOYMENT.md` completely.
@@ -37,7 +37,7 @@ The platform is operational locally and now includes:
 
 Relevant commits immediately preceding this handoff:
 
-- The newest commit — simplify the SMB campaign flow and fix local tracked training links
+- `3789943` — simplify the SMB campaign flow and fix local tracked training links
 - `44afb4a` — bound worker log growth
 - `73e6827` — improve guided integration setup
 - `d4d01ce` — fix setup assistant field guidance
@@ -48,14 +48,16 @@ Relevant commits immediately preceding this handoff:
 
 ## Verified runtime state
 
-Docker Desktop and all local services were healthy on 2026-08-18. The application is available at
+Docker Desktop and all local services were reverified healthy on 2026-08-20. The application is available at
 `http://localhost:8000/console/`. The supervisor was running:
 
 - operator API and tracking API
 - ingestion, generation, delivery, retention, mailbox, reminder, alert, and directory workers
 - Postgres, Redis, Mailpit, mock IdP, mock Graph, and rebuilt mock AI containers
 
-The following passed against the current implementation:
+The following full gates passed against the current implementation on
+2026-08-18; `./scripts/verify_install.sh` and the audit chain passed again on
+2026-08-20:
 
 ```bash
 node --check apps/operator-ui/src/console/app.js
@@ -129,6 +131,18 @@ No real Azure deployment has been executed. Production qualification still requi
 approved GitHub environment reviewers, a private runner with VNet access, vendor/legal review, backup/restore evidence, and an
 authorized deployment window.
 
+## Recommended continuation order
+
+1. Complete the outstanding in-app Browser visual qualification of the Azure
+   deployment wizard. Treat controller attachment failures as environmental.
+2. Improve the core SMB operator experience only where testing finds concrete
+   friction; do not restore separate campaign-approval gates.
+3. Prepare an isolated Azure Communication Services Email pilot using an
+   Azure-managed test domain and test-tenant recipients. Do not configure or
+   send through an external provider without explicit user authorization.
+4. After the local and isolated-mail paths are qualified, consider the next
+   product enhancements in `docs/AI_HANDOFF.md` section 10.
+
 ## Important locations
 
 - Azure wizard UI: `apps/operator-ui/src/console/app.js`
@@ -154,3 +168,44 @@ authorized deployment window.
 - Keep DSR fulfillment evidence-based; exception requests require legal review.
 - Do not weaken single-tenant enforcement without complete tenant isolation across data, auth, queues, encryption, and tests.
 - Do not delete logs, state, infrastructure, or user data without explicit authorization.
+
+## Ready-to-paste next-session prompt
+
+```text
+Continue development of the phishing-awareness platform at:
+
+/Users/edierks/projects/codex-test/phishing-awareness-platform
+
+Use branch main. Begin by running git status and verifying HEAD matches
+origin/main; preserve any user changes. Read these files completely, in order:
+
+1. docs/NEXT_SESSION_HANDOFF.md
+2. README.md
+3. RUNBOOK.md
+4. docs/AI_HANDOFF.md
+5. docs/REMEDIATION_PLAN.md
+6. docs/AZURE_DEPLOYMENT.md
+
+Run ./scripts/verify_install.sh before making changes. The local console should
+be available at http://127.0.0.1:8000/console/, Mailpit at
+http://127.0.0.1:8025/, and the local training page at
+http://127.0.0.1:8001/v1/training/awareness.
+
+The supported SMB workflow intentionally lets one authorized administrator
+create and schedule a DRAFT directly. Do not restore separate security/privacy
+campaign approvals. Preserve deterministic content safety, recipient caps,
+append-only audit, recall, the scoped kill switch, bounded rate limits, privacy
+controls, and single-tenant enforcement.
+
+Primary task: complete visual qualification of all four Azure deployment wizard
+stages with the in-app Browser, including field guidance, searchable Help,
+keyboard/focus behavior, validation errors and success, privacy-filtered AI help,
+and both configuration downloads. Use disposable fake credential-shaped text
+only. Browser-controller failures are environmental blockers, not application
+defects. Do not perform a real Azure deployment or configure external email or
+infrastructure without explicit authorization.
+
+If genuine defects are found, fix them with regression tests. Before handoff,
+run the full gates listed in this document, update the handoff files with exact
+results and remaining blockers, commit, push main, and leave the worktree clean.
+```
