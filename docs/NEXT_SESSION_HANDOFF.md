@@ -55,26 +55,69 @@ Docker Desktop and all local services were reverified healthy on 2026-08-20. The
 - ingestion, generation, delivery, retention, mailbox, reminder, alert, and directory workers
 - Postgres, Redis, Mailpit, mock IdP, mock Graph, and rebuilt mock AI containers
 
-The following full gates passed against the current implementation on
-2026-08-18; `./scripts/verify_install.sh` and the audit chain passed again on
-2026-08-20:
+The following full gate was re-run end to end and passed against the current
+implementation on 2026-08-20 (exact observed results in the trailing comments):
 
 ```bash
-node --check apps/operator-ui/src/console/app.js
-make lint
-make typecheck
-uv run pytest -q                         # 183 passed
-make security-scan                       # Semgrep 0; dependency/secret scan 0
-terraform fmt -check -recursive infrastructure/terraform
-terraform -chdir=infrastructure/terraform validate
-trivy config --exit-code 1 --severity HIGH,CRITICAL infrastructure/terraform
-./scripts/verify_install.sh
-make operational-readiness               # 7 live tests passed
+node --check apps/operator-ui/src/console/app.js   # OK
+make lint                                # All checks passed; 122 files formatted
+make typecheck                           # Success: no issues in 74 source files
+uv run pytest -q                         # 184 passed (was 183; +1 regression test this session)
+make security-scan                       # Bandit/Semgrep/Trivy fs: 0 findings
+terraform fmt -check -recursive infrastructure/terraform      # exit 0
+terraform -chdir=infrastructure/terraform validate            # Success! The configuration is valid.
+trivy config --exit-code 1 --severity HIGH,CRITICAL infrastructure/terraform   # 0 HIGH/CRITICAL
+./scripts/verify_install.sh              # 21 ok, 0 FAIL
+make operational-readiness               # All checks passed; 7 live lifecycle tests passed
 ```
 
 The readiness gate intentionally leaves uniquely named local campaign evidence. The audit chain verified successfully.
 
-## Work completed in this session
+## Work completed in the 2026-08-20 continuation session
+
+- Restarted the full local stack (infra was already up; supervisor + APIs +
+  eight workers were not running) with `./scripts/run_console.sh` and reverified
+  health: `verify_install.sh` reports 21 ok / 0 FAIL.
+- Attempted the primary task — in-app Browser visual qualification of the Azure
+  wizard. **The browser controller is still not attachable** in this session:
+  the Claude-in-Chrome / in-app Browser extension is not set up, so no
+  `mcp__*browser*` controller is exposed. This is the same environmental blocker
+  carried since the plugin update; it is **not** an application defect.
+- Qualified every layer the browser would exercise that is reachable without a
+  live browser, and found **no application defects**:
+  - Wizard schema (`GET /console/azure-deployment`): 4 non-secret steps, every
+    field carries `where_to_find` guidance and `secret: false`.
+  - Validation (`POST /console/azure-deployment/validate`): success, field-level
+    errors (bad hostnames, credential-bearing URLs), unknown-key rejection (403),
+    and — newly covered — the structurally-valid **warnings** branch.
+  - Privacy-filtered AI assist (`POST /console/onboarding/assist`): current-step
+    non-secret fields only; disposable credential-shaped text is stripped;
+    suggestions are constrained to step-owned non-secret keys; never persists,
+    saves, deploys, or audits.
+  - Help (`GET /console/help`): glossary + topics including `azure-deployment`;
+    the searchable filter is client-side over that payload.
+  - **Terraform export correctness (verified):** every key the review step writes
+    into `<env>.auto.tfvars` (`subscription_id`, `environment`, `location`,
+    `name_prefix`, `operator_fqdn`, `tracking_fqdn`, `entra_tenant_id`,
+    `entra_client_id`, `communication_data_location`, `ai_endpoint`,
+    `alert_webhook_domains`) matches a real variable in
+    `infrastructure/terraform/variables.tf`. The GitHub-variables JSON matches
+    the workflow's expected environment variables.
+  - Front-end interaction behavior confirmed by reading `app.js` (browser needed
+    only to see it render): per-step focus moves to the `#azure-wizard-title`
+    heading (`tabindex="-1"`); each field shows an explicit Required/Optional
+    badge and a native `required` attribute; Back/continue navigation preserves
+    `collected` values across steps; both downloads use `Blob` +
+    `createObjectURL`/`revokeObjectURL`; downloads appear only after a successful
+    validation and are cleared on re-validate.
+- Added one regression test —
+  `test_azure_deployment_validation_surfaces_advisory_warnings` in
+  `apps/operator-api/tests/test_console.py` — pinning the `ok: True` +
+  advisory-warnings validate branch (empty AI gateway, non-`azure-vnet` runner
+  label), the one validate output state that had zero automated coverage and
+  which backs the console's success-with-warnings rendering. Suite: 183 → 184.
+
+## Work completed in the prior session
 
 - Removed the development-identity warning and separate security/privacy approval
   buttons from the normal campaign path.
@@ -113,11 +156,23 @@ this session.
 
 ## Remaining qualification item
 
-Visual browser automation of the Azure wizard remains outstanding because the Codex Browser plugin updated while the prior agent
-session was active. The user opened the in-app Browser, but that session did not expose the updated controller. This is an agent-tool
-attachment issue, not an application defect. The plugin moved from cached version `26.623.141536` to `26.727.51351`.
+**Only the pixel-level/interaction visual pass remains, and it is environmentally
+blocked — not an application defect.** In the 2026-08-20 continuation session the
+in-app Browser controller was again unavailable: the Claude-in-Chrome / Browser
+extension is not connected in this environment, so no browser MCP tools are
+exposed (the skill reports "Browser tools are not available in this session").
+The backend behavior the browser drives (schema, validation incl. errors +
+success + warnings, Help content, privacy-filtered AI assist, and the exact
+Terraform/GitHub export mapping) was fully qualified without a browser via the
+test suite (184 passed) and code inspection, with no defects found. What is still
+unverified is only the rendered visual/keyboard interaction: on-screen focus
+movement, the Required/Optional badges as drawn, back/forward navigation feel,
+native validation-error surfacing, and the two actual file downloads landing on
+disk.
 
-In a fresh Codex session:
+To finish it, a session with a working browser controller (connect the extension
+from https://claude.ai/chrome, or run in Codex with the in-app Browser attached)
+should:
 
 1. Confirm `git status` is clean and the local app is still healthy with `./scripts/verify_install.sh`.
 2. Use the in-app Browser skill and the already-open or newly opened `http://localhost:8000/console/` tab.

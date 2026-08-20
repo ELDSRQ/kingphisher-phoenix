@@ -439,6 +439,44 @@ def test_azure_deployment_validation_accepts_safe_values_and_rejects_bad_hosts(e
         assert forbidden.status_code == 403
 
 
+def test_azure_deployment_validation_surfaces_advisory_warnings(env_file: str) -> None:
+    """A structurally valid configuration still returns advisory warnings.
+
+    This is the ``ok: True`` state the review step shows in green while still
+    listing non-blocking guidance: an empty AI gateway keeps deterministic local
+    guidance, and a non-standard runner label may not match the checked-in
+    workflow. The happy-path test pins ``warnings == []``; this pins the other
+    valid branch so the console's success-with-warnings rendering cannot regress.
+    """
+    values = {
+        "subscription_id": "11111111-1111-1111-1111-111111111111",
+        "environment": "staging",
+        "location": "eastus2",
+        "name_prefix": "kp",
+        "entra_tenant_id": "22222222-2222-2222-2222-222222222222",
+        "entra_client_id": "33333333-3333-3333-3333-333333333333",
+        "operator_fqdn": "awareness.example.com",
+        "tracking_fqdn": "awareness-track.example.com",
+        "communication_data_location": "United States",
+        "ai_endpoint": "",
+        "alert_webhook_domains": "",
+        "tf_state_resource_group": "rg-kp-state",
+        "tf_state_storage_account": "kptfstateprod",
+        "tf_state_container": "tfstate",
+        "runner_label": "self-hosted-other",
+    }
+    with TestClient(_app(env_file)) as client:
+        headers = _auth(_login(client))
+        response = client.post("/api/v1/console/azure-deployment/validate", headers=headers, json={"values": values})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["errors"] == {}
+    warnings = " ".join(body["warnings"])
+    assert "No AI gateway is configured" in warnings
+    assert "azure-vnet runner label" in warnings
+
+
 def test_azure_deployment_assistance_is_advisory_and_nonsecret(env_file: str) -> None:
     with TestClient(_app(env_file)) as client:
         response = client.post(

@@ -66,9 +66,9 @@ Apps depend only on packages — **never import across apps**. Keep it that way.
 - structlog (telemetry), Jinja2 (sandboxed templating), PyJWT (console HS256).
 - Docker Compose: postgres, redis, mailpit (SMTP relay + UI), otel-collector,
   mock-idp :8443, mock-graph :8181, mock-ai :8282.
-- Gate: `uv run pytest -q` (183 tests), `make lint` (Ruff plus console syntax),
-  `make typecheck` (mypy strict, 74 files), `make security-scan`, and
-  `make operational-readiness` (7 live tests at the 2026-08-18 full gate).
+- Gate: `uv run pytest -q` (184 tests at the 2026-08-20 full gate), `make lint`
+  (Ruff plus console syntax), `make typecheck` (mypy strict, 74 files),
+  `make security-scan`, and `make operational-readiness` (7 live tests).
 
 ---
 
@@ -261,7 +261,7 @@ authorization first.
 ## 8. Testing & gate
 
 ```bash
-make test            # 183 passed at the 2026-08-18 full gate
+make test            # 184 passed at the 2026-08-20 full gate
 make lint            # ruff check + format plus node --check for console JavaScript
 make typecheck       # mypy strict (74 files at handoff)
 make verify-audit    # recompute audit chain
@@ -317,9 +317,15 @@ module-scope `drop_all/create_all` + a skip-if-no-DB guard.
     required reviewers, workload identity, an initialized remote-state backend,
     and a private runner with VNet access. The console wizard exports non-secret
     inputs only and intentionally cannot apply infrastructure.
-11. Visual Azure-wizard qualification remains pending because the in-app Browser
-    plugin updated during the previous agent session. Retry it in a fresh Codex
-    session and report controller attachment failures separately from app bugs.
+11. Visual Azure-wizard qualification remains pending: the in-app Browser
+    controller is not attachable in these sessions (the Claude-in-Chrome /
+    Browser extension is not connected, so no browser MCP tools are exposed).
+    The backend the browser drives is fully qualified without a browser (schema,
+    validation errors/success/warnings, Help, privacy-filtered AI assist, and the
+    Terraform/GitHub export mapping — 184 tests, no defects). Only the rendered
+    visual/keyboard pass and the two on-disk downloads remain, and require a
+    session with a working browser controller. Report controller attachment
+    failures separately from app bugs.
 
 ---
 
