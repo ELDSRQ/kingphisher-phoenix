@@ -60,6 +60,13 @@ class OperatorApiSettings(BaseSettings):
             "KP_ALLOWED_RECIPIENT_DOMAINS",
         ),
     )
+    #: Shared key that signs Rules-of-Engagement. RoE creation and the
+    #: delivery gate use the same value so a campaign scheduled under a signed
+    #: RoE is verifiable by the workers that deliver it.
+    roe_signing_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPERATOR_API_ROE_SIGNING_KEY", "KP_ROE_SIGNING_KEY"),
+    )
     #: Recipients per delivery message; bounds the 1MiB queue payload cap.
     delivery_batch_size: int = Field(default=200, ge=1, le=2000)
 
@@ -105,6 +112,17 @@ class OperatorApiSettings(BaseSettings):
             raise RuntimeError("OPERATOR_API_AUDIT_HMAC_KEY must be a hex string") from exc
         if len(key) != 32:
             raise RuntimeError("OPERATOR_API_AUDIT_HMAC_KEY must be a 256-bit hex key (64 hex chars)")
+        return key
+
+    def require_roe_signing_key(self) -> bytes:
+        if not self.roe_signing_key:
+            raise RuntimeError("KP_ROE_SIGNING_KEY is required to sign Rules-of-Engagement")
+        try:
+            key = bytes.fromhex(self.roe_signing_key)
+        except ValueError as exc:
+            raise RuntimeError("KP_ROE_SIGNING_KEY must be a hex string") from exc
+        if len(key) != 32:
+            raise RuntimeError("KP_ROE_SIGNING_KEY must be a 256-bit hex key (64 hex chars)")
         return key
 
     def require_cipher_kek(self) -> bytes:

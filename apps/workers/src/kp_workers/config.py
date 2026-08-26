@@ -83,6 +83,13 @@ class WorkerSettings(BaseSettings):
         default="",
         validation_alias=AliasChoices("KP_WORKER_ALLOWED_RECIPIENT_DOMAINS", "KP_ALLOWED_RECIPIENT_DOMAINS"),
     )
+    #: Shared key that signs Rules-of-Engagement. Delivery verifies the
+    #: campaign's RoE signature before honoring it; without the key (or a
+    #: valid signature) delivery fails closed.
+    roe_signing_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("KP_WORKER_ROE_SIGNING_KEY", "KP_ROE_SIGNING_KEY"),
+    )
     #: QUEUED assignments older than this on a finished campaign are reconciled
     #: to FAILED. Never auto-resent — a human decides whether to re-run.
     queued_stale_hours: int = Field(default=24, ge=1, le=720)
@@ -150,6 +157,17 @@ class WorkerSettings(BaseSettings):
             raise RuntimeError("KP_WORKER_AUDIT_HMAC_KEY must be a hex string") from exc
         if len(key) != 32:
             raise RuntimeError("KP_WORKER_AUDIT_HMAC_KEY must be a 256-bit hex key (64 hex chars)")
+        return key
+
+    def require_roe_signing_key(self) -> bytes:
+        if not self.roe_signing_key:
+            raise RuntimeError("KP_ROE_SIGNING_KEY is required to verify Rules-of-Engagement")
+        try:
+            key = bytes.fromhex(self.roe_signing_key)
+        except ValueError as exc:
+            raise RuntimeError("KP_ROE_SIGNING_KEY must be a hex string") from exc
+        if len(key) != 32:
+            raise RuntimeError("KP_ROE_SIGNING_KEY must be a 256-bit hex key (64 hex chars)")
         return key
 
     def require_kek(self) -> bytes:

@@ -30,7 +30,9 @@ from kp_database.models import (
     PrivacyNotice,
     PrivacyRequest,
     Recipient,
+    RecipientAssignment,
     RecipientExclusion,
+    RulesOfEngagement,
     TemplateVersion,
     TrackingEvent,
 )
@@ -42,6 +44,7 @@ from kp_database.privacy import (
 )
 from kp_domain_models import models as dm
 from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed, mailbox_domain
+from kp_domain_models.roe import recipient_domain_roe_covered, roe_covers_schedule
 from kp_telemetry.errors import (
     ConflictError,
     NotFoundError,
@@ -191,6 +194,41 @@ def _missing_campaign_approvals(session: Session, campaign: Campaign) -> set[dm.
         .all()
     }
     return set(REQUIRED_APPROVALS - granted)
+
+
+def _covering_roes(session: Session, *, schedule_start: datetime, schedule_end: datetime) -> list[RulesOfEngagement]:
+    """Unrevoked RoEs whose engagement window contains the whole delivery window.
+
+    This is the schedule half of the authorization boundary: without at least
+    one covering RoE a campaign cannot be queued at all.
+    """
+    roes = list(session.scalars(select(RulesOfEngagement)).all())
+    return [
+        roe
+        for roe in roes
+        if roe_covers_schedule(
+            revoked_at=roe.revoked_at,
+            window_start=roe.window_start,
+            window_end=roe.window_end,
+            schedule_start=schedule_start,
+            schedule_end=schedule_end,
+        )
+    ]
+
+
+def _campaign_assignment_mailboxes(session: Session, campaign_id: uuid.UUID) -> list[str]:
+    """Mailboxes of the assignments prepared for `campaign_id`."""
+    rows = session.execute(
+        select(Recipient.mailbox)
+        .join(RecipientAssignment, RecipientAssignment.recipient_id == Recipient.recipient_id)
+        .where(RecipientAssignment.campaign_id == campaign_id)
+    )
+    return [row[0] for row in rows if row[0] is not None]
+
+
+def _roe_covers_all_mailboxes(roe: RulesOfEngagement, mailboxes: list[str]) -> bool:
+    targets = frozenset(roe.target_domains or [])
+    return all(recipient_domain_roe_covered(mailbox, targets) for mailbox in mailboxes)
 
 
 def _publish_delivery_batches(
@@ -352,13 +390,62 @@ def schedule_campaign(
     schedule_start = campaign.schedule_start
     if schedule_start.tzinfo is None:
         raise ValidationError_("schedule start must include a timezone offset")
+    if campaign.schedule_end is None:
+        raise ValidationError_("campaign requires a schedule end")
+    schedule_end = campaign.schedule_end
+    if schedule_end.tzinfo is None:
+        raise ValidationError_("schedule end must include a timezone offset")
+    # Signed Rules-of-Engagement gate (authorization boundary). A campaign may
+    # not be queued at all unless an unrevoked, operator-signed RoE exists
+    # whose engagement window contains the campaign's whole delivery window,
+    # and whose verified target domains cover every prepared recipient. This
+    # check runs again at delivery, so a message queued before an RoE expired
+    # or was revoked cannot slip out.
+    covering = _covering_roes(session, schedule_start=schedule_start, schedule_end=schedule_end)
+    if not covering:
+        audit.record(
+            actor=principal.principal_id,
+            action="campaign.schedule.blocked",
+            object_type="campaign",
+            object_id=str(campaign.campaign_id),
+            detail={"reason": "no_covering_roe"},
+        )
+        session.commit()
+        raise ConflictError(
+            "no active signed Rules-of-Engagement covers this campaign's delivery window; sign an RoE before scheduling"
+        )
     first_schedule = campaign.state != dm.CampaignState.SCHEDULED
+    previous_state = campaign.state
     campaign.state = dm.CampaignState.SCHEDULED
     # prepare_campaign commits assignments and the SCHEDULED state together.
     # Publishing only after that commit closes the consumer/state race. A
     # repeated request is safe and can repair a transient Redis publish error.
     prepared = prepare_campaign(session, campaign, tracking_base_url=request.app.state.settings.tracking_base_url)
     assignment_ids = [p.assignment_id for p in prepared]
+    mailboxes = _campaign_assignment_mailboxes(session, campaign.campaign_id)
+    chosen_roe = next((roe for roe in covering if _roe_covers_all_mailboxes(roe, mailboxes)), None)
+    if chosen_roe is None:
+        # Nothing was published and the campaign reverts to its prior state;
+        # prepared assignments stay QUEUED but are harmless and reused on the
+        # next schedule attempt.
+        campaign.state = previous_state
+        campaign.roe_id = None
+        audit.record(
+            actor=principal.principal_id,
+            action="campaign.schedule.blocked",
+            object_type="campaign",
+            object_id=str(campaign.campaign_id),
+            detail={
+                "reason": "no_roe_covers_recipients",
+                "recipient_domains": sorted({m.rsplit("@", 1)[-1] for m in mailboxes}),
+            },
+        )
+        session.commit()
+        raise ConflictError(
+            "no signed Rules-of-Engagement covers the campaign's recipient domains; "
+            "recipients may only be in verified, RoE-covered target domains"
+        )
+    campaign.roe_id = chosen_roe.roe_id
     batches = _publish_delivery_batches(
         request,
         campaign=campaign,
@@ -393,6 +480,25 @@ def test_send_campaign(
     principal: Principal = Depends(require_capability(Capability.SEND_CAMPAIGN)),
 ) -> dict[str, Any]:
     campaign = _get_campaign(session, campaign_id)
+    # Test sends obey the same authorization boundary as real deliveries: they
+    # only go to test accounts, but the messages still leave through the relay
+    # and must be covered by an active signed RoE.
+    if campaign.schedule_start is None or campaign.schedule_end is None:
+        raise ValidationError_("campaign requires a schedule window")
+    covering = _covering_roes(session, schedule_start=campaign.schedule_start, schedule_end=campaign.schedule_end)
+    if not covering:
+        audit.record(
+            actor=principal.principal_id,
+            action="campaign.test-send.blocked",
+            object_type="campaign",
+            object_id=str(campaign.campaign_id),
+            detail={"reason": "no_covering_roe"},
+        )
+        session.commit()
+        raise ConflictError(
+            "no active signed Rules-of-Engagement covers this campaign's delivery window; "
+            "sign an RoE before test-sending"
+        )
     prepared = prepare_campaign(
         session,
         campaign,

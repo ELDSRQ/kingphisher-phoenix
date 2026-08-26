@@ -30,6 +30,7 @@ from kp_database.models import (
     RecipientAssignment,
     RetentionAction,
     RetentionPolicy,
+    RulesOfEngagement,
     SourceItem,
     TemplateVersion,
     TrackingEvent,
@@ -42,6 +43,11 @@ from kp_database.models import (
 from kp_database.privacy import hash_mailbox
 from kp_domain_models import models as dm
 from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
+from kp_domain_models.roe import (
+    recipient_domain_roe_covered,
+    roe_active_at,
+    verify_roe_signature,
+)
 from kp_safety_validation.validator import SafetyValidator
 from kp_sanitization.neutralize import neutralize
 from kp_source_adapters import BulkDownloadAdapter, RssAdapter, SourceAdapter, StixAdapter
@@ -312,6 +318,59 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                 )
                 logger.error("campaign %s lacks required approvals; refusing to deliver", campaign_id)
                 return
+        # Signed Rules-of-Engagement gate. Delivery is impossible without an
+        # active, validly-signed RoE attached at scheduling: the RoE names the
+        # verified target domains recipients are confined to. Every failure
+        # mode here returns without sending anything.
+        roe = session.get(RulesOfEngagement, campaign.roe_id) if campaign.roe_id is not None else None
+        if roe is None:
+            ctx.audit_store.record(
+                actor="worker:delivery",
+                action="campaign.deliver.blocked",
+                object_type="campaign",
+                object_id=campaign_id,
+                detail={"reason": "no_roe"},
+            )
+            logger.error("campaign %s has no Rules-of-Engagement; refusing to deliver", campaign_id)
+            return
+        try:
+            roe_key = ctx.settings.require_roe_signing_key()
+        except RuntimeError as exc:
+            ctx.audit_store.record(
+                actor="worker:delivery",
+                action="campaign.deliver.blocked",
+                object_type="campaign",
+                object_id=campaign_id,
+                detail={"reason": "roe_key_unconfigured"},
+            )
+            logger.error("campaign %s RoE cannot be verified: %s", campaign_id, exc)
+            return
+        if not verify_roe_signature(roe.terms_hash, roe.signer, roe.signed_at, roe.signature, signing_key=roe_key):
+            ctx.audit_store.record(
+                actor="worker:delivery",
+                action="campaign.deliver.blocked",
+                object_type="campaign",
+                object_id=campaign_id,
+                detail={"reason": "roe_signature_invalid"},
+            )
+            logger.error("campaign %s RoE signature is invalid; refusing to deliver", campaign_id)
+            return
+        if not roe_active_at(
+            revoked_at=roe.revoked_at,
+            window_start=roe.window_start,
+            window_end=roe.window_end,
+            when=datetime.now(UTC),
+        ):
+            ctx.audit_store.record(
+                actor="worker:delivery",
+                action="campaign.deliver.blocked",
+                object_type="campaign",
+                object_id=campaign_id,
+                detail={"reason": "roe_not_active"},
+            )
+            logger.error("campaign %s RoE is not active; refusing to deliver", campaign_id)
+            return
+        roe_targets = frozenset(roe.target_domains or [])
         allowlist = ctx.settings.recipient_domain_allowlist()
         # Mirror the import rule: unset is fail-closed under OIDC-shaped
         # deployments and allow-all only for the offline dev stack.
@@ -362,6 +421,16 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                     blocked += 1
                     session.commit()
                     continue
+                if not recipient_domain_roe_covered(recipient.mailbox or "", roe_targets):
+                    # The authorization boundary: recipients may only be in the
+                    # verified target domains the signed RoE names. This is
+                    # independent of the recipient allowlist and cannot be
+                    # switched off by config.
+                    assignment.send_state = dm.SendState.FAILED
+                    assignment.failure_reason = "target_domain_not_roe_covered"
+                    blocked += 1
+                    session.commit()
+                    continue
                 try:
                     _send_email(ctx, campaign, template, pattern, assignment, recipient, token, sender=sender)
                     assignment.send_state = dm.SendState.DELIVERED
@@ -388,6 +457,8 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
             "template_hash": template_hash,
             "spf_has_record": spf.has_spf,
             "spf_domain": spf.domain,
+            "roe_id": str(roe.roe_id),
+            "roe_signer": roe.signer,
         },
     )
 
