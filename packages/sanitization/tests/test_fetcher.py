@@ -40,6 +40,30 @@ def test_non_allowlisted_domain_rejected(fetcher_fx: SecureFetcher) -> None:
         fetcher_fx.fetch("https://evil.example/feed")
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "sub.advisory.example.com",
+        "advisory.example.com.evil.example",
+        "wwww.advisory.example.com",
+        "www.evil.example",
+        "www.advisory.example.com.evil.example",
+    ],
+)
+def test_lookalike_hosts_rejected_before_dns(
+    fetcher_fx: SecureFetcher, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """Anything other than base_domain / www.base_domain is rejected, and DNS is
+    never consulted for a disallowed host."""
+    monkeypatch.setattr(
+        fetcher.socket,
+        "getaddrinfo",
+        lambda *a, **k: pytest.fail("DNS must not be consulted for a disallowed host"),
+    )
+    with pytest.raises(DomainNotAllowedError):
+        fetcher_fx.fetch(f"https://{host}/feed")
+
+
 def test_non_standard_port_rejected(fetcher_fx: SecureFetcher) -> None:
     with pytest.raises(DomainNotAllowedError):
         fetcher_fx.fetch("https://advisory.example.com:8443/feed")
@@ -153,6 +177,130 @@ def test_redirect_revalidates_and_pins_each_hop(fetcher_fx: SecureFetcher, monke
     assert len(hits) == 2
     assert result.final_url == "https://advisory.example.com/latest"
     assert all("203.0.113.10" in h for h in hits)
+
+
+def test_redirect_to_www_variant_allowed_and_pinned(fetcher_fx: SecureFetcher, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Feeds configured as base_domain often redirect to www.base_domain; the
+    www-variant passes allowlist re-validation and is still pinned to the
+    validated IP with the real www hostname for SNI/Host."""
+    monkeypatch.setattr(fetcher.socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("203.0.113.10"))
+    requests: list[dict[str, str]] = []
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            return None
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def get(self, url: str, **kwargs: object) -> object:
+            requests.append(
+                {
+                    "url": url,
+                    "host": str(kwargs.get("headers", {}).get("Host", "")),
+                    "sni": str(kwargs.get("extensions", {}).get("sni_hostname", "")),
+                }
+            )
+            if len(requests) == 1:
+                return SimpleNamespace(
+                    status_code=301,
+                    headers={"content-type": "text/html", "location": "https://www.advisory.example.com/feed"},
+                    is_redirect=True,
+                    content=b"",
+                    url=url,
+                )
+            return _fake_response(url, content=b"<feed/>")
+
+    monkeypatch.setattr(fetcher.httpx, "Client", _Client)
+    result = fetcher_fx.fetch("https://advisory.example.com/feed")
+    assert result.final_url == "https://www.advisory.example.com/feed"
+    assert len(requests) == 2
+    assert all(r["url"].startswith("https://203.0.113.10/") for r in requests)
+    assert requests[0]["host"] == "advisory.example.com"
+    assert requests[1]["host"] == "www.advisory.example.com"
+    assert requests[1]["sni"] == "www.advisory.example.com"
+
+
+def test_direct_www_url_allowed_when_bare_domain_allowlisted(
+    fetcher_fx: SecureFetcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(fetcher.socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("203.0.113.10"))
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            return None
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def get(self, url: str, **kwargs: object) -> object:
+            return _fake_response(url, content=b"<feed/>")
+
+    monkeypatch.setattr(fetcher.httpx, "Client", _Client)
+    assert (
+        fetcher_fx.fetch("https://www.advisory.example.com/feed").final_url == "https://www.advisory.example.com/feed"
+    )
+
+
+def test_bare_domain_allowed_when_www_form_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reverse direction: a source configured as www.example.com accepts the
+    bare domain too (canonicalization strips the leading www.)."""
+    www_fetcher = SecureFetcher(allowlist={"www.advisory.example.com"})
+    monkeypatch.setattr(fetcher.socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("203.0.113.10"))
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            return None
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def get(self, url: str, **kwargs: object) -> object:
+            return _fake_response(url, content=b"<feed/>")
+
+    monkeypatch.setattr(fetcher.httpx, "Client", _Client)
+    assert www_fetcher.fetch("https://advisory.example.com/feed").status_code == 200
+
+
+def test_redirect_to_arbitrary_host_denied(fetcher_fx: SecureFetcher, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A redirect off the allowlisted domain (base or www variant) is denied
+    before any request is issued to the target host."""
+    monkeypatch.setattr(fetcher.socket, "getaddrinfo", lambda *a, **k: _fake_addrinfo("203.0.113.10"))
+    issued: list[str] = []
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            return None
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def get(self, url: str, **kwargs: object) -> object:
+            issued.append(url)
+            return SimpleNamespace(
+                status_code=302,
+                headers={"content-type": "text/html", "location": "https://evil.example/feed"},
+                is_redirect=True,
+                content=b"",
+                url=url,
+            )
+
+    monkeypatch.setattr(fetcher.httpx, "Client", _Client)
+    with pytest.raises(DomainNotAllowedError, match="evil.example"):
+        fetcher_fx.fetch("https://advisory.example.com/feed")
+    assert len(issued) == 1
 
 
 def test_redirect_to_private_resolution_denied(fetcher_fx: SecureFetcher, monkeypatch: pytest.MonkeyPatch) -> None:

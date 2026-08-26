@@ -1,8 +1,9 @@
 """Secure content fetcher.
 
 Implements SAN-001: allowlisted HTTPS fetching with redirect limits, final-domain
-validation, DNS-rebinding protection, private/link-local/metadata address denial,
-response-size and content-type limits, and timeouts. Fails closed.
+validation (base_domain or its www-variant only), DNS-rebinding protection,
+private/link-local/metadata address denial, response-size and content-type
+limits, and timeouts. Fails closed.
 
 DNS-rebinding protection: every hop resolves its hostname ONCE, validates that
 every returned address is public, and then opens the connection against the
@@ -79,6 +80,21 @@ class UnsupportedContentTypeError(FetchError):
     """Response content type is not allowlisted."""
 
 
+def _host_allowed(host: str, allowlist: set[str]) -> bool:
+    """Exact-match host check: only base_domain and www.base_domain are allowed.
+
+    The allowlisted domain is canonicalized by stripping one leading "www.",
+    so a source configured as e.g. kaspersky.com also accepts www.kaspersky.com
+    (and vice versa) after redirects. Nothing looser — subdomains, lookalikes,
+    and any other host are rejected.
+    """
+    for domain in allowlist:
+        base = domain.lower().removeprefix("www.")
+        if host == base or host == f"www.{base}":
+            return True
+    return False
+
+
 def _resolve_pinned(url: str, allowlist: set[str]) -> tuple[str, int, list[str]]:
     """Resolve `url`'s host and return (host, port, pinned_public_ips).
 
@@ -91,7 +107,7 @@ def _resolve_pinned(url: str, allowlist: set[str]) -> tuple[str, int, list[str]]
     if parsed.username or parsed.password:
         raise DomainNotAllowedError("credentials in URL are prohibited")
     host = (parsed.hostname or "").lower()
-    if host not in allowlist:
+    if not _host_allowed(host, allowlist):
         raise DomainNotAllowedError(f"domain {host} not in allowlist")
     port = parsed.port or 443
     if port not in _ALLOWED_PORTS:
