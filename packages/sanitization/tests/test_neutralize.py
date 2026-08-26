@@ -48,3 +48,38 @@ def test_flagged_text_is_returned_cleaned_not_dropped() -> None:
     assert verdict.untrusted is True
     assert "finance lure was observed" in verdict.cleaned_text.lower()
     assert "Disregard prior instructions" not in verdict.cleaned_text
+
+
+def test_protected_brand_lookalike_is_flagged() -> None:
+    verdict = neutralize("Login to micr0soft-secure.example with your account")
+    assert verdict.untrusted is True
+    assert "lookalike" in " ".join(verdict.reasons)
+
+
+def test_operators_owned_domain_is_exempt_from_lookalike_flagging() -> None:
+    # A lookalike of a protected brand that the operator registered and
+    # verified (and put on the brand allowlist) is legitimate lure content.
+    text = "Your session expired at micr0soft.corp-training.example"
+    assert neutralize(text).untrusted is True
+    assert neutralize(text, brand_allowlist={"corp-training.example"}).untrusted is False
+
+
+def test_owned_subdomain_is_exempt() -> None:
+    text = "Update your password at micr0soft.social.corp-training.example"
+    assert neutralize(text).untrusted is True
+    assert neutralize(text, brand_allowlist={"corp-training.example"}).untrusted is False
+
+
+def test_owned_allowlist_does_not_exempt_unowned_lookalikes() -> None:
+    text = "Visit micr0soft-secure.example for your reward"
+    assert neutralize(text, brand_allowlist={"corp-training.example"}).untrusted is True
+
+
+def test_owned_punycode_subdomain_is_exempt() -> None:
+    text = "Look out for xn--micr0soft.corp-training.example lures"
+    assert neutralize(text).untrusted is True
+    assert neutralize(text, brand_allowlist={"corp-training.example"}).untrusted is False
+
+
+def test_standalone_lookalike_token_is_always_flagged() -> None:
+    assert neutralize("The attacker used sharep0int in the lure").untrusted is True

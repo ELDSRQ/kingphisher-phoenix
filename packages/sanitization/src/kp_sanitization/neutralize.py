@@ -96,9 +96,13 @@ class SanitizationVerdict:
 def neutralize(text: str, *, brand_allowlist: set[str] | None = None) -> SanitizationVerdict:
     """Detect and neutralize malicious instructions and dangerous Unicode.
 
-    `brand_allowlist` are brands the source is permitted to discuss (e.g. the
-    training domain's own brand). Neutralization always returns cleaned text;
-    the verdict records why it was marked untrusted.
+    `brand_allowlist` are domains/brands the operator owns and is permitted
+    to imitate in authorized training (their sending domains, internal
+    brands). A token that equals one of them or sits on a subdomain is the
+    operator's own registered surface, so it is exempt from lookalike
+    flagging; the default protected brands are still protected against
+    everyone. Neutralization always returns cleaned text; the verdict records
+    why it was marked untrusted.
     """
     reasons: list[str] = []
     original = text
@@ -120,8 +124,8 @@ def neutralize(text: str, *, brand_allowlist: set[str] | None = None) -> Sanitiz
         if pattern.search(cleaned):
             reasons.append(f"fake-administrator pattern: {pattern.pattern}")
 
-    protected = (brand_allowlist or set()) | _PROTECTED_BRANDS
-    lookalikes = _find_lookalike_domains(cleaned, protected)
+    protected = _PROTECTED_BRANDS
+    lookalikes = _find_lookalike_domains(cleaned, protected, owned=brand_allowlist or set())
     if lookalikes:
         reasons.append(f"lookalike/homoglyph domains detected: {sorted(lookalikes)}")
 
@@ -136,17 +140,49 @@ def _neutralize_matches(pattern: re.Pattern[str], text: str) -> str:
     return pattern.sub("", text)
 
 
-def _find_lookalike_domains(text: str, protected_brands: set[str]) -> set[str]:
-    """Detect punycode or homoglyph domains resembling protected brands."""
+def _find_lookalike_domains(text: str, protected_brands: set[str], *, owned: set[str]) -> set[str]:
+    """Detect punycode or homoglyph domains resembling protected brands.
+
+    A flagged token is suppressed only when the domain it appears in is the
+    operator's own registered surface (an ``owned`` domain or a subdomain of
+    one) — that is legitimate lure content. Standalone tokens and domains on
+    nobody's list stay flagged.
+    """
     found: set[str] = set()
-    for domain in re.findall(r"\bxn--[a-z0-9\-]+\b", text.lower()):
-        found.add(domain)
-    # Homoglyph substitution check on alphanumeric tokens against brand names.
-    for token in re.findall(r"\b[a-z0-9]{4,24}\b", text.lower()):
-        for brand in protected_brands:
-            if token != brand and _homoglyph_distance(token, brand) <= 1 and len(token) >= len(brand) - 1:
-                found.add(token)
+
+    def flag_label(label: str) -> None:
+        if label.startswith("xn--"):
+            found.add(label)
+            return
+        # A hyphenated label ("micr0soft-secure") hides the brand inside it;
+        # check the segments as well as the whole label.
+        candidates = label.split("-") + [label]
+        for candidate in candidates:
+            for brand in protected_brands:
+                if (
+                    candidate != brand
+                    and _homoglyph_distance(candidate, brand) <= 1
+                    and len(candidate) >= len(brand) - 1
+                ):
+                    found.add(candidate)
+                    return
+
+    domain_pattern = re.compile(r"\b[a-z0-9][a-z0-9\-]*(?:\.[a-z0-9][a-z0-9\-]*)+\b")
+    for domain in domain_pattern.findall(text.lower()):
+        if _is_owned(domain, owned):
+            continue
+        for label in domain.split("."):
+            flag_label(label)
+    # Standalone tokens (no dot) are checked after domains are stripped so a
+    # label inside an owned domain is never re-flagged on its own.
+    remainder = domain_pattern.sub(" ", text.lower())
+    for token in re.findall(r"\b[a-z0-9]{4,24}\b", remainder):
+        flag_label(token)
     return found
+
+
+def _is_owned(domain: str, owned: set[str]) -> bool:
+    return any(domain == owner or domain.endswith(f".{owner}") for owner in owned)
 
 
 def _homoglyph_distance(a: str, b: str) -> int:

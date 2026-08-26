@@ -24,6 +24,12 @@ class _Settings:
 
     training_base_url = "https://training.example.com/awareness"
 
+    def brand_allowlist_set(self) -> set[str]:
+        return set()
+
+    def sending_domain_pool(self) -> frozenset[str]:
+        return frozenset()
+
 
 class _Ctx:
     settings = _Settings()

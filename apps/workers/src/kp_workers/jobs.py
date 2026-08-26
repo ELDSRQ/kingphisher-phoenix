@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
+from email.utils import formataddr
 from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
@@ -42,7 +43,7 @@ from kp_database.models import (
 )
 from kp_database.privacy import hash_mailbox
 from kp_domain_models import models as dm
-from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
+from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed, resolve_sender
 from kp_domain_models.roe import (
     recipient_domain_roe_covered,
     roe_active_at,
@@ -239,18 +240,33 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
     )
 
 
-def effective_sender_address(ctx: WorkerContext, campaign: Campaign) -> str:
-    """The address mail will actually leave from.
+def effective_sender_address(ctx: WorkerContext, campaign: Campaign) -> tuple[str, bool]:
+    """The address mail will actually leave from, and whether the campaign's
+    requested persona was honored.
 
-    Azure Communication Services only accepts a From on its own verified
-    sending domain, so the campaign's configured sender_mailbox is overridden
-    there. Anything reasoning about the sender — SPF preflight, logs, the
-    operator's expectations — has to use this rather than sender_mailbox, or it
-    is describing a domain that never appears in the envelope.
+    Three cases:
+
+    * Azure Communication Services only accepts a From on its own verified
+      sending domain, so the campaign's configured sender_mailbox is always
+      overridden there.
+    * With a configured sending-domain pool, the persona's mailbox is honored
+      only when it sits in the pool (a registered/verified lookalike or owned
+      domain); otherwise the message falls back to the default sender because
+      sending as an unauthenticated domain does not deliver.
+    * With an empty pool the request is honored as given — the operator owns
+      the relay and has authorized the sender address directly.
+
+    Anything reasoning about the sender — SPF preflight, logs, the operator's
+    expectations — has to use this rather than sender_mailbox, or it is
+    describing a domain that never appears in the envelope.
     """
     if ctx.settings.email_provider == "azure_communication_services":
-        return ctx.settings.effective_smtp_sender
-    return campaign.sender_mailbox
+        return ctx.settings.effective_smtp_sender, False
+    return resolve_sender(
+        campaign.sender_mailbox,
+        sending_domains=ctx.settings.sending_domain_pool(),
+        default_sender=ctx.settings.effective_smtp_sender,
+    )
 
 
 def _make_batch_sender(ctx: WorkerContext) -> EmailSender:
@@ -378,17 +394,24 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # Check the domain that will actually send, not the one configured on
         # the campaign: under ACS they differ, and checking the wrong one gave
         # an SPF verdict about a domain absent from the message.
-        sender_address = effective_sender_address(ctx, campaign)
+        sender_address, sender_honored = effective_sender_address(ctx, campaign)
         spf = check_spf_for_mailbox(sender_address)
         if not spf.has_spf:
             logger.warning("SPF pre-flight: %s publishes no SPF record; delivery may be flagged", spf.domain)
         if sender_address != campaign.sender_mailbox:
-            logger.info(
-                "sender override: campaign requests %s but the %s provider sends as %s",
-                campaign.sender_mailbox,
-                ctx.settings.email_provider,
-                sender_address,
-            )
+            if ctx.settings.email_provider == "azure_communication_services":
+                logger.info(
+                    "sender override: campaign requests %s but the %s provider sends as %s",
+                    campaign.sender_mailbox,
+                    ctx.settings.email_provider,
+                    sender_address,
+                )
+            else:
+                logger.warning(
+                    "sender fallback: %s is not in the sending-domain pool; sending as %s",
+                    campaign.sender_mailbox,
+                    sender_address,
+                )
         sent = 0
         failed = 0
         blocked = 0
@@ -459,6 +482,8 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
             "spf_domain": spf.domain,
             "roe_id": str(roe.roe_id),
             "roe_signer": roe.signer,
+            "sender_address": sender_address,
+            "sender_persona_honored": sender_honored,
         },
     )
 
@@ -861,11 +886,11 @@ def _source_adapter(source: dm.Source, fetcher: Any) -> SourceAdapter:
     raise ValueError(f"unsupported source type: {source.source_type}")
 
 
-def _clean(text: str | None) -> tuple[str, list[str]]:
+def _clean(text: str | None, *, brand_allowlist: set[str] | None = None) -> tuple[str, list[str]]:
     """Neutralize one free-text field, returning the text and why it was flagged."""
     if not text:
         return "", []
-    verdict = neutralize(str(text))
+    verdict = neutralize(str(text), brand_allowlist=brand_allowlist)
     return verdict.cleaned_text, list(verdict.reasons)
 
 
@@ -880,8 +905,13 @@ def _build_generation_request(ctx: WorkerContext, pattern: CampaignPattern, *, a
     """
     reasons: list[str] = []
 
+    # The operator's own brands (sending domains + brand allowlist) are the
+    # ones legitimate lures imitate; a lookalike-domain template referencing
+    # them must not be flagged as attacker content.
+    brands = ctx.settings.brand_allowlist_set() | ctx.settings.sending_domain_pool()
+
     def field(value: str | None) -> str:
-        cleaned, why = _clean(value)
+        cleaned, why = _clean(value, brand_allowlist=brands)
         reasons.extend(why)
         return cleaned
 
@@ -998,7 +1028,13 @@ def _send_email(
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = effective_sender_address(ctx, campaign)
+    sender_address, _ = effective_sender_address(ctx, campaign)
+    if campaign.sender_display_name and ctx.settings.email_provider != "azure_communication_services":
+        # The display name is the persona vector ("Account Security"); ACS is
+        # excluded because it parses the From header as the bare senderAddress.
+        msg["From"] = formataddr((campaign.sender_display_name, sender_address))
+    else:
+        msg["From"] = sender_address
     msg["To"] = recipient.mailbox or f"recipient-{assignment.recipient_id}@example.com"
     msg.set_content(plain_text or subject)
     if html:

@@ -90,6 +90,22 @@ class WorkerSettings(BaseSettings):
         default="",
         validation_alias=AliasChoices("KP_WORKER_ROE_SIGNING_KEY", "KP_ROE_SIGNING_KEY"),
     )
+    #: Pool of domains this deployment is authenticated to send *as* (the
+    #: registered lookalike/sending domains). A campaign's requested sender
+    #: mailbox is honored only when it sits in the pool; otherwise the
+    #: envelope falls back to the configured default sender, because mail
+    #: from an unauthenticated domain does not deliver.
+    sending_domains: str = Field(
+        default="",
+        validation_alias=AliasChoices("KP_WORKER_SENDING_DOMAINS", "KP_SENDING_DOMAINS"),
+    )
+    #: Brands/domains the operator's own lures are allowed to imitate (their
+    #: sending domains and internal brand). Fed to the neutralizer so a
+    #: legitimate lookalike-domain template is not flagged as malicious.
+    brand_allowlist: str = Field(
+        default="",
+        validation_alias=AliasChoices("KP_WORKER_BRAND_ALLOWLIST", "KP_BRAND_ALLOWLIST"),
+    )
     #: QUEUED assignments older than this on a finished campaign are reconciled
     #: to FAILED. Never auto-resent — a human decides whether to re-run.
     queued_stale_hours: int = Field(default=24, ge=1, le=720)
@@ -120,6 +136,12 @@ class WorkerSettings(BaseSettings):
 
     def recipient_domain_allowlist(self) -> frozenset[str]:
         return parse_domain_allowlist(self.allowed_recipient_domains)
+
+    def sending_domain_pool(self) -> frozenset[str]:
+        return parse_domain_allowlist(self.sending_domains)
+
+    def brand_allowlist_set(self) -> set[str]:
+        return {d.strip().lower() for d in self.brand_allowlist.split(",") if d.strip()}
 
     @property
     def effective_smtp_address(self) -> str:
