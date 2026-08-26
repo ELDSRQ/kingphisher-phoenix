@@ -547,6 +547,52 @@ def campaign_report(
     return _campaign_report(session, _get_campaign(session, campaign_id))
 
 
+@router.get("/campaigns/{campaign_id}/recipients")
+def campaign_recipient_results(
+    campaign_id: str,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.VIEW_NAMED_RESULTS)),
+) -> list[dict[str, Any]]:
+    """Per-recipient outcomes for one campaign.
+
+    Deliberately does not return mailboxes, matching `list_recipients`: an
+    operator needs to know *which assignments* failed and why, not who clicked
+    what. Identifying a specific person's behaviour is a different decision with
+    different consequences, and the aggregate report covers the normal case.
+    """
+    from kp_database.models import RecipientAssignment
+
+    campaign = _get_campaign(session, campaign_id)
+    rows = session.execute(
+        select(RecipientAssignment, Recipient)
+        .join(Recipient, Recipient.recipient_id == RecipientAssignment.recipient_id)
+        .where(RecipientAssignment.campaign_id == campaign.campaign_id)
+    ).all()
+
+    events = session.scalars(select(TrackingEvent).where(TrackingEvent.campaign_id == campaign.campaign_id)).all()
+    by_token: dict[Any, set[str]] = {}
+    for event in events:
+        if event.token_id is None:
+            continue
+        by_token.setdefault(event.token_id, set()).add(event.event_type.value)
+
+    results: list[dict[str, Any]] = []
+    for assignment, recipient in rows:
+        seen = by_token.get(assignment.token_id, set())
+        results.append(
+            {
+                "recipient_id": str(recipient.recipient_id),
+                "department": recipient.department,
+                "send_state": assignment.send_state.value,
+                "failure_reason": assignment.failure_reason,
+                "opened": dm.EventType.OPENED.value in seen,
+                "clicked": dm.EventType.CLICKED.value in seen,
+                "reported": dm.EventType.MESSAGE_REPORTED.value in seen,
+            }
+        )
+    return results
+
+
 @router.get("/campaigns/{campaign_id}/report.csv")
 def campaign_report_csv(
     campaign_id: str,

@@ -219,7 +219,9 @@ function showCampaignReport(report) {
     ["Delivered", delivered, report.recipients],
     ["Opened", report.event_counts.opened || 0, delivered],
     ["Clicked", report.event_counts.clicked || 0, delivered],
-    ["Reported", report.event_counts.reported || 0, delivered],
+    // The enum member is MESSAGE_REPORTED, so the key is "message_reported";
+    // reading "reported" silently rendered 0 for every campaign.
+    ["Reported", report.event_counts.message_reported || 0, delivered],
     ["Training completed", report.training.completed || 0, report.training.assigned || 0],
   ];
   const funnelTable = el("table", { class: "report-table" }, [
@@ -258,6 +260,25 @@ function showCampaignReport(report) {
     ]));
   }
 
+  // Per-recipient detail is loaded on demand: it is the larger query, and most
+  // of the time the aggregate answers the question.
+  const perRecipient = el("div", {});
+  form.appendChild(el("h4", { class: "modal-section", text: "Per recipient" }));
+  form.appendChild(el("p", { class: "modal-help", text: "Shows assignment outcomes by department. Mailboxes are never returned — the platform reports on assignments, not on named individuals' behaviour." }));
+  const loadBtn = el("button", { class: "btn small", type: "button", text: "Load per-recipient results", onclick: async (e) => {
+    e.target.disabled = true;
+    try {
+      const rows = await api(`/campaigns/${report.campaign_id}/recipients`);
+      perRecipient.replaceChildren(renderRecipientTable(rows));
+      e.target.remove();
+    } catch (err) {
+      perRecipient.replaceChildren(el("p", { class: "modal-warn", text: err.message }));
+      e.target.disabled = false;
+    }
+  } });
+  form.appendChild(loadBtn);
+  form.appendChild(perRecipient);
+
   form.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "btn", type: "button", text: "Download CSV", onclick: async (e) => {
       e.target.disabled = true;
@@ -268,6 +289,28 @@ function showCampaignReport(report) {
     el("button", { class: "btn primary", type: "button", text: "Close", onclick: () => dlg.close() }),
   ]));
   openDialog(dlg);
+}
+
+function renderRecipientTable(rows) {
+  if (!rows.length) return el("p", { class: "modal-help", text: "No assignments for this campaign yet." });
+  return el("table", { class: "report-table" }, [
+    el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Department" }),
+      el("th", { text: "Send state" }),
+      el("th", { text: "Reason" }),
+      el("th", { text: "Opened" }),
+      el("th", { text: "Clicked" }),
+      el("th", { text: "Reported" }),
+    ])]),
+    el("tbody", {}, rows.map((r) => el("tr", {}, [
+      el("td", { text: r.department || "—" }),
+      el("td", { text: r.send_state }),
+      el("td", { text: r.failure_reason || "—" }),
+      el("td", { class: "num", text: r.opened ? "yes" : "—" }),
+      el("td", { class: "num", text: r.clicked ? "yes" : "—" }),
+      el("td", { class: "num", text: r.reported ? "yes" : "—" }),
+    ]))),
+  ]);
 }
 
 /* The CSV route is authenticated, so a plain link would 401. Fetch with the
