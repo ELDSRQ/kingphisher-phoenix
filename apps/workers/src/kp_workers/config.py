@@ -1,7 +1,8 @@
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, model_validator
+from kp_domain_models.policy import ApprovalPolicy, parse_domain_allowlist
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,7 +23,7 @@ def _validate_provider_url(name: str, value: str | None) -> None:
 
 
 class WorkerSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="KP_WORKER_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="KP_WORKER_", env_file=".env", extra="ignore", populate_by_name=True)
 
     worker_name: str = "worker"
     database_url: str = "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher"
@@ -73,6 +74,24 @@ class WorkerSettings(BaseSettings):
     training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
     training_domains: str = "example.com,127.0.0.1"
 
+    # --- send-safety policy (T-06); mirrors the operator API ---
+    approval_policy: ApprovalPolicy = Field(
+        default=ApprovalPolicy.SINGLE_ADMIN,
+        validation_alias=AliasChoices("KP_WORKER_APPROVAL_POLICY", "OPERATOR_APPROVAL_POLICY"),
+    )
+    allowed_recipient_domains: str = Field(
+        default="",
+        validation_alias=AliasChoices("KP_WORKER_ALLOWED_RECIPIENT_DOMAINS", "KP_ALLOWED_RECIPIENT_DOMAINS"),
+    )
+    #: QUEUED assignments older than this on a finished campaign are reconciled
+    #: to FAILED. Never auto-resent — a human decides whether to re-run.
+    queued_stale_hours: int = Field(default=24, ge=1, le=720)
+    #: Consecutive poll failures before a source is disabled (circuit breaker).
+    source_failure_threshold: int = Field(default=10, ge=1, le=1000)
+    #: Recipients per delivery message. Bounds queue payload size (1MiB cap) and
+    #: gives the sender a natural batch for one reused SMTP/ACS connection.
+    delivery_batch_size: int = Field(default=200, ge=1, le=2000)
+
     @model_validator(mode="after")
     def validate_provider_credentials(self) -> "WorkerSettings":
         if self.smtp_ssl and self.smtp_starttls:
@@ -91,6 +110,9 @@ class WorkerSettings(BaseSettings):
         _validate_provider_url("AI base URL", self.ai_base_url)
         _validate_provider_url("reported mailbox URL", self.reported_mailbox_url)
         return self
+
+    def recipient_domain_allowlist(self) -> frozenset[str]:
+        return parse_domain_allowlist(self.allowed_recipient_domains)
 
     @property
     def effective_smtp_address(self) -> str:

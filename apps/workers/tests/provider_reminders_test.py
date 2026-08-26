@@ -8,9 +8,9 @@ from kp_workers.providers.reminders import Reminder, SmtpReminderSender
 
 def test_smtp_reminder_sender_builds_plain_message() -> None:
     smtp = MagicMock()
-    manager = MagicMock()
-    manager.__enter__.return_value = smtp
-    with patch("kp_workers.providers.smtp.smtplib.SMTP", return_value=manager) as constructor:
+    # Mirror real smtplib: SMTP.__enter__ returns self.
+    smtp.__enter__.return_value = smtp
+    with patch("kp_workers.providers.smtp.smtplib.SMTP", return_value=smtp) as constructor:
         SmtpReminderSender("mailpit:1025", sender="training@example.com").send(
             Reminder(recipient="learner@example.com", subject="Reminder", text="Complete training")
         )

@@ -3,15 +3,30 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import smtplib
 import ssl
 from email.message import EmailMessage
 from email.utils import getaddresses
-from typing import Protocol
+from types import TracebackType
+from typing import Protocol, Self
 
 
 class EmailSender(Protocol):
+    """A transport that can send one message, optionally over a held session.
+
+    Entering the sender lets a batch reuse one connection; outside a `with`
+    block every send is self-contained, which keeps single-message callers
+    (reminders, test sends) unchanged.
+    """
+
     def send(self, message: EmailMessage) -> None: ...
+
+    def __enter__(self) -> Self: ...
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None: ...
 
 
 class SmtpSender:
@@ -35,24 +50,75 @@ class SmtpSender:
         self._starttls = starttls
         self._use_ssl = use_ssl
         self._timeout = timeout
+        #: Connection held for the duration of a `with` block, so a delivery
+        #: batch pays one connect+login instead of one per recipient (ARCH-1).
+        self._session: smtplib.SMTP | None = None
+
+    def _connect(self) -> smtplib.SMTP:
+        context = ssl.create_default_context()
+        smtp: smtplib.SMTP
+        if self._use_ssl:
+            smtp = smtplib.SMTP_SSL(self._host, self._port, timeout=self._timeout, context=context)
+        else:
+            smtp = smtplib.SMTP(self._host, self._port, timeout=self._timeout)
+        if self._starttls:
+            smtp.starttls(context=context)
+        if self._username is not None:
+            smtp.login(self._username, self._password or "")
+        return smtp
+
+    def __enter__(self) -> Self:
+        self._session = self._connect()
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        self._close_session()
+
+    def _close_session(self) -> None:
+        session, self._session = self._session, None
+        if session is None:
+            return
+        # The batch is finished; a failed QUIT is not worth surfacing, and the
+        # socket is dropped either way.
+        with contextlib.suppress(Exception):
+            try:
+                session.quit()
+            finally:
+                session.close()
 
     def send(self, message: EmailMessage) -> None:
-        context = ssl.create_default_context()
-        smtp_manager: smtplib.SMTP
-        if self._use_ssl:
-            smtp_manager = smtplib.SMTP_SSL(self._host, self._port, timeout=self._timeout, context=context)
-        else:
-            smtp_manager = smtplib.SMTP(self._host, self._port, timeout=self._timeout)
-        with smtp_manager as smtp:
-            if self._starttls:
-                smtp.starttls(context=context)
-            if self._username is not None:
-                smtp.login(self._username, self._password or "")
-            smtp.send_message(message)
+        session = self._session
+        if session is None:
+            smtp = self._connect()
+            try:
+                smtp.send_message(message)
+            finally:
+                with contextlib.suppress(Exception):
+                    smtp.quit()
+            return
+        try:
+            session.send_message(message)
+        except (smtplib.SMTPServerDisconnected, OSError):
+            # A dropped connection must not fail every remaining recipient in
+            # the batch: discard it, reconnect once, and retry this message.
+            self._close_session()
+            self._session = self._connect()
+            self._session.send_message(message)
 
 
 class AzureCommunicationEmailSender:
     """Azure Communication Services transport using managed identity by default."""
+
+    def __enter__(self) -> Self:
+        # The ACS client pools HTTP connections itself; batching is a no-op.
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        return None
 
     def __init__(self, endpoint: str, *, connection_string: str | None = None) -> None:
         from azure.communication.email import EmailClient

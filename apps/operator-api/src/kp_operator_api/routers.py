@@ -41,6 +41,7 @@ from kp_database.privacy import (
     hash_mailbox,
 )
 from kp_domain_models import models as dm
+from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed, mailbox_domain
 from kp_telemetry.errors import (
     ConflictError,
     NotFoundError,
@@ -56,6 +57,7 @@ from sqlalchemy.orm import Session
 from kp_operator_api.auth import require_any_capability, require_capability
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
+from kp_operator_api.send_policy import resolve_recipient_policy
 
 router = APIRouter(prefix="/api/v1")
 _renderer = MessageRenderer()
@@ -169,6 +171,65 @@ def submit_campaign(
     return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
 
 
+REQUIRED_APPROVALS: frozenset[dm.ApprovalType] = frozenset({dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY})
+
+
+def _missing_campaign_approvals(session: Session, campaign: Campaign) -> set[dm.ApprovalType]:
+    """Approval types still outstanding for `campaign`.
+
+    Only APPROVED decisions count; a REJECTED row never satisfies a requirement.
+    """
+    granted = {
+        row.approval_type
+        for row in session.execute(
+            select(CampaignApproval).where(
+                CampaignApproval.campaign_id == campaign.campaign_id,
+                CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+            )
+        )
+        .scalars()
+        .all()
+    }
+    return set(REQUIRED_APPROVALS - granted)
+
+
+def _publish_delivery_batches(
+    request: Request,
+    *,
+    campaign: Campaign,
+    campaign_id: str,
+    assignment_ids: list[str],
+    idempotency_prefix: str,
+    test_send: bool,
+    available_at: float | None = None,
+) -> int:
+    """Publish delivery work in bounded batches.
+
+    The queue enforces a 1MiB payload cap, so a single message carrying every
+    assignment id fails for large campaigns. Chunking also gives the delivery
+    worker a natural unit for reusing one SMTP/ACS connection. Batch index is
+    part of the idempotency key so a retried schedule request re-publishes the
+    same batches rather than duplicating sends.
+    """
+    batch_size = max(1, request.app.state.settings.delivery_batch_size)
+    batches = [assignment_ids[i : i + batch_size] for i in range(0, len(assignment_ids), batch_size)] or [[]]
+    for index, batch in enumerate(batches):
+        payload: dict[str, Any] = {
+            "campaign_id": campaign_id,
+            "recipient_assignment_ids": batch,
+            "template_hash": campaign.manifest_hash,
+        }
+        if test_send:
+            payload["test_send"] = True
+        request.app.state.queue.publish(
+            "deliver",
+            payload,
+            idempotency_key=f"{idempotency_prefix}:{index}",
+            **({"available_at": available_at} if available_at is not None else {}),
+        )
+    return len(batches)
+
+
 @router.post("/campaigns/{campaign_id}/approvals/{approval_type}", status_code=status.HTTP_200_OK)
 def approve_campaign(
     campaign_id: str,
@@ -245,6 +306,26 @@ def schedule_campaign(
     campaign = _get_campaign(session, campaign_id)
     if campaign.state not in (dm.CampaignState.DRAFT, dm.CampaignState.APPROVED, dm.CampaignState.SCHEDULED):
         raise ConflictError("only draft or approved campaigns can be scheduled")
+    # Two-person rule. Under `enforce` a campaign cannot reach the queue without
+    # both a security and a privacy approval, which is what stops a single
+    # administrator from sending a simulation unilaterally.
+    if request.app.state.settings.approval_policy is ApprovalPolicy.ENFORCE:
+        missing = _missing_campaign_approvals(session, campaign)
+        if missing:
+            outstanding = sorted(approval.value for approval in missing)
+            audit.record(
+                actor=principal.principal_id,
+                action="campaign.schedule.blocked",
+                object_type="campaign",
+                object_id=str(campaign.campaign_id),
+                detail={"reason": "missing_approvals", "missing": outstanding},
+            )
+            session.commit()
+            raise ConflictError(
+                "campaign requires "
+                + " and ".join(outstanding)
+                + " approval before scheduling (approval policy: enforce)"
+            )
     if campaign.schedule_start is None:
         raise ValidationError_("campaign requires a schedule start")
     schedule_start = campaign.schedule_start
@@ -257,15 +338,13 @@ def schedule_campaign(
     # repeated request is safe and can repair a transient Redis publish error.
     prepared = prepare_campaign(session, campaign, tracking_base_url=request.app.state.settings.tracking_base_url)
     assignment_ids = [p.assignment_id for p in prepared]
-    request.app.state.queue.publish(
-        "deliver",
-        {
-            "campaign_id": campaign_id,
-            "recipient_assignment_ids": assignment_ids,
-            "template_hash": campaign.manifest_hash,
-            "test_send": True,
-        },
-        idempotency_key=f"deliver:{campaign_id}",
+    batches = _publish_delivery_batches(
+        request,
+        campaign=campaign,
+        campaign_id=campaign_id,
+        assignment_ids=assignment_ids,
+        idempotency_prefix=f"deliver:{campaign_id}",
+        test_send=False,
         available_at=max(schedule_start.timestamp(), datetime.now(UTC).timestamp()),
     )
     if first_schedule:
@@ -274,7 +353,11 @@ def schedule_campaign(
             action="campaign.schedule",
             object_type="campaign",
             object_id=str(campaign.campaign_id),
-            detail={"prepared": len(assignment_ids), "scheduled_for": schedule_start.isoformat()},
+            detail={
+                "prepared": len(assignment_ids),
+                "batches": batches,
+                "scheduled_for": schedule_start.isoformat(),
+            },
         )
         _queue_campaign_alert(session, request, campaign, "campaign.scheduled")
     return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value, "prepared": len(assignment_ids)}
@@ -297,14 +380,13 @@ def test_send_campaign(
         test_only=True,
     )
     assignment_ids = [p.assignment_id for p in prepared]
-    request.app.state.queue.publish(
-        "deliver",
-        {
-            "campaign_id": campaign_id,
-            "recipient_assignment_ids": assignment_ids,
-            "template_hash": campaign.manifest_hash,
-        },
-        idempotency_key=f"deliver:test:{campaign_id}",
+    _publish_delivery_batches(
+        request,
+        campaign=campaign,
+        campaign_id=campaign_id,
+        assignment_ids=assignment_ids,
+        idempotency_prefix=f"deliver:test:{campaign_id}",
+        test_send=True,
     )
     audit.record(
         actor=principal.principal_id,
@@ -607,8 +689,11 @@ def import_recipients_csv(
     import io
 
     salt = settings.require_recipient_hash_salt()
+    # Fail-closed outside dev-auth; see resolve_recipient_policy.
+    allowlist, unrestricted = resolve_recipient_policy(settings)
     created = 0
     skipped = 0
+    blocked = 0
     errors: list[str] = []
     for idx, row in enumerate(csv.reader(io.StringIO(body.csv_text)), start=1):
         if not row or all(cell.strip() == "" for cell in row):
@@ -617,8 +702,12 @@ def import_recipients_csv(
             errors.append(f"row {idx}: expected at least one column")
             continue
         mailbox = row[0].strip()
-        if "@" not in mailbox:
+        if mailbox_domain(mailbox) is None:
             errors.append(f"row {idx}: invalid mailbox {mailbox!r}")
+            continue
+        if not unrestricted and not is_recipient_allowed(mailbox, allowlist):
+            blocked += 1
+            errors.append(f"row {idx}: domain {mailbox_domain(mailbox)!r} is not in the allowed recipient domains")
             continue
         mailbox_key = hash_mailbox(mailbox, salt)
         existing = session.scalar(select(Recipient).where(Recipient.mailbox_sha256 == mailbox_key))
@@ -644,10 +733,18 @@ def import_recipients_csv(
         action="recipient.import",
         object_type="recipients",
         object_id="csv",
-        detail={"created": created, "skipped": skipped, "errors": len(errors)},
+        detail={
+            "created": created,
+            "skipped": skipped,
+            "blocked": blocked,
+            "errors": len(errors),
+            # Surfaced so an auditor can see imports that ran with no domain
+            # restriction at all, which is only reachable in dev-auth mode.
+            "domain_allowlist": "unrestricted" if unrestricted else sorted(allowlist),
+        },
     )
     session.commit()
-    return {"created": created, "skipped": skipped, "errors": errors[:20]}
+    return {"created": created, "skipped": skipped, "blocked": blocked, "errors": errors[:20]}
 
 
 @router.post("/recipients/sync-directory", status_code=status.HTTP_202_ACCEPTED)

@@ -23,6 +23,7 @@ from kp_database.audit_store import AuditStore
 from kp_database.models import (
     AlertSubscription,
     Campaign,
+    CampaignApproval,
     CampaignPattern,
     Recipient,
     RecipientAssignment,
@@ -39,6 +40,7 @@ from kp_database.models import (
 )
 from kp_database.privacy import hash_mailbox
 from kp_domain_models import models as dm
+from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
 from kp_safety_validation.validator import SafetyValidator
 from kp_source_adapters import BulkDownloadAdapter, RssAdapter, SourceAdapter, StixAdapter
 from kp_telemetry.errors import SafetyRejectionError
@@ -55,7 +57,7 @@ from kp_workers.providers.alerts import SignedWebhookSender
 from kp_workers.providers.graph import GraphDirectoryProvider
 from kp_workers.providers.mailpit import MailpitReportedMessageProvider
 from kp_workers.providers.reminders import ProviderReminderSender, Reminder, ReminderSender
-from kp_workers.providers.smtp import make_email_sender
+from kp_workers.providers.smtp import EmailSender, make_email_sender
 
 logger = get_logger("kp_workers.jobs")
 
@@ -112,7 +114,33 @@ def process_ingestion(ctx: WorkerContext, message: dict[str, Any]) -> None:
             consecutive_failures=source.consecutive_failures,
         )
         adapter = _source_adapter(source_model, fetcher)
-        items = adapter.fetch()
+        try:
+            items = adapter.fetch()
+        except Exception:
+            # NEW-10: the counter existed but nothing ever incremented it, so a
+            # permanently broken feed retried forever. Count the failure, trip
+            # the breaker at the threshold, and let the error propagate so the
+            # queue's own retry/DLQ handling is unchanged.
+            source.consecutive_failures += 1
+            source.last_attempt_at = datetime.now(UTC)
+            tripped = source.consecutive_failures >= ctx.settings.source_failure_threshold
+            if tripped:
+                source.enabled = False
+            session.commit()
+            ctx.audit_store.record(
+                actor="worker:ingestion",
+                action="ingest.source.disabled" if tripped else "ingest.fetch.failed",
+                object_type="source",
+                object_id=source_id,
+                detail={
+                    "consecutive_failures": source.consecutive_failures,
+                    "threshold": ctx.settings.source_failure_threshold,
+                    "disabled": tripped,
+                },
+            )
+            if tripped:
+                logger.error("source %s disabled after %s consecutive failures", source_id, source.consecutive_failures)
+            raise
         inserted = 0
         patterns = 0
         for item in items:
@@ -181,6 +209,21 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
     )
 
 
+def _make_batch_sender(ctx: WorkerContext) -> EmailSender:
+    """Build the transport once so a delivery batch can hold one connection."""
+    return make_email_sender(
+        provider=ctx.settings.email_provider,
+        smtp_address=ctx.settings.effective_smtp_address,
+        smtp_username=ctx.settings.smtp_username,
+        smtp_password=ctx.settings.smtp_password,
+        smtp_starttls=ctx.settings.effective_smtp_starttls,
+        smtp_ssl=ctx.settings.smtp_ssl,
+        acs_endpoint=ctx.settings.acs_email_endpoint,
+        acs_connection_string=ctx.settings.acs_email_connection_string,
+        timeout=ctx.settings.provider_timeout_seconds,
+    )
+
+
 def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
     payload = message["payload"]
     assignment_ids = payload.get("recipient_assignment_ids", [])
@@ -208,37 +251,79 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         if template_hash != campaign.manifest_hash:
             raise SafetyRejectionError("delivery manifest does not match the approved campaign")
         pattern = session.get(CampaignPattern, campaign.pattern_id) if campaign.pattern_id else None
+        # Re-check the two-person rule here, not just at scheduling: a message
+        # queued before the policy tightened must not still go out under the
+        # old rules.
+        if not test_send and ctx.settings.approval_policy is ApprovalPolicy.ENFORCE:
+            granted = {
+                row.approval_type
+                for row in session.scalars(
+                    select(CampaignApproval).where(
+                        CampaignApproval.campaign_id == campaign.campaign_id,
+                        CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+                    )
+                ).all()
+            }
+            if not {dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY} <= granted:
+                ctx.audit_store.record(
+                    actor="worker:delivery",
+                    action="campaign.deliver.blocked",
+                    object_type="campaign",
+                    object_id=campaign_id,
+                    detail={"reason": "missing_approvals"},
+                )
+                logger.error("campaign %s lacks required approvals; refusing to deliver", campaign_id)
+                return
+        allowlist = ctx.settings.recipient_domain_allowlist()
+        # Mirror the import rule: unset is fail-closed under OIDC-shaped
+        # deployments and allow-all only for the offline dev stack.
+        unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
         spf = check_spf_for_mailbox(campaign.sender_mailbox)
         if not spf.has_spf:
             logger.warning("SPF pre-flight: %s publishes no SPF record; delivery may be flagged", spf.domain)
         sent = 0
         failed = 0
-        for assignment_id in assignment_ids:
-            assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
-            if (
-                assignment is None
-                or assignment.campaign_id != campaign.campaign_id
-                or assignment.send_state != dm.SendState.QUEUED
-            ):
-                continue
-            token = session.scalar(
-                select(TrackingToken).where(TrackingToken.recipient_assignment_id == assignment.recipient_assignment_id)
-            )
-            recipient = session.get(Recipient, assignment.recipient_id)
-            if token is None or recipient is None or recipient.status != dm.RecipientStatus.ACTIVE:
-                assignment.send_state = dm.SendState.FAILED
-                failed += 1
-                continue
-            try:
-                _send_email(ctx, campaign, template, pattern, assignment, recipient, token)
-                assignment.send_state = dm.SendState.DELIVERED
-                sent += 1
-            except Exception:  # noqa: BLE001 - per-recipient isolation: one bad
-                # recipient must not roll back the whole batch or drop the message
-                logger.exception("delivery failed for recipient %s; marking FAILED", recipient.mailbox)
-                assignment.send_state = dm.SendState.FAILED
-                failed += 1
-            session.commit()
+        blocked = 0
+        sender = _make_batch_sender(ctx)
+        # One held SMTP/ACS connection for the whole batch (ARCH-1).
+        with sender:
+            for assignment_id in assignment_ids:
+                assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
+                if (
+                    assignment is None
+                    or assignment.campaign_id != campaign.campaign_id
+                    or assignment.send_state != dm.SendState.QUEUED
+                ):
+                    continue
+                token = session.scalar(
+                    select(TrackingToken).where(
+                        TrackingToken.recipient_assignment_id == assignment.recipient_assignment_id
+                    )
+                )
+                recipient = session.get(Recipient, assignment.recipient_id)
+                if token is None or recipient is None or recipient.status != dm.RecipientStatus.ACTIVE:
+                    assignment.send_state = dm.SendState.FAILED
+                    assignment.failure_reason = "recipient_unavailable"
+                    failed += 1
+                    continue
+                if not unrestricted and not is_recipient_allowed(recipient.mailbox or "", allowlist):
+                    # Policy refusal, not a transport error: never attempt the send.
+                    assignment.send_state = dm.SendState.FAILED
+                    assignment.failure_reason = "domain_not_allowed"
+                    blocked += 1
+                    session.commit()
+                    continue
+                try:
+                    _send_email(ctx, campaign, template, pattern, assignment, recipient, token, sender=sender)
+                    assignment.send_state = dm.SendState.DELIVERED
+                    sent += 1
+                except Exception:  # noqa: BLE001 - per-recipient isolation: one bad
+                    # recipient must not roll back the whole batch or drop the message
+                    logger.exception("delivery failed for recipient %s; marking FAILED", recipient.mailbox)
+                    assignment.send_state = dm.SendState.FAILED
+                    assignment.failure_reason = "send_error"
+                    failed += 1
+                session.commit()
         if not test_send:
             campaign.state = dm.CampaignState.ACTIVE
         session.commit()
@@ -248,6 +333,7 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         object_type="campaign",
         object_id=campaign_id,
         detail={
+            "blocked": blocked,
             "sent": sent,
             "failed": failed,
             "template_hash": template_hash,
@@ -262,7 +348,7 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
     policy_id = payload.get("retention_policy_id", "default")
     with ctx.session_factory() as session:
         now = datetime.now(UTC)
-        lifecycle = reconcile_campaign_lifecycle(session, now)
+        lifecycle = reconcile_campaign_lifecycle(session, now, queued_stale_hours=ctx.settings.queued_stale_hours)
         if policy_id != "default":
             policy = session.get(RetentionPolicy, uuid.UUID(policy_id))
         else:
@@ -344,8 +430,15 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
     )
 
 
-def reconcile_campaign_lifecycle(session: Session, now: datetime) -> dict[str, int]:
-    """Close campaigns whose configured assessment window has ended."""
+def reconcile_campaign_lifecycle(session: Session, now: datetime, *, queued_stale_hours: int = 24) -> dict[str, int]:
+    """Close campaigns whose assessment window ended, and settle stale sends.
+
+    An assignment left QUEUED after its campaign closed means the delivery
+    message was lost or never ran. Those are marked FAILED with a reason so the
+    funnel stops counting them as in-flight forever. Deliberately never
+    auto-resent: re-mailing people after a campaign closed is a decision for a
+    human, not a reconciler.
+    """
     rows = list(
         session.scalars(
             select(Campaign).where(
@@ -370,7 +463,29 @@ def reconcile_campaign_lifecycle(session: Session, now: datetime) -> dict[str, i
         else:
             campaign.state = dm.CampaignState.COMPLETED
             completed += 1
-    return {"completed": completed, "expired": expired}
+
+    cutoff = now - timedelta(hours=queued_stale_hours)
+    stale_rows = list(
+        session.scalars(
+            select(RecipientAssignment)
+            .join(Campaign, Campaign.campaign_id == RecipientAssignment.campaign_id)
+            .where(
+                RecipientAssignment.send_state == dm.SendState.QUEUED,
+                RecipientAssignment.created_at <= cutoff,
+                Campaign.state.in_(
+                    [
+                        dm.CampaignState.COMPLETED,
+                        dm.CampaignState.EXPIRED,
+                        dm.CampaignState.CANCELLED,
+                    ]
+                ),
+            )
+        )
+    )
+    for assignment in stale_rows:
+        assignment.send_state = dm.SendState.FAILED
+        assignment.failure_reason = "stale_queued_reconcile"
+    return {"completed": completed, "expired": expired, "stale_queued": len(stale_rows)}
 
 
 def maybe_publish_retention(ctx: WorkerContext, now: datetime) -> None:
@@ -647,6 +762,8 @@ def _send_email(
     assignment: RecipientAssignment,
     recipient: Recipient,
     token: TrackingToken,
+    *,
+    sender: EmailSender | None = None,
 ) -> None:
     tracking_base = ctx.settings.tracking_base_url.rstrip("/")
     tracking = TrackingContext(
@@ -716,17 +833,9 @@ def _send_email(
         msg.add_attachment(
             ics_text.encode("utf-8"), maintype="text", subtype="calendar", filename=f"invite-{uid[:12]}.ics"
         )
-    make_email_sender(
-        provider=ctx.settings.email_provider,
-        smtp_address=ctx.settings.effective_smtp_address,
-        smtp_username=ctx.settings.smtp_username,
-        smtp_password=ctx.settings.smtp_password,
-        smtp_starttls=ctx.settings.effective_smtp_starttls,
-        smtp_ssl=ctx.settings.smtp_ssl,
-        acs_endpoint=ctx.settings.acs_email_endpoint,
-        acs_connection_string=ctx.settings.acs_email_connection_string,
-        timeout=ctx.settings.provider_timeout_seconds,
-    ).send(msg)
+    # Reuse the batch connection when one was supplied; single-message callers
+    # (reminders, ad-hoc sends) still get a self-contained transport.
+    (sender if sender is not None else _make_batch_sender(ctx)).send(msg)
 
 
 def _provider_headers(bearer_token: str | None, api_key: str | None) -> dict[str, str]:

@@ -256,7 +256,7 @@ def test_reconcile_campaign_lifecycle_closes_elapsed_windows() -> None:
         )
         session.add_all([active, scheduled])
         session.flush()
-        assert reconcile_campaign_lifecycle(session, now) == {"completed": 1, "expired": 1}
+        assert reconcile_campaign_lifecycle(session, now) == {"completed": 1, "expired": 1, "stale_queued": 0}
         session.commit()
         assert active.state == dm.CampaignState.COMPLETED
         assert scheduled.state == dm.CampaignState.EXPIRED

@@ -8,10 +8,11 @@ from kp_workers.providers.smtp import AzureCommunicationEmailSender, SmtpSender
 
 def test_smtp_sender_uses_starttls_then_auth_without_exposing_password() -> None:
     smtp = MagicMock()
-    manager = MagicMock()
-    manager.__enter__.return_value = smtp
+    # Mirror real smtplib: SMTP.__enter__ returns self, so the connected object
+    # and the context-manager target are the same instance.
+    smtp.__enter__.return_value = smtp
     message = EmailMessage()
-    with patch("kp_workers.providers.smtp.smtplib.SMTP", return_value=manager) as constructor:
+    with patch("kp_workers.providers.smtp.smtplib.SMTP", return_value=smtp) as constructor:
         SmtpSender(
             "smtp.example.com:587",
             username="service",
@@ -23,6 +24,9 @@ def test_smtp_sender_uses_starttls_then_auth_without_exposing_password() -> None
     smtp.starttls.assert_called_once()
     smtp.login.assert_called_once_with("service", "secret")
     smtp.send_message.assert_called_once_with(message)
+    # The channel must be encrypted before credentials cross it.
+    called = [call[0] for call in smtp.method_calls]
+    assert called.index("starttls") < called.index("login")
 
 
 def test_acs_sender_uses_managed_identity_and_preserves_content() -> None:

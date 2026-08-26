@@ -310,6 +310,10 @@ class RecipientAssignment(Base):
     snapshot_version: Mapped[int] = mapped_column(Integer, default=1)
     token_id = mapped_column(UUID(as_uuid=True), nullable=True)
     send_state: Mapped[dm.SendState] = mapped_column(Enum(dm.SendState, name="send_state"), default=dm.SendState.QUEUED)
+    #: Why a send failed, when the cause is a policy decision rather than a
+    #: transport error (e.g. "domain_not_allowed", "stale_queued_reconcile").
+    #: NULL on success and on failures predating migration 0011.
+    failure_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
     idempotency_key: Mapped[str] = mapped_column(String(128), unique=True)
 
