@@ -11,8 +11,8 @@ CLI workflow. Built from the reconstructed build specification
   any platform, run the installer. Everything starts: infrastructure, APIs, and
   eight background workers.
 - **Browser operator console** at `http://127.0.0.1:8000/console` — dashboard,
-  campaigns, recipients, sources, patterns, audit, and settings (including
-  Restart / Stop). Secrets are masked; every change is audited.
+  campaigns, template review, recipients, sources, patterns, audit, and settings
+  (including Restart / Stop). Secrets are masked; every change is audited.
 - **Deterministic safety model** enforced in code: append-only hash-chained
   audit, role-based access, deterministic safety validation
   outside the AI model, allowlisted sanitized fetching, and a kill switch.
@@ -152,6 +152,19 @@ Non-negotiable boundaries enforced in code:
 - Sanitization: allowlisted HTTPS fetching, HTML→plain-text, instruction/Unicode
   neutralization (`kp_sanitization`)
 - Fail-closed error handling (error taxonomy `KP-001..010`)
+- **Two-person approval** — under `OPERATOR_APPROVAL_POLICY=enforce` a campaign
+  needs both a security and a privacy approval from two different people, and
+  neither may be its author. `single-admin` is rejected at startup when an
+  identity provider is configured, so the relaxed offline mode cannot reach a
+  deployment that mails real people.
+- **Recipient-domain allowlist** — `KP_ALLOWED_RECIPIENT_DOMAINS` gates both
+  recipient import and delivery, and is re-checked per batch in the worker.
+  Unset fails closed under OIDC.
+- **Human approval of generated content** — AI drafts land as DRAFT and cannot
+  be scheduled until a security approver accepts them. Whoever requested the
+  generation may not approve it. Threat-feed text is run through the
+  prompt-injection neutralizer before it reaches a model, and the draft records
+  whether its source context was flagged.
 
 Zone-crossing restrictions, secrets handling, and encryption-at-rest are
 documented in `docs/architecture/` and enforced progressively as services are

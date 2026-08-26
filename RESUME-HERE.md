@@ -21,20 +21,30 @@ per-file is the rollback.
 
 ## 2. Where work stopped
 
-Waves 1–2 ran (10 tasks delegated). **Wave 2's central gate has NOT been run yet.** Status:
+**Updated 2026-08-26 (second pass).** Everything below is COMMITTED and PUSHED
+to `origin/main`; the "no commits" rule in §1 was lifted by an explicit operator
+instruction to land the work.
 
-- **Wave 1 — COMPLETE + GATE GREEN** (lint clean, mypy strict clean, 296 passed / 7 skipped):
-  T-01, T-02, T-03, T-04, T-05 all done & verified.
-- **Wave 2 — 4 of 5 done (per-task checks green), 1 NOT IMPLEMENTED:**
-  - T-07 done (90 tests pass). T-08 done (40 tests pass). T-10 done (`docker compose config` clean).
-  - T-09 done + verified (13 tests pass; report lost in transit but all artifacts present: migration
-    `0010_audit_ownership_separation.py`, `main.py` scheduled chain-verification, tests,
-    `001-roles.sh`).
-  - **T-06 (approval policy + domain allowlist + delivery batching + reconcile + circuit breaker):
-    TWO delegation attempts both returned empty results and wrote NOTHING.** routers.py, config.py
-    (operator), apps/workers/** are still at base. Implement it DIRECTLY (do not delegate again, or
-    delegate with tighter scope) — full spec in §5.
-- **Waves 3–4 not started.**
+- **Waves 1-2 — COMPLETE, gate green.** T-01..T-05, T-07..T-10 landed.
+- **T-06 — COMPLETE.** Approval policy, recipient-domain allowlist, delivery
+  batching with connection reuse, stale-QUEUED reconcile, source circuit
+  breaker. Also fixed an inverted `test_send` flag that let scheduled campaigns
+  skip the approved-template check.
+- **Wave 3 — COMPLETE.** T-11 (generation pipeline end to end + injection guard
+  armed), T-12 (report view, approval lifecycle, real dialogs, live refresh),
+  T-13 (distinct approvers enforced + pending demo campaign).
+- **Wave 4 — COMPLETE.** T-14 (template review UI, categorised connection
+  failures), T-15 (docs).
+- **Azure standup — COMPLETE.** `scripts/azure_bootstrap.sh` removes day zero;
+  `network_mode=starter` allows a hosted-runner first deploy; `az acr build`
+  removes the Docker-daemon requirement; P-3 console honesty on Container Apps.
+
+Gate at the time of writing: lint clean, mypy clean on 81 source files,
+445 passed / 7 skipped.
+
+Remaining known-open items are listed at the end of
+`docs/REMEDIATION_PLAN.md`; the significant one is **ARCH-7** (rate limits are
+per-replica on Container Apps and need a shared store).
 
 ## 3. Findings register (consolidated 3-perspective review, 2026-08-26, HEAD 0423079)
 

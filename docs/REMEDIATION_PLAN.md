@@ -33,3 +33,52 @@ integrated by the root task after each wave.
 | AZURE-VISUAL | Qualify Azure wizard interaction through the in-app browser | Browser/live console | Focus, help, AI, validation errors/success, and downloads visually verified without real secrets | AZURE-WIZARD | ENVIRONMENT | P2 | Blocked (environmental) — browser controller not attachable (extension not connected). Backend layers qualified without a browser: schema, validation errors/success/warnings, Help, privacy-filtered AI assist, Terraform/GitHub export mapping (184 tests, no defects). Rendered visual/keyboard pass + on-disk downloads still need a working browser controller. |
 | SMB-FLOW | Let one authorized SMB administrator create and schedule campaigns without separate approvers | campaign API/UI/live E2E/docs | DRAFT schedules directly; audit, safety validation, cap, recall, and kill switch remain | UX-1 | API/UI/DOCS | P1 | Complete |
 | LOCAL-TRAINING | Complete local click attribution without DNS or an external training service | tracking API/seed/config/tests | Seeded link records a click and lands on the loopback awareness page | SMB-FLOW | TRACKING/RUNTIME | P1 | Complete |
+
+---
+
+## Status as of 2026-08-26
+
+Closed since the consolidated review (see `RESUME-HERE.md` for the finding IDs):
+
+| Finding | Status |
+|---|---|
+| NEW-1 zero-width / bidi validator bypass | Fixed (T-01) |
+| NEW-2 two-person approval not enforced | Fixed (T-06) — and extended so the two approvals must come from different people |
+| NEW-3 no template-approval endpoint | Fixed (T-11/T-14) |
+| NEW-4 no external-recipient blocking | Fixed (T-06) |
+| NEW-5 tracking API had no body cap | Fixed (T-02) |
+| NEW-6 prompt-injection neutralizer dormant | Fixed (T-11) — wired onto the AI path, and the override patterns widened to cover "disregard prior instructions" |
+| NEW-7 audit verification on demand only | Fixed (T-09) |
+| NEW-8 stale `.env.bak-qa` | Fixed (T-03) |
+| NEW-9 `.env.example` bind addresses | Fixed (T-03) |
+| NEW-10 `Source.consecutive_failures` dead | Fixed (T-06) — incremented and trips a breaker |
+| ARCH-1 oversized delivery message, per-recipient SMTP connect | Fixed (T-06) |
+| ARCH-2 stuck QUEUED assignments never reconciled | Fixed (T-06) |
+| ARCH-3 Redis persistence disabled | Fixed (T-10) |
+| ARCH-4 RSS placeholder parser | Fixed (T-08) |
+| ARCH-6 open/click dedup race | Fixed (T-02) |
+| ARCH-8 testpaths excluded tests | Fixed (T-03), and `infrastructure/` added in T-11 |
+| ARCH-9 zero tests on two packages | Fixed (T-04) |
+| HIGH-02res non-UUID OIDC subjects | Fixed (T-05) |
+| P-1 generation pipeline dead code | Fixed (T-11) |
+| P-2 single-admin weaponization path | Fixed (T-06) |
+| P-3 console writes `.env` on Container Apps | Fixed — `OPERATOR_API_CONFIG_STORE=managed` makes those endpoints refuse with guidance |
+
+Found and fixed during the work, not in the original register:
+
+- **Inverted `test_send` flag** (introduced in `d9c800a`): scheduled campaigns
+  skipped the "delivery requires an approved template" check and never became
+  ACTIVE, while test sends enforced approval and flipped the campaign live. No
+  test covered it.
+- **One approver could give both approvals**, since only the author was blocked.
+- **`az acr build` / bootstrap gap**: a new Azure tenant could not be stood up at
+  all without pre-existing VNet infrastructure.
+
+Still open:
+
+| Finding | Note |
+|---|---|
+| NEW-11 global kill switch advisory-only | Accepted; per-campaign recall is enforced |
+| NEW-12 pattern self-approval vacuous | Minor |
+| ARCH-5 contracts package decorative | Partly addressed — the generation contract is now real and enforced |
+| ARCH-7 in-memory rate limits vs multi-replica | Open. Limits are per-replica on Container Apps; needs a shared store |

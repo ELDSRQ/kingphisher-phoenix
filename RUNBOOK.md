@@ -130,7 +130,8 @@ from `.env`.
 | Campaigns | create/edit campaigns from a pattern, preview, approve workflow, scoped per-campaign kill switch on active campaigns |
 | Recipients | list, CSV import (see §2.4), department tagging |
 | Sources | create threat-intel sources — types: `advisory`, `rss`, `stix`, `bulk_download`, `curated` (only these; the dropdown matches the API) |
-| Patterns | list lure patterns, approve for use |
+| Patterns | list lure patterns, approve for use (approving one queues a draft for generation) |
+| Template review | approve or reject AI-generated drafts before they can be used; flags drafts whose source threat text tripped the injection filter |
 | Privacy | view current privacy notice, submit data-subject requests (CCPA), verify, export (`access_export`), fulfill (`deletion`) |
 | Audit | hash-chained event log, "Verify chain", global kill switch with engaged-state indicator |
 | Setup wizard | guided OIDC, Graph-compatible directory, SMTP, reported mailbox, AI, training, and webhook wiring with connection tests |
@@ -185,15 +186,35 @@ Graph/AI/mailbox tokens. Restart services from the wizard after changing them.
 
 ### 2.4 Campaign lifecycle (as an operator)
 
+How a draft reaches recipients depends on the **approval policy**
+(`OPERATOR_APPROVAL_POLICY`, shown as a banner at the top of the Campaigns
+screen). See §2.9.
+
 1. **Create** a campaign from an approved pattern (DRAFT).
-2. **Schedule / send** — an authenticated campaign operator can schedule the
-   draft directly; it becomes SCHEDULED → ACTIVE and the delivery worker sends
+2. **Submit for approval** → PENDING_APPROVAL.
+   - Under `enforce`: both a **security** and a **privacy** approval are
+     required, and they must come from **two different people**, neither of whom
+     authored the campaign. The console only offers "Schedule" once that is
+     satisfied.
+   - Under `single-admin` (the offline stack only): one administrator may
+     schedule a draft directly, and the console offers "Schedule" on the draft.
+3. **Schedule** — it becomes SCHEDULED → ACTIVE and the delivery worker sends
    personalized HTML mail through Mailpit's SMTP relay (local) with tracking
-   pixel + click-redirect tokens.
+   pixel + click-redirect tokens. Recipients outside
+   `KP_ALLOWED_RECIPIENT_DOMAINS` are skipped and recorded as failed with the
+   reason `domain_not_allowed`; the worker re-checks both the approvals and the
+   allowlist per batch, so a message queued before a policy tightened cannot go
+   out under the old rules.
 4. **Monitor** the dashboard; use the **kill switch** (global, or scoped to a
    campaign) to revoke queued deliveries and tracking tokens immediately.
-5. Outcomes are COMPLETED / EXPIRED; delivered data is purged per the active
-   retention policy (default 365 days).
+5. **Report** — the Report button on a campaign shows the funnel
+   (delivered → opened → clicked → reported → training), the send-state
+   breakdown, why any sends failed, and a CSV export. Open/click/report rates
+   are a share of *delivered*, not of recipients.
+6. Outcomes are COMPLETED / EXPIRED; delivered data is purged per the active
+   retention policy (default 365 days). Assignments still QUEUED
+   `KP_WORKER_QUEUED_STALE_HOURS` after a campaign closed are settled to FAILED
+   with the reason `stale_queued_reconcile` — never silently re-sent.
 
 For the no-credential local path, messages are captured by Mailpit at
 `http://127.0.0.1:8025/`. Seeded messages use their unique tracking click URL;
@@ -214,6 +235,10 @@ bob@example.com,Bob Example,
 ```
 
 - Column 1 (required): mailbox; invalid rows are reported per-row, the rest import.
+- Rows outside `KP_ALLOWED_RECIPIENT_DOMAINS` are **blocked**, counted
+  separately, and listed individually in the import result. With the allowlist
+  unset, import is refused outright under OIDC and allowed with an audited
+  warning on the offline dev stack.
 - Column 2: display name (falls back to mailbox). Column 3: department (falls
   back to the `department` field).
 - Mailboxes are salted-hashed (`OPERATOR_API_RECIPIENT_HASH_SALT`); identity
@@ -240,6 +265,33 @@ State machine: **opened → in_progress → completed** (45-day SLA deadline sho
   `docker compose down -v && up -d` then migrate + seed.
 
 ---
+
+### 2.9 Send-safety settings
+
+Two controls decide who can be mailed and who has to agree first. Both are
+enforced twice — once at the operator API and again in the delivery worker.
+
+| Setting | Default | Effect |
+|---|---|---|
+| `OPERATOR_APPROVAL_POLICY` | `single-admin` (dev-auth) | `enforce` requires separate security and privacy approvals before a campaign can be scheduled or delivered. `single-admin` lets one administrator schedule directly. |
+| `KP_ALLOWED_RECIPIENT_DOMAINS` | empty | Comma-separated domains this deployment may mail; subdomains included. Gates CSV import **and** delivery. |
+| `KP_WORKER_QUEUED_STALE_HOURS` | `24` | QUEUED assignments older than this on a closed campaign are settled to FAILED. |
+| `KP_WORKER_SOURCE_FAILURE_THRESHOLD` | `10` | Consecutive ingestion failures before a source is disabled. |
+| `OPERATOR_API_DELIVERY_BATCH_SIZE` | `200` | Recipients per delivery message; also the batch that reuses one SMTP connection. |
+
+Two behaviours worth knowing before you go live:
+
+- **`single-admin` is refused under OIDC.** The operator API will not start with
+  it when an identity provider is configured, so the relaxed offline mode cannot
+  reach a deployment that mails real people. Azure pins `enforce`.
+- **An unset allowlist fails closed under OIDC.** Recipient import is refused
+  until it is configured — deliberately, because the alternative is mailing a
+  simulation to an unintended domain. On the offline dev stack an unset
+  allowlist allows everything and audits each import as unrestricted.
+
+Assign `security_approver` and `privacy_approver` to **different people**. With
+both roles on one person, nothing can be scheduled under `enforce` at all: the
+platform refuses the second approval from someone who gave the first.
 
 ## 3. Monitoring
 
