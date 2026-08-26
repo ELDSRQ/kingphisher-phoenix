@@ -50,6 +50,8 @@ class Capability:
     MANAGE_ROLES: ClassVar[Capability]
     USE_KILL_SWITCH: ClassVar[Capability]
     SUBSCRIBE_ALERTS: ClassVar[Capability]
+    VERIFY_DOMAIN: ClassVar[Capability]
+    SIGN_ROE: ClassVar[Capability]
 
 
 # Capability identifiers used across the platform. Defined once here as class
@@ -77,6 +79,8 @@ Capability.APPROVE_TEMPLATE = Capability("approve", "template")
 Capability.MANAGE_ROLES = Capability("manage", "roles")
 Capability.USE_KILL_SWITCH = Capability("use", "kill_switch")
 Capability.SUBSCRIBE_ALERTS = Capability("subscribe", "alerts")
+Capability.VERIFY_DOMAIN = Capability("verify", "sending_domain")
+Capability.SIGN_ROE = Capability("sign", "rules_of_engagement")
 
 APPROVE_CAMPAIGN = Capability.APPROVE_CAMPAIGN
 APPROVE_SECURITY = Capability.APPROVE_SECURITY
@@ -100,6 +104,8 @@ APPROVE_TEMPLATE = Capability.APPROVE_TEMPLATE
 MANAGE_ROLES = Capability.MANAGE_ROLES
 USE_KILL_SWITCH = Capability.USE_KILL_SWITCH
 SUBSCRIBE_ALERTS = Capability.SUBSCRIBE_ALERTS
+VERIFY_DOMAIN = Capability.VERIFY_DOMAIN
+SIGN_ROE = Capability.SIGN_ROE
 
 _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.SOURCE_CURATOR: frozenset([SUBMIT_SOURCE, MANAGE_SOURCES, APPROVE_PATTERN, VIEW_AGGREGATE]),
@@ -128,6 +134,8 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             MANAGE_RECIPIENTS,
             APPROVE_CAMPAIGN,
             SUBSCRIBE_ALERTS,
+            VERIFY_DOMAIN,
+            SIGN_ROE,
         ]
     ),
     Role.AUDITOR: frozenset([VIEW_AUDIT, VIEW_NAMED_RESULTS, VIEW_AGGREGATE]),
@@ -155,6 +163,8 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             MANAGE_ROLES,
             USE_KILL_SWITCH,
             SUBSCRIBE_ALERTS,
+            VERIFY_DOMAIN,
+            SIGN_ROE,
         ]
     ),
 }

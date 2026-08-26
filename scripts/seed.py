@@ -36,8 +36,10 @@ from kp_database.models import (  # noqa: E402
     PrivacyNotice,
     Recipient,
     RetentionPolicy,
+    RulesOfEngagement,
     SourceItem,
     TemplateVersion,
+    VerifiedDomain,
 )
 from kp_database.models import (  # noqa: E402
     Source as SourceRow,
@@ -45,6 +47,8 @@ from kp_database.models import (  # noqa: E402
 from kp_database.privacy import hash_mailbox  # noqa: E402
 from kp_database.session import create_db_engine, make_session_factory  # noqa: E402
 from kp_domain_models import models as dm  # noqa: E402
+from kp_domain_models.roe import roe_signature_hex  # noqa: E402
+from kp_domain_verification.verification import challenge_record_value  # noqa: E402
 from kp_test_fixtures.builders import make_source_item  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
@@ -77,6 +81,10 @@ RECIPIENT_HASH_SALT = _require_hex_bytes(
     os.environ.get("OPERATOR_API_RECIPIENT_HASH_SALT", ""),
     "OPERATOR_API_RECIPIENT_HASH_SALT",
 )
+ROE_SIGNING_KEY = _require_hex_bytes(
+    os.environ.get("OPERATOR_API_ROE_SIGNING_KEY") or os.environ.get("KP_ROE_SIGNING_KEY", ""),
+    "OPERATOR_API_ROE_SIGNING_KEY",
+)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher")
 AUDIT_DATABASE_URL = os.environ.get(
@@ -98,10 +106,15 @@ def main() -> None:
         source_id = _seed_source(session)
         pattern = _seed_pattern(session, source_id)
         template = _seed_template(session)
-        campaign = _seed_campaign(session, pattern.campaign_pattern_id, template.template_version_id, policy)
+        roe = _seed_roe(session)
+        campaign = _seed_campaign(
+            session, pattern.campaign_pattern_id, template.template_version_id, policy, roe.roe_id
+        )
         _seed_recipients(session)
         _seed_approvals(session, campaign.campaign_id, template.template_version_id)
-        pending = _seed_pending_campaign(session, pattern.campaign_pattern_id, template.template_version_id, policy)
+        pending = _seed_pending_campaign(
+            session, pattern.campaign_pattern_id, template.template_version_id, policy, roe.roe_id
+        )
 
         audit.record(
             actor=SOURCE_OWNER,
@@ -311,7 +324,61 @@ def _seed_retention_and_notice(session: Session) -> RetentionPolicy:
     return policy
 
 
-def _seed_campaign(session: Session, pattern_id: UUID, template_id: UUID, policy: RetentionPolicy) -> Campaign:
+def _seed_roe(session: Session) -> RulesOfEngagement:
+    """A signed RoE covering the demo recipient domain (example.com).
+
+    The demo stack pre-verifies example.com because it is the operator's own
+    local training domain — outside this offline demo a domain only becomes a
+    verified target through the DNS-TXT wizard. The signature binds the same
+    terms under the shared RoE key the delivery workers verify with.
+    """
+    existing = session.scalar(
+        select(RulesOfEngagement).where(RulesOfEngagement.authorizing_party == "Local development")
+    )
+    if existing is not None:
+        return existing
+    now = datetime.now(UTC)
+    token = challenge_record_value("example.com", signing_key=ROE_SIGNING_KEY)
+    verified = session.scalar(select(VerifiedDomain).where(VerifiedDomain.domain == "example.com"))
+    if verified is None:
+        session.add(
+            VerifiedDomain(
+                verified_domain_id=uuid4(),
+                domain="example.com",
+                challenge_token=token.split("=", 1)[1],
+                verified_at=now,
+                verified_by=UUID(int=0),
+                active=True,
+            )
+        )
+    terms = (
+        "Local development engagement: authorized for the verified example.com "
+        "recipient domain only; simulated lures are disclosed as training; "
+        "no recipient outside example.com may be mailed."
+    )
+    terms_hash = hashlib.sha256(terms.encode("utf-8")).hexdigest()
+    signer = "seed:console-operator"
+    roe = RulesOfEngagement(
+        roe_id=uuid5(NAMESPACE_URL, "seed-roe"),
+        signer=signer,
+        authorizing_party="Local development",
+        terms_text=terms,
+        terms_hash=terms_hash,
+        signature=roe_signature_hex(terms_hash, signer, now, signing_key=ROE_SIGNING_KEY),
+        signed_at=now,
+        window_start=now - timedelta(days=1),
+        window_end=now + timedelta(days=90),
+        target_domains=["example.com"],
+        created_by=UUID(int=0),
+    )
+    session.add(roe)
+    session.commit()
+    return roe
+
+
+def _seed_campaign(
+    session: Session, pattern_id: UUID, template_id: UUID, policy: RetentionPolicy, roe_id: UUID
+) -> Campaign:
     existing = session.scalar(select(Campaign).where(Campaign.title == "Q3 Invoice Lure Drill"))
     if existing is not None:
         return existing
@@ -323,6 +390,7 @@ def _seed_campaign(session: Session, pattern_id: UUID, template_id: UUID, policy
         title="Q3 Invoice Lure Drill",
         state=dm.CampaignState.APPROVED,
         sender_mailbox="security-drills@example.com",
+        roe_id=roe_id,
         training_domain="training.local",
         schedule_start=now - timedelta(days=1),
         schedule_end=now + timedelta(days=13),
@@ -345,7 +413,9 @@ def _seed_campaign(session: Session, pattern_id: UUID, template_id: UUID, policy
 SEED_SECOND_ADMIN = uuid5(NAMESPACE_URL, "seed-admin-campaign-author")
 
 
-def _seed_pending_campaign(session: Session, pattern_id: UUID, template_id: UUID, policy: RetentionPolicy) -> Campaign:
+def _seed_pending_campaign(
+    session: Session, pattern_id: UUID, template_id: UUID, policy: RetentionPolicy, roe_id: UUID
+) -> Campaign:
     """A campaign awaiting approval, so the two-person flow is demonstrable.
 
     The other seeded campaign arrives pre-approved, which means a fresh install
@@ -363,6 +433,7 @@ def _seed_pending_campaign(session: Session, pattern_id: UUID, template_id: UUID
         title=title,
         state=dm.CampaignState.PENDING_APPROVAL,
         sender_mailbox="security-drills@example.com",
+        roe_id=roe_id,
         training_domain="training.local",
         schedule_start=now + timedelta(days=1),
         schedule_end=now + timedelta(days=15),

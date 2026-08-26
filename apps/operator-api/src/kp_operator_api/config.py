@@ -67,6 +67,12 @@ class OperatorApiSettings(BaseSettings):
         default="",
         validation_alias=AliasChoices("OPERATOR_API_ROE_SIGNING_KEY", "KP_ROE_SIGNING_KEY"),
     )
+    #: Key that mints the DNS-challenge tokens used to prove domain control.
+    #: Distinct from the RoE key so a leaked challenge token can never be used
+    #: to forge an authorization.
+    domain_verification_key: str = Field(
+        default="", validation_alias=AliasChoices("OPERATOR_API_DOMAIN_VERIFY_KEY", "KP_DOMAIN_VERIFY_KEY")
+    )
     #: Recipients per delivery message; bounds the 1MiB queue payload cap.
     delivery_batch_size: int = Field(default=200, ge=1, le=2000)
 
@@ -123,6 +129,17 @@ class OperatorApiSettings(BaseSettings):
             raise RuntimeError("KP_ROE_SIGNING_KEY must be a hex string") from exc
         if len(key) != 32:
             raise RuntimeError("KP_ROE_SIGNING_KEY must be a 256-bit hex key (64 hex chars)")
+        return key
+
+    def require_domain_verification_key(self) -> bytes:
+        if not self.domain_verification_key:
+            raise RuntimeError("KP_DOMAIN_VERIFY_KEY is required to run DNS-challenge verification")
+        try:
+            key = bytes.fromhex(self.domain_verification_key)
+        except ValueError as exc:
+            raise RuntimeError("KP_DOMAIN_VERIFY_KEY must be a hex string") from exc
+        if len(key) != 32:
+            raise RuntimeError("KP_DOMAIN_VERIFY_KEY must be a 256-bit hex key (64 hex chars)")
         return key
 
     def require_cipher_kek(self) -> bytes:

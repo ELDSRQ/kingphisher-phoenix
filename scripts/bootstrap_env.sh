@@ -106,6 +106,17 @@ bootstrap_env() {
   if ! grep -q '^KP_WORKER_RECIPIENT_HASH_SALT=' "$ENV_FILE" || [ -z "$(grep '^KP_WORKER_RECIPIENT_HASH_SALT=' "$ENV_FILE" | cut -d= -f2-)" ]; then
     _set_line KP_WORKER_RECIPIENT_HASH_SALT "$(grep '^OPERATOR_API_RECIPIENT_HASH_SALT=' "$ENV_FILE" | cut -d= -f2-)"
   fi
+  # Rules-of-Engagement signing key: shared by the operator API (signing) and
+  # the delivery workers (verification), so a campaign scheduled under a
+  # signed RoE is verifiable where it is delivered.
+  ROE_KEY="$(openssl rand -hex 32)"
+  _generate_if_absent OPERATOR_API_ROE_SIGNING_KEY "$ROE_KEY"
+  if ! grep -q '^KP_WORKER_ROE_SIGNING_KEY=' "$ENV_FILE" || [ -z "$(grep '^KP_WORKER_ROE_SIGNING_KEY=' "$ENV_FILE" | cut -d= -f2-)" ]; then
+    _set_line KP_WORKER_ROE_SIGNING_KEY "$(grep '^OPERATOR_API_ROE_SIGNING_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+  fi
+  # DNS-challenge verification key (operator API only): distinct from the RoE
+  # key so a leaked challenge token can never forge an authorization.
+  _generate_if_absent OPERATOR_API_DOMAIN_VERIFY_KEY "$(openssl rand -hex 32)"
   _generate_if_absent TRACKING_API_CORRECTIONS_SECRET "$(openssl rand -hex 32)"  # corrections bearer secret (WS-9)
   _generate_if_absent MAILPIT_API_PASSWORD "$(openssl rand -base64 18 | tr -d '/+=')"  # Mailpit UI/API auth (WS-16)
   _generate_if_absent KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME "admin"

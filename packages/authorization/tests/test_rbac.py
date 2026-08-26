@@ -65,6 +65,8 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
             "manage:recipients",
             "approve:campaign",
             "subscribe:alerts",
+            "verify:sending_domain",
+            "sign:rules_of_engagement",
         }
     ),
     Role.AUDITOR: frozenset({"view:audit", "view_named:results", "view_aggregate:results"}),
@@ -92,6 +94,8 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
             "manage:roles",
             "use:kill_switch",
             "subscribe:alerts",
+            "verify:sending_domain",
+            "sign:rules_of_engagement",
         }
     ),
 }
