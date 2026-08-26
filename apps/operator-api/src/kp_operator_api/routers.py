@@ -235,6 +235,7 @@ def approve_campaign(
     campaign_id: str,
     approval_type: dm.ApprovalType,
     body: ApprovalSubmit,
+    request: Request,
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
     principal: Principal = Depends(require_capability(Capability.APPROVE_CAMPAIGN)),
@@ -254,6 +255,26 @@ def approve_campaign(
 
     if str(campaign.created_by) == principal.principal_id:
         raise PermissionDeniedError("self-approval of your own campaign is prohibited")
+
+    # Two-person rule, second half. Blocking only the author still allows one
+    # approver to supply BOTH the security and the privacy decision, which
+    # defeats the purpose of requiring two. Under `enforce` the decisions must
+    # come from different people; `single-admin` (dev-auth only) keeps the
+    # offline demo workable for one operator.
+    if request.app.state.settings.approval_policy is ApprovalPolicy.ENFORCE:
+        already_decided_by_me = session.scalar(
+            select(CampaignApproval).where(
+                CampaignApproval.campaign_id == campaign.campaign_id,
+                CampaignApproval.approval_type != approval_type,
+                CampaignApproval.approver_id == uuid.UUID(principal.principal_id),
+                CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+            )
+        )
+        if already_decided_by_me is not None:
+            raise PermissionDeniedError(
+                "you already provided the other approval for this campaign; security and privacy "
+                "approvals must come from different people"
+            )
 
     approval = CampaignApproval(
         campaign_approval_id=uuid.uuid4(),

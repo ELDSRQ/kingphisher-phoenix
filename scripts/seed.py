@@ -101,6 +101,7 @@ def main() -> None:
         campaign = _seed_campaign(session, pattern.campaign_pattern_id, template.template_version_id, policy)
         _seed_recipients(session)
         _seed_approvals(session, campaign.campaign_id, template.template_version_id)
+        pending = _seed_pending_campaign(session, pattern.campaign_pattern_id, template.template_version_id, policy)
 
         audit.record(
             actor=SOURCE_OWNER,
@@ -127,6 +128,12 @@ def main() -> None:
     )
     _ = assignment_ids
     print(f"prepared campaign with {len(token_hashes)} tracking tokens")
+    print(f"awaiting approval: {pending.title} ({pending.campaign_id})")
+    print(
+        "  Open Campaigns in the console to walk the approval flow. Under the "
+        "enforce policy the security and privacy approvals must come from two "
+        "different people, so a second signed-in approver is required there."
+    )
 
 
 def _seed_source(session: Session) -> UUID:
@@ -325,6 +332,46 @@ def _seed_campaign(session: Session, pattern_id: UUID, template_id: UUID, policy
         manifest_hash=hashlib.sha256(b"seed-campaign-invoice").hexdigest(),
         created_by=UUID(int=0),
         expires_at=now + timedelta(days=14),
+    )
+    session.add(campaign)
+    session.commit()
+    return campaign
+
+
+#: A second seeded author, distinct from the console operator
+#: (CONSOLE_OPERATOR_UUID in console.py). The demo campaign below must not be
+#: authored by whoever signs in, or the self-approval rule blocks the very flow
+#: it exists to demonstrate.
+SEED_SECOND_ADMIN = uuid5(NAMESPACE_URL, "seed-admin-campaign-author")
+
+
+def _seed_pending_campaign(session: Session, pattern_id: UUID, template_id: UUID, policy: RetentionPolicy) -> Campaign:
+    """A campaign awaiting approval, so the two-person flow is demonstrable.
+
+    The other seeded campaign arrives pre-approved, which means a fresh install
+    has nothing to approve and the approval screens can never be exercised.
+    """
+    title = "Q3 Credential Harvest Drill (awaiting approval)"
+    existing = session.scalar(select(Campaign).where(Campaign.title == title))
+    if existing is not None:
+        return existing
+    now = datetime.now(UTC)
+    campaign = Campaign(
+        campaign_id=uuid5(NAMESPACE_URL, "seed-campaign-pending"),
+        pattern_id=pattern_id,
+        current_template_id=template_id,
+        title=title,
+        state=dm.CampaignState.PENDING_APPROVAL,
+        sender_mailbox="security-drills@example.com",
+        training_domain="training.local",
+        schedule_start=now + timedelta(days=1),
+        schedule_end=now + timedelta(days=15),
+        timezone="UTC",
+        max_recipients=100_000,
+        retention_policy_id=policy.retention_policy_id,
+        manifest_hash=hashlib.sha256(b"seed-campaign-pending").hexdigest(),
+        created_by=SEED_SECOND_ADMIN,
+        expires_at=now + timedelta(days=16),
     )
     session.add(campaign)
     session.commit()
