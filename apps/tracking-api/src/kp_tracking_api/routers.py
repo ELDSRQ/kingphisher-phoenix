@@ -9,6 +9,10 @@ mailbox-reader/correction pipeline can downweight low-confidence events
 
 Security posture (HIGH-04 / WS-9):
 - clicks are deduplicated like opens, so URL-scanning bots cannot inflate them
+- open/click dedup is storage-enforced via the partial unique index
+  `uq_events_open_click_dedup` (metric-integrity): INSERT ... ON CONFLICT
+  DO NOTHING closes the SELECT-then-INSERT race for concurrent
+  double-clicks/prefetches; the first event wins and duplicates are no-ops
 - `X-Forwarded-For` is only honored when the direct peer is a configured
   reverse proxy, so a spoofed header cannot change attribution
 - `/v1/corrections` is gated by a shared-secret bearer token and IP rate limit
@@ -36,8 +40,9 @@ from kp_database.models import (
 from kp_database.privacy import CLIENT_IP_MAX, minimize_ip, minimize_user_agent
 from kp_domain_models import models as dm
 from kp_telemetry.errors import ConflictError, NotFoundError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 router = APIRouter(prefix="/v1")
@@ -151,6 +156,37 @@ def _resolve_active_token(token_hash: str, session: Session) -> TrackingToken | 
     return token
 
 
+def _record_first_event(
+    request: Request,
+    session: Session,
+    token: TrackingToken,
+    event_type: dm.EventType,
+) -> None:
+    """Insert the token's first OPENED/CLICKED event; duplicates are no-ops.
+
+    metric-integrity: dedup relies on the partial unique index
+    ``uq_events_open_click_dedup`` instead of a SELECT-then-INSERT check, so
+    concurrent requests cannot create duplicate rows — the first INSERT wins
+    and ON CONFLICT DO NOTHING discards the losers.
+    """
+    session.execute(
+        pg_insert(TrackingEvent)
+        .values(
+            event_id=uuid.uuid4(),
+            event_type=event_type,
+            token_id=token.token_id,
+            campaign_id=token.campaign_id,
+            confidence=dm.Confidence.MEDIUM,
+            occurred_at=datetime.now(UTC),
+            client_ip=minimize_ip(_client_ip(request)),
+            user_agent=minimize_user_agent(request.headers.get("user-agent")),
+            payload={},
+        )
+        .on_conflict_do_nothing()
+    )
+    session.commit()
+
+
 @router.get(
     "/track/open/{token_hash}",
     dependencies=[Depends(_token_rate_limited), Depends(_ip_rate_limited), Depends(_global_rate_limited)],
@@ -164,27 +200,7 @@ def record_open(
     if token is None:
         return Response(status_code=404)
 
-    existing = session.scalar(
-        select(TrackingEvent).where(
-            TrackingEvent.token_id == token.token_id,
-            TrackingEvent.event_type == dm.EventType.OPENED,
-        )
-    )
-    if existing is None:
-        session.add(
-            TrackingEvent(
-                event_id=uuid.uuid4(),
-                event_type=dm.EventType.OPENED,
-                token_id=token.token_id,
-                campaign_id=token.campaign_id,
-                confidence=dm.Confidence.MEDIUM,
-                occurred_at=datetime.now(UTC),
-                client_ip=minimize_ip(_client_ip(request)),
-                user_agent=minimize_user_agent(request.headers.get("user-agent")),
-                payload={},
-            )
-        )
-        session.commit()
+    _record_first_event(request, session, token, dm.EventType.OPENED)
     return Response(content=GIF_BYTES, media_type="image/gif", headers={"Cache-Control": "no-store"})
 
 
@@ -201,27 +217,7 @@ def record_click(
     if token is None:
         return Response(status_code=404)
 
-    existing = session.scalar(
-        select(TrackingEvent).where(
-            TrackingEvent.token_id == token.token_id,
-            TrackingEvent.event_type == dm.EventType.CLICKED,
-        )
-    )
-    if existing is None:
-        session.add(
-            TrackingEvent(
-                event_id=uuid.uuid4(),
-                event_type=dm.EventType.CLICKED,
-                token_id=token.token_id,
-                campaign_id=token.campaign_id,
-                confidence=dm.Confidence.MEDIUM,
-                occurred_at=datetime.now(UTC),
-                client_ip=minimize_ip(_client_ip(request)),
-                user_agent=minimize_user_agent(request.headers.get("user-agent")),
-                payload={},
-            )
-        )
-        session.commit()
+    _record_first_event(request, session, token, dm.EventType.CLICKED)
     return Response(
         status_code=302, headers={"Location": request.app.state.settings.training_base_url, "Cache-Control": "no-store"}
     )
@@ -229,8 +225,9 @@ def record_click(
 
 class CorrectionBody(BaseModel):
     token_hash: str
-    correction: str
-    rationale: str
+    # 2000 matches the storage-side truncation limit in submit_correction.
+    correction: str = Field(max_length=2000)
+    rationale: str = Field(max_length=2000)
 
 
 @router.post(

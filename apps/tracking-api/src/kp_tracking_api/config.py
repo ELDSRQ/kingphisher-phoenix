@@ -13,6 +13,8 @@ class TrackingApiSettings(BaseSettings):
     rate_limit_token_per_min: int = 5
     rate_limit_global_per_min: int = 3000
     rate_limit_max_keys: int = 10_000
+    # HIGH-09 residual: request-body cap for this API (64 KiB default).
+    max_body_bytes: int = 65_536
     corrections_secret: str = ""
     trusted_proxies: str = ""
     log_level: str = "info"

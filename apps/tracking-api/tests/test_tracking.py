@@ -1,12 +1,15 @@
 """WS-9 / HIGH-04 / HIGH-17 tests for the tracking API.
 
 Exercises dedup of clicks, bearer-gated + rate-limited corrections, XFF
-validation, per-token rate limiting, and IP/UA minimization. The DB session
-dependency is overridden with a scripted fake so no live Postgres is needed.
+validation, per-token rate limiting, IP/UA minimization, the request-body cap
+(HIGH-09 residual), security response headers, and CorrectionBody length
+limits. The DB session dependency is overridden with a scripted fake so no
+live Postgres is needed.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Iterator
@@ -18,7 +21,10 @@ from kp_database.privacy import minimize_ip
 from kp_domain_models import models as dm
 from kp_tracking_api.config import TrackingApiSettings
 from kp_tracking_api.main import create_app
+from kp_tracking_api.middleware import BodyLimitMiddleware
 from kp_tracking_api.routers import _session
+from sqlalchemy.dialects import postgresql
+from starlette.types import Message
 
 
 class _Token:
@@ -34,6 +40,7 @@ class _FakeSession:
 
     `scalar` answers the dedup lookups (selects over TrackingEvent); all other
     selects (including the token lookup, which we patch out) return None.
+    `execute` captures the race-safe INSERT statements.
     """
 
     def __init__(self, dedup_event: object | None = None) -> None:
@@ -41,6 +48,7 @@ class _FakeSession:
         self.scalar_results: list[object | None] = []
         self.get_results: dict[object, object] = {}
         self.added: list[object] = []
+        self.executed: list[object] = []
 
     def scalar(self, stmt: object) -> object | None:  # noqa: ANN001
         if self.scalar_results:
@@ -53,11 +61,19 @@ class _FakeSession:
     def add(self, obj: object) -> None:
         self.added.append(obj)
 
+    def execute(self, stmt: object) -> object:
+        self.executed.append(stmt)
+        return None
+
     def commit(self) -> None:
         pass
 
     def flush(self) -> None:
         pass
+
+
+def _insert_params(stmt: object) -> dict[str, object]:
+    return dict(stmt.compile(dialect=postgresql.dialect()).params)  # type: ignore[attr-defined]
 
 
 def _settings(
@@ -74,6 +90,7 @@ def _settings(
         rate_limit_token_per_min=int(kw.get("rate_limit_token_per_min", 5)),
         rate_limit_global_per_min=int(kw.get("rate_limit_global_per_min", 3000)),
         rate_limit_max_keys=int(kw.get("rate_limit_max_keys", 10_000)),
+        max_body_bytes=int(kw.get("max_body_bytes", 65_536)),
     )
 
 
@@ -98,16 +115,24 @@ def _client(
     return TestClient(app)
 
 
-def test_click_is_deduplicated_like_open(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_click_and_open_inserts_are_race_safe_noops_on_duplicates(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeSession()
     client = _client(monkeypatch, _settings(), fake)
-    url = "/v1/track/click/" + "ab" * 32
+    click_url = "/v1/track/click/" + "ab" * 32
+    open_url = "/v1/track/open/" + "cd" * 32
     with client:
-        assert client.get(url, follow_redirects=False).status_code == 302
-        assert len(fake.added) == 1
-        fake.dedup_event = object()  # simulate the click now existing
-        assert client.get(url, follow_redirects=False).status_code == 302
-        assert len(fake.added) == 1
+        # Repeated clicks/opens keep the same API responses; the partial
+        # unique index makes the duplicate inserts no-ops in the database.
+        assert client.get(click_url, follow_redirects=False).status_code == 302
+        assert client.get(click_url, follow_redirects=False).status_code == 302
+        assert client.get(open_url).status_code == 200
+        assert client.get(open_url).status_code == 200
+    assert len(fake.executed) == 4
+    for stmt in fake.executed:
+        sql = str(stmt.compile(dialect=postgresql.dialect()))
+        assert "ON CONFLICT DO NOTHING" in sql
+    assert _insert_params(fake.executed[0])["event_type"] == dm.EventType.CLICKED
+    assert _insert_params(fake.executed[2])["event_type"] == dm.EventType.OPENED
 
 
 def test_local_training_awareness_page(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,9 +152,9 @@ def test_open_records_minimized_ip_and_truncated_ua(monkeypatch: pytest.MonkeyPa
     with client:
         resp = client.get(url, headers={"User-Agent": long_ua})
         assert resp.status_code == 200
-        event = fake.added[0]
-        assert event.client_ip == "testclient"  # peer, XFF ignored
-        assert event.user_agent == long_ua[:128]
+        params = _insert_params(fake.executed[0])
+        assert params["client_ip"] == "testclient"  # peer, XFF ignored
+        assert params["user_agent"] == long_ua[:128]
 
 
 def test_xff_only_trusted_behind_configured_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,13 +162,13 @@ def test_xff_only_trusted_behind_configured_proxy(monkeypatch: pytest.MonkeyPatc
     client = _client(monkeypatch, _settings(trusted_proxies=""), untrusted)
     with client:
         client.get("/v1/track/open/" + "ab" * 32, headers={"X-Forwarded-For": "8.8.8.8"})
-    assert untrusted.added[0].client_ip == "testclient"
+    assert _insert_params(untrusted.executed[0])["client_ip"] == "testclient"
 
     trusted = _FakeSession()
     client = _client(monkeypatch, _settings(trusted_proxies="testclient"), trusted)
     with client:
         client.get("/v1/track/open/" + "cd" * 32, headers={"X-Forwarded-For": "8.8.8.8"})
-    assert trusted.added[0].client_ip == "8.8.8.0"
+    assert _insert_params(trusted.executed[0])["client_ip"] == "8.8.8.0"
 
 
 def test_corrections_requires_bearer_secret(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -260,8 +285,8 @@ def test_events_use_correct_occurred_at(monkeypatch: pytest.MonkeyPatch) -> None
     with client:
         client.get("/v1/track/open/" + "ab" * 32)
     after = datetime.now(UTC)
-    event = fake.added[0]
-    assert before <= event.occurred_at <= after
+    occurred_at = _insert_params(fake.executed[0])["occurred_at"]
+    assert before <= occurred_at <= after  # type: ignore[operator]
 
 
 def test_training_completion_creates_assignment_and_event(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -323,3 +348,135 @@ def test_training_completion_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> N
     assert response.status_code == 200
     assert fake.added == []
     assert training.completed_at == completed_at
+
+
+def test_body_limit_rejects_oversized_content_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeSession()
+    client = _client(monkeypatch, _settings(max_body_bytes=64), fake)
+    payload = {"token_hash": "ab" * 32, "correction": "x" * 200, "rationale": "reason"}
+    with client:
+        resp = client.post("/v1/corrections", json=payload, headers={"Authorization": "Bearer s3cret"})
+    assert resp.status_code == 413
+    assert resp.json() == {"detail": "request body too large"}
+    assert fake.executed == []
+    assert fake.added == []
+
+
+def _drive_body_limit(
+    max_bytes: int, request_messages: list[Message], headers: list[tuple[bytes, bytes]]
+) -> list[Message]:
+    """Run BodyLimitMiddleware against a stub app that drains the request body."""
+    sent: list[Message] = []
+
+    async def stub_app(scope: object, receive: object, send: object) -> None:  # noqa: ANN001
+        while True:
+            message = await receive()
+            if not message.get("more_body", False):
+                break
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    async def receive() -> Message:
+        return request_messages.pop(0)
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/v1/corrections",
+        "query_string": b"",
+        "headers": headers,
+    }
+    middleware = BodyLimitMiddleware(stub_app, max_bytes=max_bytes)  # type: ignore[arg-type]
+    asyncio.run(middleware(scope, receive, send))  # type: ignore[arg-type]
+    return sent
+
+
+def test_body_limit_rejects_streamed_body_without_content_length() -> None:
+    # Two 8-byte chunks with no content-length header: the streaming guard
+    # must abort with 413 once the cumulative size exceeds the cap.
+    sent = _drive_body_limit(
+        max_bytes=8,
+        request_messages=[
+            {"type": "http.request", "body": b"12345678", "more_body": True},
+            {"type": "http.request", "body": b"12345678", "more_body": False},
+        ],
+        headers=[],
+    )
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 413
+    assert b"request body too large" in sent[1]["body"]
+
+
+def test_body_limit_allows_streamed_body_at_cap() -> None:
+    sent = _drive_body_limit(
+        max_bytes=8,
+        request_messages=[
+            {"type": "http.request", "body": b"1234", "more_body": True},
+            {"type": "http.request", "body": b"5678", "more_body": False},
+        ],
+        headers=[],
+    )
+    assert sent[0]["status"] == 200
+    assert sent[1]["body"] == b"ok"
+
+
+def test_body_limit_pre_checks_content_length_header() -> None:
+    sent = _drive_body_limit(
+        max_bytes=8,
+        request_messages=[{"type": "http.request", "body": b"", "more_body": False}],
+        headers=[(b"content-length", b"100")],
+    )
+    assert sent[0]["status"] == 413
+
+
+_EXPECTED_SECURITY_HEADERS = {
+    "referrer-policy": "no-referrer",
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+}
+
+
+def test_security_headers_on_all_responses(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, _settings(max_body_bytes=64), _FakeSession())
+    with client:
+        responses = [
+            client.get("/healthz"),
+            client.get("/v1/training/awareness"),
+            client.get("/v1/track/open/" + "ab" * 32),
+            client.get("/v1/track/click/" + "ab" * 32, follow_redirects=False),
+            client.get("/v1/track/open/" + "deadbeef" * 8),  # unknown token -> 404
+            client.post(  # oversized body -> 413
+                "/v1/corrections",
+                json={"token_hash": "ab" * 32, "correction": "x" * 200, "rationale": "r"},
+                headers={"Authorization": "Bearer s3cret"},
+            ),
+            client.get("/v1/track/open/" + "ef" * 32),  # rate limit not hit yet
+        ]
+    for resp in responses:
+        for name, value in _EXPECTED_SECURITY_HEADERS.items():
+            assert resp.headers[name] == value, (resp.status_code, name)
+    # Route-set headers survive (setdefault semantics, not overwrite).
+    click = responses[3]
+    assert click.status_code == 302
+    assert click.headers["location"] == "http://train.local/awareness"
+    assert click.headers["cache-control"] == "no-store"
+
+
+def test_correction_fields_reject_values_over_storage_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, _settings(), _FakeSession())
+    headers = {"Authorization": "Bearer s3cret"}
+    at_limit = {"token_hash": "ab" * 32, "correction": "c" * 2000, "rationale": "r" * 2000}
+    with client:
+        assert client.post("/v1/corrections", json=at_limit, headers=headers).status_code == 201
+        assert (
+            client.post("/v1/corrections", json={**at_limit, "correction": "c" * 2001}, headers=headers).status_code
+            == 422
+        )
+        assert (
+            client.post("/v1/corrections", json={**at_limit, "rationale": "r" * 2001}, headers=headers).status_code
+            == 422
+        )

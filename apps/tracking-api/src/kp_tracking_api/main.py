@@ -10,6 +10,7 @@ from kp_telemetry.logging import AccessLogMiddleware, configure_logging
 from kp_telemetry.ratelimit import RateLimiter
 
 from kp_tracking_api.config import TrackingApiSettings
+from kp_tracking_api.middleware import BodyLimitMiddleware, SecurityHeadersMiddleware
 from kp_tracking_api.routers import router
 
 
@@ -34,6 +35,11 @@ def create_app(settings: TrackingApiSettings | None = None) -> FastAPI:
     # Structured access logging replaces uvicorn's plain-text access log
     # (MED-04 / WS-12); uvicorn runs with access_log=False in __main__.
     app.add_middleware(AccessLogMiddleware, logger_name="kp.access.tracking")
+    # HIGH-09 residual: cap request bodies (streaming-safe, 413 on breach).
+    # SecurityHeadersMiddleware is added last so it is outermost and also
+    # stamps the 413 short-circuit and error responses.
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes)
+    app.add_middleware(SecurityHeadersMiddleware)
 
     @app.exception_handler(KpError)
     async def kp_error_handler(request: Request, exc: KpError) -> JSONResponse:

@@ -316,6 +316,18 @@ class RecipientAssignment(Base):
 
 class TrackingEvent(Base):
     __tablename__ = "events"
+    __table_args__ = (
+        # metric-integrity: first OPENED/CLICKED event per token wins; the
+        # partial unique index makes application dedup race-safe. Enum labels
+        # are the SQLAlchemy Enum member names.
+        Index(
+            "uq_events_open_click_dedup",
+            "token_id",
+            "event_type",
+            unique=True,
+            postgresql_where=sa_text("event_type IN ('OPENED', 'CLICKED')"),
+        ),
+    )
 
     event_id = _pk()
     event_type: Mapped[dm.EventType] = mapped_column(Enum(dm.EventType, name="event_type"))
