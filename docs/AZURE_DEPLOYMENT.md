@@ -65,7 +65,37 @@ any Azure call. Move to `private` before the platform holds real recipient data.
 Images are built with `az acr build` in both modes. The build happens inside the
 registry, so no runner needs a Docker daemon.
 
-## Day zero: bootstrap a new tenant
+## Day zero: check, bootstrap, deploy
+
+Three commands, in order. The first two change nothing and take seconds.
+
+```bash
+# 1. Is this tenant able to run the platform at all?
+scripts/azure_preflight.sh --subscription <id> --repo <owner>/<repo>
+
+# 2. Create everything the deploy workflow expects to already exist.
+scripts/azure_bootstrap.sh --subscription <id> --repo <owner>/<repo> \
+  --operator-fqdn awareness.corp.example --allowed-domains corp.example
+
+# 3. Deploy.
+gh workflow run "Azure deployment" --repo <owner>/<repo> \
+  -f environment=staging -f network_mode=starter
+```
+
+### Preflight
+
+`scripts/azure_preflight.sh` answers "will this deployment fail twenty minutes
+in?" before it starts. It checks the subscription is visible and enabled, that
+you hold Owner (or Contributor **and** User Access Administrator — Terraform
+assigns roles to a managed identity, which plain Contributor cannot do), that
+all ten required resource providers are registered, that the region offers
+Container Apps, that the tenant can create ACS email, and that every GitHub
+variable and the target environment exist.
+
+It changes nothing, exits non-zero when the tenant is not ready, and takes
+`--json` for scripting.
+
+## Bootstrap: create what the workflow expects
 
 `scripts/azure_bootstrap.sh` creates everything the workflow expects to already
 exist. It is idempotent, supports `--dry-run`, and creates no application
@@ -191,6 +221,61 @@ Normal deployment never destroys data. Removing the stack requires a separate,
 explicitly authorized recovery plan, backup verification, removal of the
 database lifecycle guard, and a second apply. No deployment script deletes logs,
 databases, Key Vault contents, or Terraform state.
+
+## Email: where simulations are sent from
+
+Simulated phishing must not leave from corporate mail. It needs a separate
+sending domain, it goes to external recipients, and a corporate domain would
+both contaminate real mail flow and make the simulation indistinguishable from
+a genuine internal message.
+
+The deployment therefore provisions its **own** email infrastructure: an Azure
+Communication Services Email resource with an **Azure-managed sending domain**.
+Nothing in your existing mail estate is touched, and no DNS records are needed.
+
+Messages arrive from `DoNotReply@<generated>.azurecomm.net`. Terraform wires
+that address into the workers, so the platform sends as the domain it owns.
+
+**One consequence to understand:** under ACS the `From` header is forced to the
+managed-domain address, and a campaign's configured `sender_mailbox` is
+overridden. The SPF pre-flight and the delivery logs both report the address
+that will actually be used, not the one on the campaign — but the campaign form
+will still show the value you typed.
+
+### Verifying it works
+
+Deploying successfully does not prove mail works — the domain has to finish
+provisioning and the runtime needs the Email Sender role, and both fail at
+*send* time. Prove the path before scheduling anything:
+
+```bash
+scripts/azure_mail_check.sh \
+  --resource-group rg-kp-staging \
+  --to you@somewhere-you-can-read.example
+```
+
+It sends one message through the same SDK the delivery worker uses and tells
+you what to conclude from where it lands. It is deliberately **not** part of the
+deploy workflow: it sends real mail to a real person.
+
+### Choosing a sending domain
+
+| | Azure-managed (default) | Custom domain |
+|---|---|---|
+| Setup | None — provisioned with the deployment | Add the domain in ACS, publish SPF/DKIM/DMARC |
+| Address | `DoNotReply@<guid>.azurecomm.net` | Anything on your domain |
+| Deliverability | Poor. No reputation, and recipients often filter `azurecomm.net` | Good, once DNS is correct and warmed |
+| Send limits | Rate limited; intended for testing | Higher, tied to your ACS tier |
+| Use for | Validating the pipeline, demos, first bring-up | Any real assessment |
+
+**Start with the Azure-managed domain** to prove the deployment works end to
+end. Move to a custom domain before running an assessment that anyone will draw
+conclusions from: a simulation that lands in spam measures your spam filter,
+not your people.
+
+Whichever you use, keep it distinct from your corporate mail domain, and keep
+`user_engagement_tracking_enabled = false` — the platform does its own,
+consent-aware tracking, and ACS-side open tracking would double-count.
 
 ## Send safety on Azure
 

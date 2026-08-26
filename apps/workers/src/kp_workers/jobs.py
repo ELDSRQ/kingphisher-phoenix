@@ -233,6 +233,20 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
     )
 
 
+def effective_sender_address(ctx: WorkerContext, campaign: Campaign) -> str:
+    """The address mail will actually leave from.
+
+    Azure Communication Services only accepts a From on its own verified
+    sending domain, so the campaign's configured sender_mailbox is overridden
+    there. Anything reasoning about the sender — SPF preflight, logs, the
+    operator's expectations — has to use this rather than sender_mailbox, or it
+    is describing a domain that never appears in the envelope.
+    """
+    if ctx.settings.email_provider == "azure_communication_services":
+        return ctx.settings.effective_smtp_sender
+    return campaign.sender_mailbox
+
+
 def _make_batch_sender(ctx: WorkerContext) -> EmailSender:
     """Build the transport once so a delivery batch can hold one connection."""
     return make_email_sender(
@@ -302,9 +316,20 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # Mirror the import rule: unset is fail-closed under OIDC-shaped
         # deployments and allow-all only for the offline dev stack.
         unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
-        spf = check_spf_for_mailbox(campaign.sender_mailbox)
+        # Check the domain that will actually send, not the one configured on
+        # the campaign: under ACS they differ, and checking the wrong one gave
+        # an SPF verdict about a domain absent from the message.
+        sender_address = effective_sender_address(ctx, campaign)
+        spf = check_spf_for_mailbox(sender_address)
         if not spf.has_spf:
             logger.warning("SPF pre-flight: %s publishes no SPF record; delivery may be flagged", spf.domain)
+        if sender_address != campaign.sender_mailbox:
+            logger.info(
+                "sender override: campaign requests %s but the %s provider sends as %s",
+                campaign.sender_mailbox,
+                ctx.settings.email_provider,
+                sender_address,
+            )
         sent = 0
         failed = 0
         blocked = 0
@@ -902,11 +927,7 @@ def _send_email(
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = (
-        ctx.settings.effective_smtp_sender
-        if ctx.settings.email_provider == "azure_communication_services"
-        else campaign.sender_mailbox
-    )
+    msg["From"] = effective_sender_address(ctx, campaign)
     msg["To"] = recipient.mailbox or f"recipient-{assignment.recipient_id}@example.com"
     msg.set_content(plain_text or subject)
     if html:

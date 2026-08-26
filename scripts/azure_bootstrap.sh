@@ -66,7 +66,13 @@ command -v az >/dev/null 2>&1 || die "the Azure CLI (az) is not installed"
 command -v gh >/dev/null 2>&1 || die "the GitHub CLI (gh) is not installed"
 az account show >/dev/null 2>&1 || die "not logged in to Azure; run: az login"
 gh auth status >/dev/null 2>&1 || die "not logged in to GitHub; run: gh auth login"
-gh repo view "$REPO" >/dev/null 2>&1 || die "cannot see repository '$REPO' with the current gh login"
+if ! gh repo view "$REPO" >/dev/null 2>&1; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "[dry-run] repository '$REPO' not visible; continuing so the plan can be previewed"
+  else
+    die "cannot see repository '$REPO' with the current gh login"
+  fi
+fi
 log "az and gh are ready"
 
 TENANT_ID="$(az account show --subscription "$SUBSCRIPTION" --query tenantId -o tsv 2>/dev/null || true)"

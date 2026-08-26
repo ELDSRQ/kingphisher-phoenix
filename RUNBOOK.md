@@ -293,6 +293,30 @@ Assign `security_approver` and `privacy_approver` to **different people**. With
 both roles on one person, nothing can be scheduled under `enforce` at all: the
 platform refuses the second approval from someone who gave the first.
 
+### 2.10 Standing up a new Azure tenant
+
+Three commands. The first two change nothing.
+
+```bash
+scripts/azure_preflight.sh  --subscription <id> --repo <owner>/<repo>
+scripts/azure_bootstrap.sh  --subscription <id> --repo <owner>/<repo> \
+    --operator-fqdn awareness.corp.example --allowed-domains corp.example
+gh workflow run "Azure deployment" --repo <owner>/<repo> \
+    -f environment=staging -f network_mode=starter
+```
+
+Then prove mail actually works before scheduling anything:
+
+```bash
+scripts/azure_mail_check.sh --resource-group rg-kp-staging --to you@example.com
+```
+
+Simulations are sent from the deployment's **own** Azure Communication Services
+domain, never from corporate mail. See `docs/AZURE_DEPLOYMENT.md` for the
+managed-versus-custom domain trade-off; the short version is that the
+Azure-managed domain proves the pipeline works but lands in spam, and a real
+assessment needs a custom domain with SPF, DKIM and DMARC.
+
 ## 3. Monitoring
 
 - `curl http://127.0.0.1:8000/healthz` and `:8001/healthz` → 200 when up.
