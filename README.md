@@ -165,6 +165,51 @@ Non-negotiable boundaries enforced in code:
   generation may not approve it. Threat-feed text is run through the
   prompt-injection neutralizer before it reaches a model, and the draft records
   whether its source context was flagged.
+- **Verified target-domain ownership** — a domain only counts as operator-verified
+  when the DNS TXT challenge the wizard issued is observable in live DNS
+  (`kp_domain_verification`). Recipients may only be in verified domains a signed
+  Rules-of-Engagement names; a self-asserted config string is never proof.
+- **Signed Rules-of-Engagement gate** — a campaign cannot be scheduled or
+  delivered unless an unrevoked, operator-signed RoE covers its delivery window
+  and its recipients. The signature binds `terms_hash | signer | signed_at`
+  under `KP_ROE_SIGNING_KEY`; delivery re-checks the signature, the active
+  window, and the per-recipient target-domain boundary, and fails closed.
+  Revoking an RoE stops its campaigns immediately.
+
+## Sender realism (authorized training lures)
+
+Four components imitate real adversary tradecraft while staying inside the
+authorization boundary above:
+
+1. **Sender personas** — per campaign: display name (`sender_display_name`),
+   local part, and pool domain, so a lure presents as e.g. *Account Security*
+   `<alerts@corp-benefits.example>`.
+2. **Lookalike generator** — `GET /api/v1/sending-domains/generate?brand=...&base_domain=...`
+   proposes candidate sending hostnames under an operator-controlled domain,
+   each with ready-to-paste DNS records.
+3. **Gophish-style relay send path** — any authenticated SMTP relay
+   (SES/Mailgun/Postfix) via `KP_WORKER_SMTP_*`; relay-agnostic, one From per
+   campaign.
+4. **Domain-onboarding wizard** — `POST /api/v1/sending-domains/challenge`
+   then `/verify`; after one pass the domain is verified and any campaign may
+   send from it.
+
+### Deliverability truth
+
+- Mail only delivers from domains the operator **controls** and that publish
+  **valid SPF/DKIM/DMARC**. No relay sends deliverable mail as an unowned
+  domain — the wizard emits the exact records (challenge TXT, provider SPF,
+  DMARC, DKIM placeholder) and a domain joins the sending pool
+  (`KP_SENDING_DOMAINS`) only after the challenge verifies.
+- A campaign's requested sender mailbox is honored only when it sits on a
+  registered pool domain; otherwise delivery falls back to
+  `KP_WORKER_SMTP_SENDER` (an unauthenticated domain would just bounce).
+- The lookalike path requires the operator to **register** each domain and
+  authenticate it through the wizard — the records to publish come from the
+  challenge response, and SPF/DKIM must authorize the configured relay.
+- The impersonated brand is lure content; the boundary is the verified,
+  RoE-covered target-domain set, which confines every lure to the operator's
+  own consenting organization.
 
 Zone-crossing restrictions, secrets handling, and encryption-at-rest are
 documented in `docs/architecture/` and enforced progressively as services are

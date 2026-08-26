@@ -74,6 +74,25 @@ Found and fixed during the work, not in the original register:
 - **`az acr build` / bootstrap gap**: a new Azure tenant could not be stood up at
   all without pre-existing VNet infrastructure.
 
+Sender-realism workstream (2026-08-26, landed on `main`):
+
+| Component | Status | Notes |
+|---|---|---|
+| Sender-persona foundation | Complete | `Campaign.sender_display_name` (migration 0012), `policy.resolve_sender` / `parse_sending_domains` |
+| DNS-challenge domain verification | Complete | `kp-domain-verification`: HMAC token, fail-closed TXT observation, exact records (`required_dns_records`) |
+| Verified domains + signed RoE models | Complete | migration 0013; signature binds `terms_hash\|signer\|signed_at` |
+| RoE gate (schedule + delivery) | Complete | unconditional fail-closed; per-recipient `target_domain_not_roe_covered`; revocation stops delivery |
+| Sender personas wired into delivery | Complete | From header display name (SMTP relay path), pool-resolved envelope address |
+| Lookalike generator | Complete | candidates under an operator-controlled base + ready-to-paste DNS |
+| Relay-agnostic send path | Complete | SMTP relay (SES/Mailgun/Postfix) already generic; persona honored through it |
+| Onboarding wizard endpoints | Complete | challenge / verify / list / generate, RoE sign / list / revoke, RBAC `VERIFY_DOMAIN` + `SIGN_ROE` |
+| Brand allowlist for neutralizer | Complete | `brand_allowlist` = operator-owned domains; lookalikes inside them are legit lure content |
+
+New env keys: `KP_ROE_SIGNING_KEY`, `OPERATOR_API_DOMAIN_VERIFY_KEY`,
+`KP_SENDING_DOMAINS`, `KP_BRAND_ALLOWLIST`. Deliverability truth: mail only
+delivers from operator-controlled domains with valid SPF/DKIM/DMARC; the
+wizard emits the exact records and the pool only accepts verified domains.
+
 Still open:
 
 | Finding | Note |

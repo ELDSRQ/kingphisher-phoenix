@@ -293,7 +293,72 @@ Assign `security_approver` and `privacy_approver` to **different people**. With
 both roles on one person, nothing can be scheduled under `enforce` at all: the
 platform refuses the second approval from someone who gave the first.
 
-### 2.10 Standing up a new Azure tenant
+### 2.10 Onboarding a sending domain and signing a Rules-of-Engagement
+
+Delivery is gated on two layers that must be satisfied **before** a campaign
+can be scheduled: a DNS-verified domain and a signed Rules-of-Engagement.
+
+**1. Onboard a domain (one pass, then zero-config forever).**
+
+```bash
+# Candidate lookalike hostnames under a domain you control, each with its
+# ready-to-paste DNS records:
+GET /api/v1/sending-domains/generate?brand=Okta&base_domain=corp-training.example
+
+# Or onboard an exact domain:
+POST /api/v1/sending-domains/challenge
+{"domain": "corp-benefits.example", "relay": "ses"}   # ses|mailgun|postfix|smtp
+```
+
+Publish the returned records in your DNS zone — the challenge TXT, the SPF
+record (it must authorize the relay you configured, or the mail will not
+deliver), DMARC, and the DKIM value minted by your relay provider. Then:
+
+```bash
+POST /api/v1/sending-domains/verify   {"domain": "corp-benefits.example"}
+```
+
+Verification is a live DNS observation and fails closed: no record, a wrong
+value, or a resolver error is reported unverified. Once verified, the domain
+may be named in an RoE and used as a sending domain (`KP_SENDING_DOMAINS`).
+After that one pass, any campaign may send from it with any display name and
+local part — the wizard's "zero-config after one pass" property.
+
+**Deliverability truth:** mail only delivers from domains you control with
+valid SPF/DKIM/DMARC. A campaign's requested sender mailbox is honored only
+when it sits on a registered pool domain; otherwise the envelope falls back to
+`KP_WORKER_SMTP_SENDER`, because sending as an unauthenticated domain never
+lands. No relay in this platform sends deliverable mail as an unowned domain.
+
+**2. Sign a Rules-of-Engagement** (needs a verified target domain; the API
+rejects any domain that has not passed the DNS challenge):
+
+```bash
+POST /api/v1/roe
+{
+  "authorizing_party": "Example Corp",
+  "terms": "Q3 training: recipients confined to the verified example.com domain.",
+  "window_start": "2026-09-01T00:00:00Z",
+  "window_end":   "2026-10-01T00:00:00Z",
+  "target_domains": ["example.com"]
+}
+```
+
+The signature binds `terms_hash | signer | signed_at` under `KP_ROE_SIGNING_KEY`
+(shared by API and workers). Scheduling requires an unrevoked RoE whose window
+contains the campaign's delivery window and whose target domains cover every
+recipient. Delivery re-verifies the signature and the active window per batch,
+and any recipient outside the target domains is refused
+(`target_domain_not_roe_covered`). Revoke with `POST /api/v1/roe/{id}/revoke` —
+its campaigns fail closed immediately.
+
+**Bootstrap note:** after pulling the sender-realism commits, run
+`scripts/bootstrap_env.sh` once to generate the new secrets
+(`KP_ROE_SIGNING_KEY`, `OPERATOR_API_DOMAIN_VERIFY_KEY`), then
+`make db-migrate` (migration 0013) and `make seed` (the demo data now includes
+a signed RoE over `example.com`).
+
+### 2.11 Standing up a new Azure tenant
 
 Three commands. The first two change nothing.
 

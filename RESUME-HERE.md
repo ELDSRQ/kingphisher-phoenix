@@ -38,9 +38,25 @@ instruction to land the work.
 - **Azure standup — COMPLETE.** `scripts/azure_bootstrap.sh` removes day zero;
   `network_mode=starter` allows a hosted-runner first deploy; `az acr build`
   removes the Docker-daemon requirement; P-3 console honesty on Container Apps.
+- **Sender-realism workstream — COMPLETE** (landed 2026-08-26, all pushed):
+  sender personas (display name + local part + pool domain), DNS-challenge
+  domain verification (`kp-domain-verification`), VerifiedDomain +
+  RulesOfEngagement models (migration 0013), unconditional RoE gate at schedule
+  and delivery, lookalike generator with ready-to-paste DNS records,
+  relay-agnostic SMTP send path, onboarding wizard endpoints, and the
+  neutralizer brand allowlist. New env keys: `KP_ROE_SIGNING_KEY`,
+  `OPERATOR_API_DOMAIN_VERIFY_KEY`, `KP_SENDING_DOMAINS`, `KP_BRAND_ALLOWLIST`
+  (generate via `scripts/bootstrap_env.sh`, then `make db-migrate` + `make seed`).
 
-Gate at the time of writing: lint clean, mypy clean on 81 source files,
-445 passed / 7 skipped.
+  **Safety architecture that now gates ALL delivery** (do not regress):
+  recipients may only be in DNS-verified, RoE-covered target domains; a
+  campaign cannot be scheduled or delivered without an active, validly-signed
+  RoE; revocation fails delivery closed; a self-asserted config string is
+  never proof of domain ownership. See `README.md → Sender realism` and
+  `RUNBOOK.md §2.10`.
+
+Gate at the time of writing: lint clean, mypy clean on 87 source files,
+541 passed / 7 skipped.
 
 Remaining known-open items are listed at the end of
 `docs/REMEDIATION_PLAN.md`; the significant one is **ARCH-7** (rate limits are
