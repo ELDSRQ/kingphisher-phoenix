@@ -15,6 +15,7 @@ members = [
     "kp-contracts",
     "kp-database",
     "kp-domain-models",
+    "kp-domain-verification",
     "kp-operator-api",
     "kp-safety-validation",
     "kp-sanitization",
@@ -781,6 +782,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.7" }]
+
+[[package]]
+name = "kp-domain-verification"
+version = "0.1.0"
+source = { editable = "packages/domain-verification" }
+dependencies = [
+    { name = "dnspython" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "dnspython", specifier = ">=2.6" }]
 
 [[package]]
 name = "kp-operator-api"
