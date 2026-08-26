@@ -4,11 +4,13 @@ JWT verification is strict: signature (JWKS or dev shared secret), `iss`,
 `aud`, `exp`, and `nbf` all checked. Roles are mapped to kp-authorization
 capabilities; endpoints call `require()`/`require_any()` on the resolved
 Principal. Unknown roles fail closed (no implicit capability) rather than
-granting anything.
+granting anything. Subjects must be parseable UUIDs because audit/DB fields
+are UUID-typed; a non-UUID `sub` is rejected at this identity boundary.
 """
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -91,8 +93,20 @@ _ROLE_ALIASES: dict[str, Role] = {
 
 def _claims_to_principal(claims: dict[str, Any]) -> Principal:
     subject = claims.get("sub")
-    if not subject:
+    if subject is None:
         raise AuthenticationError("token is missing a subject")
+    # HIGH-02 residual: routers feed `principal.principal_id` straight into
+    # `uuid.UUID(...)` for UUID-typed audit/DB columns, so a provider whose
+    # `sub` is not a UUID (e.g. `auth0|123`) surfaced there as ValueError -> 500.
+    # Fail closed here with a 403-class rejection instead. Console tokens carry
+    # the stable CONSOLE_OPERATOR_UUID and Entra object IDs are UUIDs, so
+    # intended deployments are unaffected.
+    try:
+        uuid.UUID(str(subject))
+    except ValueError as exc:
+        raise PermissionDeniedError(
+            f"token 'sub' claim {subject!r} is not a valid UUID; principal IDs must be UUIDs"
+        ) from exc
     realm_roles = (
         claims.get("realm_access", {}).get("roles", []) if isinstance(claims.get("realm_access"), dict) else []
     )
