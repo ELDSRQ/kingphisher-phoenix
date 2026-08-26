@@ -8,9 +8,13 @@ OIDC provider is required.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+from fastapi.testclient import TestClient
 from kp_domain_models.policy import ApprovalPolicy
 from kp_operator_api.config import OperatorApiSettings
+from kp_operator_api.main import create_app
 from kp_operator_api.send_policy import resolve_recipient_policy
 from kp_telemetry.errors import ValidationError_
 from pydantic import ValidationError
@@ -87,3 +91,25 @@ def test_import_policy_allows_all_only_in_dev_auth() -> None:
     allowlist, unrestricted = resolve_recipient_policy(_settings(oidc_mode="dev", allowed_recipient_domains=""))
     assert allowlist == frozenset()
     assert unrestricted is True
+
+
+# --- policy visibility for the console -------------------------------------------
+
+
+@pytest.mark.parametrize("policy", ["enforce", "single-admin"])
+def test_session_reports_the_active_approval_policy(tmp_path: Path, policy: str) -> None:
+    # The console decides from this value whether to offer "Schedule" on a
+    # draft. If it were wrong the operator would be handed an action the API
+    # rejects with a 409 they cannot act on.
+    env_file = tmp_path / ".env"
+    env_file.write_text("KP_CONSOLE_PASSWORD=correct-horse-battery-staple\n", encoding="utf-8")
+    settings = _settings(oidc_mode="dev", approval_policy=policy, env_file=str(env_file))
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/console/session",
+            json={"password": "correct-horse-battery-staple"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["approval_policy"] == policy

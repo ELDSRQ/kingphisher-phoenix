@@ -481,8 +481,15 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
         session.scalars(select(TrainingAssignment).where(TrainingAssignment.campaign_id == campaign.campaign_id))
     )
     send_counts = {state.value: 0 for state in dm.SendState}
+    # Why sends failed, not just how many. A policy refusal
+    # ("domain_not_allowed") needs a different response from an operator than a
+    # transport error, and without this the console cannot tell them apart.
+    failure_reasons: dict[str, int] = {}
     for assignment in assignments:
         send_counts[assignment.send_state.value] += 1
+        if assignment.send_state is dm.SendState.FAILED:
+            reason = assignment.failure_reason or "unspecified"
+            failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
     event_counts = {event_type.value: 0 for event_type in dm.EventType}
     confidence_counts = {confidence.value: 0 for confidence in dm.Confidence}
     for event in events:
@@ -498,6 +505,7 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
         "schedule_end": campaign.schedule_end,
         "recipients": len(assignments),
         "send_counts": send_counts,
+        "failure_reasons": dict(sorted(failure_reasons.items())),
         "event_counts": event_counts,
         "confidence_counts": confidence_counts,
         "training": {"assigned": len(training), "completed": completed_training},
@@ -531,9 +539,11 @@ def campaign_report_csv(
     writer.writerow(["campaign_id", report["campaign_id"]])
     writer.writerow(["state", report["state"]])
     writer.writerow(["recipients", report["recipients"]])
-    for group in ("send_counts", "event_counts", "confidence_counts"):
+    for group in ("send_counts", "failure_reasons", "event_counts", "confidence_counts"):
         for name, value in report[group].items():
             writer.writerow([f"{group}.{name}", value])
+    for name, value in report["training"].items():
+        writer.writerow([f"training.{name}", value])
     for name, value in report["rates"].items():
         writer.writerow([f"rates.{name}", value])
     return Response(

@@ -275,3 +275,67 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   .suggestion-preview { align-items: flex-start; flex-direction: column; }
   .wizard-summary dd { margin-bottom: 10px; }
 }
+
+/* ---------- modal dialogs ----------
+   Replaces prompt()/confirm(), which could not be styled, could not show more
+   than one field, and are suppressed entirely by some browsers. */
+.modal {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0;
+  max-width: 560px;
+  width: calc(100% - 32px);
+}
+.modal::backdrop { background: rgba(0, 0, 0, .55); }
+.modal-form { padding: 20px 22px; display: flex; flex-direction: column; gap: 8px; }
+.modal-title { margin: 0; font-size: 16px; }
+.modal-desc { margin: 0 0 6px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.modal-section { margin: 14px 0 2px; font-size: 13px; }
+.modal-help { margin: 2px 0 6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.modal-warn { margin: 8px 0; color: var(--danger); font-size: 12px; line-height: 1.5; }
+.modal-error { color: var(--danger); font-size: 12px; min-height: 16px; }
+.modal-form label { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.modal-form input,
+.modal-form select,
+.modal-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  box-sizing: border-box;
+}
+.modal-copyable { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.modal-detail { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 8px 0 0; font-size: 13px; }
+.modal-detail dt { color: var(--muted); }
+.modal-detail dd { margin: 0; }
+.modal-errors { margin: 4px 0; padding-left: 18px; font-size: 12px; line-height: 1.6; max-height: 220px; overflow-y: auto; }
+
+/* ---------- report tables ---------- */
+.report-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.report-table th,
+.report-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.report-table th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.report-table td.num,
+.report-table th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+
+.login-hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 8px 0 0; }
+
+/* ---------- policy banner ---------- */
+.policy-banner {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.policy-banner strong { color: var(--text); }
+.last-updated { color: var(--muted); font-size: 11px; margin: 6px 0; min-height: 14px; }

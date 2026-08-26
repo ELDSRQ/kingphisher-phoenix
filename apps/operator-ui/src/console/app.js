@@ -68,6 +68,259 @@ function el(tag, attrs, children) {
   return node;
 }
 
+/* ---------- dialogs ----------
+   Real <dialog> modals instead of prompt()/confirm(): those cannot be styled,
+   cannot show more than one field, cannot explain a rule, and are suppressed
+   entirely by some browsers. Everything here is textContent only — no
+   innerHTML anywhere in this console, ever. */
+
+function openDialog(node) {
+  document.body.appendChild(node);
+  node.addEventListener("close", () => node.remove());
+  node.showModal();
+  const focusable = node.querySelector("input, select, textarea, button.primary, button");
+  if (focusable) focusable.focus();
+  return node;
+}
+
+function dialogShell(title, description) {
+  const dlg = el("dialog", { class: "modal" });
+  const form = el("form", { method: "dialog", class: "modal-form" });
+  form.appendChild(el("h3", { class: "modal-title", text: title }));
+  if (description) form.appendChild(el("p", { class: "modal-desc", text: description }));
+  dlg.appendChild(form);
+  return { dlg, form };
+}
+
+function confirmDialog({ title, message, detail, confirmLabel = "Confirm", danger = false }) {
+  return new Promise((resolve) => {
+    const { dlg, form } = dialogShell(title, message);
+    if (detail) {
+      const list = el("dl", { class: "modal-detail" });
+      for (const [k, v] of Object.entries(detail)) {
+        list.appendChild(el("dt", { text: k }));
+        list.appendChild(el("dd", { text: String(v) }));
+      }
+      form.appendChild(list);
+    }
+    let decided = false;
+    const finish = (value) => { decided = true; resolve(value); dlg.close(); };
+    form.appendChild(el("div", { class: "modal-actions" }, [
+      el("button", { class: "btn", type: "button", text: "Cancel", onclick: () => finish(false) }),
+      el("button", { class: `btn primary${danger ? " danger" : ""}`, type: "button", text: confirmLabel, onclick: () => finish(true) }),
+    ]));
+    dlg.addEventListener("close", () => { if (!decided) resolve(false); });
+    openDialog(dlg);
+  });
+}
+
+/* fields: [{ name, label, type, value, options, required, help, placeholder }] */
+function promptDialog({ title, description, fields, submitLabel = "Save" }) {
+  return new Promise((resolve) => {
+    const { dlg, form } = dialogShell(title, description);
+    const inputs = {};
+    const errorLine = el("div", { class: "modal-error", role: "alert" });
+    for (const field of fields) {
+      const id = `dlg-${field.name}`;
+      form.appendChild(el("label", { for: id, text: field.label }));
+      let input;
+      if (field.type === "select") {
+        input = el("select", { id, name: field.name });
+        for (const opt of field.options || []) {
+          input.appendChild(el("option", { value: opt.value, text: opt.label, selected: opt.value === field.value }));
+        }
+      } else if (field.type === "textarea") {
+        input = el("textarea", { id, name: field.name, rows: "3", placeholder: field.placeholder || "" });
+        input.value = field.value || "";
+      } else {
+        input = el("input", { id, name: field.name, type: field.type || "text", placeholder: field.placeholder || "" });
+        input.value = field.value || "";
+      }
+      inputs[field.name] = input;
+      form.appendChild(input);
+      if (field.help) form.appendChild(el("p", { class: "modal-help", text: field.help }));
+    }
+    form.appendChild(errorLine);
+    let decided = false;
+    const cancel = () => { decided = true; resolve(null); dlg.close(); };
+    const submit = () => {
+      const values = {};
+      for (const field of fields) {
+        const value = String(inputs[field.name].value || "").trim();
+        if (field.required && !value) {
+          errorLine.textContent = `${field.label} is required.`;
+          inputs[field.name].focus();
+          return;
+        }
+        values[field.name] = value;
+      }
+      decided = true; resolve(values); dlg.close();
+    };
+    form.appendChild(el("div", { class: "modal-actions" }, [
+      el("button", { class: "btn", type: "button", text: "Cancel", onclick: cancel }),
+      el("button", { class: "btn primary", type: "button", text: submitLabel, onclick: submit }),
+    ]));
+    dlg.addEventListener("close", () => { if (!decided) resolve(null); });
+    openDialog(dlg);
+  });
+}
+
+/* A value shown exactly once (a signing secret). prompt() was being used for
+   this, which is not selectable on every browser and looks like an input. */
+function showCopyable({ title, description, value }) {
+  const { dlg, form } = dialogShell(title, description);
+  const box = el("textarea", { class: "modal-copyable", rows: "3", readonly: "readonly" });
+  box.value = value;
+  form.appendChild(box);
+  const status = el("p", { class: "modal-help", "aria-live": "polite" });
+  form.appendChild(status);
+  form.appendChild(el("div", { class: "modal-actions" }, [
+    el("button", { class: "btn", type: "button", text: "Copy", onclick: async () => {
+      box.select();
+      try {
+        await navigator.clipboard.writeText(value);
+        status.textContent = "Copied to clipboard.";
+      } catch {
+        status.textContent = "Copy failed — the value is selected, press Ctrl/Cmd+C.";
+      }
+    } }),
+    el("button", { class: "btn primary", type: "button", text: "I have saved it", onclick: () => dlg.close() }),
+  ]));
+  openDialog(dlg);
+}
+
+/* ---------- campaign report ----------
+   The funnel used to be a three-number toast that vanished after five seconds.
+   Percentages are all relative to DELIVERED, not to the recipient count: a
+   message that never left the building cannot be opened, and dividing by
+   recipients would quietly understate every rate. */
+
+function pct(part, whole) {
+  if (!whole) return "—";
+  return `${((part / whole) * 100).toFixed(1)}%`;
+}
+
+const FAILURE_REASON_TEXT = {
+  domain_not_allowed: "Recipient domain is not in the allowed list — policy refused the send",
+  stale_queued_reconcile: "Still queued when the campaign closed; settled by the reconciler, never re-sent",
+  recipient_unavailable: "Recipient record or tracking token was missing or inactive",
+  send_error: "The mail transport rejected or failed the message",
+  unspecified: "No reason recorded (failed before reasons were tracked)",
+};
+
+function showCampaignReport(report) {
+  const { dlg, form } = dialogShell(
+    report.title || "Campaign report",
+    `State: ${report.state} · ${report.recipients} recipient${report.recipients === 1 ? "" : "s"}`,
+  );
+
+  const delivered = report.send_counts.delivered || 0;
+  const funnel = [
+    ["Delivered", delivered, report.recipients],
+    ["Opened", report.event_counts.opened || 0, delivered],
+    ["Clicked", report.event_counts.clicked || 0, delivered],
+    ["Reported", report.event_counts.reported || 0, delivered],
+    ["Training completed", report.training.completed || 0, report.training.assigned || 0],
+  ];
+  const funnelTable = el("table", { class: "report-table" }, [
+    el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Stage" }), el("th", { text: "Count" }), el("th", { text: "Rate" }),
+    ])]),
+    el("tbody", {}, funnel.map(([label, count, base]) => el("tr", {}, [
+      el("td", { text: label }),
+      el("td", { class: "num", text: String(count) }),
+      el("td", { class: "num", text: pct(count, base) }),
+    ]))),
+  ]);
+  form.appendChild(el("h4", { class: "modal-section", text: "Funnel" }));
+  form.appendChild(funnelTable);
+  form.appendChild(el("p", { class: "modal-help", text: "Open, click and report rates are a share of delivered messages. Training completion is a share of assigned training." }));
+
+  const sendRows = Object.entries(report.send_counts).filter(([, v]) => v > 0);
+  form.appendChild(el("h4", { class: "modal-section", text: "Send states" }));
+  form.appendChild(el("table", { class: "report-table" }, [
+    el("tbody", {}, sendRows.length ? sendRows.map(([state, count]) => el("tr", {}, [
+      el("td", { text: state }), el("td", { class: "num", text: String(count) }),
+    ])) : [el("tr", {}, [el("td", { colspan: "2", text: "No assignments yet." })])]),
+  ]));
+
+  const failures = Object.entries(report.failure_reasons || {});
+  if (failures.length) {
+    form.appendChild(el("h4", { class: "modal-section", text: "Why sends failed" }));
+    form.appendChild(el("table", { class: "report-table" }, [
+      el("tbody", {}, failures.map(([reason, count]) => el("tr", {}, [
+        el("td", {}, [
+          el("div", { text: reason }),
+          el("div", { class: "modal-help", text: FAILURE_REASON_TEXT[reason] || "" }),
+        ]),
+        el("td", { class: "num", text: String(count) }),
+      ]))),
+    ]));
+  }
+
+  form.appendChild(el("div", { class: "modal-actions" }, [
+    el("button", { class: "btn", type: "button", text: "Download CSV", onclick: async (e) => {
+      e.target.disabled = true;
+      try { await downloadReportCsv(report.campaign_id); }
+      catch (err) { toast(err.message, "error"); }
+      finally { e.target.disabled = false; }
+    } }),
+    el("button", { class: "btn primary", type: "button", text: "Close", onclick: () => dlg.close() }),
+  ]));
+  openDialog(dlg);
+}
+
+/* The CSV route is authenticated, so a plain link would 401. Fetch with the
+   bearer token and hand the browser a blob instead. */
+async function downloadReportCsv(campaignId) {
+  const resp = await fetch(`${API}/campaigns/${campaignId}/report.csv`, {
+    headers: { Authorization: `Bearer ${token()}` },
+  });
+  if (!resp.ok) throw new Error(`Export failed (${resp.status})`);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const link = el("a", { href: url, download: `campaign-${campaignId}-report.csv` });
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* Import outcomes were previously collapsed into "Imported N, skipped M",
+   which hid the rows the domain allowlist refused. An operator whose recipients
+   silently vanish has no way to discover why. */
+function showImportResult(res) {
+  const created = res.created || 0;
+  const skipped = res.skipped || 0;
+  const blocked = res.blocked || 0;
+  const errors = res.errors || [];
+  const { dlg, form } = dialogShell("Import complete", null);
+
+  form.appendChild(el("table", { class: "report-table" }, [
+    el("tbody", {}, [
+      el("tr", {}, [el("td", { text: "Imported" }), el("td", { class: "num", text: String(created) })]),
+      el("tr", {}, [el("td", { text: "Already present" }), el("td", { class: "num", text: String(skipped) })]),
+      el("tr", {}, [el("td", { text: "Blocked by domain policy" }), el("td", { class: "num", text: String(blocked) })]),
+    ]),
+  ]));
+
+  if (blocked) {
+    form.appendChild(el("p", { class: "modal-warn", text: "Blocked rows are outside the recipient domains this deployment is allowed to mail. Nothing was sent to them and no record was created." }));
+  }
+  if (errors.length) {
+    form.appendChild(el("h4", { class: "modal-section", text: "Rows not imported" }));
+    const list = el("ul", { class: "modal-errors" });
+    for (const line of errors) list.appendChild(el("li", { text: line }));
+    form.appendChild(list);
+    form.appendChild(el("p", { class: "modal-help", text: "Only the first 20 problem rows are listed." }));
+  }
+
+  form.appendChild(el("div", { class: "modal-actions" }, [
+    el("button", { class: "btn primary", type: "button", text: "Close", onclick: () => { dlg.close(); location.reload(); } }),
+  ]));
+  openDialog(dlg);
+}
+
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -108,12 +361,27 @@ views.login = async (root) => {
         authMode: data.auth_mode,
         principalId: data.principal_id,
         approvalLimited: Boolean(data.approval_limited),
+        approvalPolicy: data.approval_policy || "single-admin",
       });
       onboardingChecked = false;
       toast("Signed in", "success");
       render();
-    } catch (e) { err.textContent = e.message; }
+    } catch (e) {
+      // A bare "429 Too Many Requests" leaves an operator stuck with no idea
+      // how long to wait or where the password came from.
+      const message = String(e.message || "");
+      if (/429|too many|locked/i.test(message)) {
+        const seconds = (message.match(/(\d+)\s*second/i) || [])[1];
+        err.textContent = seconds
+          ? `Too many attempts. Try again in ${seconds} seconds.`
+          : "Too many attempts. Wait a few minutes before trying again.";
+        hint.hidden = false;
+      } else {
+        err.textContent = message;
+      }
+    }
   };
+  const hint = el("p", { class: "login-hint", hidden: true, text: "The console password is KP_CONSOLE_PASSWORD in your .env file. On Azure it is the console-password secret in Key Vault. See RUNBOOK section 2.1." });
   let authMode = "dev";
   try {
     const resp = await fetch(`${API}/console/auth-mode`);
@@ -140,6 +408,7 @@ views.login = async (root) => {
       el("p", { text: "Operator console" }),
       ...loginControls,
       err,
+      hint,
     ]),
   ]));
 };
@@ -180,6 +449,7 @@ function shell() {
       nav,
       el("div", { class: "footer" }, [
         el("div", { text: info?.authMode === "dev" ? "Signed in as development operator" : "Signed in with OIDC" }),
+        el("div", { id: "last-updated", class: "last-updated" }),
         el("button", { text: "Sign out", onclick: async () => {
           await fetch(`${API}/console/logout`, { method: "POST", credentials: "same-origin" });
           clearToken(); render();
@@ -190,6 +460,7 @@ function shell() {
   ]);
   document.getElementById("app").replaceChildren(root);
   views[active](content);
+  if (LIVE_VIEWS.has(active)) stampLastUpdated();
 }
 
 /* ---------- shared UI helpers ---------- */
@@ -660,8 +931,20 @@ views.dashboard = async (root) => {
 
 /* ---------- campaigns ---------- */
 views.campaigns = async (root) => {
+  const policy = (sessionInfo() || {}).approvalPolicy || "single-admin";
+  const enforcing = policy === "enforce";
+
   root.appendChild(el("h2", { text: "Campaigns" }));
-  root.appendChild(el("p", { class: "sub", text: "Create, schedule and manage campaigns from one administrator account." }));
+  root.appendChild(el("p", { class: "sub", text: "Create, review and run awareness campaigns." }));
+
+  // The approval rule is the single most confusing thing about this screen, so
+  // state it up front rather than letting an operator discover it as a 409.
+  const banner = el("div", { class: "policy-banner" });
+  banner.appendChild(el("strong", { text: enforcing ? "Two-person approval is required. " : "Single-admin mode. " }));
+  banner.appendChild(document.createTextNode(enforcing
+    ? "A campaign must collect both a security and a privacy approval before it can be scheduled. You cannot approve a campaign you created, and the two approvals must come from different people. Submit a draft for approval to start that process."
+    : "One administrator can schedule a campaign without separate approvals. This is intended for the offline evaluation stack; deployments using an identity provider always require two-person approval."));
+  root.appendChild(banner);
 
   let campaigns;
   try { campaigns = await api("/campaigns"); } catch (e) {
@@ -727,7 +1010,15 @@ views.campaigns = async (root) => {
       el("td", { text: c.state }),
       el("td", {}, (() => {
         const actions = [];
-        if (c.state === "draft") actions.push(el("button", { class: "btn small primary", text: "Schedule", onclick: scheduleAct(c) }));
+        if (c.state === "draft") {
+          actions.push(el("button", { class: "btn small primary", text: "Submit for approval",
+            onclick: act(`/campaigns/${c.campaign_id}/submit`, "Submitted for approval") }));
+          // Offering "Schedule" under enforce would just produce a 409 the
+          // operator cannot act on, so it is only shown where it can succeed.
+          if (!enforcing) {
+            actions.push(el("button", { class: "btn small", text: "Schedule", onclick: scheduleAct(c) }));
+          }
+        }
         if (c.state === "pending_approval") {
           for (const type of ["security", "privacy"]) {
             actions.push(el("button", { class: "btn small", text: `Approve ${type}`, onclick: approvalAct(c, type, "approved") }));
@@ -738,7 +1029,12 @@ views.campaigns = async (root) => {
         if (c.state === "scheduled") actions.push(el("button", { class: "btn small", text: "Test send", onclick: act(`/campaigns/${c.campaign_id}/test-send`, "Test send queued") }));
         if (["scheduled", "approved"].includes(c.state)) actions.push(el("button", { class: "btn small danger", text: "Recall", onclick: act(`/campaigns/${c.campaign_id}/recall`, "Recall initiated") }));
         if (["scheduled", "sending", "active"].includes(c.state)) actions.push(el("button", { class: "btn small danger", text: "Kill switch", onclick: (async (e) => {
-          if (!confirm(`Scoped kill switch for "${c.title}"? Revokes this campaign's queued deliveries and tracking tokens.`)) return;
+          const ok = await confirmDialog({
+            title: "Engage scoped kill switch?",
+            message: `This revokes queued deliveries and tracking tokens for "${c.title}". It cannot be undone.`,
+            confirmLabel: "Engage kill switch", danger: true,
+          });
+          if (!ok) return;
           e.target.disabled = true;
           try {
             const res = await api("/kill-switch", { method: "POST", body: JSON.stringify({ campaign_id: c.campaign_id, confirm: true }) });
@@ -749,26 +1045,35 @@ views.campaigns = async (root) => {
         actions.push(el("button", { class: "btn small", text: "Report", onclick: async (e) => {
           e.target.disabled = true;
           try {
-            const report = await api(`/campaigns/${c.campaign_id}/report`);
-            const sent = report.send_counts.delivered || 0;
-            const opened = report.event_counts.opened || 0;
-            const clicked = report.event_counts.clicked || 0;
-            toast(`Delivered ${sent} · Opened ${opened} · Clicked ${clicked}`, "success");
+            showCampaignReport(await api(`/campaigns/${c.campaign_id}/report`));
           } catch (err) { toast(err.message, "error"); }
           finally { e.target.disabled = false; }
         } }));
         actions.push(el("button", { class: "btn small", text: "Add alert", onclick: async (e) => {
-          const channel = prompt("Alert channel: webhook or ntfy", "webhook");
-          if (!channel) return;
-          const destination = prompt(channel.trim().toLowerCase() === "ntfy" ? "ntfy HTTPS topic URL (for example, https://ntfy.sh/my-private-topic):" : "HTTPS webhook destination URL:");
-          if (!destination) return;
+          const values = await promptDialog({
+            title: `Alert subscription for "${c.title}"`,
+            description: "Campaign state changes are posted to this destination.",
+            fields: [
+              { name: "channel", label: "Channel", type: "select", value: "webhook",
+                options: [{ value: "webhook", label: "Webhook" }, { value: "ntfy", label: "ntfy" }] },
+              { name: "destination", label: "Destination URL", type: "url", required: true,
+                placeholder: "https://ntfy.example.com/my-private-topic",
+                help: "Must be HTTPS and within the configured alert domain allowlist." },
+            ],
+            submitLabel: "Create subscription",
+          });
+          if (!values) return;
           e.target.disabled = true;
           try {
             const result = await api("/alerts/subscriptions", { method: "POST", body: JSON.stringify({
-              campaign_id: c.campaign_id, channel: channel.trim().toLowerCase(), destination_url: destination.trim(),
+              campaign_id: c.campaign_id, channel: values.channel, destination_url: values.destination,
             }) });
             if (result.signing_secret) {
-              prompt("Copy this signing secret now; it will not be displayed again:", result.signing_secret);
+              showCopyable({
+                title: "Signing secret",
+                description: "Save this now — it is shown once and cannot be retrieved later. Use it to verify alert payload signatures.",
+                value: result.signing_secret,
+              });
             }
             toast("Alert subscription created", "success");
           } catch (err) { toast(err.message, "error"); }
@@ -793,9 +1098,19 @@ views.campaigns = async (root) => {
 
   function approvalAct(campaign, approvalType, decision) {
     return async (e) => {
-      const rationale = prompt(`${decision === "approved" ? "Approval" : "Rejection"} rationale for ${approvalType} review:`);
-      if (rationale === null) return;
-      if (!rationale.trim()) { toast("A rationale is required", "error"); return; }
+      const approving = decision === "approved";
+      const values = await promptDialog({
+        title: `${approving ? "Approve" : "Reject"}: ${approvalType} review`,
+        description: `Campaign "${campaign.title}". This decision is recorded in the audit chain against your identity.`,
+        fields: [
+          { name: "rationale", label: "Rationale", type: "textarea", required: true,
+            placeholder: approving ? "Why this campaign is safe to run" : "What must change before this can run",
+            help: "You cannot approve a campaign you created, and security and privacy approvals must come from different people." },
+        ],
+        submitLabel: approving ? "Record approval" : "Record rejection",
+      });
+      if (!values) return;
+      const rationale = values.rationale;
       const btn = e.target; btn.disabled = true;
       try {
         await api(`/campaigns/${campaign.campaign_id}/approvals/${approvalType}`, {
@@ -811,9 +1126,17 @@ views.campaigns = async (root) => {
 
   function scheduleAct(campaign) {
     return async (e) => {
-      const start = formatInstant(campaign.schedule_start);
-      const end = formatInstant(campaign.schedule_end);
-      if (!confirm(`Schedule "${campaign.title}"?\n\nStart: ${start}\nEnd: ${end}\n\nThese are shown in ${browserTimeZone()}.`)) return;
+      const ok = await confirmDialog({
+        title: `Schedule "${campaign.title}"?`,
+        message: "Once scheduled, deliveries are queued and will send at the start time.",
+        detail: {
+          Start: formatInstant(campaign.schedule_start),
+          End: formatInstant(campaign.schedule_end),
+          "Time zone": browserTimeZone(),
+        },
+        confirmLabel: "Schedule campaign",
+      });
+      if (!ok) return;
       return act(`/campaigns/${campaign.campaign_id}/schedule`, "Scheduled")(e);
     };
   }
@@ -837,22 +1160,35 @@ views.recipients = async (root) => {
   try { recipients = await api("/recipients"); } catch (e) {
     root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` })); return;
   }
+  const csvArea = el("textarea", { id: "r-csv", placeholder: "user@example.com, Jane Doe, Engineering" });
+  const filePicker = el("input", { id: "r-file", type: "file", accept: ".csv,text/csv,text/plain" });
+  filePicker.addEventListener("change", async () => {
+    const file = filePicker.files && filePicker.files[0];
+    if (!file) return;
+    try {
+      csvArea.value = await file.text();
+      toast(`Loaded ${file.name}`, "success");
+    } catch (err) { toast(`Could not read ${file.name}: ${err.message}`, "error"); }
+  });
+
   root.appendChild(el("div", { class: "card" }, [
     el("h3", { text: "Import CSV" }),
-    el("label", { text: "CSV text (mailbox, name, department)" }),
-    el("textarea", { id: "r-csv", placeholder: "user@example.com, Jane Doe, Engineering" }),
-    el("label", { text: "Default department" }),
+    el("label", { for: "r-file", text: "Choose a CSV file" }),
+    filePicker,
+    el("p", { class: "modal-help", text: "The file is read in your browser and placed in the box below; nothing is uploaded until you press Import." }),
+    el("label", { for: "r-csv", text: "CSV text (mailbox, name, department)" }),
+    csvArea,
+    el("label", { for: "r-dept", text: "Default department" }),
     el("input", { id: "r-dept", value: "Engineering" }),
     el("div", { class: "btn-row" }, [
       el("button", { class: "btn primary", text: "Import", onclick: async (e) => {
         const btn = e.target; btn.disabled = true;
         try {
           const res = await api("/recipients/import", { method: "POST", body: JSON.stringify({
-            csv_text: document.getElementById("r-csv").value,
+            csv_text: csvArea.value,
             department: document.getElementById("r-dept").value,
           }) });
-          toast(`Imported ${res.created}, skipped ${res.skipped}`, "success");
-          location.reload();
+          showImportResult(res);
         } catch (err) { toast(err.message, "error"); }
         finally { btn.disabled = false; }
       } }),
@@ -920,10 +1256,20 @@ views.privacy = async (root) => {
     const actions = el("td", {});
     if (r.status === "opened") {
       actions.appendChild(el("button", { class: "btn small", text: "Verify", onclick: async (e) => {
-        const evidence = prompt("Verification evidence reference (ticket, IdP event, or case ID):");
-        if (!evidence || !evidence.trim()) { toast("Verification evidence is required", "error"); return; }
+        const values = await promptDialog({
+          title: "Verify data-subject identity",
+          description: "Record how this requester's identity was confirmed before any personal data is released.",
+          fields: [
+            { name: "evidence", label: "Evidence reference", required: true,
+              placeholder: "Ticket, IdP sign-in event, or case ID",
+              help: "Stored in the audit chain as the justification for releasing or erasing personal data." },
+          ],
+          submitLabel: "Record verification",
+        });
+        if (!values) return;
+        const evidence = values.evidence;
         e.target.disabled = true;
-        try { await api(`/privacy/requests/${r.privacy_request_id}/verify`, { method: "POST", body: JSON.stringify({ method: "operator_verified", evidence_ref: evidence.trim() }) }); toast("Verified", "success"); location.reload(); }
+        try { await api(`/privacy/requests/${r.privacy_request_id}/verify`, { method: "POST", body: JSON.stringify({ method: "operator_verified", evidence_ref: evidence }) }); toast("Verified", "success"); location.reload(); }
         catch (err) { toast(err.message, "error"); }
       } }));
     }
@@ -1066,7 +1412,12 @@ views.audit = async (root) => {
     } }),
     el("button", { class: "btn danger", text: engaged ? "Kill switch engaged" : "Engage kill switch", disabled: engaged,
       onclick: async (e) => {
-      if (!confirm("Engage the global kill switch? This cancels ALL queued deliveries and revokes ALL tracking tokens.")) return;
+      const ok = await confirmDialog({
+        title: "Engage the GLOBAL kill switch?",
+        message: "This cancels every queued delivery and revokes every tracking token across all campaigns. It cannot be undone.",
+        confirmLabel: "Engage global kill switch", danger: true,
+      });
+      if (!ok) return;
       e.target.disabled = true;
       try {
         const res = await api("/kill-switch", { method: "POST", body: JSON.stringify({ confirm: true }) });
@@ -1133,6 +1484,12 @@ views.settings = async (root) => {
       } }),
       el("button", { class: "btn", text: "Reload from disk", onclick: () => { location.reload(); } }),
       el("button", { class: "btn", text: "Restart services", onclick: async (e) => {
+        const ok = await confirmDialog({
+          title: "Restart all services?",
+          message: "The API, workers and tracking endpoint bounce together. In-flight requests are dropped; queued work resumes afterwards.",
+          confirmLabel: "Restart services",
+        });
+        if (!ok) return;
         const btn = e.target; btn.disabled = true;
         try {
           await api("/console/restart", { method: "POST" });
@@ -1141,6 +1498,12 @@ views.settings = async (root) => {
         finally { btn.disabled = false; }
       } }),
       el("button", { class: "btn danger", text: "Stop services", onclick: async (e) => {
+        const ok = await confirmDialog({
+          title: "Stop the whole stack?",
+          message: "Everything shuts down, including this console. Nothing in the browser can start it again — you will need shell access on the host to bring it back up.",
+          confirmLabel: "Stop services", danger: true,
+        });
+        if (!ok) return;
         const btn = e.target; btn.disabled = true;
         try {
           await api("/console/stop", { method: "POST" });
@@ -1171,7 +1534,7 @@ async function render() {
       const resp = await fetch(`${API}/console/session`, { credentials: "same-origin" });
       if (resp.ok) {
         const data = await resp.json();
-        setSessionInfo({ authMode: data.auth_mode, principalId: data.principal_id, approvalLimited: false });
+        setSessionInfo({ authMode: data.auth_mode, principalId: data.principal_id, approvalLimited: false, approvalPolicy: data.approval_policy || "single-admin" });
         onboardingChecked = false;
       }
     } catch { /* Render login below. */ }
@@ -1188,5 +1551,38 @@ async function render() {
   shell();
 }
 
+/* ---------- live refresh ----------
+   Campaign state advances on its own: workers deliver, recipients open and
+   click, the reconciler closes windows. Without this an operator watches a
+   frozen page and cannot tell "nothing happened" from "nothing refreshed".
+   Refresh pauses while a dialog is open so it cannot yank a form away
+   mid-edit, and while the tab is hidden so a backgrounded console is not
+   polling all night. */
+const LIVE_VIEWS = new Set(["dashboard", "campaigns"]);
+const REFRESH_MS = 30000;
+let refreshTimer = null;
+
+function currentView() {
+  return (location.hash || "#dashboard").slice(1).split("?")[0];
+}
+
+function stampLastUpdated() {
+  const node = document.getElementById("last-updated");
+  if (node) node.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
+
+function scheduleRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (!LIVE_VIEWS.has(currentView())) return;
+    if (document.hidden) return;
+    if (document.querySelector("dialog[open]")) return;
+    if (!token() && !sessionInfo()) return;
+    render();
+  }, REFRESH_MS);
+}
+
 window.addEventListener("hashchange", render);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && LIVE_VIEWS.has(currentView())) render(); });
+scheduleRefresh();
 render();

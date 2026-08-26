@@ -129,6 +129,10 @@ class SessionResponse(BaseModel):
     auth_mode: str
     principal_id: str
     approval_limited: bool
+    #: "enforce" or "single-admin". The console uses this to decide whether a
+    #: draft can be scheduled directly or must go through two-person approval,
+    #: so an operator is not offered an action the API will reject.
+    approval_policy: str = "single-admin"
 
 
 class OidcStartResponse(BaseModel):
@@ -289,6 +293,7 @@ def current_session(request: Request) -> SessionResponse:
         auth_mode="oidc",
         principal_id=principal.subject_id,
         approval_limited=False,
+        approval_policy=request.app.state.settings.approval_policy.value,
     )
 
 
@@ -336,6 +341,7 @@ def create_session(
         auth_mode="dev",
         principal_id=CONSOLE_OPERATOR_UUID,
         approval_limited=False,
+        approval_policy=request.app.state.settings.approval_policy.value,
     )
 
 
