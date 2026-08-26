@@ -3,7 +3,7 @@ name = "kp-safety-validation"
 version = "0.1.0"
 description = "Deterministic safety validation outside the AI model"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = ["kp-sanitization"]
 
 [build-system]
 requires = ["hatchling"]

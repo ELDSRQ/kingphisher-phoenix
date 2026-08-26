@@ -39,7 +39,7 @@ test-unit:
 
 ## Run contract tests.
 test-contract:
-	@$(PY) pytest -m contract
+	@$(PY) pytest packages/contracts -q
 
 ## Run end-to-end tests.
 test-e2e:

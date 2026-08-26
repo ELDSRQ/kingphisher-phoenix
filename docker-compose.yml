@@ -25,15 +25,17 @@ services:
   redis:
     image: redis:7-alpine
     user: "999:999"
+    # Queue durability: Redis backs the at-least-once job queue (deliver/generate/
+    # retention messages + delayed zset + processing list). AOF (default
+    # appendfsync everysec) + default RDB saves on the redis_data volume keep
+    # queued jobs from being lost on restart.
     command:
       [
         "redis-server",
         "--requirepass",
         "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}",
-        "--save",
-        "",
         "--appendonly",
-        "no",
+        "yes",
       ]
     ports:
       - "127.0.0.1:6379:6379"
@@ -49,8 +51,10 @@ services:
     cap_drop:
       - ALL
     read_only: true
+    volumes:
+      # Persist /data (AOF/RDB) so queued jobs survive a Redis restart.
+      - redis_data:/data
     tmpfs:
-      - /data:uid=999,gid=999,mode=0700
       - /tmp:noexec,nosuid,nodev
     pids_limit: 128
 
@@ -150,3 +154,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

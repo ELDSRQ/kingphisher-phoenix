@@ -60,5 +60,9 @@ module = ["jsonschema", "jsonschema.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["packages", "apps"]
+testpaths = ["packages", "apps", "tests"]
 addopts = "-q"
+markers = [
+    "contract: contract tests (queue round-trips against live local infra)",
+    "e2e: end-to-end tests against a running local stack",
+]
