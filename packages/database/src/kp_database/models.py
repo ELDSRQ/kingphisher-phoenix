@@ -211,6 +211,9 @@ class Campaign(Base):
     #: Display name shown in the From header (e.g. "IT Service Desk"). The
     #: primary impersonation vector; free-form and varied per campaign.
     sender_display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    #: Signed Rules-of-Engagement this campaign was scheduled under. Delivery
+    #: fails closed without an active RoE covering the campaign.
+    roe_id = mapped_column(UUID(as_uuid=True), ForeignKey("rules_of_engagement.roe_id"), nullable=True)
     training_domain: Mapped[str] = mapped_column(String(255))
     schedule_start = mapped_column(DateTime(timezone=True), nullable=True)
     schedule_end = mapped_column(DateTime(timezone=True), nullable=True)
@@ -472,3 +475,51 @@ class AlertSubscription(Base):
     last_delivery_at = mapped_column(DateTime(timezone=True), nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class VerifiedDomain(Base):
+    """A domain the operator has proven control of via the DNS TXT challenge.
+
+    Verified domains are the only legitimate RoE target domains (recipients)
+    and the only candidates for the sending-domain pool (lookalike senders).
+    `active=False` revokes the proof without deleting the history.
+    """
+
+    __tablename__ = "verified_domains"
+
+    verified_domain_id = _pk()
+    domain: Mapped[str] = mapped_column(String(253), unique=True)
+    challenge_token: Mapped[str] = mapped_column(String(64))
+    verified_at = mapped_column(DateTime(timezone=True), nullable=False)
+    verified_by = mapped_column(UUID(as_uuid=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+
+class RulesOfEngagement(Base):
+    """Operator-signed authorization to run training engagements.
+
+    One signed artifact binds the signer, authorizing party, engagement
+    window, and the operator-verified target domains to the terms text.
+    A campaign may only be scheduled and delivered under an unrevoked RoE
+    whose window contains the delivery window. The signature is HMAC-SHA256
+    over ``terms_hash | signer | signed_at`` (kp_domain_models.roe).
+    """
+
+    __tablename__ = "rules_of_engagement"
+
+    roe_id = _pk()
+    signer: Mapped[str] = mapped_column(String(255))
+    authorizing_party: Mapped[str] = mapped_column(String(255))
+    terms_text: Mapped[str] = mapped_column(Text)
+    terms_hash: Mapped[str] = mapped_column(String(64))
+    signature: Mapped[str] = mapped_column(String(64))
+    signed_at = mapped_column(DateTime(timezone=True), nullable=False)
+    window_start = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end = mapped_column(DateTime(timezone=True), nullable=False)
+    target_domains: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    created_by = mapped_column(UUID(as_uuid=True), nullable=True)
+    revoked_at = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by = mapped_column(UUID(as_uuid=True), nullable=True)
+    revoked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
