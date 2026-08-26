@@ -63,6 +63,20 @@ class OperatorApiSettings(BaseSettings):
     #: Recipients per delivery message; bounds the 1MiB queue payload cap.
     delivery_batch_size: int = Field(default=200, ge=1, le=2000)
 
+    #: Where runtime configuration actually lives.
+    #:
+    #: "env_file"  - the disposable local stack: the console may edit .env and
+    #:               supervise worker processes.
+    #: "managed"   - Azure Container Apps: configuration comes from Terraform
+    #:               and Key Vault, the filesystem is ephemeral, and there is no
+    #:               local supervisor. Console endpoints that would write .env or
+    #:               signal processes refuse instead of silently doing nothing.
+    config_store: Literal["env_file", "managed"] = "env_file"
+
+    @property
+    def config_is_managed(self) -> bool:
+        return self.config_store == "managed"
+
     @property
     def dev_auth_mode(self) -> bool:
         """True when running the offline dev-auth stack rather than real OIDC."""

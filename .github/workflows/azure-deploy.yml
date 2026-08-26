@@ -1,5 +1,18 @@
 name: Azure deployment
 
+# Two supported shapes, chosen by `network_mode`:
+#
+#   starter  - data-plane services stay publicly reachable, so a GitHub-hosted
+#              runner can deploy a brand-new tenant in a single dispatch with no
+#              pre-existing VNet or self-hosted runner. For evaluation and first
+#              bring-up only; Terraform refuses it for production.
+#   private  - the hardened default. Postgres, Redis, Key Vault and the registry
+#              sit behind private endpoints, so the deploy job must run on a
+#              runner inside the VNet.
+#
+# Images are built with `az acr build` in both modes: the build happens inside
+# the registry, so no runner needs a Docker daemon.
+
 on:
   workflow_dispatch:
     inputs:
@@ -8,6 +21,14 @@ on:
         required: true
         type: choice
         options: [staging, production]
+      network_mode:
+        description: >-
+          private = hardened (private endpoints, VNet runner required);
+          starter = public endpoints, deployable from a hosted runner
+        required: true
+        default: private
+        type: choice
+        options: [private, starter]
 
 permissions:
   contents: read
@@ -28,10 +49,28 @@ jobs:
       - run: make typecheck
       - run: uv run pytest -q
 
+  guard:
+    # Cheap, explicit refusal before any Azure call. Terraform enforces this too
+    # (terraform_data.network_mode_guard), but failing here keeps the reason
+    # legible instead of surfacing as a plan error deep in the deploy job.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse starter mode for production
+        if: inputs.environment == 'production' && inputs.network_mode == 'starter'
+        run: |
+          echo "::error::network_mode=starter exposes Postgres, Redis, Key Vault and the registry"
+          echo "::error::to the public internet and must not be used for production."
+          echo "::error::Deploy production with network_mode=private."
+          exit 1
+      - name: Record selected mode
+        run: echo "Deploying ${{ inputs.environment }} in ${{ inputs.network_mode }} network mode."
+
   deploy:
-    needs: qualify
+    needs: [qualify, guard]
     environment: ${{ inputs.environment }}
-    runs-on: [self-hosted, linux, azure-vnet]
+    # Starter mode reaches public endpoints, so a hosted runner suffices and a
+    # new tenant needs no bootstrap VM. Private mode must run inside the VNet.
+    runs-on: ${{ inputs.network_mode == 'starter' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","azure-vnet"]') }}
     env:
       TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_operator_fqdn: ${{ vars.OPERATOR_FQDN }}
@@ -40,6 +79,8 @@ jobs:
       TF_VAR_entra_client_id: ${{ vars.ENTRA_APPLICATION_CLIENT_ID }}
       TF_VAR_ai_endpoint: ${{ vars.AI_GATEWAY_ENDPOINT }}
       TF_VAR_alert_webhook_domains: ${{ vars.ALERT_WEBHOOK_DOMAINS }}
+      TF_VAR_allowed_recipient_domains: ${{ vars.ALLOWED_RECIPIENT_DOMAINS }}
+      TF_VAR_network_mode: ${{ inputs.network_mode }}
       TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
       TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
       TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
@@ -68,22 +109,23 @@ jobs:
           terraform apply -auto-approve
           -var-file="environments/${{ inputs.environment }}.tfvars"
           -var="deploy_workloads=false"
-      - name: Build immutable images on the private runner
+      - name: Build immutable images in the registry
         id: images
         shell: bash
         run: |
+          set -euo pipefail
           registry="$(terraform -chdir=infrastructure/terraform output -raw container_registry_name)"
           login_server="$(terraform -chdir=infrastructure/terraform output -raw container_registry_login_server)"
           tag="sha-${GITHUB_SHA}"
-          az acr login --name "$registry"
-          docker build -t "$login_server/operator-api:$tag" -f infrastructure/containers/Dockerfile.operator-api .
-          docker build -t "$login_server/tracking-api:$tag" -f infrastructure/containers/Dockerfile.tracking-api .
-          docker build -t "$login_server/worker:$tag" -f infrastructure/containers/Dockerfile.worker .
-          docker build -t "$login_server/migration:$tag" -f infrastructure/containers/Dockerfile.migration .
-          docker push "$login_server/operator-api:$tag"
-          docker push "$login_server/tracking-api:$tag"
-          docker push "$login_server/worker:$tag"
-          docker push "$login_server/migration:$tag"
+          # `az acr build` uploads the context and builds inside ACR Tasks, so
+          # the runner needs no Docker daemon in either network mode.
+          for image in operator-api tracking-api worker migration; do
+            az acr build \
+              --registry "$registry" \
+              --image "${image}:${tag}" \
+              --file "infrastructure/containers/Dockerfile.${image}" \
+              .
+          done
           echo "registry=$login_server" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Plan workloads
@@ -107,3 +149,19 @@ jobs:
           export AZURE_OPERATOR_URL="https://$(terraform -chdir=infrastructure/terraform output -raw operator_default_hostname)"
           export AZURE_TRACKING_URL="https://$(terraform -chdir=infrastructure/terraform output -raw tracking_default_hostname)"
           ./scripts/azure_release.sh
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### KingPhisher-Phoenix deployment"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Environment | ${{ inputs.environment }} |"
+            echo "| Network mode | ${{ inputs.network_mode }} |"
+            echo "| Image tag | sha-${GITHUB_SHA} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.network_mode }}" = "starter" ]; then
+            echo "> Starter mode: data-plane services are publicly reachable. Re-deploy with network_mode=private before holding real recipient data." >> "$GITHUB_STEP_SUMMARY"
+          fi

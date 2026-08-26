@@ -37,7 +37,7 @@ from dotenv import dotenv_values, set_key
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from kp_authorization.rbac import Capability, Principal
-from kp_telemetry.errors import AuthenticationError, PermissionDeniedError
+from kp_telemetry.errors import AuthenticationError, ConflictError, PermissionDeniedError
 from pydantic import BaseModel, Field
 
 from kp_operator_api.auth import OidcIdP, require_capability
@@ -78,6 +78,30 @@ _SECRET_KEYS: frozenset[str] = frozenset(
 
 def _env_path(request: Request) -> Path:
     return Path(request.app.state.settings.env_file or ".env")
+
+
+MANAGED_CONFIG_MESSAGE = (
+    "this deployment reads its configuration from Terraform and Key Vault, not from a file the "
+    "console can edit. Change the value in infrastructure/terraform (or the corresponding Key Vault "
+    "secret) and re-run the Azure deployment workflow. Editing it here would be discarded on the "
+    "next container restart."
+)
+
+MANAGED_PROCESS_MESSAGE = (
+    "this deployment runs as Azure Container Apps revisions, which have no local supervisor to "
+    "signal. Restart or scale the container app instead (az containerapp revision restart)."
+)
+
+
+def _reject_if_managed(request: Request, message: str) -> None:
+    """Refuse local-only console actions when configuration is externally managed.
+
+    Without this the console appears to succeed on Azure: it writes a file on an
+    ephemeral layer that disappears on the next restart, which is a worse
+    failure than an explicit refusal because it looks like it worked.
+    """
+    if request.app.state.settings.config_is_managed:
+        raise ConflictError(message)
 
 
 def _env_values(path: Path) -> dict[str, str]:
@@ -1447,6 +1471,7 @@ def put_onboarding(
     request: Request,
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
+    _reject_if_managed(request, MANAGED_CONFIG_MESSAGE)
     changed = _persist_onboarding(body, request, principal)
     return {"ok": True, "changed": changed, **_onboarding_state(_env_path(request))}
 
@@ -1611,6 +1636,7 @@ def put_config(
     request: Request,
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
+    _reject_if_managed(request, MANAGED_CONFIG_MESSAGE)
     forbidden = set(body.values) - _ALLOWED_KEYS
     if forbidden:
         raise PermissionDeniedError(f"rejected configuration keys: {sorted(forbidden)}")
@@ -1643,6 +1669,8 @@ class StatusResponse(BaseModel):
     postgres: bool
     redis: bool
     console_password_set: bool
+    #: "env_file" (console may edit config) or "managed" (Terraform/Key Vault).
+    config_store: str = "env_file"
     workers: dict[str, bool]
 
 
@@ -1662,6 +1690,7 @@ def get_status(
         postgres=_tcp_ok("127.0.0.1", 5432),
         redis=_tcp_ok("127.0.0.1", 6379),
         console_password_set=_console_password(_env_path(request)) is not None,
+        config_store=request.app.state.settings.config_store,
         workers=workers,
     )
 
@@ -1672,6 +1701,7 @@ def restart_stack(
     _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     """Signal the launcher supervisor to restart the whole stack."""
+    _reject_if_managed(request, MANAGED_PROCESS_MESSAGE)
     marker = _run_dir(request.app.state.settings) / "restart"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()

@@ -122,3 +122,50 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "network_mode" {
+  description = <<-EOT
+    How the data-plane services are reachable.
+
+    "private" (default) keeps Postgres, Redis, Key Vault and the registry on
+    private endpoints with public access disabled. Deploying it requires a
+    runner inside the VNet, because Terraform and the image build must reach
+    those private endpoints.
+
+    "starter" leaves them publicly reachable so a brand-new tenant can be stood
+    up from a GitHub-hosted runner in a single dispatch, with no pre-existing
+    VNet or self-hosted runner. It is intended for evaluation and first-run
+    bring-up, NOT for a deployment that holds real recipient data — production
+    rejects it (see the validation below).
+  EOT
+  type        = string
+  default     = "private"
+  validation {
+    condition     = contains(["private", "starter"], var.network_mode)
+    error_message = "network_mode must be either \"private\" or \"starter\"."
+  }
+}
+
+variable "allow_starter_in_production" {
+  description = <<-EOT
+    Escape hatch for the production guard on network_mode. Left false so that
+    "starter" cannot reach a production environment by accident; a deliberate
+    operator decision is required to override it.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "allowed_recipient_domains" {
+  description = <<-EOT
+    Comma-separated mail domains this deployment may target; subdomains are
+    included. Required, because the platform runs under OIDC on Azure and the
+    recipient allowlist fails closed there: with this empty, recipient import
+    is refused and no campaign can be delivered.
+  EOT
+  type        = string
+  validation {
+    condition     = length(trimspace(var.allowed_recipient_domains)) > 0
+    error_message = "allowed_recipient_domains must list at least one domain; the platform refuses to import or deliver to recipients otherwise."
+  }
+}

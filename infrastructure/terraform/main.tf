@@ -10,6 +10,26 @@ locals {
     tenant-mode = "single-tenant"
   })
   worker_roles = toset(["ingestion", "generation", "delivery", "retention", "mailbox", "reminder", "alert", "directory"])
+
+  # Starter mode trades network isolation for a one-dispatch bring-up in a new
+  # tenant. Private endpoints and their DNS zones are skipped entirely, and the
+  # data-plane services accept public traffic so a GitHub-hosted runner can
+  # reach them. Everything else (managed identity, Key Vault references, TLS,
+  # RBAC) is identical between modes.
+  starter_network   = var.network_mode == "starter"
+  private_network   = !local.starter_network
+  public_data_plane = local.starter_network
+}
+
+# A starter-mode production environment would put real recipient data behind
+# public endpoints. Fail the plan rather than let that happen quietly.
+resource "terraform_data" "network_mode_guard" {
+  lifecycle {
+    precondition {
+      condition     = !(local.production && local.starter_network) || var.allow_starter_in_production
+      error_message = "network_mode=\"starter\" exposes Postgres, Redis, Key Vault and the registry to the public internet and must not be used for production. Use network_mode=\"private\", or set allow_starter_in_production=true if this is a deliberate, understood exception."
+    }
+  }
 }
 
 resource "azurerm_resource_group" "main" {
@@ -99,7 +119,7 @@ resource "azurerm_container_registry" "main" {
   location                      = azurerm_resource_group.main.location
   sku                           = "Premium"
   admin_enabled                 = false
-  public_network_access_enabled = false
+  public_network_access_enabled = local.public_data_plane
   zone_redundancy_enabled       = local.production
   retention_policy_in_days      = 30
   tags                          = local.tags
@@ -127,10 +147,10 @@ resource "azurerm_key_vault" "main" {
   rbac_authorization_enabled    = true
   purge_protection_enabled      = local.production
   soft_delete_retention_days    = local.production ? 90 : 30
-  public_network_access_enabled = false
+  public_network_access_enabled = local.public_data_plane
   network_acls {
     bypass         = "AzureServices"
-    default_action = "Deny"
+    default_action = local.public_data_plane ? "Allow" : "Deny"
   }
   tags = local.tags
 }
@@ -182,7 +202,7 @@ resource "azurerm_postgresql_flexible_server" "main" {
   storage_mb                    = var.postgres_storage_mb
   backup_retention_days         = local.production ? 35 : 7
   geo_redundant_backup_enabled  = local.production
-  public_network_access_enabled = false
+  public_network_access_enabled = local.public_data_plane
   zone                          = "1"
   dynamic "high_availability" {
     for_each = local.production ? [1] : []
@@ -208,7 +228,7 @@ resource "azurerm_managed_redis" "main" {
   location                  = azurerm_resource_group.main.location
   sku_name                  = var.redis_sku
   high_availability_enabled = local.production
-  public_network_access     = "Disabled"
+  public_network_access     = local.public_data_plane ? "Enabled" : "Disabled"
   default_database {
     client_protocol   = "Encrypted"
     clustering_policy = "OSSCluster"
@@ -218,42 +238,47 @@ resource "azurerm_managed_redis" "main" {
 }
 
 resource "azurerm_private_dns_zone" "postgres" {
+  count               = local.private_network ? 1 : 0
   name                = "privatelink.postgres.database.azure.com"
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
 }
 
 resource "azurerm_private_dns_zone" "redis" {
+  count               = local.private_network ? 1 : 0
   name                = "privatelink.redis.azure.net"
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
 }
 
 resource "azurerm_private_dns_zone" "vault" {
+  count               = local.private_network ? 1 : 0
   name                = "privatelink.vaultcore.azure.net"
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
 }
 
 resource "azurerm_private_dns_zone" "acr" {
+  count               = local.private_network ? 1 : 0
   name                = "privatelink.azurecr.io"
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.tags
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "links" {
-  for_each = {
-    postgres = azurerm_private_dns_zone.postgres.id
-    redis    = azurerm_private_dns_zone.redis.id
-    vault    = azurerm_private_dns_zone.vault.id
-    acr      = azurerm_private_dns_zone.acr.id
-  }
+  for_each = local.private_network ? {
+    postgres = azurerm_private_dns_zone.postgres[0].id
+    redis    = azurerm_private_dns_zone.redis[0].id
+    vault    = azurerm_private_dns_zone.vault[0].id
+    acr      = azurerm_private_dns_zone.acr[0].id
+  } : {}
   name                = "${each.key}-vnet-link"
   private_dns_zone_id = each.value
   virtual_network_id  = azurerm_virtual_network.main.id
 }
 
 resource "azurerm_private_endpoint" "postgres" {
+  count               = local.private_network ? 1 : 0
   name                = "pep-${local.suffix}-postgres"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
@@ -266,12 +291,13 @@ resource "azurerm_private_endpoint" "postgres" {
   }
   private_dns_zone_group {
     name                 = "postgres"
-    private_dns_zone_ids = [azurerm_private_dns_zone.postgres.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.postgres[0].id]
   }
   tags = local.tags
 }
 
 resource "azurerm_private_endpoint" "redis" {
+  count               = local.private_network ? 1 : 0
   name                = "pep-${local.suffix}-redis"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
@@ -284,12 +310,13 @@ resource "azurerm_private_endpoint" "redis" {
   }
   private_dns_zone_group {
     name                 = "redis"
-    private_dns_zone_ids = [azurerm_private_dns_zone.redis.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.redis[0].id]
   }
   tags = local.tags
 }
 
 resource "azurerm_private_endpoint" "vault" {
+  count               = local.private_network ? 1 : 0
   name                = "pep-${local.suffix}-vault"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
@@ -302,12 +329,13 @@ resource "azurerm_private_endpoint" "vault" {
   }
   private_dns_zone_group {
     name                 = "vault"
-    private_dns_zone_ids = [azurerm_private_dns_zone.vault.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.vault[0].id]
   }
   tags = local.tags
 }
 
 resource "azurerm_private_endpoint" "acr" {
+  count               = local.private_network ? 1 : 0
   name                = "pep-${local.suffix}-acr"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
@@ -320,7 +348,7 @@ resource "azurerm_private_endpoint" "acr" {
   }
   private_dns_zone_group {
     name                 = "acr"
-    private_dns_zone_ids = [azurerm_private_dns_zone.acr.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.acr[0].id]
   }
   tags = local.tags
 }
@@ -418,23 +446,31 @@ resource "azurerm_container_app" "operator" {
       memory = "1Gi"
       dynamic "env" {
         for_each = {
-          OPERATOR_API_HOST                     = { value = "0.0.0.0", secret = null }
-          OPERATOR_API_PORT                     = { value = "8000", secret = null }
-          OPERATOR_API_DEPLOYMENT_MODE          = { value = "single_tenant", secret = null }
-          OPERATOR_API_DATABASE_URL             = { value = null, secret = "database-url" }
-          OPERATOR_API_AUDIT_DATABASE_URL       = { value = null, secret = "audit-database-url" }
-          OPERATOR_API_REDIS_URL                = { value = null, secret = "redis-url" }
-          OPERATOR_API_AUDIT_HMAC_KEY           = { value = null, secret = "audit-hmac" }
-          OPERATOR_API_CIPHERTEXT_KEK           = { value = null, secret = "ciphertext-kek" }
-          OPERATOR_API_RECIPIENT_HASH_SALT      = { value = null, secret = "recipient-salt" }
-          OPERATOR_API_CONSOLE_JWT_SECRET       = { value = null, secret = "console-jwt" }
-          KP_CONSOLE_PASSWORD                   = { value = null, secret = "console-password" }
-          OPERATOR_API_OIDC_MODE                = { value = "oidc", secret = null }
-          OPERATOR_API_OIDC_ISSUER              = { value = "https://login.microsoftonline.com/${var.entra_tenant_id}/v2.0", secret = null }
-          OPERATOR_API_OIDC_CLIENT_ID           = { value = var.entra_client_id, secret = null }
-          OPERATOR_API_OIDC_AUDIENCE            = { value = var.oidc_audience, secret = null }
-          OPERATOR_API_OIDC_REDIRECT_URI        = { value = "https://${var.operator_fqdn}/api/v1/console/oidc/callback", secret = null }
-          OPERATOR_API_TRACKING_BASE_URL        = { value = "https://${var.tracking_fqdn}", secret = null }
+          OPERATOR_API_HOST                = { value = "0.0.0.0", secret = null }
+          OPERATOR_API_PORT                = { value = "8000", secret = null }
+          OPERATOR_API_DEPLOYMENT_MODE     = { value = "single_tenant", secret = null }
+          OPERATOR_API_DATABASE_URL        = { value = null, secret = "database-url" }
+          OPERATOR_API_AUDIT_DATABASE_URL  = { value = null, secret = "audit-database-url" }
+          OPERATOR_API_REDIS_URL           = { value = null, secret = "redis-url" }
+          OPERATOR_API_AUDIT_HMAC_KEY      = { value = null, secret = "audit-hmac" }
+          OPERATOR_API_CIPHERTEXT_KEK      = { value = null, secret = "ciphertext-kek" }
+          OPERATOR_API_RECIPIENT_HASH_SALT = { value = null, secret = "recipient-salt" }
+          OPERATOR_API_CONSOLE_JWT_SECRET  = { value = null, secret = "console-jwt" }
+          KP_CONSOLE_PASSWORD              = { value = null, secret = "console-password" }
+          OPERATOR_API_OIDC_MODE           = { value = "oidc", secret = null }
+          OPERATOR_API_OIDC_ISSUER         = { value = "https://login.microsoftonline.com/${var.entra_tenant_id}/v2.0", secret = null }
+          OPERATOR_API_OIDC_CLIENT_ID      = { value = var.entra_client_id, secret = null }
+          OPERATOR_API_OIDC_AUDIENCE       = { value = var.oidc_audience, secret = null }
+          OPERATOR_API_OIDC_REDIRECT_URI   = { value = "https://${var.operator_fqdn}/api/v1/console/oidc/callback", secret = null }
+          OPERATOR_API_TRACKING_BASE_URL   = { value = "https://${var.tracking_fqdn}", secret = null }
+          # OIDC mode refuses "single-admin" at startup, so this must be set
+          # explicitly here or the container crash-loops on boot.
+          OPERATOR_APPROVAL_POLICY     = { value = "enforce", secret = null }
+          KP_ALLOWED_RECIPIENT_DOMAINS = { value = var.allowed_recipient_domains, secret = null }
+          # Container Apps filesystems are ephemeral and there is no local
+          # supervisor: console endpoints that would edit .env or signal
+          # processes refuse rather than appear to succeed.
+          OPERATOR_API_CONFIG_STORE             = { value = "managed", secret = null }
           OPERATOR_API_CONSOLE_STATIC_DIR       = { value = "/app/apps/operator-ui/src/console", secret = null }
           APPLICATIONINSIGHTS_CONNECTION_STRING = { value = azurerm_application_insights.main.connection_string, secret = null }
         }
@@ -644,6 +680,16 @@ resource "azurerm_container_app" "worker" {
       env {
         name  = "KP_WORKER_ALERT_WEBHOOK_DOMAINS"
         value = var.alert_webhook_domains
+      }
+      # The workers re-check both send-safety controls independently of the API,
+      # so they must agree on the same values.
+      env {
+        name  = "OPERATOR_APPROVAL_POLICY"
+        value = "enforce"
+      }
+      env {
+        name  = "KP_ALLOWED_RECIPIENT_DOMAINS"
+        value = var.allowed_recipient_domains
       }
       env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
