@@ -1498,29 +1498,89 @@ def _safe_url(raw: str, *, https_only: bool = False) -> str:
     return raw
 
 
-def _test_http(url: str, *, headers: dict[str, str] | None = None, reachable_only: bool = False) -> bool:
+#: Categorised connection failures. "It failed" is not actionable; an operator
+#: needs to know whether to fix a credential, a firewall rule, a DNS record or
+#: a TLS setting, and those need different people and different escalations.
+CONNECTION_GUIDANCE: dict[str, str] = {
+    "auth": "The endpoint rejected the credentials. Check the username, password, token or API key.",
+    "dns": ("The hostname could not be resolved. Check the spelling, and that this host can resolve it."),
+    "timeout": (
+        "The endpoint did not respond in time. This usually means a firewall or network path is "
+        "blocking it, not a wrong password."
+    ),
+    "refused": ("The connection was refused. The service is probably not listening on that host and port."),
+    "tls": (
+        "The TLS handshake failed. Check whether the port expects STARTTLS or implicit SSL, and "
+        "that the certificate is trusted."
+    ),
+    "config": "The address is not usable as written. Check the format, scheme and port.",
+    "http_error": (
+        "The endpoint answered, but not with a success status. Check the path and whether the service is healthy."
+    ),
+    "unknown": "The connection failed for an unrecognised reason. Check the service logs for detail.",
+}
+
+
+def _http_failure_kind(exc: Exception) -> str:
+    if isinstance(exc, ValueError):
+        return "config"
+    if isinstance(exc, httpx.ConnectTimeout | httpx.ReadTimeout | httpx.PoolTimeout):
+        return "timeout"
+    if isinstance(exc, httpx.ConnectError):
+        # httpx folds DNS and refusal into ConnectError; the message is the only
+        # way to tell an operator which of the two to go and fix.
+        text = str(exc).lower()
+        if "name or service not known" in text or "nodename nor servname" in text or "getaddrinfo" in text:
+            return "dns"
+        if "refused" in text:
+            return "refused"
+        if "certificate" in text or "ssl" in text or "tls" in text:
+            return "tls"
+        return "unknown"
+    if isinstance(exc, httpx.HTTPError):
+        return "unknown"
+    return "unknown"
+
+
+def _probe_http(
+    url: str, *, headers: dict[str, str] | None = None, reachable_only: bool = False
+) -> tuple[bool, str | None]:
+    """Return (ok, error_kind). error_kind is None on success."""
     try:
         response = httpx.get(_safe_url(url), headers=headers, timeout=3.0, follow_redirects=False)
-        if reachable_only:
-            return response.status_code < 500 and response.status_code not in {401, 403}
-        return 200 <= response.status_code < 400
-    except (httpx.HTTPError, ValueError):
-        return False
+    except (httpx.HTTPError, ValueError) as exc:
+        return False, _http_failure_kind(exc)
+    if response.status_code in {401, 403}:
+        return (False, "auth") if not reachable_only else (False, "auth")
+    if reachable_only:
+        return (response.status_code < 500, None if response.status_code < 500 else "http_error")
+    if 200 <= response.status_code < 400:
+        return True, None
+    return False, "http_error"
 
 
-def _test_smtp(
+def _test_http(url: str, *, headers: dict[str, str] | None = None, reachable_only: bool = False) -> bool:
+    ok, _ = _probe_http(url, headers=headers, reachable_only=reachable_only)
+    return ok
+
+
+def _probe_smtp(
     address: str,
     use_tls: bool,
     *,
     use_ssl: bool = False,
     username: str | None = None,
     password: str | None = None,
-) -> bool:
+) -> tuple[bool, str | None]:
+    """Return (ok, error_kind). Distinguishes auth, TLS, DNS and firewall cases."""
     try:
         host, raw_port = address.rsplit(":", 1)
         port = int(raw_port)
-        if not host or not 1 <= port <= 65535 or any(char.isspace() for char in host):
-            return False
+    except (TypeError, ValueError):
+        return False, "config"
+    if not host or not 1 <= port <= 65535 or any(char.isspace() for char in host):
+        return False, "config"
+    try:
         client = (
             smtplib.SMTP_SSL(host, port, timeout=3, context=ssl.create_default_context())
             if use_ssl
@@ -1532,9 +1592,39 @@ def _test_smtp(
             if username and password:
                 client.login(username, password)
             client.noop()
-        return True
-    except (OSError, TypeError, ValueError, smtplib.SMTPException):
-        return False
+        return True, None
+    except smtplib.SMTPAuthenticationError:
+        return False, "auth"
+    except ssl.SSLError:
+        return False, "tls"
+    except smtplib.SMTPNotSupportedError:
+        # Most often STARTTLS requested on a port that does not offer it.
+        return False, "tls"
+    except TimeoutError:
+        return False, "timeout"
+    except ConnectionRefusedError:
+        return False, "refused"
+    except OSError as exc:
+        text = str(exc).lower()
+        if "name or service not known" in text or "nodename nor servname" in text or "getaddrinfo" in text:
+            return False, "dns"
+        if "timed out" in text:
+            return False, "timeout"
+        return False, "unknown"
+    except smtplib.SMTPException:
+        return False, "unknown"
+
+
+def _test_smtp(
+    address: str,
+    use_tls: bool,
+    *,
+    use_ssl: bool = False,
+    username: str | None = None,
+    password: str | None = None,
+) -> bool:
+    ok, _ = _probe_smtp(address, use_tls, use_ssl=use_ssl, username=username, password=password)
+    return ok
 
 
 def _auth_headers(values: dict[str, str], prefix: str) -> dict[str, str]:
@@ -1576,13 +1666,13 @@ def test_onboarding_connection(
     component = body.component.lower()
     if component in {"identity", "oidc"}:
         endpoint = values.get("OPERATOR_API_OIDC_ISSUER", "").rstrip("/") + "/.well-known/openid-configuration"
-        ok = _test_http(endpoint)
+        ok, kind = _probe_http(endpoint)
     elif component == "graph":
         base = values.get("KP_WORKER_GRAPH_BASE_URL") or values.get("MOCK_GRAPH_URL", "")
-        ok = _test_http(base.rstrip("/") + "/users", headers=_auth_headers(values, "KP_WORKER_GRAPH"))
+        ok, kind = _probe_http(base.rstrip("/") + "/users", headers=_auth_headers(values, "KP_WORKER_GRAPH"))
     elif component == "ai":
         base = values.get("KP_WORKER_AI_BASE_URL") or values.get("MOCK_AI_URL", "")
-        ok = _test_http(
+        ok, kind = _probe_http(
             base.rstrip("/") + "/propose",
             headers=_auth_headers(values, "KP_WORKER_AI"),
             reachable_only=True,
@@ -1595,11 +1685,11 @@ def test_onboarding_connection(
         if basic_username and basic_password:
             token = base64.b64encode(f"{basic_username}:{basic_password}".encode()).decode()
             headers["Authorization"] = f"Basic {token}"
-        ok = _test_http(base.rstrip("/") + "/api/v1/messages", headers=headers)
+        ok, kind = _probe_http(base.rstrip("/") + "/api/v1/messages", headers=headers)
     elif component == "training":
-        ok = _test_http(values.get("OPERATOR_API_TRAINING_BASE_URL", ""))
+        ok, kind = _probe_http(values.get("OPERATOR_API_TRAINING_BASE_URL", ""))
     elif component == "smtp":
-        ok = _test_smtp(
+        ok, kind = _probe_smtp(
             values.get("KP_WORKER_SMTP_ADDRESS") or values.get("KP_WORKER_MAILPIT_SMTP", ""),
             values.get("KP_WORKER_SMTP_STARTTLS", values.get("KP_WORKER_MAILPIT_SMTP_TLS", "false")).lower() == "true",
             use_ssl=values.get("KP_WORKER_SMTP_SSL", "false").lower() == "true",
@@ -1608,14 +1698,17 @@ def test_onboarding_connection(
         )
     elif component == "webhook":
         ok = _test_webhook(values.get("KP_WORKER_ALERT_WEBHOOK_URL", ""))
+        kind = None if ok else "unknown"
     else:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unsupported component")
+    if ok:
+        return {"component": component, "ok": True, "error_kind": None, "message": "Connection successful."}
+    error_kind = kind or "unknown"
     return {
         "component": component,
-        "ok": ok,
-        "message": (
-            "Connection successful." if ok else "Connection failed; verify the endpoint, credentials, and TLS settings."
-        ),
+        "ok": False,
+        "error_kind": error_kind,
+        "message": CONNECTION_GUIDANCE.get(error_kind, CONNECTION_GUIDANCE["unknown"]),
     }
 
 

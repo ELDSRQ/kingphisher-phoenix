@@ -689,7 +689,12 @@ def test_onboarding_http_test_uses_transient_value_without_persisting(
             headers=_auth(token),
             json={"component": "ai", "values": {"MOCK_AI_URL": "https://ai.example/health"}},
         )
-        assert response.json() == {"component": "ai", "ok": True, "message": "Connection successful."}
+        assert response.json() == {
+            "component": "ai",
+            "ok": True,
+            "error_kind": None,
+            "message": "Connection successful.",
+        }
         assert requested == ["https://ai.example/health/propose"]
         assert "ai.example" not in console_module.Path(env_file).read_text(encoding="utf-8")
 
@@ -705,11 +710,13 @@ def test_onboarding_test_rejects_credentials_and_unsupported_components(
             headers=_auth(token),
             json={"component": "graph", "values": {"MOCK_GRAPH_URL": "https://user:secret@example.test"}},
         )
-        assert bad_url.json() == {
-            "component": "graph",
-            "ok": False,
-            "message": "Connection failed; verify the endpoint, credentials, and TLS settings.",
-        }
+        # A malformed address is a configuration problem, and the operator is
+        # told that specifically rather than being sent to check credentials.
+        body = bad_url.json()
+        assert body["component"] == "graph"
+        assert body["ok"] is False
+        assert body["error_kind"] == "config"
+        assert "format" in body["message"]
         unsupported = client.post(
             "/api/v1/console/onboarding/test",
             headers=_auth(token),

@@ -321,6 +321,18 @@ function showImportResult(res) {
   openDialog(dlg);
 }
 
+/* Human labels for the connection-test categories returned by the API. */
+const CONNECTION_LABELS = {
+  auth: "Credentials rejected",
+  dns: "Hostname not found",
+  timeout: "No response (likely firewall)",
+  refused: "Connection refused",
+  tls: "TLS/STARTTLS mismatch",
+  config: "Address not valid",
+  http_error: "Unexpected response",
+  unknown: "Connection failed",
+};
+
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -423,6 +435,7 @@ const NAV = [
   ["recipients", "Recipients"],
   ["sources", "Sources"],
   ["patterns", "Patterns"],
+  ["templates", "Template review"],
   ["privacy", "Privacy"],
   ["audit", "Audit"],
   ["settings", "Settings"],
@@ -622,7 +635,14 @@ views.onboarding = async (root) => {
       try {
         const result = await api("/console/onboarding/test", { method: "POST", body: JSON.stringify({ component: step.id, values: values() }) });
         feedback.className = `wizard-feedback ${result.ok ? "success" : "error"}`;
-        feedback.textContent = result.message || (result.ok ? "Connected successfully. You can save and continue." : "We couldn’t connect. Check the address and credentials, then try again.");
+        // The API now categorises the failure (auth / dns / timeout / tls /
+        // refused / config), so show what to actually go and fix instead of a
+        // generic "check the address and credentials".
+        const label = CONNECTION_LABELS[result.error_kind];
+        feedback.textContent = [
+          label ? `${label}:` : null,
+          result.message || (result.ok ? "Connected successfully. You can save and continue." : "We couldn’t connect."),
+        ].filter(Boolean).join(" ");
         return Boolean(result.ok);
       } catch (e) { feedback.className = "wizard-feedback error"; feedback.textContent = `${e.message} Check the values above and your provider’s access settings, then try again.`; return false; }
     };
@@ -1138,6 +1158,95 @@ views.campaigns = async (root) => {
       });
       if (!ok) return;
       return act(`/campaigns/${campaign.campaign_id}/schedule`, "Scheduled")(e);
+    };
+  }
+};
+
+/* ---------- template review ----------
+   The human gate on AI-generated content. Until a draft is approved here it
+   cannot be scheduled, so this screen is what stops an unreviewed model output
+   reaching a recipient. */
+views.templates = async (root) => {
+  root.appendChild(el("h2", { text: "Template review" }));
+  root.appendChild(el("p", { class: "sub", text: "Generated drafts awaiting human approval." }));
+
+  const banner = el("div", { class: "policy-banner" });
+  banner.appendChild(el("strong", { text: "Nothing here has been sent. " }));
+  banner.appendChild(document.createTextNode(
+    "Drafts are produced from approved threat patterns, re-checked by the safety validator, and can only be used in a campaign once approved below. You cannot approve a draft whose generation you requested.",
+  ));
+  root.appendChild(banner);
+
+  let pending;
+  try { pending = await api("/templates/pending"); } catch (e) {
+    root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` })); return;
+  }
+
+  if (!pending.length) {
+    root.appendChild(el("div", { class: "card" }, [
+      el("h3", { text: "Nothing awaiting review" }),
+      el("p", { class: "modal-help", text: "Approving a threat pattern queues a draft for generation; it will appear here once the generation worker has produced it." }),
+    ]));
+    return;
+  }
+
+  for (const draft of pending) {
+    const card = el("div", { class: "card" }, [
+      el("h3", { text: draft.subject || "(no subject)" }),
+      el("p", { class: "modal-help", text: `Model: ${draft.model_id || "unknown"}` }),
+    ]);
+
+    if (draft.context_untrusted) {
+      // The threat text this was written from tripped the injection
+      // neutralizer. The draft is still reviewable, but the reviewer should
+      // know the source was manipulated before trusting the framing.
+      const warn = el("p", { class: "modal-warn" });
+      warn.appendChild(el("strong", { text: "Source context was flagged. " }));
+      warn.appendChild(document.createTextNode(
+        "The threat report this was generated from contained text the injection filter had to neutralize. Read the wording especially carefully.",
+      ));
+      card.appendChild(warn);
+      if ((draft.neutralization_reasons || []).length) {
+        const list = el("ul", { class: "modal-errors" });
+        for (const reason of draft.neutralization_reasons) list.appendChild(el("li", { text: reason }));
+        card.appendChild(list);
+      }
+    }
+
+    const body = el("pre", { class: "template-body", text: draft.plain_text || "" });
+    card.appendChild(body);
+
+    card.appendChild(el("div", { class: "btn-row" }, [
+      el("button", { class: "btn small primary", text: "Approve", onclick: decide(draft, "approved") }),
+      el("button", { class: "btn small danger", text: "Reject", onclick: decide(draft, "rejected") }),
+    ]));
+    root.appendChild(card);
+  }
+
+  function decide(draft, decision) {
+    return async (e) => {
+      const approving = decision === "approved";
+      const values = await promptDialog({
+        title: `${approving ? "Approve" : "Reject"} generated template`,
+        description: draft.subject || "",
+        fields: [
+          { name: "rationale", label: "Rationale", type: "textarea", required: true,
+            placeholder: approving ? "Why this content is safe to use in a simulation" : "What is wrong with it",
+            help: "Recorded in the audit chain against your identity." },
+        ],
+        submitLabel: approving ? "Approve template" : "Reject template",
+      });
+      if (!values) return;
+      const btn = e.target; btn.disabled = true;
+      try {
+        await api(`/templates/${draft.template_version_id}/decision`, {
+          method: "POST",
+          body: JSON.stringify({ decision, rationale: values.rationale }),
+        });
+        toast(`Template ${decision}`, "success");
+        render();
+      } catch (err) { toast(err.message, "error"); }
+      finally { btn.disabled = false; }
     };
   }
 };
