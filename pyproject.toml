@@ -60,7 +60,9 @@ module = ["jsonschema", "jsonschema.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["packages", "apps", "tests"]
+# infrastructure/mock-services ships the offline AI and IdP stand-ins that the
+# generation pipeline is developed against; their tests belong in the gate.
+testpaths = ["packages", "apps", "tests", "infrastructure"]
 addopts = "-q"
 markers = [
     "contract: contract tests (queue round-trips against live local infra)",

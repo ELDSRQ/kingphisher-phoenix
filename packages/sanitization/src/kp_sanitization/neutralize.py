@@ -33,7 +33,16 @@ _CONTROL_CHARS = {
 _ZERO_WIDTH_PATTERN = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060\u2066\u2067\u2068\u2069]")
 
 _OVERRIDE_PATTERNS = [
-    re.compile(r"\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)", re.I),
+    # "ignore"/"disregard" are the two most common openings for an instruction
+    # override, in both singular and plural, with or without an article.
+    re.compile(
+        r"\b(ignore|disregard)\s+(all\s+|any\s+)?(the\s+)?"
+        r"(previous|prior|above|earlier|preceding)\s+(instructions?|prompts?|rules?|directions?)",
+        re.I,
+    ),
+    re.compile(r"\b(ignore|disregard)\s+(all\s+)?(your\s+)?(instructions?|rules?|guidelines?)\b", re.I),
+    # A payload that simply declares a replacement instruction set.
+    re.compile(r"\bnew\s+instructions?\s*[:\-]", re.I),
     re.compile(r"\bforget\s+(all\s+)?(your\s+)?(instructions|rules|guidelines)", re.I),
     re.compile(r"\bsystem\s*(:|prompt)", re.I),
     re.compile(r"\byou\s+are\s+now\s+", re.I),

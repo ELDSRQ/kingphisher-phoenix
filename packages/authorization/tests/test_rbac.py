@@ -37,6 +37,8 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
         {
             "approve:campaign",
             "approve_security:campaign",
+            # Generated content is security-reviewed before it can be scheduled.
+            "approve:template",
             "view_named:results",
             "view_aggregate:results",
             "stop:campaign",
@@ -86,6 +88,7 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
             "handle:privacy_requests",
             "delete:data",
             "approve:pattern",
+            "approve:template",
             "manage:roles",
             "use:kill_switch",
             "subscribe:alerts",

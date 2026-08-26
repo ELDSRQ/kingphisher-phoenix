@@ -46,6 +46,7 @@ class Capability:
     HANDLE_PRIVACY: ClassVar[Capability]
     DELETE_DATA: ClassVar[Capability]
     APPROVE_PATTERN: ClassVar[Capability]
+    APPROVE_TEMPLATE: ClassVar[Capability]
     MANAGE_ROLES: ClassVar[Capability]
     USE_KILL_SWITCH: ClassVar[Capability]
     SUBSCRIBE_ALERTS: ClassVar[Capability]
@@ -72,6 +73,7 @@ Capability.MANAGE_EXCLUSIONS = Capability("manage", "exclusions")
 Capability.HANDLE_PRIVACY = Capability("handle", "privacy_requests")
 Capability.DELETE_DATA = Capability("delete", "data")
 Capability.APPROVE_PATTERN = Capability("approve", "pattern")
+Capability.APPROVE_TEMPLATE = Capability("approve", "template")
 Capability.MANAGE_ROLES = Capability("manage", "roles")
 Capability.USE_KILL_SWITCH = Capability("use", "kill_switch")
 Capability.SUBSCRIBE_ALERTS = Capability("subscribe", "alerts")
@@ -94,6 +96,7 @@ MANAGE_EXCLUSIONS = Capability.MANAGE_EXCLUSIONS
 HANDLE_PRIVACY = Capability.HANDLE_PRIVACY
 DELETE_DATA = Capability.DELETE_DATA
 APPROVE_PATTERN = Capability.APPROVE_PATTERN
+APPROVE_TEMPLATE = Capability.APPROVE_TEMPLATE
 MANAGE_ROLES = Capability.MANAGE_ROLES
 USE_KILL_SWITCH = Capability.USE_KILL_SWITCH
 SUBSCRIBE_ALERTS = Capability.SUBSCRIBE_ALERTS
@@ -102,7 +105,7 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.SOURCE_CURATOR: frozenset([SUBMIT_SOURCE, MANAGE_SOURCES, APPROVE_PATTERN, VIEW_AGGREGATE]),
     Role.CAMPAIGN_AUTHOR: frozenset([CREATE_CAMPAIGN, VIEW_AGGREGATE]),
     Role.SECURITY_APPROVER: frozenset(
-        [APPROVE_CAMPAIGN, APPROVE_SECURITY, VIEW_NAMED_RESULTS, VIEW_AGGREGATE, STOP_CAMPAIGN]
+        [APPROVE_CAMPAIGN, APPROVE_SECURITY, APPROVE_TEMPLATE, VIEW_NAMED_RESULTS, VIEW_AGGREGATE, STOP_CAMPAIGN]
     ),
     Role.PRIVACY_APPROVER: frozenset(
         [
@@ -148,6 +151,7 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             HANDLE_PRIVACY,
             DELETE_DATA,
             APPROVE_PATTERN,
+            APPROVE_TEMPLATE,
             MANAGE_ROLES,
             USE_KILL_SWITCH,
             SUBSCRIBE_ALERTS,

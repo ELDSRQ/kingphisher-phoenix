@@ -30,8 +30,44 @@ async def validation_error(_request: Request, _error: RequestValidationError) ->
     return JSONResponse(status_code=422, content={"detail": "request validation failed"})
 
 
-class ProposeRequest(BaseModel):
+class ProposePatternContext(BaseModel):
+    """Mirrors kp_contracts.generation.PatternContext.
+
+    Kept permissive on unknown keys so a contract addition does not break the
+    offline stack, but the fields the mock actually uses are declared.
+    """
+
     pattern_id: str
+    lure_category: str = "unknown"
+    impersonation_category: str = ""
+    target_role_category: str = ""
+    requested_action: str = ""
+    emotional_triggers: list[str] = []
+    attack_mapping: dict[str, object] = {}
+    confidence: str = ""
+    source_excerpts: list[str] = []
+
+
+class ProposeRequest(BaseModel):
+    """Accepts the enriched contract, and the bare legacy shape."""
+
+    pattern_id: str | None = None
+    pattern: ProposePatternContext | None = None
+    as_of: str = ""
+    context_untrusted: bool = False
+    neutralization_reasons: list[str] = []
+    training_url: str = ""
+    guidance: str = ""
+
+    @model_validator(mode="after")
+    def require_a_pattern(self) -> Self:
+        if self.pattern is None and not self.pattern_id:
+            raise ValueError("either pattern or pattern_id is required")
+        return self
+
+    @property
+    def effective_pattern_id(self) -> str:
+        return self.pattern.pattern_id if self.pattern else str(self.pattern_id)
 
 
 _SECRET_KEY = re.compile(
@@ -131,18 +167,40 @@ async def setup_assist(body: SetupAssistRequest) -> dict[str, object]:
     return {"answer": answer, "suggestions": suggestions}
 
 
+#: Per-lure subject lines, so a reviewer sees content that actually reflects
+#: the approved pattern rather than the same placeholder every time.
+_LURE_SUBJECTS = {
+    "invoice": "Outstanding invoice requires your review",
+    "credential_harvest": "Action required: confirm your account details",
+    "delivery_notice": "Your delivery could not be completed",
+    "hr_policy": "Updated policy acknowledgement required",
+    "it_support": "Scheduled maintenance: confirm your workstation",
+    "calendar_invite": "Meeting invitation: quarterly security briefing",
+}
+
+
 @app.post("/propose")
 async def propose(body: ProposeRequest, request: Request) -> dict[str, str]:
-    seed = body.pattern_id + hashlib.sha256(await request.body()).hexdigest()[:8]
+    """Deterministic, safety-passing proposal shaped by the supplied context.
+
+    The response is intentionally limited to the four fields the generation
+    contract declares: a gateway cannot return an approval, a recipient, or a
+    schedule, and the platform re-validates and human-approves regardless.
+    """
+    pattern_id = body.effective_pattern_id
+    seed = pattern_id + hashlib.sha256(await request.body()).hexdigest()[:8]
+    lure = body.pattern.lure_category if body.pattern else "unknown"
+    impersonated = (body.pattern.impersonation_category if body.pattern else "") or "your organisation"
+    training_url = body.training_url or TRAINING_URL
+
+    subject = _LURE_SUBJECTS.get(lure, f"Awareness scenario {seed[:6]}")
+    lead = (
+        f"This is a simulated awareness scenario for training only. It imitates a {lure.replace('_', ' ')} "
+        f"message appearing to come from {impersonated}."
+    )
     return {
-        "subject": f"Awareness scenario {seed[:6]}",
-        "plain_text": (
-            "This is a simulated awareness scenario for training only. "
-            f"Review the scenario and complete the training module: {TRAINING_URL}"
-        ),
-        "safe_html": (
-            "<p>This is a simulated awareness scenario for training only.</p>"
-            f'<p><a href="{TRAINING_URL}">Complete the training module</a></p>'
-        ),
-        "model_id": "mock-ai/0.1.0",
+        "subject": subject,
+        "plain_text": f"{lead} Review the scenario and complete the training module: {training_url}",
+        "safe_html": (f'<p>{lead}</p><p><a href="{training_url}">Complete the training module</a></p>'),
+        "model_id": "mock-ai/0.2.0",
     }

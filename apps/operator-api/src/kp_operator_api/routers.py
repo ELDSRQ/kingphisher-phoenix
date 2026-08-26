@@ -1033,6 +1033,7 @@ def list_patterns(
 @router.post("/patterns/{pattern_id}/approve", status_code=status.HTTP_200_OK)
 def approve_pattern(
     pattern_id: str,
+    request: Request,
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
     principal: Principal = Depends(require_capability(Capability.APPROVE_PATTERN)),
@@ -1049,7 +1050,99 @@ def approve_pattern(
         actor=principal.principal_id, action="pattern.approve", object_type="campaign_pattern", object_id=pattern_id
     )
     session.commit()
-    return {"campaign_pattern_id": pattern_id, "approval_state": pattern.approval_state.value}
+    # Nothing published to the generate topic, so the generation worker idled
+    # forever and approved patterns never became draft templates (P-1). Approval
+    # is the trigger: a pattern a human has vouched for is what we are willing
+    # to build training content from. `requested_by` lets the template record who
+    # set generation in motion, so that person cannot also approve the result.
+    request.app.state.queue.publish(
+        "generate",
+        {"pattern_id": pattern_id, "requested_by": principal.principal_id},
+        idempotency_key=f"generate:{pattern_id}:{pattern.pattern_version}",
+    )
+    return {
+        "campaign_pattern_id": pattern_id,
+        "approval_state": pattern.approval_state.value,
+        "generation_queued": True,
+    }
+
+
+class TemplateDecision(BaseModel):
+    decision: dm.ApprovalDecision
+    rationale: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/templates/{template_version_id}/decision", status_code=status.HTTP_200_OK)
+def decide_template(
+    template_version_id: str,
+    body: TemplateDecision,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.APPROVE_TEMPLATE)),
+) -> dict[str, Any]:
+    """Approve or reject AI-generated content before it can be used.
+
+    This is the human gate on the generation pipeline. Until a template leaves
+    DRAFT nothing can schedule it, so an unreviewed model output cannot reach a
+    recipient.
+    """
+    template = session.get(TemplateVersion, uuid.UUID(template_version_id))
+    if template is None:
+        raise NotFoundError("template not found")
+    if template.approval_state != dm.TemplateApprovalState.DRAFT:
+        raise ConflictError(f"template is already {template.approval_state.value}")
+
+    # Whoever asked for the content must not be the one who signs it off. The
+    # requester is recorded at generation time; when it is unknown (older rows,
+    # or a self-published job) we cannot check, and say so in the audit trail.
+    requested_by = (template.raw_proposal or {}).get("requested_by")
+    if requested_by and str(requested_by) == principal.principal_id:
+        raise PermissionDeniedError(
+            "you requested this generation; approval of AI-generated content must come from someone else"
+        )
+
+    approved = body.decision == dm.ApprovalDecision.APPROVED
+    template.approval_state = dm.TemplateApprovalState.APPROVED if approved else dm.TemplateApprovalState.REJECTED
+    audit.record(
+        actor=principal.principal_id,
+        action=f"template.{'approve' if approved else 'reject'}",
+        object_type="template",
+        object_id=template_version_id,
+        detail={
+            "rationale": body.rationale,
+            "requester_known": bool(requested_by),
+        },
+    )
+    session.commit()
+    return {
+        "template_version_id": template_version_id,
+        "approval_state": template.approval_state.value,
+    }
+
+
+@router.get("/templates/pending", status_code=status.HTTP_200_OK)
+def list_pending_templates(
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.APPROVE_TEMPLATE)),
+) -> list[dict[str, Any]]:
+    """Drafts awaiting human review, newest first."""
+    rows = session.scalars(
+        select(TemplateVersion)
+        .where(TemplateVersion.approval_state == dm.TemplateApprovalState.DRAFT)
+        .order_by(TemplateVersion.template_version_id)
+    ).all()
+    return [
+        {
+            "template_version_id": str(row.template_version_id),
+            "model_id": row.model_id,
+            "subject": (row.raw_proposal or {}).get("subject", ""),
+            "plain_text": (row.raw_proposal or {}).get("plain_text", ""),
+            "requested_by": (row.raw_proposal or {}).get("requested_by"),
+            "context_untrusted": bool((row.raw_proposal or {}).get("context_untrusted")),
+            "neutralization_reasons": (row.raw_proposal or {}).get("neutralization_reasons", []),
+        }
+        for row in rows
+    ]
 
 
 @router.get("/audit", status_code=status.HTTP_200_OK)

@@ -18,6 +18,7 @@ from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
 from kp_campaign_patterns.builder import build_pattern_candidate
+from kp_contracts.generation import GenerationRequest, GenerationResponse, PatternContext
 from kp_contracts.queue import JobQueue
 from kp_database.audit_store import AuditStore
 from kp_database.models import (
@@ -42,6 +43,7 @@ from kp_database.privacy import hash_mailbox
 from kp_domain_models import models as dm
 from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
 from kp_safety_validation.validator import SafetyValidator
+from kp_sanitization.neutralize import neutralize
 from kp_source_adapters import BulkDownloadAdapter, RssAdapter, SourceAdapter, StixAdapter
 from kp_telemetry.errors import SafetyRejectionError
 from kp_telemetry.logging import get_logger
@@ -184,19 +186,41 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
         )
         if existing is not None:
             return
-        proposal = _call_ai(ctx, pattern_id)
+        pattern = session.get(CampaignPattern, uuid.UUID(pattern_id))
+        if pattern is None:
+            logger.error("generate message references unknown pattern %s", pattern_id)
+            return
+        if pattern.approval_state != dm.PatternApprovalState.APPROVED:
+            # Only human-approved patterns are worth building content from, and
+            # this also stops a revoked pattern from being generated against.
+            logger.info("pattern %s is not approved; skipping generation", pattern_id)
+            return
+
+        as_of = datetime.now(UTC)
+        generation_request = _build_generation_request(ctx, pattern, as_of=as_of)
+        response = _call_ai(ctx, generation_request)
+
         validator = SafetyValidator(training_domains=ctx.settings.training_domain_set())
-        verdict = validator.validate(
-            proposal.get("subject"), proposal.get("plain_text", ""), proposal.get("safe_html", "")
-        )
+        verdict = validator.validate(response.subject, response.plain_text, response.safe_html)
         if not verdict.allowed:
+            # The model's output is never trusted: it is re-validated here, and
+            # a human still has to approve whatever survives.
             raise SafetyRejectionError(f"generation rejected: {verdict.reasons}")
+
+        proposal: dict[str, Any] = response.model_dump()
+        # Carried onto the draft so the reviewer sees who asked for it (they may
+        # not approve it) and whether the source context was flagged.
+        proposal["requested_by"] = payload.get("requested_by")
+        proposal["context_untrusted"] = generation_request.context_untrusted
+        proposal["neutralization_reasons"] = generation_request.neutralization_reasons
+        proposal["as_of"] = generation_request.as_of
+
         template = TemplateVersion(
             template_version_id=uuid.uuid4(),
             campaign_id=uuid.UUID(campaign_id) if campaign_id else None,
             generator_version="0.1.0",
             prompt_template_version="0.1.0",
-            model_id=proposal.get("model_id", "mock-ai"),
+            model_id=response.model_id,
             input_hash=hashlib.sha256(pattern_id.encode()).hexdigest(),
             raw_proposal=proposal,
             approval_state=dm.TemplateApprovalState.DRAFT,
@@ -741,17 +765,81 @@ def _source_adapter(source: dm.Source, fetcher: Any) -> SourceAdapter:
     raise ValueError(f"unsupported source type: {source.source_type}")
 
 
-def _call_ai(ctx: WorkerContext, pattern_id: str) -> dict[str, Any]:
+def _clean(text: str | None) -> tuple[str, list[str]]:
+    """Neutralize one free-text field, returning the text and why it was flagged."""
+    if not text:
+        return "", []
+    verdict = neutralize(str(text))
+    return verdict.cleaned_text, list(verdict.reasons)
+
+
+def _build_generation_request(ctx: WorkerContext, pattern: CampaignPattern, *, as_of: datetime) -> GenerationRequest:
+    """Assemble the sanitized threat context sent to the generation gateway.
+
+    NEW-6: the neutralizer existed but nothing on the AI path called it, so
+    attacker-influenced text from a threat feed reached the model verbatim.
+    Every free-text field is neutralized HERE, before it leaves the process —
+    doing it at the gateway would be too late, and doing it in the gateway's
+    own code would put the control outside this repository's review.
+    """
+    reasons: list[str] = []
+
+    def field(value: str | None) -> str:
+        cleaned, why = _clean(value)
+        reasons.extend(why)
+        return cleaned
+
+    def string_list(values: list[Any] | None) -> list[str]:
+        out: list[str] = []
+        for value in (values or [])[:12]:
+            cleaned = field(str(value))
+            if cleaned:
+                out.append(cleaned)
+        return out
+
+    excerpts: list[str] = []
+    for evidence in (pattern.supporting_evidence or [])[:5]:
+        text = evidence.get("excerpt") if isinstance(evidence, dict) else str(evidence)
+        cleaned = field(text)
+        if cleaned:
+            # Bounded: a gateway does not need the whole report to write a lure.
+            excerpts.append(cleaned[:500])
+
+    context = PatternContext(
+        pattern_id=str(pattern.campaign_pattern_id),
+        lure_category=pattern.lure_category.value,
+        impersonation_category=field(pattern.impersonation_category),
+        target_role_category=field(pattern.target_role_category),
+        requested_action=field(pattern.requested_action),
+        delivery_method=field(pattern.delivery_method),
+        emotional_triggers=string_list(pattern.emotional_triggers),
+        warning_cues=string_list(pattern.warning_cues),
+        attack_mapping=dict(pattern.attack_mapping or {}),
+        confidence=pattern.confidence.value,
+        source_excerpts=excerpts,
+    )
+    return GenerationRequest(
+        pattern=context,
+        as_of=as_of.isoformat(),
+        context_untrusted=bool(reasons),
+        neutralization_reasons=sorted(set(reasons))[:20],
+        training_url=ctx.settings.training_base_url,
+    )
+
+
+def _call_ai(ctx: WorkerContext, request: GenerationRequest) -> GenerationResponse:
     import httpx
 
     resp = httpx.post(
         f"{ctx.settings.effective_ai_base_url.rstrip('/')}/propose",
-        json={"pattern_id": pattern_id},
+        json=request.model_dump(mode="json"),
         headers=_provider_headers(ctx.settings.ai_bearer_token, ctx.settings.ai_api_key),
         timeout=ctx.settings.provider_timeout_seconds,
     )
     resp.raise_for_status()
-    return dict(resp.json())
+    # Parsed through the contract, so a gateway cannot return extra fields and
+    # have them silently persisted onto the draft.
+    return GenerationResponse.model_validate(resp.json())
 
 
 def _send_email(
