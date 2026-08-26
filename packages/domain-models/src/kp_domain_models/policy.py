@@ -67,3 +67,45 @@ def is_recipient_allowed(mailbox: str, allowlist: frozenset[str]) -> bool:
     if domain in allowlist:
         return True
     return any(domain.endswith(f".{allowed}") for allowed in allowlist)
+
+
+def parse_sending_domains(raw: str | None) -> frozenset[str]:
+    """Parse the pool of domains this deployment is allowed to send *as*.
+
+    Same normalization as the recipient allowlist. This is the "register once,
+    reuse forever" pool: an operator authenticates a handful of domains
+    (SPF/DKIM/DMARC, or an Azure-managed domain) and then any campaign may send
+    from any of them, with any display name and local part, at no per-campaign
+    cost. It is deliberately an allowlist and not free-form: mail from a domain
+    the deployment has not authenticated will not deliver, so letting a campaign
+    request one would just produce silent failures.
+    """
+    return parse_domain_allowlist(raw)
+
+
+def resolve_sender(
+    requested_mailbox: str,
+    *,
+    sending_domains: frozenset[str],
+    default_sender: str,
+) -> tuple[str, bool]:
+    """Choose the envelope From address for a campaign.
+
+    Returns ``(address, honored)``. When the requested mailbox sits on one of
+    the authenticated ``sending_domains`` it is used verbatim, so an operator
+    gets ``payroll@corp-benefits.example`` if ``corp-benefits.example`` is in
+    the pool. Otherwise it falls back to ``default_sender`` and ``honored`` is
+    False, because sending as an unauthenticated domain does not deliver —
+    honoring the request would trade a visible fallback for an invisible bounce.
+
+    An empty pool means "no restriction configured": the request is honored as
+    given, which is the SMTP/offline path where the operator owns the relay.
+    """
+    domain = mailbox_domain(requested_mailbox)
+    if domain is None:
+        return default_sender, False
+    if not sending_domains:
+        return requested_mailbox, True
+    if domain in sending_domains or any(domain.endswith(f".{allowed}") for allowed in sending_domains):
+        return requested_mailbox, True
+    return default_sender, False

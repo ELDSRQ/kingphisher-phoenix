@@ -208,6 +208,9 @@ class Campaign(Base):
         Enum(dm.CampaignState, name="campaign_state"), default=dm.CampaignState.DRAFT
     )
     sender_mailbox: Mapped[str] = mapped_column(String(255))
+    #: Display name shown in the From header (e.g. "IT Service Desk"). The
+    #: primary impersonation vector; free-form and varied per campaign.
+    sender_display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     training_domain: Mapped[str] = mapped_column(String(255))
     schedule_start = mapped_column(DateTime(timezone=True), nullable=True)
     schedule_end = mapped_column(DateTime(timezone=True), nullable=True)
