@@ -109,3 +109,33 @@ def test_normal_prose_stays_allowed(validator: SafetyValidator) -> None:
 def test_external_link_in_html_body_is_rejected(validator: SafetyValidator) -> None:
     html_body = '<p>Hello, <a href="https://evil.example/credential-check">verify now</a></p>'
     assert not validator.validate(None, "Hello", html_body).allowed
+
+
+def test_zero_width_space_in_href_host_is_rejected(validator: SafetyValidator) -> None:
+    reasons = _reasons(validator, '<a href="attacker\u200b.com/security">click</a>')
+    assert any("external link" in r for r in reasons)
+    assert any("obfuscation" in r for r in reasons)
+
+
+def test_directional_isolate_in_prose_host_is_rejected(validator: SafetyValidator) -> None:
+    reasons = _reasons(validator, "Reset your password at attacker\u2066.evil-site.net/verify")
+    assert any("external link" in r for r in reasons)
+    assert any("obfuscation" in r for r in reasons)
+
+
+def test_word_joiner_in_prose_host_is_rejected(validator: SafetyValidator) -> None:
+    reasons = _reasons(validator, "Confirm your account at secure\u2060-login.example.net/auth")
+    assert any("external link" in r for r in reasons)
+    assert any("obfuscation" in r for r in reasons)
+
+
+def test_soft_hyphen_in_prose_host_is_rejected(validator: SafetyValidator) -> None:
+    reasons = _reasons(validator, "Visit attacker\u00ad.com/security to keep your access")
+    assert any("external link" in r for r in reasons)
+    assert any("obfuscation" in r for r in reasons)
+
+
+def test_hidden_chars_in_allowlisted_host_still_rejected(validator: SafetyValidator) -> None:
+    verdict = validator.validate(None, "Visit training\u200b.example.com/lesson-1", None)
+    assert not verdict.allowed
+    assert any("obfuscation" in r for r in verdict.reasons)

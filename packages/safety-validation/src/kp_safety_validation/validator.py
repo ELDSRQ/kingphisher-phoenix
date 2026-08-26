@@ -15,6 +15,9 @@ Anti-evasion hardening:
 - Unicode NFKC normalization plus a Cyrillic->Latin fold defeats homoglyphs.
 - Percent-encoded schemes (``https%3A%2F%2F``), scheme-less ``www.`` links,
   href/src attribute values, and trailing-dot FQDNs are all checked.
+- Zero-width/bidi characters and soft hyphens are stripped before matching
+  (browsers ignore them when resolving hosts) and their presence is itself a
+  blocking reason, so hidden characters cannot split a host past the regexes.
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
+
+from kp_sanitization.neutralize import _CONTROL_CHARS
 
 # External link detection: anything with a scheme-host that is not on the
 # approved training-domain allowlist is rejected.
@@ -156,18 +161,28 @@ _WWW_HOST_RE = re.compile(r"\bwww\.[a-z0-9](?:[a-z0-9.-]{0,253})?[a-z0-9]", re.I
 _HREF_RE = re.compile(r"\b(?:href|src)\s*=\s*[\"']?([^\"'>\s][^\"'>\s]*)", re.I)
 _BARE_HOST_RE = re.compile(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b", re.I)
 
+# Reuse the sanitizer's hidden-character set (zero-width + bidi classes) and
+# add soft hyphen: browsers strip all of these when resolving hosts, so an
+# embedded one only hides the host from the regexes above.
+_HIDDEN_CHARS = _CONTROL_CHARS | {"\u00ad"}
+_HIDDEN_CHAR_RE = re.compile("[" + re.escape("".join(sorted(_HIDDEN_CHARS))) + "]")
 
-def _normalize(text: str) -> str:
+
+def _normalize(text: str) -> tuple[str, bool]:
     """Fold a message into the shape the recipient's client renders.
 
     HTML-entity decoding first (so ``&#112;&#97;&#115;&#115;`` becomes
     ``pass``), then NFKC normalization, then a Cyrillic homoglyph fold so
     ``pаssword`` matches ``password``. NFKC also collapses fullwidth and
     compatibility characters used to smuggle keywords past the regexes.
+    Zero-width/bidi characters and soft hyphens are stripped so every
+    detector sees the host the browser resolves; the second return value
+    flags their presence so the caller blocks on the obfuscation itself.
     """
     decoded = html.unescape(text)
-    normalized = unicodedata.normalize("NFKC", decoded)
-    return normalized.translate(_HOMOGLYPH_FOLD)
+    normalized = unicodedata.normalize("NFKC", decoded).translate(_HOMOGLYPH_FOLD)
+    stripped, hidden_count = _HIDDEN_CHAR_RE.subn("", normalized)
+    return stripped, hidden_count > 0
 
 
 def _clean_host(host: str) -> str:
@@ -261,7 +276,9 @@ class SafetyValidator:
     ) -> SafetyVerdict:
         reasons: list[str] = []
         raw = "\n".join(x for x in (subject, plain_text, html_body) if x)
-        haystack = _normalize(raw)
+        haystack, has_hidden_chars = _normalize(raw)
+        if has_hidden_chars:
+            reasons.append("obfuscation: hidden zero-width/bidi/control characters present")
 
         for host, origin in self._extract_hosts(haystack):
             if host in URL_SHORTENER_HOSTS:
