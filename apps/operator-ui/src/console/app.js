@@ -475,6 +475,7 @@ const NAV = [
   ["help", "Help"],
   ["dashboard", "Dashboard"],
   ["campaigns", "Campaigns"],
+  ["sending", "Domains & RoE"],
   ["recipients", "Recipients"],
   ["sources", "Sources"],
   ["patterns", "Patterns"],
@@ -1025,6 +1026,9 @@ views.campaigns = async (root) => {
       el("div", {}, [
         el("label", { for: "c-title", text: "Title" }), el("input", { id: "c-title" }),
         el("label", { for: "c-sender", text: "Sender mailbox" }), el("input", { id: "c-sender", value: "security-drills@example.com" }),
+        el("label", { for: "c-sender-display", text: "Sender display name (persona)" }),
+        el("input", { id: "c-sender-display", placeholder: "e.g. Account Security" }),
+        el("p", { class: "field-help", text: "Shown in the From header; honored only when the mailbox is on a registered sending domain (KP_SENDING_DOMAINS), otherwise delivery falls back to the configured sender." }),
         el("label", { for: "c-tdomain", text: "Training domain" }), el("input", { id: "c-tdomain", value: "127.0.0.1" }),
         el("label", { for: "c-max", text: "Max recipients" }), el("input", { id: "c-max", type: "number", min: "1", max: "100000", value: "1000" }),
       ]),
@@ -1049,6 +1053,7 @@ views.campaigns = async (root) => {
             pattern_id: document.getElementById("c-pattern").value,
             title: document.getElementById("c-title").value,
             sender_mailbox: document.getElementById("c-sender").value,
+            sender_display_name: document.getElementById("c-sender-display").value.trim() || null,
             training_domain: document.getElementById("c-tdomain").value,
             schedule_start: start,
             schedule_end: end,
@@ -1066,10 +1071,11 @@ views.campaigns = async (root) => {
 
   const list = el("table", {}, [
     el("thead", {}, [el("tr", {}, [
-      el("th", { text: "Title" }), el("th", { text: "State" }), el("th", { text: "Actions" }),
+      el("th", { text: "Title" }), el("th", { text: "Sender" }), el("th", { text: "State" }), el("th", { text: "Actions" }),
     ])]),
     el("tbody", {}, campaigns.map((c) => el("tr", {}, [
       el("td", { text: c.title }),
+      el("td", { text: c.sender_display_name ? `${c.sender_display_name} <${c.sender_mailbox}>` : c.sender_mailbox }),
       el("td", { text: c.state }),
       el("td", {}, (() => {
         const actions = [];
@@ -1203,6 +1209,252 @@ views.campaigns = async (root) => {
       return act(`/campaigns/${campaign.campaign_id}/schedule`, "Scheduled")(e);
     };
   }
+};
+
+/* ---------- sending domains & rules of engagement ----------
+   The authorization boundary, operated from here: prove DNS control of a
+   domain (onboarding wizard + lookalike generator), then sign the
+   Rules-of-Engagement that delivery fails closed without. */
+views.sending = async (root) => {
+  root.appendChild(el("h2", { text: "Domains & Rules of Engagement" }));
+  root.appendChild(el("p", { class: "sub", text: "Prove you control a domain via DNS, then sign the RoE that authorizes delivery to it." }));
+
+  let domains, roes;
+  try {
+    const [d, r] = await Promise.all([api("/sending-domains"), api("/roe")]);
+    domains = d.domains || [];
+    roes = r.roes || [];
+  } catch (e) {
+    root.appendChild(el("div", { class: "card", text: `Failed to load: ${e.message}` }));
+    return;
+  }
+  const verifiedDomains = domains.filter((d) => d.active).map((d) => d.domain);
+
+  const banner = el("div", { class: "policy-banner" });
+  banner.appendChild(el("strong", { text: "Delivery fails closed. " }));
+  banner.appendChild(document.createTextNode(
+    "Recipients may only sit in DNS-verified domains named by an active signed RoE, and a campaign cannot be scheduled or delivered outside that boundary. Revoking an RoE stops its campaigns immediately.",
+  ));
+  root.appendChild(banner);
+
+  function dnsRecordTextarea(record) {
+    const ta = el("textarea", { class: "mono", rows: "2", readonly: "readonly" });
+    ta.value = record.value;
+    return ta;
+  }
+
+  function showRecordsDialog(title, description, records) {
+    const { dlg, form } = dialogShell(title, description);
+    for (const record of records) {
+      form.appendChild(el("div", { class: "dns-record" }, [
+        el("strong", { text: `${record.type} ${record.name}` }),
+        dnsRecordTextarea(record),
+        el("p", { class: "modal-help", text: record.note }),
+        el("button", {
+          class: "btn small", type: "button", text: "Copy",
+          onclick: () => showCopyable({ title: `Copy ${record.type} record`, description: `${record.name}`, value: record.value }),
+        }),
+      ]));
+    }
+    form.appendChild(el("div", { class: "modal-actions" }, [
+      el("button", { class: "btn", type: "button", text: "Close", onclick: () => dlg.close() }),
+    ]));
+    openDialog(dlg);
+  }
+
+  async function verifyDomain(domain) {
+    try {
+      await api("/sending-domains/verify", { method: "POST", body: JSON.stringify({ domain }) });
+      toast(`Domain ${domain} verified`, "success");
+      location.reload();
+    } catch (err) { toast(err.message, "error"); }
+  }
+
+  async function onboard() {
+    const values = await promptDialog({
+      title: "Onboard a sending domain",
+      description: "You get the exact DNS records for your zone. The domain only becomes verified — and usable as a sending or target domain — after the challenge is observable in live DNS.",
+      fields: [
+        { name: "domain", label: "Domain", type: "text", required: true, placeholder: "corp-benefits.example" },
+        { name: "relay", label: "Mail relay", type: "select", value: "smtp", options: [
+          { value: "smtp", label: "Generic SMTP relay" },
+          { value: "ses", label: "Amazon SES" },
+          { value: "mailgun", label: "Mailgun" },
+          { value: "postfix", label: "Postfix" },
+        ] },
+        { name: "relay_address", label: "Relay IP/address (SPF)", type: "text", placeholder: "optional, e.g. 203.0.113.10" },
+        { name: "dmarc_address", label: "DMARC report mailbox", type: "text", placeholder: "optional, e.g. dmarc@example.com" },
+      ],
+      submitLabel: "Get DNS records",
+    });
+    if (!values) return;
+    try {
+      const challenge = await api("/sending-domains/challenge", {
+        method: "POST",
+        body: JSON.stringify({
+          domain: values.domain,
+          relay: values.relay,
+          relay_address: values.relay_address || null,
+          dmarc_address: values.dmarc_address || null,
+        }),
+      });
+      const { dlg, form } = dialogShell("DNS records to publish", `Paste these into your DNS zone for ${challenge.domain}, then click Verify.`);
+      for (const record of challenge.dns_records) {
+        form.appendChild(el("div", { class: "dns-record" }, [
+          el("strong", { text: `${record.type} ${record.name}` }),
+          dnsRecordTextarea(record),
+          el("p", { class: "modal-help", text: record.note }),
+          el("button", {
+            class: "btn small", type: "button", text: "Copy",
+            onclick: () => showCopyable({ title: `Copy ${record.type} record`, description: record.name, value: record.value }),
+          }),
+        ]));
+      }
+      form.appendChild(el("div", { class: "modal-actions" }, [
+        el("button", { class: "btn", type: "button", text: "Close", onclick: () => dlg.close() }),
+        el("button", { class: "btn primary", type: "button", text: "Verify now", onclick: async () => {
+          dlg.close();
+          await verifyDomain(challenge.domain);
+        } }),
+      ]));
+      openDialog(dlg);
+    } catch (err) { toast(err.message, "error"); }
+  }
+
+  async function lookalike() {
+    const values = await promptDialog({
+      title: "Lookalike generator",
+      description: "Candidate sending hostnames under a domain you control, each with ready-to-paste DNS records. Registerable by definition; they join the pool only after verification.",
+      fields: [
+        { name: "brand", label: "Brand the lure imitates", type: "text", required: true, placeholder: "Okta" },
+        { name: "base_domain", label: "Base domain you control", type: "text", required: true, placeholder: "corp-training.example" },
+        { name: "relay", label: "Mail relay", type: "select", value: "smtp", options: [
+          { value: "smtp", label: "Generic SMTP relay" },
+          { value: "ses", label: "Amazon SES" },
+          { value: "mailgun", label: "Mailgun" },
+          { value: "postfix", label: "Postfix" },
+        ] },
+        { name: "limit", label: "How many candidates", type: "number", value: "6" },
+      ],
+      submitLabel: "Generate candidates",
+    });
+    if (!values) return;
+    try {
+      const resp = await api(`/sending-domains/generate?brand=${encodeURIComponent(values.brand)}&base_domain=${encodeURIComponent(values.base_domain)}&relay=${encodeURIComponent(values.relay)}&limit=${encodeURIComponent(values.limit || "6")}`);
+      const candidates = resp.candidates || [];
+      if (!candidates.length) { toast("No candidates generated", "error"); return; }
+      const { dlg, form } = dialogShell("Lookalike candidates", `Pick a candidate, publish its DNS records, then verify it in the list below.`);
+      for (const candidate of candidates) {
+        form.appendChild(el("section", { class: "dns-record" }, [
+          el("h4", { text: candidate.domain }),
+          ...candidate.dns_records.map((record) => el("div", {}, [
+            el("strong", { text: `${record.type} ${record.name}` }),
+            dnsRecordTextarea(record),
+            el("p", { class: "modal-help", text: record.note }),
+          ])),
+        ]));
+      }
+      form.appendChild(el("div", { class: "modal-actions" }, [
+        el("button", { class: "btn primary", type: "button", text: "Close", onclick: () => dlg.close() }),
+      ]));
+      openDialog(dlg);
+    } catch (err) { toast(err.message, "error"); }
+  }
+
+  async function signRoe() {
+    const values = await promptDialog({
+      title: "Sign a Rules-of-Engagement",
+      description: "The signature binds terms + signer + timestamp under the shared RoE key. Every target domain must already be DNS-verified, and the window must cover the campaigns it authorizes.",
+      fields: [
+        { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp" },
+        { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training." },
+        { name: "window_start", label: "Window start (your local time)", type: "datetime-local", required: true },
+        { name: "window_end", label: "Window end (your local time)", type: "datetime-local", required: true },
+        { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: verifiedDomains.join(", ") },
+      ],
+      submitLabel: "Sign RoE",
+    });
+    if (!values) return;
+    try {
+      const start = localDateTimeToIso(values.window_start, "Window start");
+      const end = localDateTimeToIso(values.window_end, "Window end");
+      if (new Date(end) <= new Date(start)) throw new Error("Window end must be after window start");
+      const targets = values.target_domains.split(",").map((d) => d.trim()).filter(Boolean);
+      if (!targets.length) throw new Error("At least one target domain is required");
+      const roe = await api("/roe", {
+        method: "POST",
+        body: JSON.stringify({
+          authorizing_party: values.authorizing_party,
+          terms: values.terms,
+          window_start: start,
+          window_end: end,
+          target_domains: targets,
+        }),
+      });
+      toast(`RoE signed (${roe.terms_hash.slice(0, 12)}...)`, "success");
+      location.reload();
+    } catch (err) { toast(err.message, "error"); }
+  }
+
+  async function revokeRoe(roe) {
+    const ok = await confirmDialog({
+      title: `Revoke RoE for ${roe.authorizing_party}?`,
+      message: "Its campaigns fail closed immediately — queued and future deliveries stop. The record is kept for the audit trail.",
+      detail: { Signer: roe.signer, Window: `${formatInstant(roe.window_start)} → ${formatInstant(roe.window_end)}` },
+      confirmLabel: "Revoke RoE", danger: true,
+    });
+    if (!ok) return;
+    const values = await promptDialog({
+      title: "Reason for revocation",
+      fields: [{ name: "reason", label: "Reason (recorded in audit)", type: "textarea", placeholder: "Engagement complete" }],
+      submitLabel: "Revoke",
+    });
+    if (!values) return;
+    try {
+      await api(`/roe/${roe.roe_id}/revoke`, { method: "POST", body: JSON.stringify({ reason: values.reason || null }) });
+      toast("RoE revoked", "success");
+      location.reload();
+    } catch (err) { toast(err.message, "error"); }
+  }
+
+  /* --- verified domains --- */
+  const domainRows = domains.length ? domains.map((d) => el("tr", {}, [
+    el("td", { text: d.domain }),
+    el("td", { class: "mono", text: formatInstant(d.verified_at) }),
+    el("td", {}, [el("span", { class: `pill ${d.active ? "ok" : "down"}`, text: d.active ? "verified" : "revoked" })]),
+  ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 3, text: "No verified domains yet. Onboard one below." })])];
+  root.appendChild(el("div", { class: "card" }, [
+    el("div", { class: "card-head" }, [
+      el("h3", { text: "Verified domains" }),
+      el("div", { class: "btn-row" }, [
+        el("button", { class: "btn", text: "Lookalike generator", onclick: lookalike }),
+        el("button", { class: "btn primary", text: "Onboard a sending domain", onclick: onboard }),
+      ]),
+    ]),
+    el("p", { class: "field-help", text: "A domain is verified only when its DNS-TXT challenge is observable in live DNS. Verified domains can be named in an RoE (recipients) and used as sending domains (KP_SENDING_DOMAINS)." }),
+    el("table", {}, [el("thead", {}, [el("tr", {}, [el("th", { text: "Domain" }), el("th", { text: "Verified at" }), el("th", { text: "Status" })])]), el("tbody", {}, domainRows)]),
+  ]));
+
+  /* --- rules of engagement --- */
+  const nowMs = Date.now();
+  const roeActive = (roe) => !roe.revoked_at
+    && Date.parse(roe.window_start) <= nowMs && nowMs <= Date.parse(roe.window_end);
+  const roeRows = roes.length ? roes.map((roe) => el("tr", {}, [
+    el("td", { text: roe.authorizing_party }),
+    el("td", { text: roe.signer }),
+    el("td", { class: "mono", text: `${formatInstant(roe.window_start)} → ${formatInstant(roe.window_end)}` }),
+    el("td", { text: (roe.target_domains || []).join(", ") }),
+    el("td", {}, [el("span", { class: `pill ${roe.revoked_at ? "down" : (roeActive(roe) ? "ok" : "down")}`, text: roe.revoked_at ? "revoked" : (roeActive(roe) ? "active" : "window passed") })]),
+    el("td", {}, roe.revoked_at ? [el("span", { class: "empty", text: formatInstant(roe.revoked_at) })] : [el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeRoe(roe) })]),
+  ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 6, text: "No Rules-of-Engagement signed yet. Delivery is blocked until one covers a campaign." })])];
+  root.appendChild(el("div", { class: "card" }, [
+    el("div", { class: "card-head" }, [
+      el("h3", { text: "Rules of Engagement" }),
+      el("div", { class: "btn-row" }, [el("button", { class: "btn primary", text: "Sign RoE", onclick: signRoe })]),
+    ]),
+    el("p", { class: "field-help", text: "Scheduling and delivery require an unrevoked RoE whose window contains the campaign window and whose target domains cover every recipient." }),
+    el("table", {}, [el("thead", {}, [el("tr", {}, [el("th", { text: "Authorizing party" }), el("th", { text: "Signer" }), el("th", { text: "Window" }), el("th", { text: "Target domains" }), el("th", { text: "Status" }), el("th", { text: "" })])]), el("tbody", {}, roeRows)]),
+  ]));
 };
 
 /* ---------- template review ----------

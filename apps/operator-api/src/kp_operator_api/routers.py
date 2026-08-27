@@ -78,6 +78,9 @@ class CampaignCreate(BaseModel):
     pattern_id: str
     title: str = Field(min_length=1, max_length=255)
     sender_mailbox: str
+    #: The persona display name shown in the From header (e.g. "IT Service
+    #: Desk"). Optional: absent renders as a bare address, exactly as before.
+    sender_display_name: str | None = Field(default=None, max_length=255)
     training_domain: str
     schedule_start: datetime
     schedule_end: datetime
@@ -137,6 +140,7 @@ def create_campaign(
         title=body.title,
         state=dm.CampaignState.DRAFT,
         sender_mailbox=body.sender_mailbox,
+        sender_display_name=body.sender_display_name,
         training_domain=body.training_domain,
         schedule_start=body.schedule_start,
         schedule_end=body.schedule_end,
@@ -600,6 +604,8 @@ def list_campaigns(
             "state": c.state.value,
             "schedule_start": c.schedule_start,
             "schedule_end": c.schedule_end,
+            "sender_mailbox": c.sender_mailbox,
+            "sender_display_name": c.sender_display_name,
         }
         for c in rows
     ]

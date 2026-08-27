@@ -99,6 +99,7 @@ def _token(roles: list[str]) -> str:
 
 OPERATOR_HEADERS = {"Authorization": f"Bearer {_token(['campaign_operator'])}"}
 AUDITOR_HEADERS = {"Authorization": f"Bearer {_token(['auditor'])}"}
+AUTHOR_HEADERS = {"Authorization": f"Bearer {_token(['campaign_author', 'campaign_operator'])}"}
 
 
 @requires_db
@@ -314,3 +315,81 @@ def test_wizard_endpoints_require_verification_capability(client: TestClient) ->
         headers=AUDITOR_HEADERS,
     )
     assert resp.status_code == 403
+
+
+@requires_db
+def test_campaign_accepts_sender_display_name(client: TestClient) -> None:
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from kp_database.models import CampaignPattern, TemplateVersion
+    from kp_database.session import create_db_engine, make_session_factory
+    from kp_domain_models import models as dm
+
+    session = make_session_factory(create_db_engine(TEST_URL))()
+    pattern = CampaignPattern(
+        campaign_pattern_id=uuid4(),
+        lure_category=dm.LureCategory.OTHER,
+        impersonation_category="Account Security",
+        confidence=dm.Confidence.HIGH,
+        approval_state=dm.PatternApprovalState.APPROVED,
+    )
+    template = TemplateVersion(
+        template_version_id=uuid4(),
+        generator_version="0.1.0",
+        prompt_template_version="0.1.0",
+        model_id="seed",
+        input_hash="i" * 64,
+        subject="hello",
+        plain_text="world",
+        approval_state=dm.TemplateApprovalState.APPROVED,
+    )
+    session.add_all([pattern, template])
+    session.commit()
+
+    start = datetime.now(UTC) + timedelta(days=2)
+    resp = client.post(
+        "/api/v1/campaigns",
+        json={
+            "pattern_id": str(pattern.campaign_pattern_id),
+            "template_version_id": str(template.template_version_id),
+            "title": "Persona round-trip",
+            "sender_mailbox": "alerts@corp-benefits.example",
+            "sender_display_name": "Account Security",
+            "training_domain": "example.com",
+            "schedule_start": start.isoformat(),
+            "schedule_end": (start + timedelta(hours=2)).isoformat(),
+            "timezone": "UTC",
+            "max_recipients": 10,
+        },
+        headers=AUTHOR_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    campaign_id = resp.json()["campaign_id"]
+
+    listing = client.get("/api/v1/campaigns", headers=OPERATOR_HEADERS).json()
+    match = next(c for c in listing if c["campaign_id"] == campaign_id)
+    assert match["sender_display_name"] == "Account Security"
+    assert match["sender_mailbox"] == "alerts@corp-benefits.example"
+
+    # Optional field: absent stays None (bare address, previous behaviour).
+    start2 = datetime.now(UTC) + timedelta(days=3)
+    resp = client.post(
+        "/api/v1/campaigns",
+        json={
+            "pattern_id": str(pattern.campaign_pattern_id),
+            "template_version_id": str(template.template_version_id),
+            "title": "Persona round-trip bare",
+            "sender_mailbox": "alerts@corp-benefits.example",
+            "training_domain": "example.com",
+            "schedule_start": start2.isoformat(),
+            "schedule_end": (start2 + timedelta(hours=2)).isoformat(),
+            "timezone": "UTC",
+            "max_recipients": 10,
+        },
+        headers=AUTHOR_HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    listing = client.get("/api/v1/campaigns", headers=OPERATOR_HEADERS).json()
+    match = next(c for c in listing if c["campaign_id"] == resp.json()["campaign_id"])
+    assert match["sender_display_name"] is None

@@ -352,3 +352,9 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   overflow-y: auto;
   margin: 8px 0;
 }
+
+/* Sending-domain wizard + RoE: ready-to-paste DNS record blocks. */
+.card-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.dns-record { border: 1px solid var(--border, #444); border-radius: 6px; padding: 10px 12px; margin: 8px 0; }
+.dns-record textarea { width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--bg-code, #141414); color: var(--fg, #e8e8e8); border: 1px solid var(--border, #444); border-radius: 4px; padding: 6px; margin: 4px 0; box-sizing: border-box; }
+.dns-record h4 { margin: 0 0 6px; }
