@@ -393,3 +393,127 @@ def test_campaign_accepts_sender_display_name(client: TestClient) -> None:
     listing = client.get("/api/v1/campaigns", headers=OPERATOR_HEADERS).json()
     match = next(c for c in listing if c["campaign_id"] == resp.json()["campaign_id"])
     assert match["sender_display_name"] is None
+
+
+@requires_db
+def test_schedule_refuses_out_of_roe_recipients_and_queues_rest(client: TestClient) -> None:
+    """The RoE boundary is per recipient at schedule time, mirroring delivery:
+    out-of-scope assignments are refused (never queued) while in-scope ones
+    still go out."""
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from kp_database.models import (
+        CampaignPattern,
+        Recipient,
+        RulesOfEngagement,
+        TemplateVersion,
+        VerifiedDomain,
+    )
+    from kp_database.privacy import hash_mailbox
+    from kp_database.session import create_db_engine, make_session_factory
+    from kp_domain_models import models as dm
+    from kp_domain_models.roe import roe_signature_hex
+    from sqlalchemy import select
+
+    session = make_session_factory(create_db_engine(TEST_URL))()
+    now = datetime.now(UTC)
+
+    verified = session.scalar(select(VerifiedDomain).where(VerifiedDomain.domain == "example.com"))
+    if verified is None:
+        verified = VerifiedDomain(
+            verified_domain_id=uuid4(),
+            domain="example.com",
+            challenge_token="t" * 22,
+            verified_at=now,
+            active=True,
+        )
+        session.add(verified)
+    terms_hash = hashlib.sha256(b"roe terms").hexdigest()
+    signer = "operator@example.com"
+    roe = RulesOfEngagement(
+        roe_id=uuid4(),
+        signer=signer,
+        authorizing_party="Test Corp",
+        terms_text="roe terms",
+        terms_hash=terms_hash,
+        signature=roe_signature_hex(terms_hash, signer, now, signing_key=ROE_KEY),
+        signed_at=now,
+        window_start=now - timedelta(days=1),
+        window_end=now + timedelta(days=30),
+        target_domains=["example.com"],
+    )
+    pattern = CampaignPattern(
+        campaign_pattern_id=uuid4(),
+        lure_category=dm.LureCategory.OTHER,
+        confidence=dm.Confidence.HIGH,
+        approval_state=dm.PatternApprovalState.APPROVED,
+    )
+    template = TemplateVersion(
+        template_version_id=uuid4(),
+        generator_version="0.1.0",
+        prompt_template_version="0.1.0",
+        model_id="seed",
+        input_hash="i" * 64,
+        subject="hello",
+        plain_text="world",
+        approval_state=dm.TemplateApprovalState.APPROVED,
+    )
+    in_scope = Recipient(
+        recipient_id=uuid4(),
+        employee_key="in-scope",
+        mailbox="user@example.com",
+        mailbox_sha256=hash_mailbox("user@example.com", bytes.fromhex(SALT_HEX)),
+        status=dm.RecipientStatus.ACTIVE,
+        is_test_account=False,
+    )
+    out_scope = Recipient(
+        recipient_id=uuid4(),
+        employee_key="out-scope",
+        mailbox="user@elsewhere.com",
+        mailbox_sha256=hash_mailbox("user@elsewhere.com", bytes.fromhex(SALT_HEX)),
+        status=dm.RecipientStatus.ACTIVE,
+        is_test_account=False,
+    )
+    session.add_all([roe, pattern, template, in_scope, out_scope])
+    session.commit()
+
+    start = datetime.now(UTC) + timedelta(days=1)
+    created = client.post(
+        "/api/v1/campaigns",
+        json={
+            "pattern_id": str(pattern.campaign_pattern_id),
+            "template_version_id": str(template.template_version_id),
+            "title": "Per-recipient RoE refusal",
+            "sender_mailbox": "security-drills@example.com",
+            "sender_display_name": "Account Security",
+            "training_domain": "example.com",
+            "schedule_start": start.isoformat(),
+            "schedule_end": (start + timedelta(hours=2)).isoformat(),
+            "timezone": "UTC",
+            "max_recipients": 10,
+        },
+        headers=AUTHOR_HEADERS,
+    )
+    assert created.status_code == 201, created.text
+    campaign_id = created.json()["campaign_id"]
+
+    scheduled = client.post(f"/api/v1/campaigns/{campaign_id}/schedule", headers=OPERATOR_HEADERS)
+    assert scheduled.status_code == 200, scheduled.text
+    body = scheduled.json()
+    assert body["prepared"] == 2
+    assert body["queued"] == 1
+    assert body["refused_roe"] == 1
+
+    from kp_database.models import RecipientAssignment
+
+    assignments = list(
+        session.scalars(
+            select(RecipientAssignment).where(RecipientAssignment.campaign_id == created.json()["campaign_id"])
+        )
+    )
+    refused = [a for a in assignments if a.failure_reason == "target_domain_not_roe_covered"]
+    queued = [a for a in assignments if a.send_state == dm.SendState.QUEUED]
+    assert len(refused) == 1
+    assert len(queued) == 1

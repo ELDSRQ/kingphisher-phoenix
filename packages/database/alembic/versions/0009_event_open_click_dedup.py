@@ -36,18 +36,25 @@ def _index_exists() -> bool:
 
 def upgrade() -> None:
     # Keep the lowest event_id per (token_id, event_type) for open/click rows
-    # so the unique index can be created over pre-existing data.
+    # so the unique index can be created over pre-existing data. uuid has no
+    # min() aggregate in Postgres, so the earliest row per group is found with
+    # a window function instead (uuid ordering is defined).
     op.execute(
         """
+        WITH ranked AS (
+            SELECT event_id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY token_id, event_type
+                       ORDER BY event_id
+                   ) AS rn
+            FROM events
+            WHERE event_type IN ('OPENED', 'CLICKED')
+              AND token_id IS NOT NULL
+        )
         DELETE FROM events AS dup
-        WHERE dup.event_type IN ('OPENED', 'CLICKED')
-          AND dup.token_id IS NOT NULL
-          AND dup.event_id > (
-                SELECT MIN(keep.event_id)
-                FROM events AS keep
-                WHERE keep.token_id = dup.token_id
-                  AND keep.event_type = dup.event_type
-              )
+        USING ranked
+        WHERE dup.event_id = ranked.event_id
+          AND ranked.rn > 1
         """
     )
     if not _index_exists():

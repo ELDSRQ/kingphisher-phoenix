@@ -228,19 +228,18 @@ def _covering_roes(session: Session, *, schedule_start: datetime, schedule_end: 
     ]
 
 
-def _campaign_assignment_mailboxes(session: Session, campaign_id: uuid.UUID) -> list[str]:
-    """Mailboxes of the assignments prepared for `campaign_id`."""
+def _campaign_assignment_mailboxes(session: Session, campaign_id: uuid.UUID) -> list[tuple[str, str]]:
+    """(assignment_id, mailbox) pairs for the assignments prepared for `campaign_id`."""
     rows = session.execute(
-        select(Recipient.mailbox)
+        select(RecipientAssignment.recipient_assignment_id, Recipient.mailbox)
         .join(RecipientAssignment, RecipientAssignment.recipient_id == Recipient.recipient_id)
         .where(RecipientAssignment.campaign_id == campaign_id)
     )
-    return [row[0] for row in rows if row[0] is not None]
+    return [(str(aid), mailbox) for aid, mailbox in rows if mailbox is not None]
 
 
-def _roe_covers_all_mailboxes(roe: RulesOfEngagement, mailboxes: list[str]) -> bool:
-    targets = frozenset(roe.target_domains or [])
-    return all(recipient_domain_roe_covered(mailbox, targets) for mailbox in mailboxes)
+def _roe_covers_mailbox(roe: RulesOfEngagement, mailbox: str) -> bool:
+    return recipient_domain_roe_covered(mailbox, frozenset(roe.target_domains or []))
 
 
 def _publish_delivery_batches(
@@ -434,8 +433,19 @@ def schedule_campaign(
     # repeated request is safe and can repair a transient Redis publish error.
     prepared = prepare_campaign(session, campaign, tracking_base_url=request.app.state.settings.tracking_base_url)
     assignment_ids = [p.assignment_id for p in prepared]
-    mailboxes = _campaign_assignment_mailboxes(session, campaign.campaign_id)
-    chosen_roe = next((roe for roe in covering if _roe_covers_all_mailboxes(roe, mailboxes)), None)
+    assignment_mailboxes = _campaign_assignment_mailboxes(session, campaign.campaign_id)
+    # The RoE boundary is enforced per recipient, exactly as delivery does:
+    # assignments outside the chosen RoE's verified target domains are refused
+    # (never queued, never sent) while in-scope recipients still go out. A
+    # campaign with nothing in scope is blocked outright.
+    chosen_roe = None
+    covered_assignment_ids: set[str] = set()
+    for roe in covering:
+        covered = {aid for aid, mailbox in assignment_mailboxes if _roe_covers_mailbox(roe, mailbox)}
+        if covered:
+            chosen_roe = roe
+            covered_assignment_ids = covered
+            break
     if chosen_roe is None:
         # Nothing was published and the campaign reverts to its prior state;
         # prepared assignments stay QUEUED but are harmless and reused on the
@@ -449,20 +459,28 @@ def schedule_campaign(
             object_id=str(campaign.campaign_id),
             detail={
                 "reason": "no_roe_covers_recipients",
-                "recipient_domains": sorted({m.rsplit("@", 1)[-1] for m in mailboxes}),
+                "recipient_domains": sorted({mailbox.rsplit("@", 1)[-1] for _, mailbox in assignment_mailboxes}),
             },
         )
         session.commit()
         raise ConflictError(
-            "no signed Rules-of-Engagement covers the campaign's recipient domains; "
+            "no signed Rules-of-Engagement covers any of the campaign's recipient domains; "
             "recipients may only be in verified, RoE-covered target domains"
         )
+    refused = [aid for aid, _ in assignment_mailboxes if aid not in covered_assignment_ids]
+    for assignment_id in refused:
+        assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
+        if assignment is not None and assignment.send_state == dm.SendState.QUEUED:
+            assignment.send_state = dm.SendState.FAILED
+            assignment.failure_reason = "target_domain_not_roe_covered"
+    session.commit()
     campaign.roe_id = chosen_roe.roe_id
+    publishable = [aid for aid in assignment_ids if aid in covered_assignment_ids]
     batches = _publish_delivery_batches(
         request,
         campaign=campaign,
         campaign_id=campaign_id,
-        assignment_ids=assignment_ids,
+        assignment_ids=publishable,
         idempotency_prefix=f"deliver:{campaign_id}",
         test_send=False,
         available_at=max(schedule_start.timestamp(), datetime.now(UTC).timestamp()),
@@ -475,12 +493,20 @@ def schedule_campaign(
             object_id=str(campaign.campaign_id),
             detail={
                 "prepared": len(assignment_ids),
+                "queued": len(publishable),
+                "refused_roe": len(refused),
                 "batches": batches,
                 "scheduled_for": schedule_start.isoformat(),
             },
         )
         _queue_campaign_alert(session, request, campaign, "campaign.scheduled")
-    return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value, "prepared": len(assignment_ids)}
+    return {
+        "campaign_id": str(campaign.campaign_id),
+        "state": campaign.state.value,
+        "prepared": len(assignment_ids),
+        "queued": len(publishable),
+        "refused_roe": len(refused),
+    }
 
 
 @router.post("/campaigns/{campaign_id}/test-send", status_code=status.HTTP_200_OK)
