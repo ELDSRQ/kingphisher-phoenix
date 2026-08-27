@@ -55,6 +55,17 @@ instruction to land the work.
   never proof of domain ownership. See `README.md → Sender realism` and
   `RUNBOOK.md §2.10`.
 
+**Live dev stack state (2026-08-27):** the local stack is on `origin/main`,
+migrated to head `0013` and seeded (verified example.com + signed demo RoE).
+Two defects found by live verification and fixed since: migration `0009`
+used `min(uuid)` (invalid SQL — no DB could upgrade past `0008`); and
+`schedule_campaign` never committed `campaign.roe_id`, so deliveries failed
+closed with `no_roe` despite a 200 schedule. The console now has the
+persona display-name field and a full "Domains & RoE" screen (wizard,
+lookalike generator, RoE sign/list/revoke). Live E2E verified: schedule
+refuses out-of-RoE recipients per recipient (`refused_roe`), and a test-send
+delivered `Account Security <alerts@corp-benefits.example>` through Mailpit.
+
 Gate at the time of writing: lint clean, mypy clean on 87 source files,
 541 passed / 7 skipped.
 
