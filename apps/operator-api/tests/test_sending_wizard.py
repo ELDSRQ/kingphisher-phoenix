@@ -506,6 +506,18 @@ def test_schedule_refuses_out_of_roe_recipients_and_queues_rest(client: TestClie
     assert body["queued"] == 1
     assert body["refused_roe"] == 1
 
+    # The RoE binding must survive the request: read the row from a fresh
+    # session, not the one the endpoint used.
+    import uuid as _uuid_mod
+
+    from kp_database.models import Campaign as CampaignRow
+
+    fresh = make_session_factory(create_db_engine(TEST_URL))()
+    persisted = fresh.get(CampaignRow, _uuid_mod.UUID(campaign_id))
+    assert persisted is not None
+    assert persisted.roe_id is not None
+    assert persisted.state == dm.CampaignState.SCHEDULED
+
     from kp_database.models import RecipientAssignment
 
     assignments = list(

@@ -473,8 +473,11 @@ def schedule_campaign(
         if assignment is not None and assignment.send_state == dm.SendState.QUEUED:
             assignment.send_state = dm.SendState.FAILED
             assignment.failure_reason = "target_domain_not_roe_covered"
-    session.commit()
+    # The RoE binding must survive the request: delivery re-checks it per
+    # batch, and without this commit the rolled-back roe_id made every
+    # delivery fail closed with no_roe even though scheduling "succeeded".
     campaign.roe_id = chosen_roe.roe_id
+    session.commit()
     publishable = [aid for aid in assignment_ids if aid in covered_assignment_ids]
     batches = _publish_delivery_batches(
         request,
