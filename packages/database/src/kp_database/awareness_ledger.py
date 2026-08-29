@@ -13,7 +13,7 @@ import hmac
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Final
 
 from kp_domain_models import models as dm
@@ -33,7 +33,14 @@ from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
 
 AWARENESS_LEDGER_RETENTION_DAYS: Final = 1_826
 MAX_LEDGER_PROJECTION_BATCH: Final = 500
+MAX_LEDGER_RECIPIENT_HISTORY: Final = 500
 MIN_PSEUDONYM_KEY_BYTES: Final = 32
+#: Deterministic development-only values so disposable local databases remain
+#: reproducible. Both the operator API and the retention worker must fall back
+#: to the SAME dev values so named drill-down resolves the pseudonyms the
+#: worker projected; managed modes never fall back to these.
+LOCAL_AWARENESS_PSEUDONYM_KEY: Final = "4b502d6c6f63616c2d61776172656e6573732d6c65646765722d6f6e6c792121"
+LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION: Final = "synthetic-local-v1"
 _KEY_VERSION: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 _ENTRY_NAMESPACE: Final = uuid.UUID("94e41132-9b1e-4bda-a9a7-522c83be828a")
 AWARENESS_LEDGER_TERMINAL_CAMPAIGN_STATES: Final = frozenset(
@@ -80,9 +87,22 @@ def _at_or_before(value: datetime | None, cutoff: datetime) -> bool:
     return value is not None and _normalized_utc(value) <= cutoff
 
 
-def _recipient_pseudonym(*, tenant_scope: str, recipient_id: uuid.UUID, key: bytes) -> str:
+def recipient_pseudonym(*, tenant_scope: str, recipient_id: uuid.UUID, key: bytes) -> str:
     message = b"kingphisher-awareness-ledger-recipient\0" + tenant_scope.encode("ascii") + b"\0" + recipient_id.bytes
     return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def _validate_pseudonym_inputs(*, tenant_scope: str, key: bytes, key_version: str, as_of: datetime) -> None:
+    """Shared guard for every ledger surface that resolves a pseudonym."""
+
+    if tenant_scope != SINGLE_TENANT_DATABASE_SCOPE:
+        raise ValueError("awareness projection requires the isolated single-tenant database scope")
+    if not isinstance(key, bytes) or len(key) < MIN_PSEUDONYM_KEY_BYTES:
+        raise ValueError("awareness pseudonym key must contain at least 32 bytes")
+    if _KEY_VERSION.fullmatch(key_version) is None:
+        raise ValueError("awareness pseudonym key version is invalid")
+    if as_of.tzinfo is None:
+        raise ValueError("as_of must include a timezone")
 
 
 def _assignment_exposure_pseudonym(*, tenant_scope: str, assignment_id: uuid.UUID, key: bytes) -> str:
@@ -255,7 +275,7 @@ def project_awareness_ledger_batch(
         else:
             campaign_date = _normalized_utc(assignment_created_at).date()
             campaign_date_basis = "targeted_at"
-        pseudonym = _recipient_pseudonym(
+        pseudonym = recipient_pseudonym(
             tenant_scope=tenant_scope,
             recipient_id=recipient_id,
             key=pseudonym_key,
@@ -325,3 +345,172 @@ def project_awareness_ledger_batch(
     )
     session.execute(statement)
     return AwarenessLedgerProjectionResult(len(requested), len(projections), tuple(entry_ids))
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerRecipientHistoryEntry:
+    """One pseudonymous ledger fact for a named recipient drill-down.
+
+    Contains no recipient attributes: the caller already knows the recipient
+    (the route is addressed by recipient id), so only campaign-date outcomes
+    are returned.
+    """
+
+    campaign_id: uuid.UUID
+    campaign_date: date
+    campaign_date_basis: str
+    delivered: bool
+    observed_open: bool
+    observed_click: bool
+    confirmed_interaction: bool
+    reported: bool
+    training_started: bool
+    training_completed: bool
+    no_activity_at_close: bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerRecipientHistory:
+    """Bounded chronological ledger history for one resolved pseudonym.
+
+    ``recipient_pseudonym`` is the tenant-keyed HMAC hex value, not PII; it is
+    included so an audited consumer can correlate repeated calls without ever
+    receiving a mailbox or recipient attribute.
+    """
+
+    recipient_pseudonym: str
+    pseudonym_key_version: str
+    generated_at: datetime
+    truncated: bool
+    entries: tuple[LedgerRecipientHistoryEntry, ...]
+    exposures_total: int
+    delivered_total: int
+    engaged_total: int
+    no_activity_at_close_total: int
+    repeat_exposures: int
+
+
+def ledger_recipient_history(
+    session: Session,
+    *,
+    tenant_scope: str,
+    recipient_id: uuid.UUID,
+    pseudonym_key: bytes,
+    pseudonym_key_version: str,
+    generated_at: datetime | None = None,
+) -> LedgerRecipientHistory:
+    """Return the bounded ledger history for one recipient's pseudonym.
+
+    The caller supplies the stable tenant pseudonym key; this service resolves
+    ``recipient_id`` to its pseudonym and reads only the PII-free ledger, never
+    recipient tables or raw evidence. The result is chronological and capped at
+    ``MAX_LEDGER_RECIPIENT_HISTORY`` rows; ``truncated`` reports the cap.
+
+    ``pseudonym_key``/``pseudonym_key_version`` must be the same governed key
+    the retention worker used to project the ledger, or the resolved pseudonym
+    will not match any rows. Key rotation/recovery is a separate governed
+    operation; this service never stores the key or the recipient identifier.
+    """
+
+    _validate_pseudonym_inputs(
+        tenant_scope=tenant_scope,
+        key=pseudonym_key,
+        key_version=pseudonym_key_version,
+        as_of=generated_at or datetime.now(UTC),
+    )
+    report_time = (generated_at or datetime.now(UTC)).astimezone(UTC)
+    if not isinstance(recipient_id, uuid.UUID):
+        raise TypeError("recipient_id must be a UUID")
+    pseudonym = recipient_pseudonym(
+        tenant_scope=tenant_scope,
+        recipient_id=recipient_id,
+        key=pseudonym_key,
+    )
+
+    rows = list(
+        session.execute(
+            select(
+                AwarenessLedgerEntry.campaign_id,
+                AwarenessLedgerEntry.campaign_date,
+                AwarenessLedgerEntry.campaign_date_basis,
+                AwarenessLedgerEntry.delivered,
+                AwarenessLedgerEntry.observed_open,
+                AwarenessLedgerEntry.observed_click,
+                AwarenessLedgerEntry.confirmed_interaction,
+                AwarenessLedgerEntry.reported,
+                AwarenessLedgerEntry.training_started,
+                AwarenessLedgerEntry.training_completed,
+                AwarenessLedgerEntry.no_activity_at_close,
+            )
+            .where(
+                AwarenessLedgerEntry.tenant_scope == tenant_scope,
+                AwarenessLedgerEntry.recipient_pseudonym == pseudonym,
+            )
+            .order_by(
+                AwarenessLedgerEntry.campaign_date,
+                AwarenessLedgerEntry.campaign_id,
+            )
+            .limit(MAX_LEDGER_RECIPIENT_HISTORY + 1)
+        )
+    )
+    truncated = len(rows) > MAX_LEDGER_RECIPIENT_HISTORY
+    rows = rows[:MAX_LEDGER_RECIPIENT_HISTORY]
+    entries = tuple(
+        LedgerRecipientHistoryEntry(
+            campaign_id=campaign_id,
+            campaign_date=campaign_date,
+            campaign_date_basis=campaign_date_basis,
+            delivered=bool(delivered),
+            observed_open=bool(_observed_open),
+            observed_click=bool(observed_click),
+            confirmed_interaction=bool(confirmed_interaction),
+            reported=bool(reported),
+            training_started=bool(training_started),
+            training_completed=bool(training_completed),
+            no_activity_at_close=(None if no_activity_at_close is None else bool(no_activity_at_close)),
+        )
+        for (
+            campaign_id,
+            campaign_date,
+            campaign_date_basis,
+            delivered,
+            _observed_open,
+            observed_click,
+            confirmed_interaction,
+            reported,
+            training_started,
+            training_completed,
+            no_activity_at_close,
+        ) in rows
+    )
+    exposures_total = len(entries)
+    delivered_total = sum(1 for entry in entries if entry.delivered)
+    # The same activity set as the ledger's no-activity-at-close rule and the
+    # aggregate repeat distribution (open, click, report, confirmed
+    # interaction, training started or completed).
+    engaged_total = sum(
+        1
+        for entry in entries
+        if (
+            entry.observed_open
+            or entry.observed_click
+            or entry.confirmed_interaction
+            or entry.reported
+            or entry.training_started
+            or entry.training_completed
+        )
+    )
+    no_activity_at_close_total = sum(1 for entry in entries if entry.no_activity_at_close is True)
+    repeat_exposures = max(0, exposures_total - 1)
+    return LedgerRecipientHistory(
+        recipient_pseudonym=pseudonym,
+        pseudonym_key_version=pseudonym_key_version,
+        generated_at=report_time,
+        truncated=truncated,
+        entries=entries,
+        exposures_total=exposures_total,
+        delivered_total=delivered_total,
+        engaged_total=engaged_total,
+        no_activity_at_close_total=no_activity_at_close_total,
+        repeat_exposures=repeat_exposures,
+    )

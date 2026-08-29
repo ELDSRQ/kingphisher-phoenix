@@ -3,6 +3,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.parse import urlparse
 
+from kp_database.awareness_ledger import (
+    LOCAL_AWARENESS_PSEUDONYM_KEY,
+    LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
+)
 from kp_domain_models.policy import ApprovalPolicy, parse_domain_allowlist
 from kp_telemetry.settings import local_dotenv_file
 from pydantic import AliasChoices, Field, model_validator
@@ -22,8 +26,6 @@ _ACS_DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63
 _CIPHERTEXT_KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
 _AWARENESS_PSEUDONYM_KEY_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 _MAX_CIPHERTEXT_PRIOR_KEYS = 4
-_LOCAL_AWARENESS_PSEUDONYM_KEY = "4b502d6c6f63616c2d61776172656e6573732d6c65646765722d6f6e6c792121"
-_LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION = "synthetic-local-v1"
 
 
 def _is_local_provider_host(hostname: str | None) -> bool:
@@ -583,8 +585,8 @@ class WorkerSettings(BaseSettings):
         key_hex = self.awareness_pseudonym_key
         version = self.awareness_pseudonym_key_version
         if self.runtime_mode == "development":
-            key_hex = key_hex or _LOCAL_AWARENESS_PSEUDONYM_KEY
-            version = version or _LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION
+            key_hex = key_hex or LOCAL_AWARENESS_PSEUDONYM_KEY
+            version = version or LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION
         if re.fullmatch(r"[0-9a-f]{64,128}", key_hex) is None or len(key_hex) % 2 != 0:
             raise RuntimeError(
                 "KP_WORKER_AWARENESS_PSEUDONYM_KEY must be a 32-64-byte lowercase hexadecimal key"

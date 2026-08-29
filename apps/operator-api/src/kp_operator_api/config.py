@@ -10,6 +10,10 @@ import re
 import uuid
 from typing import Literal
 
+from kp_database.awareness_ledger import (
+    LOCAL_AWARENESS_PSEUDONYM_KEY,
+    LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
+)
 from kp_domain_models.policy import ApprovalPolicy, parse_domain_allowlist
 from kp_telemetry.settings import local_dotenv_file
 from pydantic import AliasChoices, Field, model_validator
@@ -45,6 +49,27 @@ class OperatorApiSettings(BaseSettings):
     ciphertext_prior_keys: str = Field(default="", max_length=512)
     console_jwt_secret: str = ""
     recipient_hash_salt: str = ""
+    #: Stable key and governed version for the PII-free awareness ledger
+    #: (RET-005). Must match the retention worker's key so named drill-down
+    #: resolves the pseudonyms the worker projected; like the RoE key, a shared
+    #: unprefixed alias lets one managed value serve both API and workers.
+    awareness_pseudonym_key: str = Field(
+        default="",
+        max_length=128,
+        repr=False,
+        validation_alias=AliasChoices(
+            "OPERATOR_API_AWARENESS_PSEUDONYM_KEY",
+            "KP_WORKER_AWARENESS_PSEUDONYM_KEY",
+        ),
+    )
+    awareness_pseudonym_key_version: str = Field(
+        default="",
+        max_length=32,
+        validation_alias=AliasChoices(
+            "OPERATOR_API_AWARENESS_PSEUDONYM_KEY_VERSION",
+            "KP_WORKER_AWARENESS_PSEUDONYM_KEY_VERSION",
+        ),
+    )
     tracking_token_hmac_key: str = Field(
         default="",
         validation_alias=AliasChoices("OPERATOR_API_TRACKING_TOKEN_HMAC_KEY", "TRACKING_TOKEN_HMAC_KEY"),
@@ -264,6 +289,30 @@ class OperatorApiSettings(BaseSettings):
         if len(salt) < 16:
             raise RuntimeError("OPERATOR_API_RECIPIENT_HASH_SALT must be at least 16 bytes")
         return salt
+
+    def require_awareness_pseudonym_config(self) -> tuple[bytes, str]:
+        """Return the stable ledger key and governed version for named drill-down.
+
+        Must match the retention worker's key so per-recipient history resolves
+        the pseudonyms the worker projected. Development has one deterministic
+        synthetic value (shared with the worker) so disposable local databases
+        remain reproducible; managed mode never falls back to it.
+        """
+
+        key_hex = self.awareness_pseudonym_key
+        version = self.awareness_pseudonym_key_version
+        if not self.config_is_managed:
+            key_hex = key_hex or LOCAL_AWARENESS_PSEUDONYM_KEY
+            version = version or LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION
+        if re.fullmatch(r"[0-9a-f]{64,128}", key_hex) is None or len(key_hex) % 2 != 0:
+            raise RuntimeError(
+                "OPERATOR_API_AWARENESS_PSEUDONYM_KEY must be a 32-64-byte lowercase hexadecimal key"
+            ) from None
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z", version) is None:
+            raise RuntimeError(
+                "OPERATOR_API_AWARENESS_PSEUDONYM_KEY_VERSION must be a governed 1-32 character identifier"
+            ) from None
+        return bytes.fromhex(key_hex), version
 
     def require_tracking_token_hmac_key(self) -> bytes:
         if not self.tracking_token_hmac_key:

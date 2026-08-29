@@ -100,7 +100,10 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
     (frozenset({"stop:campaign"}), _routes("POST /api/v1/campaigns/{campaign_id}/recall")),
     (
         frozenset({"view_named:results"}),
-        _routes("GET /api/v1/campaigns/{campaign_id}/recipients"),
+        _routes(
+            "GET /api/v1/campaigns/{campaign_id}/recipients",
+            "GET /api/v1/analytics/ledger/recipients/{recipient_id}/history",
+        ),
     ),
     (
         frozenset({"manage:recipients", "view_named:results"}),
@@ -114,6 +117,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/analytics/campaigns/{campaign_id}/funnel.csv",
             "GET /api/v1/analytics/ledger/trend.csv",
             "GET /api/v1/analytics/ledger/repeats.csv",
+            "GET /api/v1/analytics/ledger/recipients/{recipient_id}/history.csv",
         ),
     ),
     (frozenset({"submit:source"}), _routes("POST /api/v1/sources")),

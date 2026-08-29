@@ -15,6 +15,8 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 from kp_authorization.rbac import Capability, Principal
+from kp_database.awareness_ledger import LedgerRecipientHistory, ledger_recipient_history
+from kp_database.models import Recipient
 from kp_database.reporting import (
     MAX_LEDGER_TREND_WINDOW,
     MAX_TREND_CAMPAIGNS,
@@ -43,10 +45,12 @@ from kp_database.reporting import (
 from kp_domain_models import models as dm
 from kp_telemetry.errors import NotFoundError, ValidationError_
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_capability
-from kp_operator_api.deps import get_session
+from kp_operator_api.config import OperatorApiSettings
+from kp_operator_api.deps import get_session, get_settings
 
 router = APIRouter(prefix="/api/v1/analytics", tags=["analytics"])
 
@@ -77,6 +81,13 @@ _LEDGER_REPEAT_VALIDATION_MESSAGES = frozenset(
         "ledger repeat window bounds must be dates",
         "ledger repeat window start must precede end",
         "ledger repeat window cannot exceed 1826 days",
+    }
+)
+_LEDGER_HISTORY_VALIDATION_MESSAGES = frozenset(
+    {
+        "awareness pseudonym key must contain at least 32 bytes",
+        "awareness pseudonym key version is invalid",
+        "recipient_id must be a UUID",
     }
 )
 
@@ -191,6 +202,32 @@ class LedgerRepeatDistributionView(BaseModel):
     engaged_buckets: tuple[LedgerRepeatBucketView, ...]
     summary: tuple[CountMetric, ...]
     rates: tuple[RateMetric, ...]
+    semantics: dict[str, str]
+    privacy: str
+
+
+class LedgerRecipientHistoryEntryView(BaseModel):
+    """One pseudonymous ledger fact; no recipient attributes are returned."""
+
+    campaign_id: uuid.UUID
+    campaign_date: date
+    campaign_date_basis: str
+    delivered: bool
+    observed_open: bool
+    observed_click: bool
+    confirmed_interaction: bool
+    reported: bool
+    training_started: bool
+    training_completed: bool
+    no_activity_at_close: bool | None
+
+
+class LedgerRecipientHistoryView(BaseModel):
+    schema_version: Literal["1"] = "1"
+    generated_at: datetime
+    truncated: bool
+    summary: tuple[CountMetric, ...]
+    entries: tuple[LedgerRecipientHistoryEntryView, ...]
     semantics: dict[str, str]
     privacy: str
 
@@ -510,6 +547,136 @@ def _load_ledger_repeats(
         raise ValidationError_(message) from None
 
 
+def _ledger_recipient_history_view(
+    history: LedgerRecipientHistory,
+) -> LedgerRecipientHistoryView:
+    return LedgerRecipientHistoryView(
+        generated_at=history.generated_at,
+        truncated=history.truncated,
+        summary=(
+            CountMetric(name="exposures_total", value=history.exposures_total),
+            CountMetric(name="delivered_total", value=history.delivered_total),
+            CountMetric(name="engaged_total", value=history.engaged_total),
+            CountMetric(name="no_activity_at_close_total", value=history.no_activity_at_close_total),
+            CountMetric(name="repeat_exposures", value=history.repeat_exposures),
+        ),
+        entries=tuple(
+            LedgerRecipientHistoryEntryView(
+                campaign_id=entry.campaign_id,
+                campaign_date=entry.campaign_date,
+                campaign_date_basis=entry.campaign_date_basis,
+                delivered=entry.delivered,
+                observed_open=entry.observed_open,
+                observed_click=entry.observed_click,
+                confirmed_interaction=entry.confirmed_interaction,
+                reported=entry.reported,
+                training_started=entry.training_started,
+                training_completed=entry.training_completed,
+                no_activity_at_close=entry.no_activity_at_close,
+            )
+            for entry in history.entries
+        ),
+        semantics={
+            "unit": "pseudonymous ledger facts for one named recipient; the recipient pseudonym is never returned",
+            "exposures_total": "retained ledger exposures for this recipient within the 1,826-day ledger",
+            "engaged_total": "exposures with retained human activity (open, click, report, confirmed "
+            "interaction, training started or completed)",
+            "repeat_exposures": "exposures beyond the first; the basis for repeat history",
+            "delivered": "destination MTA handoff, never inbox placement or reading",
+            "corrections": "scanner or bot corrections are not subtracted without normalized correction evidence",
+        },
+        privacy=(
+            "named capability-protected ledger history; no recipient identifiers, mailboxes, display names, "
+            "departments, or pseudonyms are returned"
+        ),
+    )
+
+
+def _ledger_recipient_history_csv_rows(
+    history: LedgerRecipientHistory,
+) -> tuple[tuple[str | int, ...], ...]:
+    """Formula-safe, PII-free CSV projection of one named ledger history.
+
+    The recipient is identified by the request path, so the export carries no
+    recipient identifier, mailbox, pseudonym, or recipient attribute.
+    """
+
+    header = (
+        "scope",
+        "generated_at",
+        "truncated",
+        "campaign_date",
+        "campaign_date_basis",
+        "campaign_id",
+        "delivered",
+        "observed_open",
+        "observed_click",
+        "confirmed_interaction",
+        "reported",
+        "training_started",
+        "training_completed",
+        "no_activity_at_close",
+    )
+    rows: list[tuple[str | int, ...]] = [header]
+    prefix = (
+        SINGLE_TENANT_DATABASE_SCOPE,
+        history.generated_at.isoformat(),
+        str(history.truncated).lower(),
+    )
+    for entry in history.entries:
+        rows.append(
+            (
+                *prefix,
+                entry.campaign_date.isoformat(),
+                entry.campaign_date_basis,
+                str(entry.campaign_id),
+                int(entry.delivered),
+                int(entry.observed_open),
+                int(entry.observed_click),
+                int(entry.confirmed_interaction),
+                int(entry.reported),
+                int(entry.training_started),
+                int(entry.training_completed),
+                "" if entry.no_activity_at_close is None else int(entry.no_activity_at_close),
+            )
+        )
+    for name, value in (
+        ("exposures_total", history.exposures_total),
+        ("delivered_total", history.delivered_total),
+        ("engaged_total", history.engaged_total),
+        ("no_activity_at_close_total", history.no_activity_at_close_total),
+        ("repeat_exposures", history.repeat_exposures),
+    ):
+        rows.append((*prefix, "summary", "", "", name, int(value), "", "", "", "", "", "", ""))
+    return tuple(rows)
+
+
+def _load_ledger_recipient_history(
+    session: Session,
+    settings: OperatorApiSettings,
+    recipient_id: uuid.UUID,
+) -> LedgerRecipientHistory:
+    known = session.execute(select(Recipient.recipient_id).where(Recipient.recipient_id == recipient_id)).first()
+    if known is None:
+        raise NotFoundError("recipient does not exist")
+    try:
+        pseudonym_key, key_version = settings.require_awareness_pseudonym_config()
+        return ledger_recipient_history(
+            session,
+            tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+            recipient_id=recipient_id,
+            pseudonym_key=pseudonym_key,
+            pseudonym_key_version=key_version,
+        )
+    except ValueError as exc:
+        message = _bounded_validation_message(
+            exc,
+            allowed=_LEDGER_HISTORY_VALIDATION_MESSAGES,
+            fallback="ledger recipient history request is invalid",
+        )
+        raise ValidationError_(message) from None
+
+
 EvidenceStart = Annotated[datetime | None, Query(description="Inclusive RFC 3339 timestamp with timezone")]
 EvidenceEnd = Annotated[datetime | None, Query(description="Exclusive RFC 3339 timestamp with timezone")]
 ScheduleStart = Annotated[datetime, Query(description="Inclusive campaign schedule-start timestamp with timezone")]
@@ -648,6 +815,54 @@ def export_ledger_repeats(
         content=output.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="awareness-ledger-repeats.csv"'},
+    )
+
+
+@router.get("/ledger/recipients/{recipient_id}/history", response_model=LedgerRecipientHistoryView)
+def get_ledger_recipient_history(
+    recipient_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    settings: OperatorApiSettings = Depends(get_settings),
+    _principal: Principal = Depends(require_capability(Capability.VIEW_NAMED_RESULTS)),
+) -> LedgerRecipientHistoryView:
+    """Return the bounded pseudonymous ledger history for one named recipient.
+
+    Named (capability-protected) drill-down into the PII-free ledger. The
+    recipient id is resolved server-side with the governed pseudonym key; the
+    response contains only ledger outcome facts, never recipient attributes or
+    the pseudonym itself.
+    """
+
+    return _ledger_recipient_history_view(
+        _load_ledger_recipient_history(
+            session,
+            settings=settings,
+            recipient_id=recipient_id,
+        )
+    )
+
+
+@router.get("/ledger/recipients/{recipient_id}/history.csv")
+def export_ledger_recipient_history(
+    recipient_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    settings: OperatorApiSettings = Depends(get_settings),
+    _principal: Principal = Depends(require_capability(Capability.EXPORT_BULK)),
+) -> Response:
+    """Export the same bounded named ledger history as formula-safe CSV."""
+
+    history = _load_ledger_recipient_history(
+        session,
+        settings=settings,
+        recipient_id=recipient_id,
+    )
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows(_ledger_recipient_history_csv_rows(history))
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="awareness-ledger-recipient-history.csv"'},
     )
 
 

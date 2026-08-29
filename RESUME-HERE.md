@@ -267,15 +267,16 @@ For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact R
 
 ## Next execution order
 
-1. Deliver the minimum complete product: finish ANA-010 with the ledger's
-   named-history privacy/RBAC consumers (capability-protected per-recipient
-   pseudonymous drill-down with pseudonym-key governance — basic repeat
-   history, close disposition, and the five-year ledger graph are already
-   landed), then benchmark/select the internal model and wire `AI-010` into the
-   existing worker role/job, then complete campaign-specific micro-training
-   (`TRN-010`). Deterministic fallback and human approval remain mandatory. Do
-   not reopen locally complete `ORG-001`, `THR-001A/B`, `IMP-001`, or
-   `DOCSIM-001` without a regression.
+1. Deliver the minimum complete product: ANA-010 is complete locally
+   (five-year ledger graph, named close disposition, repeat history, and
+   named per-recipient pseudonymous drill-down with a shared governed
+   pseudonym key; GUI drill-down wiring and key rotation/recovery remain
+   governed follow-up), so the remaining items are: benchmark/select the
+   internal model and wire `AI-010` into the existing worker role/job, then
+   complete campaign-specific micro-training (`TRN-010`). Deterministic
+   fallback and human approval remain mandatory. Do not reopen locally
+   complete `ORG-001`, `THR-001A/B`, `IMP-001`, `DOCSIM-001`, or `ANA-010`
+   without a regression.
 2. Simplify the normal Azure/mail path through the GUI after those interfaces
    stabilize; keep the existing secure three-stage deployment contract and
    provider adapters supported while hiding engineering internals.
@@ -308,15 +309,15 @@ defect is fixed. Do not reopen locally complete ORG-001, THR-001A/B, IMP-001,
 or DOCSIM-001 without a regression.
 
 Continue the goal-aligned backlog without removing useful deferred features:
-finish ANA-010 (the ledger's named-history privacy/RBAC consumers with
-pseudonym-key governance; basic repeat history is landed); then benchmark and
-select the internal-model-first AI-010 path (pinned llama.cpp role/job in the
-existing worker image, no tools/network, schema-constrained output, cost/status
-exposure, deterministic fallback) and add campaign-specific micro-training
-(TRN-010); then simplify GUI Azure/mail deployment (DEP-010). AI may
-draft/advise but never approve, target, apply infrastructure, handle consent,
-or launch. Prefer simplicity and the existing three-deployable modular-monolith
-architecture.
+ANA-010 is complete locally (ledger graph, named disposition, repeat history,
+named per-recipient pseudonymous drill-down); the remaining minimum-product
+items are: benchmark and select the internal-model-first AI-010 path (pinned
+llama.cpp role/job in the existing worker image, no tools/network,
+schema-constrained output, cost/status exposure, deterministic fallback) and
+add campaign-specific micro-training (TRN-010); then simplify GUI Azure/mail
+deployment (DEP-010). AI may draft/advise but never approve, target, apply
+infrastructure, handle consent, or launch. Prefer simplicity and the existing
+three-deployable modular-monolith architecture.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
 ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/
