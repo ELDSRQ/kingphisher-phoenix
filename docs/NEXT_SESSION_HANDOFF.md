@@ -103,10 +103,10 @@ delete potentially valuable behavior simply because it is deferred.
   migration revision-id overflow so fresh databases can reach head `0032`.
 - The checkpoint (`d25313d`) and every increment through the DEP-010
   strong-defaults/Advanced classification are committed and pushed;
-  `origin/main` is `5ab56e6` with the review/CSP/A-drift commits (`506b716`,
-  `4ac0e9a`) awaiting push. Current-head hermetic 2,683/103, external
-  PostgreSQL 92, and external Redis 2 pass on 2026-08-29; E2E, image, browser,
-  and cloud gates remain open.
+  `origin/main` is `95cbc81` (review/CSP/A-drift/provider/chart waves landed,
+  incl. `506b716`, `4ac0e9a`, `dc53688`, `93d33c0`, `95cbc81`). Current-head
+  hermetic 2,692/103, external PostgreSQL 92, and external Redis 2 pass on
+  2026-08-29; E2E, image, browser, and cloud gates remain open.
 - The offline-buildable backlog is complete. ANA-010 (ledger graph, named close
   disposition, repeat history, per-recipient pseudonymous drill-down), TRN-010
   (campaign-bound knowledge check with deterministic evidence builder, digest

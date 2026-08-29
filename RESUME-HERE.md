@@ -104,8 +104,9 @@ functionality or data.
   `1403d94` → `c9ea716` with the ANA-010 ledger-trend (`aa67c17`) and named
   close-disposition (`c9ea716`) increments. Worktree is clean; do not reset or
   clean it.
-- Current-head gates (all 2026-08-29): hermetic 2,683/103 deselected with 0
-  failures; external PostgreSQL 92 passed (fresh-install/historical migration
+- Current-head gates (all 2026-08-29, as of `95cbc81`): hermetic 2,692/103
+  deselected with 0 failures (includes the chart/CSP contract tests from the
+  D3 wave); external PostgreSQL 92 passed (fresh-install/historical migration
   to `0033`, retention concurrency, outcome-writer-versus-retention, grants);
   external Redis 2 passed on DB15; fresh-migration 1 passed; `make lint` and
   strict mypy (133 files) clean. E2E, exact-image, browser, and
@@ -323,11 +324,10 @@ The project-only ARM64 engine remains on 192.168.1.140 under
 /Volumes/DockerExternal/KingPhisher-Phoenix (see
 /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
 
-origin/main is 5ab56e6; the local worktree is ahead by the review/CSP
-commits (506b716, 4ac0e9a) plus the A-drift/list commit, and is clean.
-Alembic head is 0033_training_knowledge_check. Current-head gates pass:
-hermetic 2,683, external PostgreSQL 92, fresh-migration 1, external Redis 2,
-lint, strict mypy. The retention P1 is closed, the migration revision-id
+origin/main is 95cbc81; the local worktree is clean. Alembic head is
+0033_training_knowledge_check. Current-head gates pass: hermetic 2,692,
+external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
+mypy. The retention P1 is closed, the migration revision-id
 defect is fixed, and ANA-010/TRN-010 are complete locally. The offline-
 buildable backlog is complete: every remaining min-product item needs an
 external environment (a live llama.cpp endpoint for model selection/deployment
@@ -356,15 +356,20 @@ discovery and live progress/cost/rollback qualification for DEP-010, then the
 full qualification lanes (external E2E, exact-final ARM64 images,
 AMD64/registry/attestation, browser/WCAG, disposable Azure +
 Entra/Graph/Outlook/ACS/DNS/inbox, recovery/rotation, alert/audit witness,
-human acceptance). The 2026-08-29 remediation wave (A-drift docs, provider
-strategy refactor, rate-limit posture, DeliveryConfigurationError) is done;
-see /Users/edierks/projects/codex-test/phishing-awareness-platform/docs/REMEDIATION-LIST-2026-08-29.md
-for the open remainder (modularization, behavioral UI tests, trend charts,
-qualification lanes). Label evidence local/static, local live, or
-cloud/provider live; only the last closes a corresponding production gate. AI
-may draft/advise but never approve, target, apply infrastructure, handle
-consent, or launch. Prefer simplicity and the existing three-deployable
-modular-monolith architecture.
+human acceptance). The 2026-08-29 remediation waves are done: (a) A-drift
+docs, (b) the provider strategy refactor (EmailProviderKind enum, 9 forks no
+longer string-forkable), rate-limit posture documentation, and
+DeliveryConfigurationError (see /Users/edierks/projects/codex-test/phishing-awareness-platform/docs/REMEDIATION-LIST-2026-08-29.md
+for status), and (c) the D3 accessible SVG ledger-trend chart
+(ledgerTrendChart + svg() in the console app.js, strict-CSP-clean, table
+retained as the data fallback; pinned by a 7-test chart/CSP contract in
+/Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-api/tests/test_console_csp_contract.py
+and executed offline by
+/Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-ui/tests/chart-smoke.mjs).
+The open remainder is modularization (D1, file-level splits of the monolith
+modules to avoid churn, do with the next feature touch), a real behavioral UI
+test (D2; extend chart-smoke.mjs toward a DOM/Playwright harness), the other
+opportunistic items, and the external qualification lanes.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
 ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/
