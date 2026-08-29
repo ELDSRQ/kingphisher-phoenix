@@ -4,543 +4,148 @@ The browser never supplies a command, path, repository, ref, workflow name, or
 credential.  It can only review the fixed workflow inputs declared here and ask
 the server to dispatch the checked-in ``azure-deploy.yml`` workflow.  GitHub's
 protected environment remains the final approval boundary.
+
+This module is the deployment facade: constants, exceptions, public error
+guidance, and the two frozen value types live in
+kp_operator_api.deployment_common; the GitHub workflow connector lives in
+kp_operator_api.github_workflow_gateway.  This facade re-exports every name so
+route handlers and operator tests that reference
+kp_operator_api.deployment_orchestration.X keep resolving exactly as before
+the split.
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import io
 import json
-import os
 import re
 import secrets
 import threading
 import uuid
-import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
-from urllib.parse import quote, urlsplit
 
-import httpx
 import redis
 
-WORKFLOW_FILE = "azure-deploy.yml"
-WORKFLOW_PATH = ".github/workflows/azure-deploy.yml"
-PLAN_TTL_SECONDS = 24 * 60 * 60
-ACTIVE_TTL_SECONDS = PLAN_TTL_SECONDS
-OPERATION_TTL_SECONDS = 5 * 60
-RUNS_PER_PAGE = 100
-MAX_RUN_PAGES = 3
-MAX_BASELINE_RUNS = RUNS_PER_PAGE * MAX_RUN_PAGES
-MAX_ACTIVITY = 160
-MAX_STEPS_PER_JOB = 96
-MAX_DEPLOYMENT_ATTEMPTS = 8
-CHECKPOINT_RESERVE_PER_ATTEMPT = 8
-CORRELATION_PREFIX = "kp"
-MAX_WORKFLOW_BYTES = 256 * 1024
-MAX_GITHUB_METADATA_BYTES = 1024 * 1024
-MAX_GITHUB_STATUS_BYTES = 256 * 1024
-MAX_GITHUB_ACTIVITY_BYTES = 512 * 1024
-MAX_DEPLOYMENT_CONFIG_BYTES = 32 * 1024
-MAX_PLAN_BYTES = 128 * 1024
-MAX_CHECKPOINTS = 64
-MAX_ACS_ARTIFACT_BYTES = 2 * 1024 * 1024
-MAX_ACS_EVIDENCE_BYTES = 16 * 1024
-MAX_ACS_EVIDENCE_AGE_SECONDS = 24 * 60 * 60
-# Updated only when the fixed workflow and connector contract are reviewed
-# together. A repository ref that resolves to any other content is not ready.
-EXPECTED_WORKFLOW_SHA256 = "6868067ef5d58c799bc4a07dd832d4852d38dee73e6ff1af9a58c701ce85a4d3"
-REQUIRED_WORKFLOW_INPUTS = frozenset(
-    {
-        "environment",
-        "network_mode",
-        "deployment_phase",
-        "deployment_config",
-        "deployment_request_id",
-        "reviewed_commit_sha",
-    }
+from kp_operator_api.deployment_common import (
+    _ACS_STAGE_RESULT_BY_STAGE,
+    _ACS_STATUS_VALUES,
+    _CHECKPOINT_EVIDENCE_FIELDS,
+    _CHECKPOINT_REASONS,
+    _CIPHERTEXT_KEY_ID,
+    _COMMON_RECOVERY_STEPS,
+    _DIGEST,
+    _FOUNDATION_BOOTSTRAP_RECOVERY_STEPS,
+    _FOUNDATION_FINALIZE_RECOVERY_STEPS,
+    _NEXT_ACTIONS,
+    _NEXT_DEPLOYMENT_STAGE,
+    _PLAN_ID,
+    _PUBLIC_PLAN_ERRORS,
+    _SENSITIVE_DEPLOYMENT_VALUE,
+    _TERMINAL_RESULTS,
+    _VERSIONLESS_KEY_VAULT_SECRET_ID,
+    _WORKLOAD_RECOVERY_STEPS,
+    ACS_EVIDENCE_ARTIFACT_ALLOWED_PATHS,
+    ACS_EVIDENCE_ARTIFACT_PATH,
+    ACS_EVIDENCE_ARTIFACT_SCHEMA,
+    ACTIVE_TTL_SECONDS,
+    CHECKPOINT_RESERVE_PER_ATTEMPT,
+    CORRELATION_PREFIX,
+    DEPLOYMENT_CONFIG_KEYS,
+    DEPLOYMENT_STAGES,
+    EXPECTED_WORKFLOW_SHA256,
+    INTERNAL_ACS_CONFIG_DEFAULTS,
+    MAX_ACS_ARTIFACT_BYTES,
+    MAX_ACS_EVIDENCE_AGE_SECONDS,
+    MAX_ACS_EVIDENCE_BYTES,
+    MAX_ACTIVITY,
+    MAX_BASELINE_RUNS,
+    MAX_CHECKPOINTS,
+    MAX_DEPLOYMENT_ATTEMPTS,
+    MAX_DEPLOYMENT_CONFIG_BYTES,
+    MAX_GITHUB_ACTIVITY_BYTES,
+    MAX_GITHUB_METADATA_BYTES,
+    MAX_GITHUB_STATUS_BYTES,
+    MAX_PLAN_BYTES,
+    MAX_RUN_PAGES,
+    MAX_STEPS_PER_JOB,
+    MAX_WORKFLOW_BYTES,
+    OPERATION_TTL_SECONDS,
+    PLAN_TTL_SECONDS,
+    PRESERVATION_REQUIRED_ASSETS,
+    PROHIBITED_AUTOMATIC_ACTIONS,
+    PUBLIC_DEPLOYMENT_CONFLICT,
+    PUBLIC_DEPLOYMENT_STATUS_UNAVAILABLE,
+    PUBLIC_DEPLOYMENT_UNAVAILABLE,
+    RECOVERY_EVIDENCE_REQUIREMENTS,
+    REQUIRED_WORKFLOW_INPUTS,
+    RUNS_PER_PAGE,
+    WORKFLOW_FILE,
+    WORKFLOW_PATH,
+    DeploymentConflict,
+    DeploymentUnavailable,
+    DispatchIndeterminate,
+    DispatchRejected,
+    WorkflowConfiguration,
+    WorkflowPreflight,
+    public_deployment_error,
 )
-DEPLOYMENT_CONFIG_KEYS = (
-    "subscription_id",
-    "location",
-    "name_prefix",
-    "operator_fqdn",
-    "tracking_fqdn",
-    "entra_tenant_id",
-    "entra_client_id",
-    "acs_resource_mode",
-    "acs_existing_communication_service_id",
-    "acs_existing_email_endpoint",
-    "acs_existing_email_domain_id",
-    "acs_sending_domain",
-    "acs_sender_local_part",
-    "acs_sender_display_name",
-    "acs_dns_zone_id",
-    "acs_daily_message_limit",
-    "acs_messages_per_minute",
-    "acs_ramp_batch_size",
-    "acs_ramp_interval_seconds",
-    "communication_data_location",
-    "ai_endpoint",
-    "enable_directory_sync",
-    "directory_group_ids",
-    "enable_reported_mailbox",
-    "reported_mailbox_address",
-    "reported_mailbox_folder",
-    "alert_webhook_domains",
-    "allowed_recipient_domains",
-    "ciphertext_active_key_id",
-    "ciphertext_prior_key_ids",
-    "ciphertext_prior_keys_secret_id",
-)
-# These values are workflow-internal defensive defaults. They can never be
-# supplied by a browser, AI assistant, export, or caller-controlled allowlist.
-# Only authenticated Azure control-plane readback may replace them.
-INTERNAL_ACS_CONFIG_DEFAULTS = {
-    "acs_domain_verification_status": "pending_live_readback",
-    "acs_spf_verification_status": "pending_live_readback",
-    "acs_dkim_verification_status": "pending_live_readback",
-    "acs_dkim2_verification_status": "pending_live_readback",
-    "acs_sender_username_status": "pending_live_readback",
-    "acs_domain_association_status": "pending_live_readback",
-    "acs_readiness_checked_at": "",
-}
-DEPLOYMENT_STAGES = ("foundation_bootstrap", "foundation_finalize", "workloads")
-_NEXT_DEPLOYMENT_STAGE = {
-    "foundation_bootstrap": "foundation_finalize",
-    "foundation_finalize": "workloads",
-}
-ACS_EVIDENCE_ARTIFACT_SCHEMA = "kp.acs-stage-result.v1"
-ACS_EVIDENCE_ARTIFACT_PATH = "acs-stage-result.json"
-ACS_EVIDENCE_ARTIFACT_ALLOWED_PATHS = frozenset(
-    {
-        "acs-live-readiness.json",
-        "acs-verification-initiation.json",
-        "acs-finalize-readback.json",
-        "acs-stage-result.json",
-        "checkpoints.ndjson",
-    }
-)
-_ACS_STAGE_RESULT_BY_STAGE = {
-    "foundation_bootstrap": frozenset(
-        {
-            "foundation_bootstrap_pending_dns",
-            "foundation_bootstrap_already_verified_no_mutation",
-            "foundation_bootstrap_existing_resource_no_mutation",
-        }
-    ),
-    "foundation_finalize": frozenset({"foundation_finalized"}),
-    "workloads": frozenset({"workloads_deployed"}),
-}
-_ACS_STATUS_VALUES = frozenset(
-    {
-        "not_observed",
-        "not_linked",
-        "notstarted",
-        "verificationrequested",
-        "verificationinprogress",
-        "verificationfailed",
-        "verified",
-    }
-)
-_REPOSITORY = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\Z")
-_REF = re.compile(r"[A-Za-z0-9._/-]{1,255}\Z")
-_PLAN_ID = re.compile(r"[0-9a-f]{32}\Z")
-_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-_COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
-_GITHUB_TOKEN = re.compile(r"[A-Za-z0-9_-]{20,512}\Z")
-_CIPHERTEXT_KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
-_VERSIONLESS_KEY_VAULT_SECRET_ID = re.compile(
-    r"/subscriptions/([^/]+)/resourceGroups/[^/]+/providers/Microsoft\.KeyVault/"
-    r"vaults/[A-Za-z0-9-]{3,24}/secrets/[A-Za-z0-9-]{1,127}\Z",
-    re.IGNORECASE,
-)
-_TERMINAL_FAILURES = frozenset({"failure", "cancelled", "timed_out", "action_required", "stale"})
-_TERMINAL_RESULTS = _TERMINAL_FAILURES | {"success", "neutral", "skipped"}
-_RUN_STATUSES = frozenset({"queued", "in_progress", "completed", "waiting", "requested", "pending"})
-_ACTIVITY_STATUSES = _RUN_STATUSES | {"unknown"}
-_JSON_CONTENT_TYPE = re.compile(r"application/(?:json|[A-Za-z0-9!#$&^_.+-]+\+json)\Z", re.IGNORECASE)
-_SENSITIVE_ACTIVITY = re.compile(
-    r"(?:gh[pousr]_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]{12,}|"
-    r"(?:password|secret|token|api[_-]?key|authorization|accountkey)\s*[:=])",
-    re.IGNORECASE,
-)
-_SENSITIVE_DEPLOYMENT_VALUE = re.compile(
-    r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|"
-    r"(?:password|secret|token|api[_-]?key|authorization|accountkey)\s*[:=]\s*\S+|"
-    r"bearer\s+[A-Za-z0-9._~+/=-]{8,})",
-    re.IGNORECASE,
-)
+from kp_operator_api.github_workflow_gateway import GitHubWorkflowGateway
 
-# Deployment recovery is deliberately preservation-first.  These values are
-# returned as reviewed, machine-readable policy; they are not shell commands
-# and the connector has no cleanup primitive.
-PRESERVATION_REQUIRED_ASSETS = (
-    "working_tree",
-    "python_environment",
-    "terraform_provider_cache",
-    "container_images",
-    "compose_containers",
-    "build_cache",
-    "named_volumes",
-    "databases",
-    "runtime_state",
-    "qualification_evidence",
-)
-PROHIBITED_AUTOMATIC_ACTIONS = (
-    "delete_files",
-    "prune_build_cache",
-    "remove_images",
-    "remove_containers",
-    "remove_volumes",
-    "drop_databases",
-    "compose_down",
-    "reset_working_tree",
-)
-RECOVERY_EVIDENCE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    "disk": (
-        "free_bytes_before_build",
-        "required_bytes_estimate",
-        "capacity_decision",
-    ),
-    "runtime": (
-        "container_runtime_available",
-        "container_runtime_writable",
-        "runtime_version",
-    ),
-    "images": (
-        "required_image_references",
-        "required_image_digests",
-        "missing_images_rebuild_plan",
-    ),
-    "platform": (
-        "runner_operating_system",
-        "runner_architecture",
-        "target_platform",
-    ),
-    "volumes": (
-        "required_named_volumes",
-        "volume_presence",
-        "preservation_decision",
-    ),
-    "databases": (
-        "required_databases",
-        "schema_revision",
-        "backup_or_recovery_evidence",
-        "preservation_decision",
-    ),
-}
-QUALIFICATION_JOB = "Qualify source and release gates"
-GUARD_JOB = "Guard reviewed deployment inputs"
-DEPLOY_JOB = "Deploy reviewed Azure phase"
-_COMMON_RECOVERY_STEPS = (
-    (QUALIFICATION_JOB, "Record runner disk headroom before qualification"),
-    (QUALIFICATION_JOB, "Required hermetic no-skip suite"),
-    (QUALIFICATION_JOB, "Validate Terraform without a backend"),
-    (QUALIFICATION_JOB, "Upload qualification recovery evidence"),
-    (GUARD_JOB, "Validate opaque deployment request correlation"),
-    (GUARD_JOB, "Refuse source drift after GUI review"),
-    (GUARD_JOB, "Record selected mode"),
-    (DEPLOY_JOB, "Initialize append-only deployment checkpoint"),
-    (DEPLOY_JOB, "Validate and materialize reviewed deployment values"),
-    (DEPLOY_JOB, "Checkpoint reviewed configuration"),
-    (DEPLOY_JOB, "Authenticate to Azure"),
-    (DEPLOY_JOB, "Checkpoint Azure authentication"),
-    (DEPLOY_JOB, "Initialize Terraform"),
-    (DEPLOY_JOB, "Checkpoint Terraform state identity"),
-    (DEPLOY_JOB, "Validate ciphertext key-rotation lifecycle metadata"),
-    (DEPLOY_JOB, "Read ACS readiness from the authenticated Azure control plane"),
-    (DEPLOY_JOB, "Checkpoint live ACS control-plane observation"),
-    (DEPLOY_JOB, "Summarize"),
-    (DEPLOY_JOB, "Checkpoint conclusive ACS stage result"),
-    (DEPLOY_JOB, "Record completed cloud operations"),
-    (DEPLOY_JOB, "Upload append-only deployment recovery evidence"),
-)
-_FOUNDATION_BOOTSTRAP_RECOVERY_STEPS = (
-    (DEPLOY_JOB, "Plan ACS foundation bootstrap"),
-    (DEPLOY_JOB, "Enforce ACS foundation bootstrap plan allowlist"),
-    (DEPLOY_JOB, "Checkpoint allowlisted foundation bootstrap plan"),
-    (DEPLOY_JOB, "Apply ACS foundation bootstrap"),
-    (DEPLOY_JOB, "Checkpoint ACS foundation bootstrap apply"),
-    (DEPLOY_JOB, "Publish non-secret integration bootstrap plan"),
-    (DEPLOY_JOB, "Checkpoint integration bootstrap plan"),
-    (DEPLOY_JOB, "Initiate pending ACS customer-domain verification"),
-    (DEPLOY_JOB, "Checkpoint ACS verification initiation"),
-)
-_FOUNDATION_FINALIZE_RECOVERY_STEPS = (
-    (DEPLOY_JOB, "Plan ACS foundation finalize"),
-    (DEPLOY_JOB, "Enforce ACS foundation finalize plan allowlist"),
-    (DEPLOY_JOB, "Checkpoint allowlisted foundation finalize plan"),
-    (DEPLOY_JOB, "Apply ACS foundation finalize"),
-    (DEPLOY_JOB, "Checkpoint ACS foundation finalize apply"),
-    (DEPLOY_JOB, "Prove finalized ACS association and sender from Azure"),
-    (DEPLOY_JOB, "Checkpoint finalized ACS readback"),
-)
-_WORKLOAD_RECOVERY_STEPS = (
-    (QUALIFICATION_JOB, "Required PostgreSQL integration gate"),
-    (QUALIFICATION_JOB, "Required Redis integration gate"),
-    (QUALIFICATION_JOB, "Required fresh-migration gate"),
-    (QUALIFICATION_JOB, "Build and start every release image"),
-    (QUALIFICATION_JOB, "Scan the built release images"),
-    (DEPLOY_JOB, "Build immutable images in the registry"),
-    (DEPLOY_JOB, "Verify registry attestations before deployment"),
-    (DEPLOY_JOB, "Checkpoint verified immutable images"),
-    (DEPLOY_JOB, "Plan workloads"),
-    (DEPLOY_JOB, "Refuse destructive workload changes"),
-    (DEPLOY_JOB, "Checkpoint non-destructive workload plan"),
-    (DEPLOY_JOB, "Apply workloads"),
-    (DEPLOY_JOB, "Checkpoint workload apply"),
-    (DEPLOY_JOB, "Migrate and qualify"),
-    (DEPLOY_JOB, "Checkpoint migration and health qualification"),
-    (DEPLOY_JOB, "Plan ACS receipt subscription activation"),
-    (DEPLOY_JOB, "Refuse unrelated changes in receipt activation plan"),
-    (DEPLOY_JOB, "Checkpoint non-destructive receipt plan"),
-    (DEPLOY_JOB, "Activate ACS receipt subscription after readiness"),
-    (DEPLOY_JOB, "Verify ACS Event Grid subscription"),
-    (DEPLOY_JOB, "Checkpoint verified receipt activation"),
-    (DEPLOY_JOB, "Remove ephemeral registry credentials"),
-)
-_CHECKPOINT_EVIDENCE_FIELDS = {
-    "plan_reviewed": frozenset({"review_digest", "source_revision_digest"}),
-    "dispatch_intent_saved": frozenset({"baseline_run_count", "retry"}),
-    "dispatch_blocked": frozenset({"reason"}),
-    "audit_evidence_committed": frozenset(),
-    "review_invalidated": frozenset({"reason"}),
-    "source_revalidated": frozenset({"source_revision_digest"}),
-    "dispatch_rejected": frozenset({"retry_safe"}),
-    "dispatch_indeterminate": frozenset({"retry_safe"}),
-    "dispatch_interrupted": frozenset({"retry_safe"}),
-    "dispatch_accepted": frozenset({"retry_safe"}),
-    "reconciliation_blocked": frozenset({"reason"}),
-    "run_linked": frozenset({"run_id"}),
-    "workflow_failed": frozenset({"run_id", "conclusion", "retry_safe"}),
-    "workflow_evidence_unverified": frozenset({"run_id", "reason"}),
-    "workflow_succeeded": frozenset({"run_id"}),
-    "workflow_status_observed": frozenset({"run_id", "status"}),
-}
-_CHECKPOINT_REASONS = frozenset(
-    {
-        "audit_evidence_unavailable",
-        "preflight_unavailable",
-        "source_revision_drift",
-        "exclusivity_lost",
-        "identity_changed",
-        "ambiguous_runs",
-        "correlation_changed",
-        "required_activity_unverified",
-    }
-)
-
-_NEXT_ACTIONS = {
-    "reviewed": "Review the preservation and preflight evidence requirements, then approve this plan.",
-    "dispatching": "Refresh this plan to reconcile the existing request; do not retry or clean up resources.",
-    "dispatch_accepted": "Refresh this plan while GitHub links the existing run; do not dispatch again.",
-    "dispatch_indeterminate": (
-        "Inspect GitHub Actions for the displayed correlation ID, then refresh; do not retry or clean up resources."
-    ),
-    "queued": "Wait for protected-environment approval, then refresh this plan.",
-    "running": "Allow the existing protected workflow to finish, then refresh this plan.",
-    "dispatch_failed": "Reconcile the confirmed pre-dispatch result; retry is available only for a rejected dispatch.",
-    "run_failed": (
-        "Review the linked GitHub run and reconcile Azure and Terraform state; do not dispatch this plan again."
-    ),
-    "evidence_unverified": (
-        "The run reported success but required pinned workflow steps were not verified; inspect the run and reconcile "
-        "Azure and Terraform state."
-    ),
-    "review_required": "Create and review a new plan; preserve this plan and its evidence for audit.",
-    "workflow_succeeded": (
-        "Verify the live Azure resources and required recovery evidence before declaring deployment complete."
-    ),
-}
-
-
-class DeploymentUnavailable(RuntimeError):
-    """The reviewed workflow connector is not configured or reachable."""
-
-
-class DeploymentConflict(RuntimeError):
-    """The requested transition could duplicate or overlap a deployment."""
-
-
-class DispatchRejected(RuntimeError):
-    """GitHub conclusively rejected the dispatch before it was accepted."""
-
-
-class DispatchIndeterminate(RuntimeError):
-    """The dispatch may have reached GitHub; retrying could duplicate it."""
-
-
-PUBLIC_DEPLOYMENT_UNAVAILABLE = (
-    "GUI deployment is unavailable; review the protected GitHub Actions connector configuration and retry"
-)
-PUBLIC_DEPLOYMENT_CONFLICT = (
-    "the deployment request cannot be completed in its current state; refresh and review the plan"
-)
-PUBLIC_DEPLOYMENT_STATUS_UNAVAILABLE = (
-    "Deployment status details are unavailable; inspect the protected GitHub Actions workflow"
-)
-
-# These are the only exception messages allowed to cross the GUI boundary.
-# Each value is fixed by this module; provider responses and arbitrary exception
-# strings are deliberately excluded.
-_PUBLIC_UNAVAILABLE_MESSAGES = frozenset(
-    {
-        "GUI deployment dispatch is disabled; configure the protected GitHub Actions connector",
-        "the server-side GitHub repository is missing or invalid",
-        "the server-side GitHub workflow ref is missing or invalid",
-        "the server-side GitHub workflow credential is missing or invalid",
-        "the server-side GitHub API origin is invalid",
-        "the fixed workflow environment is invalid",
-        "GitHub configured deployment ref metadata is malformed",
-        "GitHub deployment workflow path does not match the fixed connector",
-        "the fixed GitHub deployment workflow is disabled",
-        "GitHub deployment workflow metadata is malformed",
-        "GitHub deployment workflow content metadata is malformed",
-        "GitHub deployment workflow content is malformed",
-        "GitHub deployment workflow content size is inconsistent",
-        "the configured ref does not contain the reviewed deployment workflow",
-        "the fixed deployment workflow input contract is incomplete",
-        "GitHub protected environment metadata is malformed",
-        "GitHub protected environment reviewer metadata is malformed",
-        "GitHub protected environment wait timer metadata is malformed",
-        "GitHub protected environment branch policy metadata is malformed",
-        "GitHub workflow status is unavailable",
-        "GitHub workflow status is malformed",
-        "GitHub workflow run status is unavailable",
-        "GitHub workflow run status is malformed",
-        "GitHub workflow activity is unavailable",
-        "GitHub returned an invalid workflow run",
-        "deployment plan storage is unavailable",
-        "deployment plan storage is malformed",
-        *{
-            message
-            for purpose in (
-                "configured deployment ref",
-                "deployment workflow",
-                "deployment workflow content",
-                "protected staging environment",
-                "protected production environment",
-                "protected staging environment variables",
-                "protected production environment variables",
-            )
-            for message in (
-                f"GitHub {purpose} is unavailable",
-                f"the GitHub connector cannot inspect {purpose}; verify read permissions",
-                f"GitHub {purpose} is missing or is not visible to the connector",
-                f"GitHub {purpose} metadata exceeds the connector limit",
-                f"GitHub {purpose} metadata is malformed",
-            )
-        },
-        *{
-            message
-            for environment in ("staging", "production")
-            for message in (
-                f"the GitHub {environment} environment allows administrator approval bypass",
-                f"the GitHub {environment} environment has no required reviewer protection",
-                f"the GitHub {environment} environment allows reviewer self-approval",
-                f"the GitHub {environment} environment has no deployment branch protection",
-            )
-        },
-    }
-)
-
-_PUBLIC_CONFLICT_MESSAGES = frozenset(
-    {
-        "the reviewed deployment digest does not match",
-        "retry is allowed only after GitHub rejected a dispatch before creating a run",
-        "this reviewed plan has already been submitted",
-        "The stored plan lacks reviewed source evidence; create and review a new plan",
-        "this deployment attempt was already submitted",
-        "this deployment plan is currently being updated; refresh and retry",
-        "GitHub workflow, ref, or protected environment drifted; create and review a new plan",
-        "invalid deployment plan identifier",
-        "deployment plan is missing or expired",
-        "deployment plans may be used only by the administrator who reviewed them",
-        "deployment values must not contain credentials or tokens",
-        "deployment configuration exceeds the fixed workflow limit",
-        "ciphertext recovery metadata is invalid",
-        "deployment network mode is invalid for the reviewed environment and phase",
-        "reviewed Terraform state identity does not match the protected environment",
-        "deployment plan has reached its safe attempt or checkpoint limit; create and review a new plan",
-        *{f"another {environment} deployment is active" for environment in ("staging", "production")},
-    }
-)
-
-_PUBLIC_PLAN_ERRORS = frozenset(
-    {
-        "Audit evidence could not be committed; no workflow was dispatched",
-        "GitHub preflight became unavailable; no workflow was dispatched",
-        "GitHub workflow, ref, or protected environment drifted; create and review a new plan",
-        "GitHub conclusively rejected the workflow dispatch; correct access and retry",
-        "Dispatch outcome is unknown; inspect GitHub Actions and do not retry this plan",
-        "Multiple new workflow runs exist; inspect GitHub Actions before any retry",
-        "The linked workflow correlation changed; inspect GitHub Actions",
-        "The linked workflow identity changed; inspect GitHub Actions",
-        "Deployment exclusivity was lost; inspect GitHub Actions before continuing",
-        "The protected workflow ended unsuccessfully; review its GitHub evidence before retrying",
-        "The protected workflow ended unsuccessfully; reconcile its evidence and Azure state without retrying",
-        "The workflow reported success but required pinned job or step evidence is unavailable or incomplete",
-        "The prior operation stopped before workflow dispatch; reconcile its checkpoints without redispatching",
-        "The stored plan lacks reviewed source evidence; create and review a new plan",
-    }
-)
-
-
-def public_deployment_error(exc: DeploymentUnavailable | DeploymentConflict) -> str:
-    """Return only reviewed operator guidance for a deployment exception."""
-
-    message = str(exc)
-    if type(exc) is DeploymentUnavailable and message in _PUBLIC_UNAVAILABLE_MESSAGES:
-        return message
-    if type(exc) is DeploymentConflict and message in _PUBLIC_CONFLICT_MESSAGES:
-        return message
-    if isinstance(exc, DeploymentConflict):
-        return PUBLIC_DEPLOYMENT_CONFLICT
-    return PUBLIC_DEPLOYMENT_UNAVAILABLE
-
-
-@dataclass(frozen=True, slots=True)
-class WorkflowPreflight:
-    """Security-relevant GitHub metadata bound into a reviewed plan."""
-
-    commit_sha: str
-    workflow_id: int
-    workflow_blob_sha: str
-    workflow_content_sha256: str
-    environment_metadata_sha256: str
-    environment: str
-    required_reviewer_count: int
-    admin_bypass_allowed: bool
-    deployment_branch_policy_present: bool
-    tf_state_resource_group: str
-    tf_state_storage_account: str
-    tf_state_container: str
-
-    def review_payload(self) -> dict[str, Any]:
-        return {
-            "commit_sha": self.commit_sha,
-            "workflow_id": self.workflow_id,
-            "workflow_blob_sha": self.workflow_blob_sha,
-            "workflow_content_sha256": self.workflow_content_sha256,
-            "workflow_state": "active",
-            "workflow_path": WORKFLOW_PATH,
-            "input_contract": "exact_pinned_workflow_content",
-            "environment": self.environment,
-            "environment_metadata_sha256": self.environment_metadata_sha256,
-            "required_reviewer_count": self.required_reviewer_count,
-            "admin_bypass_allowed": self.admin_bypass_allowed,
-            "deployment_branch_policy_present": self.deployment_branch_policy_present,
-            "terraform_state_identity": {
-                "resource_group": self.tf_state_resource_group,
-                "storage_account": self.tf_state_storage_account,
-                "container": self.tf_state_container,
-            },
-        }
+# Re-export surface of the deployment facade. Tests and console routes reference
+# kp_operator_api.deployment_orchestration.<name>; __all__ marks every name that
+# must keep resolving here (constants, exceptions, shared types, gateway) as an
+# intentional re-export for ruff (F401), even when the orchestrator's own code
+# does not use them directly.
+__all__ = [
+    "ACS_EVIDENCE_ARTIFACT_ALLOWED_PATHS",
+    "ACS_EVIDENCE_ARTIFACT_PATH",
+    "ACS_EVIDENCE_ARTIFACT_SCHEMA",
+    "ACTIVE_TTL_SECONDS",
+    "CHECKPOINT_RESERVE_PER_ATTEMPT",
+    "CORRELATION_PREFIX",
+    "DEPLOYMENT_CONFIG_KEYS",
+    "DEPLOYMENT_STAGES",
+    "EXPECTED_WORKFLOW_SHA256",
+    "INTERNAL_ACS_CONFIG_DEFAULTS",
+    "MAX_ACS_ARTIFACT_BYTES",
+    "MAX_ACS_EVIDENCE_AGE_SECONDS",
+    "MAX_ACS_EVIDENCE_BYTES",
+    "MAX_ACTIVITY",
+    "MAX_BASELINE_RUNS",
+    "MAX_CHECKPOINTS",
+    "MAX_DEPLOYMENT_ATTEMPTS",
+    "MAX_DEPLOYMENT_CONFIG_BYTES",
+    "MAX_GITHUB_ACTIVITY_BYTES",
+    "MAX_GITHUB_METADATA_BYTES",
+    "MAX_GITHUB_STATUS_BYTES",
+    "MAX_PLAN_BYTES",
+    "MAX_RUN_PAGES",
+    "MAX_STEPS_PER_JOB",
+    "MAX_WORKFLOW_BYTES",
+    "OPERATION_TTL_SECONDS",
+    "PLAN_TTL_SECONDS",
+    "PRESERVATION_REQUIRED_ASSETS",
+    "PROHIBITED_AUTOMATIC_ACTIONS",
+    "PUBLIC_DEPLOYMENT_CONFLICT",
+    "PUBLIC_DEPLOYMENT_STATUS_UNAVAILABLE",
+    "PUBLIC_DEPLOYMENT_UNAVAILABLE",
+    "RECOVERY_EVIDENCE_REQUIREMENTS",
+    "REQUIRED_WORKFLOW_INPUTS",
+    "RUNS_PER_PAGE",
+    "WORKFLOW_FILE",
+    "WORKFLOW_PATH",
+    "DeploymentConflict",
+    "DeploymentUnavailable",
+    "DispatchIndeterminate",
+    "DispatchRejected",
+    "GitHubWorkflowGateway",
+    "WorkflowConfiguration",
+    "WorkflowPreflight",
+    "public_deployment_error",
+]
 
 
 class PlanStore(Protocol):
@@ -784,699 +389,6 @@ class MemoryPlanStore:
         with self._lock:
             if self.operations.get(plan_id) == token:
                 self.operations.pop(plan_id, None)
-
-
-@dataclass(frozen=True)
-class WorkflowConfiguration:
-    repository: str
-    ref: str
-    token: str
-
-    @classmethod
-    def from_environment(cls) -> WorkflowConfiguration:
-        mode = os.getenv("OPERATOR_API_DEPLOYMENT_ORCHESTRATION_MODE", "disabled").strip().lower()
-        if mode != "github_actions":
-            raise DeploymentUnavailable(
-                "GUI deployment dispatch is disabled; configure the protected GitHub Actions connector"
-            )
-        repository = os.getenv("OPERATOR_API_DEPLOYMENT_GITHUB_REPOSITORY", "").strip()
-        ref = os.getenv("OPERATOR_API_DEPLOYMENT_GITHUB_REF", "main").strip()
-        token = os.getenv("OPERATOR_API_DEPLOYMENT_GITHUB_TOKEN", "")
-        repository_parts = repository.split("/")
-        if _REPOSITORY.fullmatch(repository) is None or any(part in {".", ".."} for part in repository_parts):
-            raise DeploymentUnavailable("the server-side GitHub repository is missing or invalid")
-        if (
-            _REF.fullmatch(ref) is None
-            or ref.startswith("/")
-            or ref.endswith(("/", ".", ".lock"))
-            or ".." in ref
-            or "//" in ref
-            or any(part.startswith(".") for part in ref.split("/"))
-        ):
-            raise DeploymentUnavailable("the server-side GitHub workflow ref is missing or invalid")
-        if _GITHUB_TOKEN.fullmatch(token) is None:
-            raise DeploymentUnavailable("the server-side GitHub workflow credential is missing or invalid")
-        return cls(repository=repository, ref=ref, token=token)
-
-
-class GitHubWorkflowGateway:
-    """Fixed-origin GitHub API client; response bodies never cross the boundary."""
-
-    def __init__(self, configuration: WorkflowConfiguration, *, client: httpx.Client | None = None) -> None:
-        self.configuration = configuration
-        self._owns_client = client is None
-        self._client = client or httpx.Client(
-            base_url="https://api.github.com",
-            timeout=8.0,
-            follow_redirects=False,
-            headers={
-                "Accept": "application/vnd.github+json",
-                "Accept-Encoding": "identity",
-                "Authorization": f"Bearer {configuration.token}",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "kingphisher-deployment-orchestrator/1",
-            },
-        )
-        base_url = self._client.base_url
-        if (
-            base_url.scheme != "https"
-            or base_url.host != "api.github.com"
-            or base_url.port is not None
-            or base_url.userinfo
-            or base_url.path != "/"
-            or base_url.query
-            or base_url.fragment
-        ):
-            if self._owns_client:
-                self._client.close()
-            raise DeploymentUnavailable("the server-side GitHub API origin is invalid")
-        self._client.headers["Accept-Encoding"] = "identity"
-
-    def close(self) -> None:
-        """Close only the HTTP client created by this gateway."""
-        if self._owns_client:
-            self._client.close()
-
-    @property
-    def workflow_url(self) -> str:
-        return f"https://github.com/{self.configuration.repository}/actions/workflows/{WORKFLOW_FILE}"
-
-    def _workflow_api(self, suffix: str = "") -> str:
-        return f"/repos/{self.configuration.repository}/actions/workflows/{WORKFLOW_FILE}{suffix}"
-
-    def _get_json(
-        self,
-        path: str,
-        *,
-        purpose: str,
-        params: dict[str, str | int] | None = None,
-        max_bytes: int = MAX_GITHUB_METADATA_BYTES,
-        unavailable_message: str | None = None,
-        malformed_message: str | None = None,
-        preserve_access_semantics: bool = True,
-    ) -> dict[str, Any]:
-        unavailable = unavailable_message or f"GitHub {purpose} is unavailable"
-        malformed = malformed_message or f"GitHub {purpose} metadata is malformed"
-        try:
-            with self._client.stream("GET", path, params=params) as response:
-                if preserve_access_semantics and response.status_code in {401, 403}:
-                    raise DeploymentUnavailable(
-                        f"the GitHub connector cannot inspect {purpose}; verify read permissions"
-                    )
-                if preserve_access_semantics and response.status_code == 404:
-                    raise DeploymentUnavailable(f"GitHub {purpose} is missing or is not visible to the connector")
-                if not 200 <= response.status_code < 300:
-                    raise DeploymentUnavailable(unavailable)
-
-                content_lengths = response.headers.get_list("content-length")
-                if len(content_lengths) > 1:
-                    raise DeploymentUnavailable(malformed)
-                if content_lengths:
-                    declared = content_lengths[0]
-                    if len(declared) > 10 or re.fullmatch(r"[0-9]+", declared) is None:
-                        raise DeploymentUnavailable(malformed)
-                    if int(declared) > max_bytes:
-                        raise DeploymentUnavailable(
-                            f"GitHub {purpose} metadata exceeds the connector limit"
-                            if preserve_access_semantics
-                            else unavailable
-                        )
-
-                content_encodings = response.headers.get_list("content-encoding")
-                if len(content_encodings) > 1 or (
-                    content_encodings and content_encodings[0].strip().lower() not in {"", "identity"}
-                ):
-                    raise DeploymentUnavailable(malformed)
-                content_types = response.headers.get_list("content-type")
-                if len(content_types) != 1:
-                    raise DeploymentUnavailable(malformed)
-                media_type = content_types[0].split(";", maxsplit=1)[0].strip()
-                if _JSON_CONTENT_TYPE.fullmatch(media_type) is None:
-                    raise DeploymentUnavailable(malformed)
-
-                body = bytearray()
-                for chunk in response.iter_bytes():
-                    if len(body) + len(chunk) > max_bytes:
-                        raise DeploymentUnavailable(
-                            f"GitHub {purpose} metadata exceeds the connector limit"
-                            if preserve_access_semantics
-                            else unavailable
-                        )
-                    body.extend(chunk)
-        except DeploymentUnavailable:
-            raise
-        except httpx.HTTPError:
-            raise DeploymentUnavailable(unavailable) from None
-        try:
-            payload = json.loads(bytes(body).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
-            raise DeploymentUnavailable(malformed) from None
-        if not isinstance(payload, dict):
-            raise DeploymentUnavailable(malformed)
-        return payload
-
-    @staticmethod
-    def _bounded_response_bytes(response: httpx.Response, *, max_bytes: int) -> bytes:
-        content_lengths = response.headers.get_list("content-length")
-        if len(content_lengths) > 1:
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        if content_lengths:
-            declared = content_lengths[0]
-            if len(declared) > 10 or re.fullmatch(r"[0-9]+", declared) is None or int(declared) > max_bytes:
-                raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        encodings = response.headers.get_list("content-encoding")
-        if len(encodings) > 1 or (encodings and encodings[0].strip().lower() not in {"", "identity"}):
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        body = bytearray()
-        for chunk in response.iter_bytes():
-            if len(body) + len(chunk) > max_bytes:
-                raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-            body.extend(chunk)
-        return bytes(body)
-
-    @staticmethod
-    def _safe_artifact_redirect(value: str) -> bool:
-        try:
-            parsed = urlsplit(value)
-            host = (parsed.hostname or "").lower()
-            return bool(
-                parsed.scheme == "https"
-                and parsed.port is None
-                and parsed.username is None
-                and parsed.password is None
-                and not parsed.fragment
-                and (
-                    host == "pipelines.actions.githubusercontent.com"
-                    or host.endswith(".actions.githubusercontent.com")
-                    or host.endswith(".blob.core.windows.net")
-                )
-            )
-        except ValueError:
-            return False
-
-    def _artifact_archive(self, path: str) -> bytes:
-        """Download one bounded ZIP without forwarding GitHub credentials cross-origin."""
-
-        try:
-            with self._client.stream("GET", path) as response:
-                if response.status_code == 200:
-                    return self._bounded_response_bytes(response, max_bytes=MAX_ACS_ARTIFACT_BYTES)
-                if response.status_code != 302:
-                    raise DeploymentUnavailable("GitHub deployment evidence is unavailable")
-                locations = response.headers.get_list("location")
-                if len(locations) != 1 or not self._safe_artifact_redirect(locations[0]):
-                    raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-                location = locations[0]
-            # Use an isolated client so the GitHub bearer token is never sent to
-            # the short-lived object-storage URL.
-            with (
-                httpx.Client(
-                    timeout=8.0,
-                    follow_redirects=False,
-                    headers={"Accept-Encoding": "identity", "User-Agent": "kingphisher-deployment-orchestrator/1"},
-                ) as artifact_client,
-                artifact_client.stream("GET", location) as artifact_response,
-            ):
-                if artifact_response.status_code != 200:
-                    raise DeploymentUnavailable("GitHub deployment evidence is unavailable")
-                return self._bounded_response_bytes(artifact_response, max_bytes=MAX_ACS_ARTIFACT_BYTES)
-        except DeploymentUnavailable:
-            raise
-        except httpx.HTTPError:
-            raise DeploymentUnavailable("GitHub deployment evidence is unavailable") from None
-
-    def acs_evidence_artifact(self, run_id: int, run_attempt: int) -> dict[str, Any]:
-        """Return the one exact ACS live-read artifact from a completed workflow attempt."""
-
-        expected_name = f"azure-deployment-evidence-{run_id}-{run_attempt}"
-        payload = self._get_json(
-            f"/repos/{self.configuration.repository}/actions/runs/{run_id}/artifacts",
-            params={"per_page": 100},
-            purpose="deployment evidence",
-            max_bytes=MAX_GITHUB_STATUS_BYTES,
-            unavailable_message="GitHub deployment evidence is unavailable",
-            malformed_message="GitHub deployment evidence is malformed",
-            preserve_access_semantics=False,
-        )
-        artifacts = payload.get("artifacts")
-        total_count = payload.get("total_count")
-        if (
-            not isinstance(artifacts, list)
-            or len(artifacts) > 100
-            or not isinstance(total_count, int)
-            or isinstance(total_count, bool)
-            or total_count != len(artifacts)
-            or any(not isinstance(item, dict) for item in artifacts)
-        ):
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        matches = [item for item in artifacts if item.get("name") == expected_name]
-        if len(matches) != 1:
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        artifact = matches[0]
-        artifact_id = artifact.get("id")
-        artifact_size = artifact.get("size_in_bytes")
-        artifact_digest = artifact.get("digest")
-        archive_url = artifact.get("archive_download_url")
-        expected_url = (
-            f"https://api.github.com/repos/{self.configuration.repository}/actions/artifacts/{artifact_id}/zip"
-        )
-        if (
-            not isinstance(artifact_id, int)
-            or isinstance(artifact_id, bool)
-            or not 0 < artifact_id <= 2**63 - 1
-            or not isinstance(artifact_size, int)
-            or isinstance(artifact_size, bool)
-            or not 0 < artifact_size <= MAX_ACS_ARTIFACT_BYTES
-            or artifact.get("expired") is not False
-            or not isinstance(artifact_digest, str)
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", artifact_digest) is None
-            or archive_url != expected_url
-        ):
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        archive = self._artifact_archive(f"/repos/{self.configuration.repository}/actions/artifacts/{artifact_id}/zip")
-        if len(archive) != artifact_size:
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        archive_sha256 = f"sha256:{hashlib.sha256(archive).hexdigest()}"
-        if not secrets.compare_digest(archive_sha256, artifact_digest):
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        try:
-            with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-                members = bundle.infolist()
-                names = [member.filename for member in members]
-                if (
-                    not 1 <= len(members) <= len(ACS_EVIDENCE_ARTIFACT_ALLOWED_PATHS)
-                    or len(set(names)) != len(names)
-                    or ACS_EVIDENCE_ARTIFACT_PATH not in names
-                    or any(
-                        name not in ACS_EVIDENCE_ARTIFACT_ALLOWED_PATHS
-                        or member.is_dir()
-                        or member.file_size
-                        > (MAX_ACS_ARTIFACT_BYTES if name == "checkpoints.ndjson" else MAX_ACS_EVIDENCE_BYTES)
-                        or member.compress_size > MAX_ACS_ARTIFACT_BYTES
-                        for name, member in zip(names, members, strict=True)
-                    )
-                    or bundle.testzip() is not None
-                ):
-                    raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-                evidence_bytes = bundle.read(ACS_EVIDENCE_ARTIFACT_PATH)
-                live_bytes = bundle.read("acs-live-readiness.json")
-        except (KeyError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile):
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed") from None
-        if not 0 < len(evidence_bytes) <= MAX_ACS_EVIDENCE_BYTES:
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        try:
-            evidence = json.loads(evidence_bytes.decode("utf-8"))
-            live_evidence = json.loads(live_bytes.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed") from None
-        if not isinstance(evidence, dict) or not isinstance(live_evidence, dict):
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        phase = evidence.get("phase")
-        if not isinstance(phase, str):
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        source_path = {
-            "foundation_bootstrap": "acs-verification-initiation.json",
-            "foundation_finalize": "acs-finalize-readback.json",
-            "workloads": None,
-        }.get(phase, "invalid")
-        expected_paths = {"checkpoints.ndjson", "acs-live-readiness.json", "acs-stage-result.json"}
-        if isinstance(source_path, str) and source_path != "invalid":
-            expected_paths.add(source_path)
-        if source_path == "invalid" or set(names) != expected_paths:
-            raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        source_evidence: dict[str, Any] | None = None
-        if isinstance(source_path, str):
-            try:
-                with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-                    source_evidence = json.loads(bundle.read(source_path).decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, KeyError, zipfile.BadZipFile):
-                raise DeploymentUnavailable("GitHub deployment evidence is malformed") from None
-            if not isinstance(source_evidence, dict):
-                raise DeploymentUnavailable("GitHub deployment evidence is malformed")
-        return {
-            "artifact_sha256": artifact_digest,
-            "stage_result": evidence,
-            "live_readiness": live_evidence,
-            "stage_source": source_evidence,
-        }
-
-    def preflight(self, environment: str) -> WorkflowPreflight:
-        """Prove the fixed workflow revision and protected environment metadata."""
-
-        if environment not in {"staging", "production"}:
-            raise DeploymentUnavailable("the fixed workflow environment is invalid")
-        repository_api = f"/repos/{self.configuration.repository}"
-        encoded_ref = quote(self.configuration.ref, safe="")
-        commit_payload = self._get_json(
-            f"{repository_api}/commits/{encoded_ref}",
-            purpose="configured deployment ref",
-        )
-        commit_sha = commit_payload.get("sha")
-        if not isinstance(commit_sha, str) or _COMMIT_SHA.fullmatch(commit_sha) is None:
-            raise DeploymentUnavailable("GitHub configured deployment ref metadata is malformed")
-
-        workflow_payload = self._get_json(self._workflow_api(), purpose="deployment workflow")
-        if workflow_payload.get("path") != WORKFLOW_PATH:
-            raise DeploymentUnavailable("GitHub deployment workflow path does not match the fixed connector")
-        if workflow_payload.get("state") != "active":
-            raise DeploymentUnavailable("the fixed GitHub deployment workflow is disabled")
-        workflow_id = workflow_payload.get("id")
-        if not isinstance(workflow_id, int) or isinstance(workflow_id, bool) or not 0 < workflow_id <= 2**63 - 1:
-            raise DeploymentUnavailable("GitHub deployment workflow metadata is malformed")
-
-        content_payload = self._get_json(
-            f"{repository_api}/contents/{WORKFLOW_PATH}",
-            purpose="deployment workflow content",
-            params={"ref": commit_sha},
-        )
-        encoded_content = content_payload.get("content")
-        workflow_blob_sha = content_payload.get("sha")
-        size = content_payload.get("size")
-        if (
-            content_payload.get("type") != "file"
-            or content_payload.get("encoding") != "base64"
-            or not isinstance(encoded_content, str)
-            or len(encoded_content) > MAX_WORKFLOW_BYTES * 2
-            or not isinstance(size, int)
-            or not 0 < size <= MAX_WORKFLOW_BYTES
-            or not isinstance(workflow_blob_sha, str)
-            or _COMMIT_SHA.fullmatch(workflow_blob_sha) is None
-        ):
-            raise DeploymentUnavailable("GitHub deployment workflow content metadata is malformed")
-        try:
-            compact_content = "".join(encoded_content.split())
-            workflow_content = base64.b64decode(compact_content, validate=True)
-        except (ValueError, TypeError) as exc:
-            raise DeploymentUnavailable("GitHub deployment workflow content is malformed") from exc
-        if len(workflow_content) != size:
-            raise DeploymentUnavailable("GitHub deployment workflow content size is inconsistent")
-        workflow_content_sha256 = hashlib.sha256(workflow_content).hexdigest()
-        if not secrets.compare_digest(workflow_content_sha256, EXPECTED_WORKFLOW_SHA256):
-            raise DeploymentUnavailable("the configured ref does not contain the reviewed deployment workflow")
-        try:
-            workflow_text = workflow_content.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise DeploymentUnavailable("GitHub deployment workflow content is malformed") from exc
-        missing_inputs = [name for name in REQUIRED_WORKFLOW_INPUTS if f"\n      {name}:" not in workflow_text]
-        if missing_inputs:
-            raise DeploymentUnavailable("the fixed deployment workflow input contract is incomplete")
-
-        environment_payload = self._get_json(
-            f"{repository_api}/environments/{environment}",
-            purpose=f"protected {environment} environment",
-        )
-        if environment_payload.get("name") != environment:
-            raise DeploymentUnavailable("GitHub protected environment metadata is malformed")
-        rules = environment_payload.get("protection_rules")
-        admin_bypass_allowed = environment_payload.get("can_admins_bypass")
-        if not isinstance(rules, list) or len(rules) > 20 or not isinstance(admin_bypass_allowed, bool):
-            raise DeploymentUnavailable("GitHub protected environment metadata is malformed")
-        if admin_bypass_allowed:
-            raise DeploymentUnavailable(f"the GitHub {environment} environment allows administrator approval bypass")
-        normalized_rules: list[dict[str, Any]] = []
-        required_reviewer_count = 0
-        for rule in rules:
-            if not isinstance(rule, dict) or not isinstance(rule.get("type"), str) or len(rule["type"]) > 64:
-                raise DeploymentUnavailable("GitHub protected environment metadata is malformed")
-            normalized_rule: dict[str, Any] = {"type": rule["type"]}
-            if rule["type"] == "required_reviewers":
-                reviewers = rule.get("reviewers")
-                prevent_self_review = rule.get("prevent_self_review")
-                if not isinstance(reviewers, list) or len(reviewers) > 6 or not isinstance(prevent_self_review, bool):
-                    raise DeploymentUnavailable("GitHub protected environment reviewer metadata is malformed")
-                reviewer_keys: list[str] = []
-                for reviewer in reviewers:
-                    if not isinstance(reviewer, dict) or reviewer.get("type") not in {"User", "Team"}:
-                        raise DeploymentUnavailable("GitHub protected environment reviewer metadata is malformed")
-                    identity = reviewer.get("reviewer")
-                    if not isinstance(identity, dict):
-                        raise DeploymentUnavailable("GitHub protected environment reviewer metadata is malformed")
-                    identity_key = identity.get("node_id", identity.get("id", identity.get("login")))
-                    if (
-                        not isinstance(identity_key, str | int)
-                        or isinstance(identity_key, bool)
-                        or len(str(identity_key)) > 256
-                    ):
-                        raise DeploymentUnavailable("GitHub protected environment reviewer metadata is malformed")
-                    reviewer_keys.append(f"{reviewer['type']}:{identity_key}")
-                required_reviewer_count += len(reviewer_keys)
-                normalized_rule["reviewers"] = sorted(reviewer_keys)
-                normalized_rule["prevent_self_review"] = prevent_self_review
-                if not prevent_self_review:
-                    raise DeploymentUnavailable(f"the GitHub {environment} environment allows reviewer self-approval")
-            elif rule["type"] == "wait_timer":
-                wait_timer = rule.get("wait_timer")
-                if not isinstance(wait_timer, int) or isinstance(wait_timer, bool) or not 0 <= wait_timer <= 43_200:
-                    raise DeploymentUnavailable("GitHub protected environment wait timer metadata is malformed")
-                normalized_rule["wait_timer"] = wait_timer
-            normalized_rules.append(normalized_rule)
-        if required_reviewer_count < 1:
-            raise DeploymentUnavailable(f"the GitHub {environment} environment has no required reviewer protection")
-        branch_policy = environment_payload.get("deployment_branch_policy")
-        if not isinstance(branch_policy, dict):
-            raise DeploymentUnavailable("GitHub protected environment branch policy metadata is malformed")
-        protected_branches = branch_policy.get("protected_branches")
-        custom_branch_policies = branch_policy.get("custom_branch_policies")
-        if not isinstance(protected_branches, bool) or not isinstance(custom_branch_policies, bool):
-            raise DeploymentUnavailable("GitHub protected environment branch policy metadata is malformed")
-        if not protected_branches and not custom_branch_policies:
-            raise DeploymentUnavailable(f"the GitHub {environment} environment has no deployment branch protection")
-        normalized_branch_policy = {
-            "protected_branches": protected_branches,
-            "custom_branch_policies": custom_branch_policies,
-        }
-        variables_payload = self._get_json(
-            f"{repository_api}/environments/{environment}/variables",
-            purpose=f"protected {environment} environment variables",
-            params={"per_page": 100},
-        )
-        variables = variables_payload.get("variables")
-        total_count = variables_payload.get("total_count")
-        if (
-            not isinstance(variables, list)
-            or len(variables) > 100
-            or not isinstance(total_count, int)
-            or isinstance(total_count, bool)
-            or total_count != len(variables)
-            or any(not isinstance(variable, dict) for variable in variables)
-        ):
-            raise DeploymentUnavailable("GitHub protected environment variable metadata is malformed")
-        protected_values: dict[str, str] = {}
-        required_variables = {
-            "TF_STATE_RESOURCE_GROUP",
-            "TF_STATE_STORAGE_ACCOUNT",
-            "TF_STATE_CONTAINER",
-        }
-        for variable in variables:
-            name = variable.get("name")
-            value = variable.get("value")
-            if name not in required_variables:
-                continue
-            if name in protected_values or not isinstance(value, str) or len(value) > 128:
-                raise DeploymentUnavailable("GitHub protected environment variable metadata is malformed")
-            protected_values[str(name)] = value
-        if set(protected_values) != required_variables:
-            raise DeploymentUnavailable("GitHub protected environment Terraform state variables are incomplete")
-        terraform_state_identity = {
-            "resource_group": protected_values["TF_STATE_RESOURCE_GROUP"],
-            "storage_account": protected_values["TF_STATE_STORAGE_ACCOUNT"],
-            "container": protected_values["TF_STATE_CONTAINER"],
-        }
-        terraform_state_patterns = {
-            "resource_group": r"[A-Za-z0-9_.()\-]{1,90}",
-            "storage_account": r"[a-z0-9]{3,24}",
-            "container": r"[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?",
-        }
-        if any(
-            re.fullmatch(terraform_state_patterns[key], value) is None
-            for key, value in terraform_state_identity.items()
-        ):
-            raise DeploymentUnavailable("GitHub protected environment Terraform state variables are malformed")
-        protected_metadata = {
-            "environment": environment,
-            "can_admins_bypass": admin_bypass_allowed,
-            "protection_rules": sorted(normalized_rules, key=lambda rule: json.dumps(rule, sort_keys=True)),
-            "deployment_branch_policy": normalized_branch_policy,
-            "terraform_state_identity": terraform_state_identity,
-        }
-        environment_metadata_sha256 = hashlib.sha256(
-            json.dumps(protected_metadata, separators=(",", ":"), sort_keys=True).encode("utf-8")
-        ).hexdigest()
-        return WorkflowPreflight(
-            commit_sha=commit_sha,
-            workflow_id=workflow_id,
-            workflow_blob_sha=workflow_blob_sha,
-            workflow_content_sha256=workflow_content_sha256,
-            environment_metadata_sha256=environment_metadata_sha256,
-            environment=environment,
-            required_reviewer_count=required_reviewer_count,
-            admin_bypass_allowed=admin_bypass_allowed,
-            deployment_branch_policy_present=True,
-            tf_state_resource_group=terraform_state_identity["resource_group"],
-            tf_state_storage_account=terraform_state_identity["storage_account"],
-            tf_state_container=terraform_state_identity["container"],
-        )
-
-    def recent_runs(self) -> list[dict[str, Any]]:
-        runs: list[dict[str, Any]] = []
-        seen_run_ids: set[int] = set()
-        for page in range(1, MAX_RUN_PAGES + 1):
-            payload = self._get_json(
-                self._workflow_api("/runs"),
-                params={"event": "workflow_dispatch", "per_page": RUNS_PER_PAGE, "page": page},
-                purpose="workflow status",
-                max_bytes=MAX_GITHUB_STATUS_BYTES,
-                unavailable_message="GitHub workflow status is unavailable",
-                malformed_message="GitHub workflow status is malformed",
-                preserve_access_semantics=False,
-            )
-            rows = payload.get("workflow_runs") if isinstance(payload, dict) else None
-            if (
-                not isinstance(rows, list)
-                or len(rows) > RUNS_PER_PAGE
-                or any(not isinstance(row, dict) for row in rows)
-            ):
-                raise DeploymentUnavailable("GitHub workflow status is malformed")
-            for row in rows:
-                safe_run = self._safe_run(row)
-                run_id = int(safe_run["run_id"])
-                if run_id not in seen_run_ids:
-                    seen_run_ids.add(run_id)
-                    runs.append(safe_run)
-            if len(rows) < RUNS_PER_PAGE:
-                break
-        return runs[:MAX_BASELINE_RUNS]
-
-    def dispatch(self, inputs: dict[str, str]) -> None:
-        try:
-            with self._client.stream(
-                "POST",
-                self._workflow_api("/dispatches"),
-                json={"ref": self.configuration.ref, "inputs": inputs},
-            ) as response:
-                status_code = response.status_code
-        except httpx.RequestError:
-            raise DispatchIndeterminate("GitHub dispatch outcome is unknown; inspect Actions before retrying") from None
-        if status_code == 204:
-            return
-        # Only the documented, pre-dispatch GitHub rejection classes are safe
-        # to retry. A timeout, rate-limit, or unfamiliar client-error response
-        # can be observed after an intermediary or GitHub accepted the request,
-        # so treating every 4xx as conclusive could duplicate a deployment.
-        if status_code in {400, 401, 403, 404, 422}:
-            raise DispatchRejected("GitHub rejected the fixed workflow dispatch")
-        raise DispatchIndeterminate("GitHub dispatch outcome is unknown; inspect Actions before retrying")
-
-    def run(self, run_id: int) -> dict[str, Any]:
-        payload = self._get_json(
-            f"/repos/{self.configuration.repository}/actions/runs/{run_id}",
-            purpose="workflow run status",
-            max_bytes=MAX_GITHUB_STATUS_BYTES,
-            unavailable_message="GitHub workflow run status is unavailable",
-            malformed_message="GitHub workflow run status is malformed",
-            preserve_access_semantics=False,
-        )
-        return self._safe_run(payload)
-
-    def activity(self, run_id: int) -> list[dict[str, str]]:
-        """Return bounded job/step state, never raw workflow logs."""
-        payload = self._get_json(
-            f"/repos/{self.configuration.repository}/actions/runs/{run_id}/jobs",
-            params={"filter": "latest", "per_page": 20},
-            purpose="workflow activity",
-            max_bytes=MAX_GITHUB_ACTIVITY_BYTES,
-            unavailable_message="GitHub workflow activity is unavailable",
-            malformed_message="GitHub workflow activity is unavailable",
-            preserve_access_semantics=False,
-        )
-        jobs = payload.get("jobs")
-        if not isinstance(jobs, list) or len(jobs) > 20 or any(not isinstance(job, dict) for job in jobs):
-            raise DeploymentUnavailable("GitHub workflow activity is unavailable")
-        activity: list[dict[str, str]] = []
-        for job in jobs:
-            safe_job = self._safe_activity("job", job)
-            activity.append(safe_job)
-            steps = job.get("steps")
-            if isinstance(steps, list):
-                if len(steps) > MAX_STEPS_PER_JOB or any(not isinstance(step, dict) for step in steps):
-                    raise DeploymentUnavailable("GitHub workflow activity is unavailable")
-                activity.extend(self._safe_activity("step", step, job_name=safe_job["name"]) for step in steps)
-            if len(activity) > MAX_ACTIVITY:
-                raise DeploymentUnavailable("GitHub workflow activity is unavailable")
-        return activity
-
-    def _safe_run(self, row: dict[str, Any]) -> dict[str, Any]:
-        run_id = row.get("id")
-        run_attempt = row.get("run_attempt", 1)
-        status = row.get("status")
-        conclusion = row.get("conclusion")
-        workflow_id = row.get("workflow_id")
-        event = row.get("event")
-        head_sha = row.get("head_sha")
-        created_at = row.get("created_at")
-        html_url = row.get("html_url")
-        display_title = row.get("display_title")
-        if (
-            not isinstance(run_id, int)
-            or isinstance(run_id, bool)
-            or not 0 < run_id <= 2**63 - 1
-            or not isinstance(run_attempt, int)
-            or isinstance(run_attempt, bool)
-            or not 1 <= run_attempt <= 100
-            or not isinstance(status, str)
-            or status not in _RUN_STATUSES
-            or not isinstance(workflow_id, int)
-            or isinstance(workflow_id, bool)
-            or not 0 < workflow_id <= 2**63 - 1
-            or event != "workflow_dispatch"
-            or not isinstance(head_sha, str)
-            or _COMMIT_SHA.fullmatch(head_sha) is None
-            or (status == "completed" and (not isinstance(conclusion, str) or conclusion not in _TERMINAL_RESULTS))
-            or (status != "completed" and conclusion is not None)
-        ):
-            raise DeploymentUnavailable("GitHub returned an invalid workflow run")
-        return {
-            "run_id": run_id,
-            "run_attempt": run_attempt,
-            "workflow_id": workflow_id,
-            "event": event,
-            "head_sha": head_sha,
-            "status": status,
-            "conclusion": conclusion,
-            "created_at": created_at if isinstance(created_at, str) and len(created_at) <= 64 else None,
-            "run_name": display_title if isinstance(display_title, str) and len(display_title) <= 64 else "",
-            "url": html_url if self._safe_run_url(html_url, run_id) else self.workflow_url,
-        }
-
-    def _safe_run_url(self, value: Any, run_id: int) -> bool:
-        if not isinstance(value, str) or len(value) > 512:
-            return False
-        parsed = urlsplit(value)
-        return (
-            parsed.scheme == "https"
-            and parsed.netloc == "github.com"
-            and parsed.path == f"/{self.configuration.repository}/actions/runs/{run_id}"
-            and not parsed.query
-            and not parsed.fragment
-        )
-
-    @staticmethod
-    def _safe_activity(kind: str, row: dict[str, Any], *, job_name: str = "") -> dict[str, str]:
-        name = row.get("name")
-        status = row.get("status")
-        conclusion = row.get("conclusion")
-        safe_name = re.sub(r"[^A-Za-z0-9 ._:/()\[\]-]", "?", name if isinstance(name, str) else kind)[:120]
-        if _SENSITIVE_ACTIVITY.search(safe_name):
-            safe_name = "[redacted activity name]"
-        activity = {
-            "kind": kind,
-            "name": safe_name,
-            "status": status if isinstance(status, str) and status in _ACTIVITY_STATUSES else "unknown",
-            "conclusion": (conclusion if isinstance(conclusion, str) and conclusion in _TERMINAL_RESULTS else ""),
-        }
-        if kind == "step":
-            activity["job"] = job_name[:120]
-        return activity
 
 
 class DeploymentOrchestrator:
