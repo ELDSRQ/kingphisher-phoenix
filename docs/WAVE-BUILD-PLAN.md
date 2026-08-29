@@ -321,6 +321,20 @@ These IDs passed at the recorded snapshot. Wave 29/30 source edits make them sta
   refuses credential generation. Preflight parses dotenv as inert data and
   supplies only command-required keys; `prestart` precedes any Compose start and
   `ready` follows migration/audit bootstrap/seed.
+- ANA-010 increment 1: the five-year pseudonymous awareness ledger gained its
+  first graph consumer — `ledger_trend` in reporting (bounded monthly
+  click/no-click series with explicit delivered denominators and a distinct
+  no-click bucket over the 1,826-day PII-free retention), `GET
+  /analytics/ledger/trend` JSON + CSV behind `view_aggregate`/`export_bulk`, and
+  a GUI panel in Executive trends. Route-authorization inventory and UI-contract
+  tests updated; live/browser qualification remains open.
+- ANA-010 increment 2: the named per-recipient campaign surface now projects
+  explicit close disposition. `confirmed_interaction` (deliberate training-page
+  action, never relabeling observed open/click) and `close_disposition`
+  (`activity_at_close`/`no_activity_at_close` for terminal campaigns, `null`
+  while open) are exposed on `/campaigns/{id}/recipients`, rendered as
+  capability-gated GUI columns, and pinned by route/pagination/UI-contract
+  tests; basic repeat history remains open.
 - Stateful base-image qualification accepts an exact reviewed local
   digest/platform cache with `--pull=never`, otherwise resolves the exact remote
   index/platform digest. Hardened probes attach no project volume; Redis runs as
@@ -405,7 +419,7 @@ Before an internal RSA staff pilot, the GUI must prove: Entra role separation; e
 | THR-001B | One Threat Campaigns workbench | Source API/GUI/worker | Bounded daily ingest/status plus review queue showing citation/date/freshness/actor/TTP/sector/confidence; operator explicitly selects every simulation basis | THR-001A | SOURCE/UI/WORKER | P1 | **Complete locally:** bounded GUI/API, daily governed ingest, default quarantine, explicit activation, provenance/terms rechecks, and legacy re-review migration |
 | AI-010 | Internal inference execution | Existing worker image, durable generation requests, setup UI | Pinned model runs without tools/network, emits schema-constrained proposals, scales to zero where hosted, exposes cost/status, and never approves/launches; `.140` is dev/qualification only | AI-005, THR-001A | AI/WORKER/DEPLOYMENT | P1 | Current external `/propose` and `/setup-assist` gateway is a contract, not a supported deployment path |
 | TRN-010 | Campaign-specific micro-training | Training/content/generation/API/GUI | Approved evidence yields one concise lesson and question bound to the campaign and human-reviewed; generic fallback remains | THR-001B, AI-010, TRN-001 | TRAINING/CONTENT | P1 | Generic governed lesson flow exists; campaign-specific content remains |
-| ANA-010 | Five-year disposition and trend UX | Reporting/database/GUI/export | Named capability-protected per-recipient campaign status, explicit close disposition, five-year click/no-click graph, report/training rates, basic repeat history, CSV/PDF-equivalent export | RET-005, INT-001 | ANALYTICS/DB/UI | P1 | Five-year pseudonymous ledger click/no-click graph landed locally (`ledger_trend` + `/analytics/ledger/trend` JSON/CSV + GUI, bounded to the ledger's 1,826-day retention, explicit no-click bucket); named per-recipient disposition and basic repeat history remain |
+| ANA-010 | Five-year disposition and trend UX | Reporting/database/GUI/export | Named capability-protected per-recipient campaign status, explicit close disposition, five-year click/no-click graph, report/training rates, basic repeat history, CSV/PDF-equivalent export | RET-005, INT-001 | ANALYTICS/DB/UI | P1 | Five-year pseudonymous ledger click/no-click graph landed locally (`ledger_trend` + `/analytics/ledger/trend` JSON/CSV + GUI, bounded to the ledger's 1,826-day retention, explicit no-click bucket); named per-recipient disposition landed locally (`confirmed_interaction` + explicit `close_disposition` on `/campaigns/{id}/recipients`, terminal no-activity-at-close, GUI columns pinned by UI-contract tests); basic repeat history remains |
 | DEP-010 | Two-person GUI deployment path | Deployment API/GUI/Azure discovery/recovery | Browser login discovers tenant/subscription/regions/DNS/groups; strong defaults reduce normal inputs; Advanced hides resource IDs/GitHub/Terraform; progress/retry/rollback/recovery and cost are visible | AI-005, MAIL-005, GOV-002 | DEPLOY-UX/AZURE | P1 | Existing staged workflow is secure but too infrastructure-heavy and not live qualified |
 | UX-010 | Five-area operator navigation | Operator UI/API navigation contracts | Home/Threats, Campaigns, People/Training, Reports, and Settings/Deployment expose the complete core loop without removing capability gates or deep links | Stable Alignment Waves A–D | UI | P2 | Deferred until core behavior is stable; current 17-item navigation is operationally dense |
 | REL-001 | Reproducible install and operator image | Database migrations, `azure_migrate.py`, operator package manifest, container tests | Empty DB base→head and historical upgrade→head pass; grants reference real tables; operator image imports/starts from package-scoped install | — | DB-FOUNDATION | P0 | Exact checked-in code head `0032_source_explicit_curation`; latest complete external PostgreSQL witness remains historical at `0029`. Current-head migration/profile, exact-final ARM64, AMD64, registry, and live deployment remain pending |

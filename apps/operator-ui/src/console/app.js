@@ -634,6 +634,7 @@ async function openCampaignAnalytics(campaign, evidenceStart = "", evidenceEnd =
         el("th", { text: "Recipient reference" }), el("th", { text: "Department" }),
         el("th", { text: "Send state" }), el("th", { text: "Failure" }),
         el("th", { text: "Opened" }), el("th", { text: "Clicked" }), el("th", { text: "Reported" }),
+        el("th", { text: "Confirmed" }), el("th", { text: "Close disposition" }),
         el("th", { text: "Training" }),
       ])]),
       el("tbody", {}, visibleResults.length ? visibleResults.map((result) => el("tr", {}, [
@@ -644,8 +645,15 @@ async function openCampaignAnalytics(campaign, evidenceStart = "", evidenceEnd =
         el("td", { text: result.opened ? "Yes" : "No" }),
         el("td", { text: result.clicked ? "Yes" : "No" }),
         el("td", { text: result.reported ? "Yes" : "No" }),
+        el("td", { text: result.confirmed_interaction ? "Yes" : "No" }),
+        el("td", {
+          class: "num",
+          text: result.close_disposition
+            ? result.close_disposition.replaceAll("_", " ")
+            : "Campaign not closed",
+        }),
         el("td", { text: result.training_state || "Not assigned" }),
-      ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 8, text: "No recipient outcomes are recorded." })])]),
+      ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 10, text: "No recipient outcomes are recorded." })])]),
     ]));
   }
 

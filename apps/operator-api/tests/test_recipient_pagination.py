@@ -53,8 +53,14 @@ class _GlobalSession:
 
 
 class _CampaignSession:
-    def __init__(self, campaign_id: Any, rows: list[tuple[Any, Any]]) -> None:
-        self.campaign = SimpleNamespace(campaign_id=campaign_id)
+    def __init__(
+        self,
+        campaign_id: Any,
+        rows: list[tuple[Any, Any]],
+        *,
+        state: Any = dm.CampaignState.COMPLETED,
+    ) -> None:
+        self.campaign = SimpleNamespace(campaign_id=campaign_id, state=state)
         self.rows = rows
         self.count_statement: Any = None
         self.page_statement: Any = None
@@ -139,6 +145,81 @@ def test_campaign_recipient_query_bounds_rows_and_related_evidence() -> None:
     bounded_lists = [value for params in related_parameters for value in params.values() if isinstance(value, list)]
     assert bounded_lists
     assert max(map(len, bounded_lists)) == 500
+
+
+def test_campaign_recipient_results_expose_explicit_close_disposition() -> None:
+    campaign_id = uuid4()
+    token_id = uuid4()
+    recipient = _recipient(0)
+    active_assignment = SimpleNamespace(
+        recipient_assignment_id=uuid4(),
+        token_id=token_id,
+        send_state=dm.SendState.DELIVERED,
+        failure_reason=None,
+    )
+    quiet_assignment = SimpleNamespace(
+        recipient_assignment_id=uuid4(),
+        token_id=None,
+        send_state=dm.SendState.DELIVERED,
+        failure_reason=None,
+    )
+
+    class _EventsSession(_CampaignSession):
+        def __init__(self) -> None:
+            super().__init__(campaign_id, [(active_assignment, recipient), (quiet_assignment, recipient)])
+            self.calls: list[Any] = []
+
+        def scalars(self, statement: Any) -> _Rows:
+            self.calls.append(statement)
+            if len(self.calls) == 1:
+                return _Rows(
+                    [
+                        SimpleNamespace(
+                            token_id=token_id,
+                            event_type=dm.EventType.HUMAN_INTERACTION_CONFIRMED,
+                        )
+                    ]
+                )
+            return _Rows([])
+
+    page = campaign_recipient_results(
+        campaign_id=campaign_id,
+        limit=100,
+        offset=0,
+        session=_EventsSession(),  # type: ignore[arg-type]
+        _principal=object(),  # type: ignore[arg-type]
+    )
+
+    active, quiet = page["items"]
+    assert active["confirmed_interaction"] is True
+    assert active["close_disposition"] == "activity_at_close"
+    assert quiet["confirmed_interaction"] is False
+    assert quiet["close_disposition"] == "no_activity_at_close"
+
+
+def test_campaign_recipient_results_leave_disposition_open_for_nonterminal_campaigns() -> None:
+    campaign_id = uuid4()
+    assignment = SimpleNamespace(
+        recipient_assignment_id=uuid4(),
+        token_id=None,
+        send_state=dm.SendState.DELIVERED,
+        failure_reason=None,
+    )
+    session = _CampaignSession(
+        campaign_id,
+        [(assignment, _recipient(0))],
+        state=dm.CampaignState.ACTIVE,
+    )
+
+    page = campaign_recipient_results(
+        campaign_id=campaign_id,
+        limit=100,
+        offset=0,
+        session=session,  # type: ignore[arg-type]
+        _principal=object(),  # type: ignore[arg-type]
+    )
+
+    assert page["items"][0]["close_disposition"] is None
 
 
 def test_every_browser_recipient_consumer_uses_and_validates_a_bounded_page() -> None:

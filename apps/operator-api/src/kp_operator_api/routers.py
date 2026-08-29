@@ -30,6 +30,7 @@ from kp_authorization.rbac import Capability, Principal
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER
 from kp_contracts.queue import DEFAULT_QUEUE_TOPICS
 from kp_database.audit_store import AuditStore
+from kp_database.awareness_ledger import AWARENESS_LEDGER_TERMINAL_CAMPAIGN_STATES
 from kp_database.campaign_service import (
     MAX_AUDIENCE_RECIPIENTS,
     AudienceDefinition,
@@ -2290,6 +2291,26 @@ def campaign_recipient_results(
     for assignment, recipient in rows:
         seen = by_token.get(assignment.token_id, set())
         training = training_by_assignment.get(assignment.recipient_assignment_id)
+        confirmed_interaction = dm.EventType.HUMAN_INTERACTION_CONFIRMED.value in seen
+        training_started = training is not None and training.opened_at is not None
+        training_completed = training is not None and training.completed_at is not None
+        # Close disposition mirrors the awareness-ledger rule: a terminal
+        # campaign with no retained human activity is an explicit
+        # no-activity-at-close outcome, never a silently omitted row.
+        if campaign.state in AWARENESS_LEDGER_TERMINAL_CAMPAIGN_STATES:
+            has_activity = any(
+                (
+                    dm.EventType.OPENED.value in seen,
+                    dm.EventType.CLICKED.value in seen,
+                    dm.EventType.MESSAGE_REPORTED.value in seen,
+                    confirmed_interaction,
+                    training_started,
+                    training_completed,
+                )
+            )
+            close_disposition = "no_activity_at_close" if not has_activity else "activity_at_close"
+        else:
+            close_disposition = None
         results.append(
             {
                 "recipient_id": str(recipient.recipient_id),
@@ -2299,6 +2320,8 @@ def campaign_recipient_results(
                 "opened": dm.EventType.OPENED.value in seen,
                 "clicked": dm.EventType.CLICKED.value in seen,
                 "reported": dm.EventType.MESSAGE_REPORTED.value in seen,
+                "confirmed_interaction": confirmed_interaction,
+                "close_disposition": close_disposition,
                 "training_state": (
                     dm.training_state(
                         assigned_at=training.assigned_at,

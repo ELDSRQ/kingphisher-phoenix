@@ -31,6 +31,9 @@ def test_campaign_report_combines_aggregate_surfaces_without_named_access() -> N
     assert "Capability-protected recipient outcomes" in NAMED_RESULTS
     assert "result.recipient_id" in NAMED_RESULTS
     assert "result.department" in NAMED_RESULTS
+    assert 'result.confirmed_interaction ? "Yes" : "No"' in NAMED_RESULTS
+    assert "result.close_disposition" in NAMED_RESULTS
+    assert "Campaign not closed" in NAMED_RESULTS
     assert "result.recipient_id" not in CAMPAIGN_ANALYTICS[: CAMPAIGN_ANALYTICS.index(NAMED_RESULTS)]
 
 
