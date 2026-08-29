@@ -272,8 +272,11 @@ For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact R
    named per-recipient pseudonymous drill-down with a shared governed
    pseudonym key; GUI drill-down wiring and key rotation/recovery remain
    governed follow-up), so the remaining items are: benchmark/select the
-   internal model and wire `AI-010` into the existing worker role/job, then
-   complete campaign-specific micro-training (`TRN-010`). Deterministic
+   internal model against the landed AI-010 bake-off foundation
+   (`scripts/ai-bakeoff/`: fixed sanitized evaluation set + deterministic
+   offline scorer + bounded loopback runner) and wire `AI-010` into the
+   existing worker role/job, then complete campaign-specific micro-training
+   (`TRN-010`). Deterministic
    fallback and human approval remain mandatory. Do not reopen locally
    complete `ORG-001`, `THR-001A/B`, `IMP-001`, `DOCSIM-001`, or `ANA-010`
    without a regression.
@@ -310,9 +313,10 @@ or DOCSIM-001 without a regression.
 
 Continue the goal-aligned backlog without removing useful deferred features:
 ANA-010 is complete locally (ledger graph, named disposition, repeat history,
-named per-recipient pseudonymous drill-down); the remaining minimum-product
-items are: benchmark and select the internal-model-first AI-010 path (pinned
-llama.cpp role/job in the existing worker image, no tools/network,
+named per-recipient pseudonymous drill-down), and the AI-010 bake-off
+foundation has landed (`scripts/ai-bakeoff/`); the remaining minimum-product
+items are: benchmark and select the internal model, then wire the pinned
+llama.cpp role/job in the existing worker image (no tools/network,
 schema-constrained output, cost/status exposure, deterministic fallback) and
 add campaign-specific micro-training (TRN-010); then simplify GUI Azure/mail
 deployment (DEP-010). AI may draft/advise but never approve, target, apply
