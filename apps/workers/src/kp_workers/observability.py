@@ -69,6 +69,24 @@ metrics = MetricRegistry(
             "counter",
             {"provider": PROVIDERS, "operation": OPERATIONS},
         ),
+        MetricDefinition(
+            "kp_worker_ai_response_bytes_total",
+            "Bounded generation response bytes received from the AI provider.",
+            "counter",
+            {"provider": PROVIDERS, "operation": OPERATIONS},
+        ),
+        MetricDefinition(
+            "kp_worker_ai_model_pinned",
+            "Whether generation enforces a pinned model identity (1) or does not (0).",
+            "gauge",
+            {},
+        ),
+        MetricDefinition(
+            "kp_worker_ai_model_mismatch_total",
+            "Generation calls rejected because the response self-reported a different model.",
+            "counter",
+            {},
+        ),
     )
 )
 

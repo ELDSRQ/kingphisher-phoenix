@@ -167,6 +167,11 @@ class WorkerSettings(BaseSettings):
     ai_base_url: str | None = None
     ai_bearer_token: str | None = None
     ai_api_key: str | None = None
+    #: Exact identity of the model the bake-off selected and this worker is
+    #: permitted to call. When set, every generation response's self-reported
+    #: ``model_id`` must match this constant-time identity or the call fails
+    #: closed: a swapped model cannot silently change what the human reviews.
+    ai_model_id: str | None = Field(default=None, min_length=1, max_length=128)
     smtp_address: str | None = None
     smtp_username: str | None = None
     smtp_password: str | None = None
@@ -287,6 +292,8 @@ class WorkerSettings(BaseSettings):
         _validate_provider_url("Graph base URL", self.graph_base_url)
         _validate_provider_url("AI base URL", self.ai_base_url)
         _validate_provider_url("reported mailbox URL", self.reported_mailbox_url)
+        if self.ai_model_id and ("\x00" in self.ai_model_id or "\r" in self.ai_model_id or "\n" in self.ai_model_id):
+            raise ValueError("AI model ID must be a single line without control characters")
         _validate_provider_url("tracking base URL", self.tracking_base_url)
         _validate_provider_url("training base URL", self.training_base_url)
         if self.audit_anchor_container_url:
@@ -314,6 +321,8 @@ class WorkerSettings(BaseSettings):
         elif self.worker_name == "generation":
             _require_managed_provider_url("AI base URL", self.ai_base_url)
             _require_managed_provider_url("training base URL", self.training_base_url)
+            if not self.ai_model_id:
+                raise ValueError("AI model ID is required: generation must pin the bake-off-selected model identity")
         elif self.worker_name == "mailbox":
             _require_managed_provider_url("reported mailbox URL", self.reported_mailbox_url)
             if self.reported_mailbox_provider != "microsoft365":

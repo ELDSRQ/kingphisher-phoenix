@@ -306,27 +306,29 @@ project/recovery/Docker asset; do not reset, clean, prune, delete, recreate, or
 touch unrelated Docker Desktop workloads. The project-only ARM64 engine remains
 on 192.168.1.140 under /Volumes/DockerExternal/KingPhisher-Phoenix.
 
-origin/main is 627c695 (Wave 38 checkpoint + ANA-010 increments + AI-010
-bake-off foundation); the worktree is clean. Alembic head is
-0033_training_knowledge_check. Current-head gates pass: hermetic 2,675,
-external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
-mypy. The retention P1 is closed, the migration revision-id defect is fixed,
-and ANA-010/TRN-010 are complete locally. Do not reopen locally complete
-ORG-001, THR-001A/B, IMP-001, DOCSIM-001, ANA-010, or TRN-010 without a
-regression.
+origin/main is 6abe1a1 (Wave 38 checkpoint + ANA-010 increments + AI-010
+bake-off foundation + TRN-010 campaign-bound knowledge check); the worktree
+is clean. Alembic head is 0033_training_knowledge_check. Current-head gates
+pass: hermetic 2,681, external PostgreSQL 92, fresh-migration 1, external
+Redis 2, lint, strict mypy. The retention P1 is closed, the migration
+revision-id defect is fixed, and ANA-010/TRN-010 are complete locally. Do
+not reopen locally complete ORG-001, THR-001A/B, IMP-001, DOCSIM-001,
+ANA-010, or TRN-010 without a regression.
 
 Continue the goal-aligned backlog without removing useful deferred features:
 ANA-010 and TRN-010 are complete locally (ledger graph, named disposition,
 repeat history, named per-recipient pseudonymous drill-down; campaign-bound
 knowledge check with deterministic evidence builder, digest pinning, and
-generic quiz fallback), and the AI-010 bake-off foundation has landed
-(`scripts/ai-bakeoff/`); the remaining minimum-product item is: benchmark and
-select the internal model, then wire the pinned llama.cpp role/job in the
-existing worker image (no tools/network, schema-constrained output, cost/
-status exposure, deterministic fallback); then simplify GUI Azure/mail
-deployment (DEP-010). AI may draft/advise but never approve, target, apply
-infrastructure, handle consent, or launch. Prefer simplicity and the existing
-three-deployable modular-monolith architecture.
+generic quiz fallback), and the AI-010 path is nearly complete: the bake-off
+foundation has landed (`scripts/ai-bakeoff/`) and the generation worker now
+enforces a pinned model identity (`KP_WORKER_AI_MODEL_ID`, constant-time
+compare, fail-closed in managed mode) with cost/status metrics; the remaining
+AI-010 item is to benchmark and select the actual model against the bake-off
+set and deploy the pinned llama.cpp image/endpoint (external, needs a live
+endpoint). Then simplify GUI Azure/mail deployment (DEP-010). AI may
+draft/advise but never approve, target, apply infrastructure, handle
+consent, or launch. Prefer simplicity and the existing three-deployable
+modular-monolith architecture.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
 ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/

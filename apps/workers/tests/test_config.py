@@ -21,6 +21,7 @@ _VALID_MANAGED_ROLE_CONFIG: dict[str, dict[str, object]] = {
     "generation": {
         "ai_base_url": "https://ai.internal.example/v1",
         "training_base_url": "https://training.example/awareness",
+        "ai_model_id": "llama.cpp/Qwen3-8B-Q4_K_M-v1",
     },
     "delivery": {
         "smtp_address": "smtp.example:587",
@@ -109,6 +110,36 @@ def test_retired_runtime_drift_settings_are_not_worker_settings() -> None:
     example = (Path(__file__).resolve().parents[3] / ".env.example").read_text(encoding="utf-8")
     assert "KP_WORKER_REMINDER_AFTER_HOURS=" not in example
     assert "KP_WORKER_QUEUE_PREFIX=" not in example
+
+
+def test_ai_model_id_rejects_control_characters() -> None:
+    with pytest.raises(ValidationError, match="single line without control characters"):
+        _settings(worker_name="generation", ai_model_id="model\x00id")
+    with pytest.raises(ValidationError, match="single line without control characters"):
+        _settings(worker_name="generation", ai_model_id="model\nid")
+
+
+def test_managed_generation_requires_a_pinned_model_identity() -> None:
+    base = {
+        "worker_name": "generation",
+        "runtime_mode": "managed",
+        "ai_base_url": "https://ai.internal.example/v1",
+        "training_base_url": "https://training.example/awareness",
+    }
+    with pytest.raises(ValidationError, match="AI model ID is required"):
+        _settings(**base)
+    settings = _settings(**base, ai_model_id="llama.cpp/Qwen3-8B-Q4_K_M-v1")
+    assert settings.ai_model_id == "llama.cpp/Qwen3-8B-Q4_K_M-v1"
+
+
+def test_development_generation_allows_an_unpinned_model() -> None:
+    settings = _settings(
+        worker_name="generation",
+        runtime_mode="development",
+        ai_base_url="http://mock-ai:8282",
+        training_base_url="https://training.example/awareness",
+    )
+    assert settings.ai_model_id is None
 
 
 @pytest.mark.parametrize(

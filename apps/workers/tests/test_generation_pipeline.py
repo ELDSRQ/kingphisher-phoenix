@@ -33,12 +33,13 @@ from sqlalchemy.exc import IntegrityError
 
 
 class _Settings:
-    """Only what _build_generation_request reads."""
+    """Only what _build_generation_request and _call_ai read."""
 
     training_base_url = "https://training.example.com/awareness"
     effective_ai_base_url = "https://ai.example"
     ai_bearer_token = ""
     ai_api_key = ""
+    ai_model_id = "normal-model"
     provider_timeout_seconds = 2.0
 
     def brand_allowlist_set(self) -> set[str]:
@@ -332,6 +333,84 @@ def test_ai_call_accepts_normal_contract_and_redacts_schema_errors(
     with pytest.raises(jobs.AIResponseError, match="does not match the generation contract") as caught:
         jobs._call_ai(_Ctx(), request)
     assert provider_secret not in str(caught.value)
+
+
+def test_ai_call_rejects_response_from_an_unpinned_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AI-010: a generation worker only accepts the pinned model identity.
+
+    A swapped gateway/model must fail closed before the proposal can be
+    persisted or presented to a reviewer; the error is stable and content-free.
+    """
+
+    from kp_workers import jobs
+
+    request = _build(_Pattern())
+    normal = _generation_response().model_dump(mode="json")
+    swapped = {**normal, "model_id": "llama.cpp/some-other-model"}
+
+    def patch_stream(payload: dict[str, Any]) -> None:
+        response = _streaming_response(json.dumps(payload).encode())
+
+        @contextmanager
+        def stream(*_args: object, **_kwargs: object) -> Iterator[httpx.Response]:
+            yield response
+
+        monkeypatch.setattr(httpx, "stream", stream)
+
+    patch_stream(swapped)
+    with pytest.raises(jobs.AIResponseError, match="does not match the pinned generation model"):
+        jobs._call_ai(_Ctx(), request)
+
+    # The pinned model identity passes.
+    patch_stream(normal)
+    assert jobs._call_ai(_Ctx(), request) == _generation_response()
+
+
+def test_ai_call_without_pin_accepts_any_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Development without a configured pin keeps legacy permissive behavior."""
+
+    from kp_workers import jobs
+
+    ctx = _Ctx()
+    unpinned = SimpleNamespace(
+        effective_ai_base_url=ctx.settings.effective_ai_base_url,
+        ai_bearer_token=ctx.settings.ai_bearer_token,
+        ai_api_key=ctx.settings.ai_api_key,
+        ai_model_id=None,
+        provider_timeout_seconds=ctx.settings.provider_timeout_seconds,
+    )
+    request = _build(_Pattern())
+    response = _streaming_response(json.dumps(_generation_response().model_dump(mode="json")).encode())
+
+    @contextmanager
+    def stream(*_args: object, **_kwargs: object) -> Iterator[httpx.Response]:
+        yield response
+
+    monkeypatch.setattr(httpx, "stream", stream)
+    assert jobs._call_ai(SimpleNamespace(settings=unpinned), request) == _generation_response()
+
+
+def test_ai_call_counts_response_bytes_for_cost_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kp_workers import jobs
+    from kp_workers.observability import metrics
+
+    metrics._values.clear()
+    request = _build(_Pattern())
+    body = json.dumps(_generation_response().model_dump(mode="json")).encode()
+    response = _streaming_response(body[:13], body[13:])
+
+    @contextmanager
+    def stream(*_args: object, **_kwargs: object) -> Iterator[httpx.Response]:
+        yield response
+
+    monkeypatch.setattr(httpx, "stream", stream)
+    assert jobs._call_ai(_Ctx(), request) == _generation_response()
+    snapshot = metrics.snapshot()
+    bytes_series = [series for series in snapshot.get("kp_worker_ai_response_bytes_total", [])]
+    assert bytes_series and bytes_series[0]["value"] == len(body)
+    assert bytes_series[0]["labels"] == {"provider": "ai", "operation": "generate"}
+    pinned = snapshot.get("kp_worker_ai_model_pinned", [])
+    assert pinned and pinned[0]["value"] == 1.0
 
 
 def test_ai_call_revalidates_request_before_opening_http_stream(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -14,7 +14,7 @@ import math
 import re
 import secrets
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
@@ -114,7 +114,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from kp_workers.config import WorkerSettings
-from kp_workers.observability import provider_call
+from kp_workers.observability import metrics, provider_call
 from kp_workers.providers.acs_events import AcsDeliveryEvent, parse_acs_delivery_event
 from kp_workers.providers.alerts import SignedWebhookSender
 from kp_workers.providers.reminders import ProviderReminderSender, Reminder, ReminderSender
@@ -2510,7 +2510,45 @@ def _build_generation_request(ctx: WorkerContext, pattern: CampaignPattern, *, a
         raise AIRequestError("AI generation request exceeds the supported boundary") from None
 
 
-def _bounded_ai_json(response: httpx.Response, *, max_bytes: int = _MAX_AI_RESPONSE_BYTES) -> Any:
+class _CountingResponse:
+    """Count response bytes while delegating to the httpx response object.
+
+    ``_bounded_ai_json`` consumes the stream exactly once; this wrapper counts
+    each chunk as it is read so the worker can expose response size as a cost/
+    status metric without a second read or a contract change.
+    """
+
+    def __init__(self) -> None:
+        self._response: httpx.Response | None = None
+        self.bytes_read = 0
+
+    def wrap(self, response: httpx.Response) -> None:
+        self._response = response
+
+    @property
+    def headers(self) -> httpx.Headers:
+        if self._response is None:
+            raise AIResponseError("AI response is unavailable")
+        return self._response.headers
+
+    def iter_bytes(self) -> Iterator[bytes]:
+        if self._response is None:
+            raise AIResponseError("AI response is unavailable")
+        for chunk in self._response.iter_bytes():
+            self.bytes_read += len(chunk)
+            yield chunk
+
+
+class _BoundedResponseLike(Protocol):
+    """The subset of ``httpx.Response`` the bounded reader needs."""
+
+    @property
+    def headers(self) -> httpx.Headers: ...
+
+    def iter_bytes(self) -> Iterator[bytes]: ...
+
+
+def _bounded_ai_json(response: _BoundedResponseLike, *, max_bytes: int = _MAX_AI_RESPONSE_BYTES) -> Any:
     content_lengths = response.headers.get_list("content-length")
     if len(content_lengths) > 1:
         raise AIResponseError("AI response has duplicate Content-Length headers")
@@ -2533,6 +2571,7 @@ def _bounded_ai_json(response: httpx.Response, *, max_bytes: int = _MAX_AI_RESPO
 
 
 def _call_ai(ctx: WorkerContext, request: GenerationRequest) -> GenerationResponse:
+    metrics.set_gauge("kp_worker_ai_model_pinned", 1.0 if ctx.settings.ai_model_id else 0.0)
     # Re-validate a serialized copy at the final HTTP boundary. This catches a
     # caller that bypassed normal model construction and keeps all failures
     # stable and content-free before a socket is opened.
@@ -2543,6 +2582,7 @@ def _call_ai(ctx: WorkerContext, request: GenerationRequest) -> GenerationRespon
         raise AIRequestError("AI generation request exceeds the supported boundary") from None
     if request_size > MAX_GENERATION_REQUEST_BYTES:
         raise AIRequestError("AI generation request exceeds the supported boundary")
+    counting = _CountingResponse()
     with (
         provider_call("ai", "generate"),
         httpx.stream(
@@ -2554,13 +2594,31 @@ def _call_ai(ctx: WorkerContext, request: GenerationRequest) -> GenerationRespon
         ) as response,
     ):
         response.raise_for_status()
-        payload = _bounded_ai_json(response)
+        counting.wrap(response)
+        payload = _bounded_ai_json(counting)
+    metrics.increment(
+        "kp_worker_ai_response_bytes_total",
+        counting.bytes_read,
+        provider="ai",
+        operation="generate",
+    )
     # Parsed through the contract, so a gateway cannot return extra fields and
     # have them silently persisted onto the draft.
     try:
-        return GenerationResponse.model_validate(payload)
+        parsed = GenerationResponse.model_validate(payload)
     except PydanticValidationError:
         raise AIResponseError("AI response does not match the generation contract") from None
+    # AI-010 pin: a generation worker may only accept proposals from the exact
+    # model the bake-off selected and the operator configured. The model id is
+    # self-reported by the gateway, so this is a fail-closed configuration
+    # guard, not a cryptographic attestation: it stops an accidental or silent
+    # model swap from changing what the human reviewer sees. A mismatch refuses
+    # the whole response before it can be persisted or presented.
+    pinned = ctx.settings.ai_model_id
+    if pinned and not secrets.compare_digest(pinned, parsed.model_id):
+        metrics.increment("kp_worker_ai_model_mismatch_total")
+        raise AIResponseError("AI response model does not match the pinned generation model")
+    return parsed
 
 
 def _delivery_template_content(template: TemplateVersion) -> tuple[str, str, str]:
