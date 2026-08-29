@@ -40,6 +40,8 @@ apps/operator-ui/node_modules/
 
 # Runtime data (logs, pidfiles, marker files, local DB volume)
 data/
+artifacts/
+migration-checkpoint/
 *.log
 
 # macOS
@@ -47,3 +49,4 @@ data/
 
 # Built launcher bundle (regenerate with scripts/build_launcher_app.sh)
 Kingphisher Launcher.app/
+Kingphisher Launcher.app.backup-*/

@@ -19,11 +19,11 @@ dependencies = [
     "kp-contracts",
     "kp-templating",
     "kp-safety-validation",
+    "kp-domain-verification",
 ]
 
 [project.scripts]
 kp-operator-api = "kp_operator_api.__main__:main"
-kp-seed = "kp_operator_api.seed_cli:main"
 
 [build-system]
 requires = ["hatchling"]

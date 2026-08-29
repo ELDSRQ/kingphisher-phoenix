@@ -1,13 +1,16 @@
 """Scheduled audit-chain verification (CRIT-06): fired at startup and on the
 interval, failures surface loudly (CRITICAL + status), verification errors
 never crash the loop, the task is cancellable for graceful shutdown, and
-/healthz exposes the state without changing its HTTP 200 contract."""
+/healthz exposes aggregate state without changing its HTTP 200 contract."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import threading
 import time
+import traceback
 from typing import Any
 
 import kp_operator_api.main as main_module
@@ -15,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import AuditVerificationScheduler, create_app
+from kp_telemetry.logging import configure_logging, get_logger
 from pydantic import ValidationError
 
 KEK = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -57,6 +61,41 @@ class _FlakyAuditStore:
         return []
 
 
+class _TransientSnapshotAuditStore:
+    """Reports one inconsistent read while a concurrent append completes."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def verify(self) -> list[str]:
+        self.calls += 1
+        return ["transient head mismatch"] if self.calls == 1 else []
+
+
+class _BlockingAuditStore:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.finished = threading.Event()
+
+    def verify(self) -> list[str]:
+        self.started.set()
+        self.release.wait(timeout=5)
+        self.finished.set()
+        return []
+
+
+class AuditBackendSecretFailure(RuntimeError):
+    pass
+
+
+class _SecretBearingAuditStore:
+    def verify(self) -> list[str]:
+        raise AuditBackendSecretFailure(
+            "password=must-not-log postgresql://audit:secret@db/audit request=/private?token=secret"
+        )
+
+
 class _RecordingLogger:
     def __init__(self) -> None:
         self.events: list[tuple[str, str, dict[str, Any]]] = []
@@ -92,14 +131,16 @@ def test_scheduler_verifies_at_startup_then_periodically() -> None:
 
     assert store.calls >= 3
     assert scheduler.status == "ok"
-    assert scheduler.problems == []
+    assert scheduler.problem_count == 0
     assert ("info", "audit_chain_verified", {"detail": "audit chain intact"}) in logger.events
 
 
-def test_scheduler_failure_surfaces_critical_log_and_status() -> None:
+def test_scheduler_failure_surfaces_bounded_critical_log_and_status(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     problems = [
-        "hash mismatch at 2026-08-26 00:00:00+00:00 api:campaign.create",
-        "audit head signature verification failed",
+        "hash mismatch at 2026-08-26 00:00:00+00:00 recipient@example.com:campaign.create",
+        "audit head references chain-hash-deadbeef but chain ends elsewhere",
     ]
     store = _FakeAuditStore(problems=problems)
     logger = _RecordingLogger()
@@ -109,15 +150,33 @@ def test_scheduler_failure_surfaces_critical_log_and_status() -> None:
     _drive(scheduler, lambda: store.calls >= 2 and scheduler.status == "failing")
 
     assert scheduler.status == "failing"
-    assert scheduler.problems == problems
+    assert scheduler.problem_count == 2
+    assert not hasattr(scheduler, "problems")
     critical = [e for e in logger.events if e[0] == "critical"]
     assert critical
     level, event, fields = critical[0]
     assert level == "critical"
     assert event == "audit_chain_verification_failed"
-    assert fields["problems"] == problems
-    assert fields["problem_count"] == 2
-    assert "tampering" in fields["detail"]
+    assert fields == {"status": "failing", "problem_count": 2}
+    assert all(problem not in repr(logger.events) for problem in problems)
+    assert "recipient@example.com" not in repr(logger.events)
+    assert "chain-hash-deadbeef" not in repr(logger.events)
+
+    configure_logging()
+    json_scheduler = AuditVerificationScheduler(
+        store,
+        interval_seconds=60,
+        logger=get_logger("kp.audit.verify.failure.test"),
+    )
+    asyncio.run(json_scheduler.verify_once())
+
+    output = capsys.readouterr().out
+    record = json.loads(output.splitlines()[-1])
+    assert record["event"] == "audit_chain_verification_failed"
+    assert record["status"] == "failing"
+    assert record["problem_count"] == 2
+    assert "recipient@example.com" not in output
+    assert "chain-hash-deadbeef" not in output
 
 
 def test_scheduler_error_does_not_crash_loop_and_recovers() -> None:
@@ -130,6 +189,55 @@ def test_scheduler_error_does_not_crash_loop_and_recovers() -> None:
     assert scheduler.status == "ok"  # recovered on the second pass
     assert store.calls >= 2
     assert any(e[0] == "critical" and e[1] == "audit_chain_verification_error" for e in logger.events)
+
+
+def test_scheduler_confirms_a_bad_snapshot_before_failing_readiness() -> None:
+    store = _TransientSnapshotAuditStore()
+    logger = _RecordingLogger()
+    scheduler = AuditVerificationScheduler(store, interval_seconds=60, logger=logger)
+
+    asyncio.run(scheduler.verify_once())
+
+    assert store.calls == 2
+    assert scheduler.status == "ok"
+    assert scheduler.problem_count == 0
+    assert not any(event == "audit_chain_verification_failed" for _level, event, _fields in logger.events)
+
+
+def test_scheduler_error_log_is_bounded_for_recording_and_json_renderers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret = "password=must-not-log"
+    logger = _RecordingLogger()
+    scheduler = AuditVerificationScheduler(_SecretBearingAuditStore(), interval_seconds=60, logger=logger)
+
+    asyncio.run(scheduler.verify_once())
+
+    assert scheduler.status == "error"
+    assert logger.events == [
+        (
+            "critical",
+            "audit_chain_verification_error",
+            {"exception_type": "AuditBackendSecretFailure"},
+        )
+    ]
+    assert secret not in repr(logger.events)
+
+    configure_logging()
+    json_scheduler = AuditVerificationScheduler(
+        _SecretBearingAuditStore(), interval_seconds=60, logger=get_logger("kp.audit.verify.test")
+    )
+    asyncio.run(json_scheduler.verify_once())
+
+    output = capsys.readouterr().out
+    record = json.loads(output.splitlines()[-1])
+    assert record["event"] == "audit_chain_verification_error"
+    assert record["exception_type"] == "AuditBackendSecretFailure"
+    assert secret not in output
+    assert "postgresql://" not in output
+    assert "/private" not in output
+    assert "Traceback" not in output
+    assert "exception" not in record
 
 
 def test_scheduler_is_cancellable_during_sleep_and_during_verify() -> None:
@@ -162,6 +270,43 @@ def test_scheduler_is_cancellable_during_sleep_and_during_verify() -> None:
     assert store.calls == 1
 
 
+def test_shutdown_joins_inflight_thread_before_return_and_repeated_cancellation_is_safe() -> None:
+    store = _BlockingAuditStore()
+    scheduler = AuditVerificationScheduler(store, interval_seconds=60.0)
+
+    async def exercise() -> None:
+        run_task = asyncio.create_task(scheduler.run())
+        while not store.started.is_set():
+            await asyncio.sleep(0.005)
+
+        started = time.monotonic()
+        run_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await run_task
+        assert time.monotonic() - started < 0.25
+
+        shutdown_task = asyncio.create_task(scheduler.shutdown())
+        await asyncio.sleep(0.02)
+        assert not shutdown_task.done()
+
+        # Even cancellation of shutdown cannot let engine disposal race the
+        # checked-out blocking operation. It is propagated only after join.
+        shutdown_task.cancel()
+        await asyncio.sleep(0.02)
+        assert not shutdown_task.done()
+        store.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(shutdown_task, timeout=1)
+
+        assert store.finished.is_set()
+        await scheduler.shutdown()  # idempotent after a cancelled caller
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        store.release.set()
+
+
 def test_interval_is_env_tunable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPERATOR_API_AUDIT_VERIFY_INTERVAL_SECONDS", "90")
     assert main_module._audit_verify_interval_seconds() == 90
@@ -171,6 +316,24 @@ def test_interval_is_env_tunable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPERATOR_API_AUDIT_VERIFY_INTERVAL_SECONDS", "not-a-number")
     with pytest.raises(ValidationError):
         main_module._audit_verify_interval_seconds()
+
+
+@pytest.mark.parametrize(
+    ("settings_type", "values"),
+    [
+        (main_module._AuditVerificationSettings, {"audit_verify_interval_seconds": "SECRET_INTERVAL"}),
+        (main_module._RateLimitSettings, {"rate_limit_backend": "SECRET_BACKEND"}),
+    ],
+)
+def test_internal_settings_errors_hide_input_in_tracebacks(settings_type: type[Any], values: dict[str, str]) -> None:
+    secret = next(iter(values.values()))
+
+    with pytest.raises(ValidationError) as caught:
+        settings_type(_env_file=None, **values)
+
+    rendered = f"{caught.value!s}\n{caught.value!r}\n{''.join(traceback.format_exception(caught.value))}"
+    assert secret not in rendered
+    assert "input_value=" not in rendered
 
 
 def _client_with_audit_store(monkeypatch: pytest.MonkeyPatch, store: _FakeAuditStore) -> TestClient:
@@ -190,14 +353,16 @@ def _poll_healthz(client: TestClient, expected_status: str, timeout: float = 5.0
 
 
 def test_healthz_exposes_failed_verification(monkeypatch: pytest.MonkeyPatch) -> None:
-    store = _FakeAuditStore(problems=["hash mismatch at 2026-08-26 00:00:00+00:00 api:campaign.create"])
+    sensitive_problem = "hash mismatch 2026-08-26 actor@example.com:campaign.create chain-hash-deadbeef"
+    store = _FakeAuditStore(problems=[sensitive_problem])
     with _client_with_audit_store(monkeypatch, store) as client:
         resp = client.get("/healthz")
         assert resp.status_code == 200  # contract kept; payload carries the signal
         body = _poll_healthz(client, "degraded")
-        assert body["status"] == "degraded"
-        assert body["audit_verification"] == "failing"
-        assert "hash mismatch" in body["detail"]
+        assert body == {"status": "degraded", "audit_verification": "failing"}
+        assert sensitive_problem not in resp.text
+        assert "actor@example.com" not in resp.text
+        assert "chain-hash-deadbeef" not in resp.text
 
 
 def test_healthz_exposes_verification_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,8 +373,7 @@ def test_healthz_exposes_verification_error(monkeypatch: pytest.MonkeyPatch) -> 
 
     with _client_with_audit_store(monkeypatch, _BrokenAuditStore()) as client:
         body = _poll_healthz(client, "degraded")
-        assert body["status"] == "degraded"
-        assert body["audit_verification"] == "error"
+        assert body == {"status": "degraded", "audit_verification": "error"}
 
 
 def test_healthz_ok_when_chain_verifies(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -8,7 +8,8 @@ dependencies = []
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "httpx>=0.27",
+    "httpx>=0.27",  # Runtime clients and their tests still use the stable httpx API.
+    "httpx2>=2.0",  # Starlette 1.3+ TestClient uses httpx2; keep this test-only.
     "mypy>=1.10",
     "ruff>=0.6",
 ]
@@ -64,8 +65,11 @@ ignore_missing_imports = true
 # infrastructure/mock-services ships the offline AI and IdP stand-ins that the
 # generation pipeline is developed against; their tests belong in the gate.
 testpaths = ["packages", "apps", "tests", "infrastructure"]
-addopts = "-q"
+addopts = "-q --strict-markers"
 markers = [
     "contract: contract tests (queue round-trips against live local infra)",
+    "postgres: integration tests that require a migrated PostgreSQL test database",
+    "redis: integration tests that require a reachable disposable Redis instance",
     "e2e: end-to-end tests against a running local stack",
+    "azure_live: opt-in read-only checks against an authenticated Azure subscription",
 ]

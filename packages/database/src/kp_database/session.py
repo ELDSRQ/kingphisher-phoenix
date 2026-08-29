@@ -1,9 +1,9 @@
 """Engine and session factory.
 
 Services connect with their own scoped credentials. The audit store uses the
-dedicated `audit_writer` connection string (INSERT-only grants) so that
-application ORM sessions cannot mutate audit rows even if application code
-misbehaves.
+dedicated function-only `audit_writer` connection: workloads may stage intent
+in their own transaction, while only constrained SECURITY DEFINER dispatchers
+can append evidence or advance the signed chain head.
 """
 
 from __future__ import annotations

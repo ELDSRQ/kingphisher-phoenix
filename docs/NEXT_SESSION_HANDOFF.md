@@ -1,266 +1,280 @@
-# Next AI Session Handoff — 2026-08-20
+# Next-session handoff
 
 ## Start here
 
 Repository: `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 
-Branch: `main`
+Target engineering worker: `edierks@192.168.1.140`. Its canonical source is
+`/Users/edierks/Projects/kingphisher-phoenix`, mounted read-only inside the
+project-only native ARM64 Colima profile `kingphisher`; external VM/cache/client
+state and the socket are rooted at
+`/Volumes/DockerExternal/KingPhisher-Phoenix` on the attached 1 TB drive.
+External preflight/restore passed; final exact preflight reported approximately
+744,006,440 KiB free. The inactive `kp-external-mac` context is
+created with endpoint
+`ssh://edierks@192.168.1.140/Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock`
+and reports `colima-kingphisher|aarch64|/var/lib/docker`, while the
+default remains `desktop-linux`; the seven internal Docker Desktop project
+containers are stopped/preserved and unrelated containers remain running. The global remote context remains
+`desktop-linux`; unrelated workloads must not be changed. External
+mount/UUID/read-only-source/capacity drift blocks instead of falling back. The
+canonical operating procedure is
+`scripts/operator/remote-docker-worker/README.md`; current Wave 38 status is in
+`docs/PRODUCTION-READINESS-TASK-MATRIX.md`.
+The legacy Docker contexts `DockerExternal` and `kp-remote-mac` omit the
+reviewed socket path and can select shared Docker Desktop; never use them for
+project work. The external volume named `DockerExternal` is storage, not a
+Docker context. Rosetta/binfmt are disabled and unnecessary for native ARM64.
 
-Expected head after this handoff is committed: see the newest `git log -1 --oneline` entry titled
-`Refresh build continuation handoff`.
+The controller recovery identity is verified at public recipient
+`age1p9t25wm9uvcaafjv3hjmgsj092mgydrr9uzndjnmcq9psupfl94qm8h2w2`.
+Because headless SSH cannot unlock the remote Keychain, use
+`checkpoint-remote.sh` for its temporary identity transfer/cleanup. After an
+applied checkpoint, controller `stage-remote.sh` must invoke remote
+`stage-checkpoint.sh` with a second bounded transfer, validate the exact archive, and
+no-clobber publish `migration-checkpoint/` before external-engine-scoped
+`restore-state.sh`. Snapshot `20260829T013332Z-tsX1WQ`, archive SHA-256
+`e4fb16a735d0c9d3b6aa04381c4c9d7e24269006203c551f50abf671cc3637ff`,
+passed that chain and external restore, so `EXT-002` is complete. External
+installation and `verify_install.sh` passed as well.
 
-The worktree was clean before this documentation update. First inspect `git status`, preserve any user changes, then read this file,
-`README.md`, `RUNBOOK.md`, `docs/AI_HANDOFF.md`, `docs/REMEDIATION_PLAN.md`, and `docs/AZURE_DEPLOYMENT.md` completely.
+The installer timeout repair is locally integrated and validated by 42 tests:
+default 900 seconds, maximum 3600, and strict parsing. It is synced and remote
+`--check-uv` passed; no cold full rerun under the new default is claimed.
+
+The pre-remediation local and external integrated QA snapshot passed:
+operational readiness reached exact head `0029`; hermetic 2,329 passed/97
+deselected; PostgreSQL 86 passed/2,340 deselected while isolated on Redis DB14;
+Redis 2 passed/2,424 deselected on DB15; audit and `verify_install.sh` passed;
+and E2E passed all 8. Its 03Z API/worker log window contained no error/critical
+event or unknown-campaign/unknown-pattern job. Ruff/format, strict mypy over 124
+source files, Bandit, Semgrep, Trivy source checks, dependency audit,
+Actionlint, and Zizmor were green within their recorded scopes. The pre-Wave-36
+local hermetic `make test` passed 2,469 tests/97 deselected with 0 failures in
+158.15 seconds. The final local Wave 36 hermetic suite at checked-in head
+`0030_default_privacy_notice` passed 2,501 tests/97 deselected with 0 failures
+in 183.40 seconds. Ruff/format covered 336 Python files; mypy covered 124 source files;
+Bandit, Semgrep (4 rules/125 targets/0), Trivy repository scans (0
+HIGH/CRITICAL vulnerabilities, secrets, or misconfigurations), pip-audit,
+Actionlint, and Zizmor passed in their recorded scopes. PostgreSQL, Redis, and
+Current-head `0032` external PostgreSQL/Redis/E2E and exact-image evidence remain pending. Release remains NO-GO for live
+Azure/provider, real-browser/WCAG and human assistive-technology, exact-final
+image/native AMD64/registry attestation, and rollback evidence.
+
+The authoritative continuation record is [the integrated build plan](WAVE-BUILD-PLAN.md). Do not rely on old commit lists or copied test counts in handoff documents. Begin by preserving the shared worktree, then read:
+
+1. `docs/WAVE-BUILD-PLAN.md`
+2. `docs/architecture/README.md`
+3. `docs/AI_HANDOFF.md`
+4. `README.md`
+5. `docs/AZURE_DEPLOYMENT.md` for deployment work
+
+### Wave 38 paused checkpoint
+
+The product is for one 125-person tenant operated by two IT staff. The
+authoritative new-work priority is the goal-aligned policy in the build plan;
+historical waves remain evidence, not permission to expand scope. Deferred
+features remain retained and supported but receive no expansion slot. Never
+delete potentially valuable behavior simply because it is deferred.
+
+- `ORG-001` is complete locally: creator plus one independent approver holding
+  both approval capabilities. Security and privacy remain separate recorded
+  facets; RoE, frozen audience, canary, provider evidence, immutable review,
+  emergency stop, and every other safety gate remain.
+- `THR-001A` and `DOCSIM-001` are complete locally with evidence-fidelity and
+  recipient-bound ICS behavior; their focused closure passed 150 tests.
+- `IMP-001` is complete locally with guided arbitrary-header CSV preview/apply,
+  digest-bound mapping/options, skip/update merge, optional soft-deactivation,
+  and transaction-serialized writes that return a safe re-preview `409` on
+  concurrency loss.
+- `THR-001B` is complete locally with a bounded Threat Campaigns workbench,
+  daily governed ingestion, default quarantine, explicit audited activation to
+  one draft pattern basis, and source/terms/provenance rechecks at activation,
+  approval, rejection/duplicate handling, and generation.
+- `OUT-001`/`RET-005`/`INT-001` retention integration is complete locally at
+  Alembic head `0032_source_explicit_curation`: terminal-only locked
+  project-before-purge, stable pseudonym configuration, retention-only grants,
+  current outcome-writer locking, 365-day raw maximum, and 1,826-day PII-free
+  ledger are wired. Privacy/RBAC, named-history API, reporting, graph, and export
+  consumers remain open.
+- Independent static review found no P0 and one remaining P1: mirror migration
+  `0032`'s retention-day check and single-default partial unique index in
+  `RetentionPolicy.__table_args__`, with metadata/database tests.
+- Pause gate: Node syntax, targeted Ruff/format, `git diff --check`, and the
+  focused API/tracking/worker/database suite passed with eight PostgreSQL-profile
+  skips. Full hermetic/mypy/live profiles were not rerun after final edits.
+- The preserved worktree is not committed or pushed. Local `main`, `HEAD`, and
+  `origin/main` remain `1403d94`; never reset or clean it.
+
+Use the copy-ready continuation prompt in `RESUME-HERE.md` verbatim when
+starting the next build session.
+
+The AI target is internal-model-first: benchmark two or three small
+permissively licensed models, pin the chosen `llama.cpp` runtime/weights in the
+existing worker role/job, and try CPU first. Scale-to-zero serverless GPU is
+conditional on measurements; Foundry serverless/token inference is optional.
+Do not add Foundry managed compute or an always-on GPU. `.140` remains
+development/qualification infrastructure only.
 
 ## Current outcome
 
-The platform is operational locally and now includes:
+The codebase has moved from an eight-worker, development-auth, all-active-recipient prototype toward the intended simple architecture:
 
-- An expedited SMB campaign lifecycle: one authorized administrator can create a
-  draft and schedule it directly. Deterministic content safety, recipient caps,
-  append-only audit, recall, and the scoped kill switch remain enforced.
-- A complete no-credential local simulation path. Mailpit captures messages,
-  per-recipient tracking URLs record clicks, and the tracking API serves a local
-  awareness landing page without requiring DNS or a separate training service.
-- Accessible, human-friendly integration onboarding with searchable Help, contextual field guidance, privacy-filtered advisory AI,
-  connection tests, review, and explicit saving.
-- A native ntfy-compatible signed alert-webhook integration with bounded retry and DLQ behavior.
-- Bounded worker logging. The former roughly 16 GB growth was caused by tight-loop Redis connection-error logging; supervisors now
-  rotate logs and workers back off. Current `data/logs` size was about 180 KB on 2026-08-18. Do not delete logs without explicit
-  authorization.
-- Automated, production-oriented, single-tenant Azure infrastructure in `infrastructure/terraform`, container publication and a
-  protected `.github/workflows/azure-deploy.yml` workflow.
-- A four-stage **Azure deployment** GUI wizard that gathers only non-secret Azure, Entra, DNS, integration, runner, and Terraform
-  backend values; explains where each value is found; validates them; and exports Terraform/GitHub configuration files.
-- Optional AI assistance in every Azure stage. Only current-step non-secret values are eligible. AI cannot save, deploy, bypass
-  validation, or approve a release.
+- three managed deployables by default: operator, tracking/training, and one multi-role worker;
+- Entra-compatible OIDC and separated managed identities/database roles;
+- exact audience preview and frozen manifests;
+- crash-aware delivery claims and provider correlation;
+- opaque tracking and training bearers with keyed verifiers at rest;
+- token-bound lessons, completion, reminders, and training metrics;
+- persistent emergency stop;
+- a durable launch review and locked test-account cohort: schedule sends only
+  the canary, and the separate full-publication action requires current
+  server-derived provider/config evidence (authenticated delivered receipts
+  for ACS);
+- atomic queue transitions and GUI/API dead-letter operations;
+- transactionally staged audit/queue intent with a database-owned audit dispatcher;
+- a locally permission-tested create-only audit witness targeting locked Azure Blob storage;
+- Microsoft Graph directory preview/apply and Microsoft 365 reported-message ingestion;
+- ACS custom-domain readiness, pacing, provider correlation, and an Entra-authenticated, privacy-minimized Event Grid receipt pipeline; live subscription/receipt behavior remains unqualified.
+- checked-in Alembic head `0032_source_explicit_curation`; `0031` adds the confirmed-interaction/PII-free 1,826-day ledger foundation and `0032` requires explicit re-review of legacy automatically active source evidence while enforcing migrated retention bounds/default uniqueness. The latest complete external warning-strict PostgreSQL profile remains the historical 86-test result at exact head `0029`; no current-head `0032` external qualification is claimed;
+- a finite 2–12 occurrence Program Planner with allowlisted elapsed-day cadence, independent drafts, exact UTC review, duplicate-safe creation, and forward-only pause/resume;
+- denominator-explicit single-campaign analytics plus bounded longitudinal Executive Trends JSON/CSV/GUI;
+- retirement of shared-secret tracking corrections as an HTTP 410/no-write boundary, with the obsolete runtime/Terraform secret removed; normalized dual-reviewed corrections remain deferred;
+- content-library route modularization and bounded unexpected-error logging, while broader god-file decomposition remains.
+- capability-aware console session validation, navigation, and actions that fail closed on invalid or stale server-derived authority;
+- authorized, audited, repeatable source enable/disable/manual-ingest operations in the backend and GUI; a post-fetch locked state check discards fetched material before writes when disable wins, while `job_id` remains only a request reference;
+- bounded failure logging at 21 former production traceback/exception-message sites across worker/outbox/supervisor and audit/scheduler/rate-limiter paths, preserving behavior without exposing exception text or tracebacks;
+- fixed-code durable queue failure state (`queue_dispatch_failed`) and stable allowlisted operator/auth/analytics public error boundaries;
+- explicit no-skip hermetic, PostgreSQL, Redis, local-E2E, and Azure-live profiles, with operational readiness running the applicable local gates only after fail-fast disk/Docker/Compose/service checks and without printing connection URLs;
+- PostgreSQL test jobs isolated on Redis DB14 with only DB14 flushed before/after that profile; the Redis queue contract isolated on DB15; application DB0 never used as a test cleanup target;
+- a public tracking boundary that caps/validates request targets and streamed/declared bodies, accepts forwarding only from a direct peer in validated `TRACKING_API_TRUSTED_PROXIES`, resolves a bounded canonical `X-Forwarded-For` chain right-to-left, stamps privacy/security headers on early exits, and returns stable non-reflective errors. Managed Azure derives the exact proxy set from the Container Apps infrastructure subnet plus loopback and disables Uvicorn proxy rewriting;
+- purpose- and assignment-bound lure, lesson-open, completion, and reminder links; generated content retains a placeholder until delivery, and static legacy awareness destinations fail closed;
+- latest-request-wins directory preview fencing so an older Graph success or failure cannot overwrite or clear a newer preview;
+- secret-safe operator/tracking/worker settings diagnostics and role-specific managed provider validation;
+- explicit SMTP/ACS and Mailpit/Microsoft 365 GUI provider selects with conditional active-field validation, warning-only ACS reachability at an exact runtime origin, one quoted/bounded Graph delta probe, active non-secret setup-assist context, and validation-before-atomic credential rebinding;
+- privacy export by authenticated `POST`, `private, no-store` privacy list/export responses, same-origin CSRF enforcement for cookie mutations, and independent notice/request loading so a notice failure warns without disabling request operations; plus issuer-origin-bound OIDC whose DNS-pinned transport preserves TLS Host/SNI while refusing redirects, proxy inheritance, HTTP/2, and cross-origin navigation or secret transmission;
+- a preserved optional non-local HTTPS gateway adapter implementing `/propose` and `/setup-assist`; it is no longer the supported default AI deployment target. Pattern approval records a durable generation request without claiming asynchronous queue/provider completion, and the internal-model worker path plus live AI qualification remain open;
+- a reviewed three-stage Azure workflow/Terraform/API/GUI path: `foundation_bootstrap` applies the complete `deploy_workloads=false` foundation, including ACR/private-network/data and ACS/DNS resources, without Terraform targets; it initiates four verification types while explicitly forbidding sender/association changes. `foundation_finalize` requires fresh all-four Verified state and post-apply association/sender proof; `workloads` revalidates exact resources and immutable images, then requires exactly one active Healthy/Provisioned worker revision, two consecutive simultaneous ready observations for every enabled role, and a same-revision final health recheck. Every stage refuses delete/replacement plans. The GUI rejects manual readiness claims, resumes/advances digest-bound plans, validates/displays final artifact evidence, and exports the same exact ACS endpoint contract enforced by API/Terraform/preflight. The connector is pinned to workflow SHA-256 `6868067ef5d58c799bc4a07dd832d4852d38dee73e6ff1af9a58c701ce85a4d3`; no stage is live-qualified;
+- removal of four uncalled/unexported helpers (`monotonic_timestamp`, `build_email_body`, `parse_sending_domains`, and `SafetyValidatorError`), reducing production code by 35 lines without changing behavior;
+- local operator HSTS and release-readiness contracts that deliberately do not claim a qualified production edge, WAF, custom-host observation, rollback, or restore.
+- immutable local Compose/mock base-image references, a hash-verified 17-package mock runtime, frozen normal workspace bootstrap/development/console use, a native CycloneDX 1.5 inventory with 59 total components/58 external PURLs, and a fail-closed zero-known-vulnerability audit of the 58 external packages;
+- Wave 29 recovery controls: fixed Compose project and PostgreSQL/Redis volume
+  names; fail-closed `.env` bootstrap when preserved state exists or cannot be
+  inspected; command-specific, injection-resistant preflight environments;
+  read-only `prestart` before Compose and `ready` after migration/seed; offline
+  exact-cache base-image qualification; and a Redis `999:999` disposable-data
+  write probe. Partial state is reconciled in place, never treated as permission
+  for cleanup or a parallel volume;
+- removal of public OpenAPI/Swagger/ReDoc/metrics routes and the operator/tracking write-only metric registries, while preserving bounded health/log state and worker metric snapshots; audit-scheduler retention is limited to aggregate status and problem count;
+- GUI authentication-mode discovery that fails closed rather than silently defaulting to the disposable development credential;
+- a versioned, key-ID-bound ciphertext format with one active and at most four prior decrypt-only keys; managed prior-key configuration is legacy/recovery-only, the first foundation fixes the active ID, active rotation is blocked, and the Terraform-generated active KEK remains in protected state/history behind `prevent_destroy`;
+- official Starlette `TestClient` compatibility through the test-only `httpx2` dependency, without changing production HTTP clients.
+- warning-strict SQLite lifecycle/outbox fixes, including deterministic owned-pool/test-engine disposal and explicitly typed outbox timestamps;
+- an exact 113-route operator authorization manifest—103 capability-protected plus 10 dedicated/public routes—exact browser/backend capability inventory, capability-gated non-Azure actions, aggregate-reader Help, and safe preview for approve-only template reviewers;
+- rejection of duplicate as well as malformed `Content-Length` at the public tracking edge;
+- fail-closed exact workflow/code/test binding at frozen workflow SHA-256
+  `6868067ef5d58c799bc4a07dd832d4852d38dee73e6ff1af9a58c701ce85a4d3`.
+- canonical bounded generation input/output and provider streaming contracts, with queue-key idempotency across retries/races and recipient-bound delivery proof;
+- current source-terms acknowledgement/revocation across API, worker fences, and GUI;
+- server-side request normalization plus capped non-reflective operator/tracking validation responses;
+- server-derived training-resource action flags, author/reviewer separation, locking, and fail-closed GUI controls;
+- aggregate/named/export reporting separation, owner-safe alert subscriptions with outbound hostname allowlisting, audited recipient-exclusion lifecycle, and server-paginated recipient management/named reporting;
+- bounded OIDC, setup-assistant, AI-generation, and GitHub deployment response readers, including no-read GitHub dispatch bodies;
+- deterministic cleanup for newly added PostgreSQL fixtures.
+- the current loopback Mailpit `example.com` durable-gate canary passed within the latest external 8-test E2E profile at exact head `0029`, proving exactly-once canonical template delivery across retry, recipient-bound tracking, assignment reuse, separate training purposes, knowledge-check remediation/pass/replay, and correlated reporting/audit before exact cleanup; this remains local-live rather than provider/inbox evidence;
+- native-UUID outbox completion and final reconciliation of 36 stranded idempotent queue intents after fixing an audit-store owner-fallback revocation defect; the final audit chain is green. Graph/Microsoft 365/ACS-event/reported-MIME seams are hardened with an explicit ACS managed-identity client ID;
+- recovered provider-backed Terraform initialization/validation; server-derived campaign/pattern action flags and bounded privacy boundaries; protected GitHub environment/workflow/run plus owner-bound Redis lease validation; and worker preflight/context/reminder/retention/dead-path repairs.
+- bounded database pagination for user-facing collections plus a fail-closed 100-candidate RoE scheduling cap; explicit application/worker runtime failures in place of production `assert` guards; and shared/exclusive campaign locking that orders scoped stop against delivery. Point-in-time evidence passed 52 focused worker lifecycle/security tests in 1.30 seconds and 15 isolated PostgreSQL tests in 3.07 seconds, including 250 ms lock contention. A separate isolated migrated-PostgreSQL scoped-kill persistence test passed 1 in 2.88 seconds at `0027`, then dropped its disposable database; the exploratory ACS pacing fence reserved 3 then 0 in one window.
+- removal of the broken installed `kp-seed` wrapper, ignored reminder/Mailpit-TLS/queue-prefix settings, and remote full-stack stop routing/capability/marker handling from the browser, supervisor, and launcher. Source `make seed` remains, training due time remains a fixed 72-hour policy, Settings retains GUI restart, a host signal stops the launcher, and full shutdown requires OS/launcher/terminal recovery. The stop-removal lane passed 39 focused tests. `make sign` now fails closed without an immutable `IMAGE`, `COSIGN_KEY`, and `cosign`; no external signing evidence exists.
 
-Relevant commits immediately preceding this handoff:
+The decision remains **NO-GO for production and RSA Conference use**. The audited GitHub repository is `ELDSRQ/kingphisher-phoenix`. Local/static implementation is ahead of the live evidence. No disposable Azure deployment, real Entra role exercise, Graph/Outlook consent path, ACS custom-domain campaign, full browser accessibility pass, live-qualified external audit witness, production recovery exercise, AMD64 qualification, or registry publication/attestation has yet closed the release gate. Wave 29's local recovery contracts are not a restore or provider-live witness.
 
-- `3789943` — simplify the SMB campaign flow and fix local tracked training links
-- `44afb4a` — bound worker log growth
-- `73e6827` — improve guided integration setup
-- `d4d01ce` — fix setup assistant field guidance
-- `90ed2a4` — add ntfy alert integration
-- `f183fbb` — fix dashboard audit verification request
-- `6013a89` — automate secure Azure deployment
-- `f97bb56` — add guided Azure deployment wizard
+Wave 21's latest completed snapshot rebuilt all five native ARM64 images. Applicable startup/migration checks, 30 focused contracts, and scans at 0 HIGH / 0 CRITICAL vulnerabilities and 0 secrets passed. Exact IDs/sizes are in the canonical plan. Later source edits through Wave 38 make those interim images stale. The old controller free-space snapshot is historical gate evidence; external build/local-live capacity, cutover, restore, installation, and installation verification are now proven. Exact-final ARM64 status depends on the retained qualification evidence described below. AMD64/multi-architecture and registry publication/attestation remain unwitnessed.
 
-## Verified runtime state
+The exact-final ARM64 result is evidence-conditional: only retained no-clobber
+`qualification.json` plus scan evidence can prove the exact non-emulated Docker
+server platform, explicit `--platform`, all-five OS/architecture/image-ID
+metadata, unchanged source/context manifests, Trivy 0.74.0, and verified cleanup
+of labeled disposable resources. The verifier additionally binds the expected
+source-manifest digest and exact Trivy executable/hash/cache, retained empty config/ignore/secret policy files, rejects ambient
+`TRIVY_*`, records fresh database/check-bundle metadata, and makes the verified
+cache immutable. Azure workloads separately scan immutable ACR
+`repository@sha256` images with pinned Trivy before SBOM/attestation/deploy and
+retain scan JSON/checksums. No pass is inferred here.
+The fixed planned ARM64 evidence root is
+`/Volumes/DockerExternal/KingPhisher-Phoenix/qualification-evidence/arm64-release-20260829-wave35-final-v3`
+with `verifier/` beneath it and unique prefix
+`kingphisher/verify-arm64-20260829-w35-final-v3`; only validated retained
+contents determine the gate.
+The preserved `final-v2` attempt failed closed before image build on BSD
+filesystem-mode and evidence-path/source-context defects. Its failure evidence
+was retained; those bugs are repaired for `final-v3`, which remains conditional
+until its no-clobber qualification and per-image scan/checksum evidence validate.
 
-Docker Desktop and all local services were reverified healthy on 2026-08-20. The application is available at
-`http://localhost:8000/console/`. The supervisor was running:
+Historical and overlapping focused evidence remains labeled in the canonical plan. Wave 21 added green installation verification and a strict 7 passed/0 skipped/0 warning local E2E run in 3.37 seconds after targeted bootstrap/audit, token-key, PID/log, mock Graph, and fixture repairs. RoE/RBAC hardening passed 374 owned/consumer tests plus static/security/offline package gates. Its 23 workflow tests, Actionlint, and Zizmor passed at the historical Wave 21 SHA, not the current frozen connector. Removing the dead clone adapter reduced the tree by 87 lines and passed 36 focused plus 5 downstream tests. These counts are separate and must not be summed.
 
-- operator API and tracking API
-- ingestion, generation, delivery, retention, mailbox, reminder, alert, and directory workers
-- Postgres, Redis, Mailpit, mock IdP, mock Graph, and rebuilt mock AI containers
+The earlier operational-readiness interruption remains historical. Its pre-Wave-30 result was 1,994 hermetic, 87 PostgreSQL, 2 Redis, and 8 E2E tests; the intermediate external 2,230/86/2/8 result is also superseded. The 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected at exact head `0029` using Redis DB14, 2 Redis/2,424 deselected on DB15, and 8 E2Es plus audit/install result is now a pre-remediation snapshot. The pre-Wave-36 local hermetic result is 2,469 passed/97 deselected, 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501/97 deselected with 0 failures in 183.40 seconds; current-head `0032` PostgreSQL/Redis/E2E external profiles remain pending. Earlier controller observations at about 5.9 and 5.6 GiB remain dated proof that the 8 and 10 GiB gates stopped safely. External capacity and restore are proven; browser, exact-final image, provider-live, recovery, and witness qualification remain open.
 
-The following full gate was re-run end to end and passed against the current
-implementation on 2026-08-20 (exact observed results in the trailing comments):
+The historical 2026-08-28 Azure inspection confirmed the selected subscription/tenant, subscription Owner authority, `eastus2`, required provider readiness including `Microsoft.Communication`, and absence of a Terraform backend, foundation resource group, platform Entra applications, and application resources. The 2026-08-29 sandboxed re-audit could prove only an enabled cached account because DNS could not resolve `management.azure.com`; current management-plane state is therefore unverified. The live GitHub re-audit proves valid `ELDSRQ` authentication with `repo`/`workflow` scopes; a public, enabled repository with default `main`; Actions enabled; and the Azure workflow active, with no billing-disabled run signal. It also proves zero environments, variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled secret scanning and push protection, and remote `main` still at old-tree SHA `1403d944a40214714b6cbfcf5cbabc4fa7225eb9`. The connector's protected-environment/workflow/run validation and Redis lease behavior pass locally, but no workflow dispatch/run or Azure apply occurred. The next cloud step requires reviewed final-source sync plus protected environment/reviewers, variables, secrets, branch protection/rulesets, repository secret protections, revalidated Azure state, and backend/bootstrap inputs before any of the three deployment stages can run.
 
-```bash
-node --check apps/operator-ui/src/console/app.js   # OK
-make lint                                # All checks passed; 122 files formatted
-make typecheck                           # Success: no issues in 74 source files
-uv run pytest -q                         # 184 passed (was 183; +1 regression test this session)
-make security-scan                       # Bandit/Semgrep/Trivy fs: 0 findings
-terraform fmt -check -recursive infrastructure/terraform      # exit 0
-terraform -chdir=infrastructure/terraform validate            # Success! The configuration is valid.
-trivy config --exit-code 1 --severity HIGH,CRITICAL infrastructure/terraform   # 0 HIGH/CRITICAL
-./scripts/verify_install.sh              # 21 ok, 0 FAIL
-make operational-readiness               # All checks passed; 7 live lifecycle tests passed
-```
+## Do not regress
 
-The readiness gate intentionally leaves uniquely named local campaign evidence. The audit chain verified successfully.
+- Do not restore a shared password/JWT as managed identity, all-active targeting, reusable stored token hashes, eight Azure worker applications, disconnected tokenless training, Mailpit-only Microsoft 365 behavior, or provider acceptance as delivered mail.
+- Do not give runtime applications a database administrator URL, all-vault access, audit-root access, or direct audit-table mutation.
+- Do not let AI apply state, handle secrets, select audiences, approve content, or weaken deterministic gates.
+- Do not automatically retry `INDETERMINATE` mail sends.
+- Do not expand a frozen audience after a directory change.
+- Do not describe static Terraform/tests as live Azure or provider evidence.
+- Do not restore the retired shared-secret `/v1/corrections` write path or silently subtract scanner/bot activity from observed analytics.
+- Do not claim that source disable aborts provider I/O. Preserve the post-fetch lock/refetch fence that discards fetched material before writes when disable wins, and do not present an ingestion `job_id` as a status endpoint.
+- Do not log or persist exception messages or tracebacks in worker/outbox failure paths; preserve bounded event/type logs and the fixed durable failure code.
+- Do not restore `TRACKING_API_CORRECTIONS_SECRET`, the Terraform corrections secret, or any authentication/write behavior on the retired 410 endpoint.
+- Do not reflect arbitrary backend exception text through operator/auth/analytics responses; keep public errors stable and allowlisted.
+- Do not merge live PostgreSQL, Redis, E2E, or Azure tests into the hermetic profile or permit skips in a claimed gate.
+- Keep PostgreSQL integration queues on DB14 and flush only DB14 before/after that profile; keep the Redis contract on DB15; never flush or repurpose application DB0.
+- Do not restore a static training destination in generated or delivered lure content. Preserve placeholder-to-tracking-click resolution and distinct assignment-bound open/completion purposes.
+- Do not remove the directory `last_job_key`/configuration recheck around provider I/O; stale successes and failures must remain `superseded`.
+- Do not weaken public tracking target/body limits, duplicate/malformed `Content-Length` rejection, proxy trust, all-response security headers, or exception translation.
+- Do not let configuration validation render secret inputs or nested exception chains, and do not make managed workers require unrelated provider settings.
+- Do not restore public OpenAPI/docs/metrics routes, raw audit-problem retention, or a browser fallback from failed auth-mode discovery to development authentication.
+- Do not mutate the workspace lock during normal bootstrap, development, or console launch; keep local image digests and mock dependency hashes immutable, and keep dependency audit/SBOM scoped to the full external production closure.
+- Do not present managed legacy/recovery keys as active rotation. Preserve the post-foundation immutable active ID and `prevent_destroy`; do not retire a prior key until a separately reviewed bulk rewrite/proof establishes that no required ciphertext needs it.
+- Do not collapse the three Azure dispatches. Initial foundation, live-verified sender-finalization foundation, and workloads each retain their saved-plan/delete-replacement/fresh-evidence/image/source gates. Never trust operator-entered ACS readiness strings or timestamps.
+- Do not change the fixed Compose project/volume identities or generate critical
+  `.env` credentials when preserved state exists or cannot be inspected. Keep
+  subprocess environments command-specific, preserve exact cached images, run
+  `prestart` before Compose and `ready` after migration/seed, and reconcile from
+  checkpoints/evidence. Never prune, delete, reset, recreate, rename, or blindly
+  redispatch to recover.
+- Do not run `.140` project Docker commands without proving the exact external
+  mount, profile, socket, and canonical source. Never change the global context
+  or mutate the shared Docker Desktop engine/unrelated workloads. Preserve the
+  internal project source and encrypted snapshots. The internal seven-container
+  copy is stopped/preserved after checkpoint/external verification, and the legacy
+  encrypted snapshot is unrecoverable because its identity is absent.
+- Do not send external email or alter real Azure/Microsoft resources without the authority and safety controls required by the active task.
 
-## Work completed in the 2026-08-20 continuation session
+## Recommended continuation
 
-- Restarted the full local stack (infra was already up; supervisor + APIs +
-  eight workers were not running) with `./scripts/run_console.sh` and reverified
-  health: `verify_install.sh` reports 21 ok / 0 FAIL.
-- Attempted the primary task — in-app Browser visual qualification of the Azure
-  wizard. **The browser controller is still not attachable** in this session:
-  the Claude-in-Chrome / in-app Browser extension is not set up, so no
-  `mcp__*browser*` controller is exposed. This is the same environmental blocker
-  carried since the plugin update; it is **not** an application defect.
-- Qualified every layer the browser would exercise that is reachable without a
-  live browser, and found **no application defects**:
-  - Wizard schema (`GET /console/azure-deployment`): 4 non-secret steps, every
-    field carries `where_to_find` guidance and `secret: false`.
-  - Validation (`POST /console/azure-deployment/validate`): success, field-level
-    errors (bad hostnames, credential-bearing URLs), unknown-key rejection (403),
-    and — newly covered — the structurally-valid **warnings** branch.
-  - Privacy-filtered AI assist (`POST /console/onboarding/assist`): current-step
-    non-secret fields only; disposable credential-shaped text is stripped;
-    suggestions are constrained to step-owned non-secret keys; never persists,
-    saves, deploys, or audits.
-  - Help (`GET /console/help`): glossary + topics including `azure-deployment`;
-    the searchable filter is client-side over that payload.
-  - **Terraform export correctness (verified):** every key the review step writes
-    into `<env>.auto.tfvars` (`subscription_id`, `environment`, `location`,
-    `name_prefix`, `operator_fqdn`, `tracking_fqdn`, `entra_tenant_id`,
-    `entra_client_id`, `communication_data_location`, `ai_endpoint`,
-    `alert_webhook_domains`) matches a real variable in
-    `infrastructure/terraform/variables.tf`. The GitHub-variables JSON matches
-    the workflow's expected environment variables.
-  - Front-end interaction behavior confirmed by reading `app.js` (browser needed
-    only to see it render): per-step focus moves to the `#azure-wizard-title`
-    heading (`tabindex="-1"`); each field shows an explicit Required/Optional
-    badge and a native `required` attribute; Back/continue navigation preserves
-    `collected` values across steps; both downloads use `Blob` +
-    `createObjectURL`/`revokeObjectURL`; downloads appear only after a successful
-    validation and are cleared on re-validate.
-- Added one regression test —
-  `test_azure_deployment_validation_surfaces_advisory_warnings` in
-  `apps/operator-api/tests/test_console.py` — pinning the `ok: True` +
-  advisory-warnings validate branch (empty AI gateway, non-`azure-vnet` runner
-  label), the one validate output state that had zero automated coverage and
-  which backs the console's success-with-warnings rendering. Suite: 183 → 184.
+Follow the alignment sequence. First close the single ORM retention-metadata P1,
+run the complete local and current-head PostgreSQL gates, reconcile evidence,
+then commit and push the preserved checkpoint to `main`. Next finish the
+privacy/RBAC/API/reporting/graph consumers around the `0032`
+outcome/retention/interaction foundation, then benchmark and pin the
+internal model in the existing worker and complete the minimum Threats → safe
+draft → campaign-specific training → named five-year result loop. Then simplify
+the GUI deployment/mail path while preserving the current provider adapters and
+three-stage fail-closed Azure contract. Finally qualify the exact stable tree:
+current-head external profiles, exact ARM64 and native AMD64/registry images,
+browser/WCAG, disposable Azure, Entra/Graph/ACS/Event Grid/Outlook/DNS/inbox,
+backup/restore, recovery/rotation, external audit witness, and human operation.
+Navigation/module simplification follows stable core behavior; deferred useful
+features remain supported without expansion.
 
-## Work completed in the prior session
+For any handoff, record evidence in the build plan using these labels:
 
-- Removed the development-identity warning and separate security/privacy approval
-  buttons from the normal campaign path.
-- Allowed an administrator with campaign-scheduling capability to schedule a
-  DRAFT directly. Legacy approval routes and database records remain readable for
-  compatibility but do not block the normal console workflow.
-- Updated the live lifecycle smoke to exercise create → schedule using one
-  administrator identity.
-- Fixed the seeded campaign template, which had linked directly to
-  `https://training.local/awareness` and therefore bypassed click attribution.
-  New seeded messages now use `{{ tracking.click_url }}`.
-- Added `GET /v1/training/awareness` to the tracking API and changed local
-  operator, worker, and tracking defaults to
-  `http://127.0.0.1:8001/v1/training/awareness`.
-- Made the seed idempotently upgrade the existing local seed template. Messages
-  already delivered to Mailpit retain their old embedded URL; create a new
-  campaign to exercise the corrected flow.
-- The user manually exercised the simulator successfully. After the fix, the
-  local awareness endpoint and full install health were also verified live.
+- **local/static** — code, tests, migrations, Terraform validation, scanners, images;
+- **local live** — disposable local PostgreSQL/Redis/APIs/workers/Mailpit;
+- **cloud/provider live** — Azure, Entra, Graph, ACS, Outlook, browser, backup/restore, and recovery in the intended environment.
 
-## Expedited delivery path
-
-1. Use local Mailpit (`http://127.0.0.1:8025/`) for complete campaign, delivery,
-   tracking, monitoring, report, recall, and kill-switch qualification without
-   sending internet email.
-2. For a small real-mail pilot that does not use the company domain, use Azure
-   Communication Services Email with an Azure-managed test domain and only
-   disposable/test-tenant recipients. Respect its low test-domain quotas.
-3. For an authorized employee pilot, use a separately owned simulation domain
-   with SPF, DKIM, DMARC, conservative sending limits, and Microsoft 365 Advanced
-   Delivery configuration. Do not spoof or send from the operational company
-   domain.
-
-No external email provider was configured and no internet email was sent during
-this session.
-
-## Remaining qualification item
-
-**Only the pixel-level/interaction visual pass remains, and it is environmentally
-blocked — not an application defect.** In the 2026-08-20 continuation session the
-in-app Browser controller was again unavailable: the Claude-in-Chrome / Browser
-extension is not connected in this environment, so no browser MCP tools are
-exposed (the skill reports "Browser tools are not available in this session").
-The backend behavior the browser drives (schema, validation incl. errors +
-success + warnings, Help content, privacy-filtered AI assist, and the exact
-Terraform/GitHub export mapping) was fully qualified without a browser via the
-test suite (184 passed) and code inspection, with no defects found. What is still
-unverified is only the rendered visual/keyboard interaction: on-screen focus
-movement, the Required/Optional badges as drawn, back/forward navigation feel,
-native validation-error surfacing, and the two actual file downloads landing on
-disk.
-
-To finish it, a session with a working browser controller (connect the extension
-from https://claude.ai/chrome, or run in Codex with the in-app Browser attached)
-should:
-
-1. Confirm `git status` is clean and the local app is still healthy with `./scripts/verify_install.sh`.
-2. Use the in-app Browser skill and the already-open or newly opened `http://localhost:8000/console/` tab.
-3. Test login, **Azure deployment**, all four stages, each contextual “Where do I find this?” disclosure, searchable Azure Help,
-   keyboard/focus behavior, AI questions, validation errors, successful validation, and both downloads.
-4. Use disposable fake credential text to reconfirm filtering. Never use a real secret or connection string.
-5. Confirm AI guidance never changes a field, saves configuration, starts Azure work, or bypasses protected workflow approval.
-6. Fix genuine application defects with regression tests; report browser/tool failures separately.
-
-No real Azure deployment has been executed. Production qualification still requires organization-owned Azure/Entra/DNS values,
-approved GitHub environment reviewers, a private runner with VNet access, vendor/legal review, backup/restore evidence, and an
-authorized deployment window.
-
-## Recommended continuation order
-
-1. Complete the outstanding in-app Browser visual qualification of the Azure
-   deployment wizard. Treat controller attachment failures as environmental.
-2. Improve the core SMB operator experience only where testing finds concrete
-   friction; do not restore separate campaign-approval gates.
-3. Prepare an isolated Azure Communication Services Email pilot using an
-   Azure-managed test domain and test-tenant recipients. Do not configure or
-   send through an external provider without explicit user authorization.
-4. After the local and isolated-mail paths are qualified, consider the next
-   product enhancements in `docs/AI_HANDOFF.md` section 10.
-
-## Important locations
-
-- Azure wizard UI: `apps/operator-ui/src/console/app.js`
-- Azure wizard schema, validation, Help, and AI filtering: `apps/operator-api/src/kp_operator_api/console.py`
-- Azure infrastructure and validation: `infrastructure/terraform/`
-- Deployment workflow: `.github/workflows/azure-deploy.yml`
-- Deployment documentation: `docs/AZURE_DEPLOYMENT.md`
-- Console/API regression tests: `apps/operator-api/tests/test_console.py`
-- Live console tests: `tests/e2e/test_live_console_smoke.py`
-- Local training landing and click redirect: `apps/tracking-api/src/kp_tracking_api/routers.py`
-- Seeded tracked template: `scripts/seed.py`
-- ntfy/webhook worker: `apps/workers/src/kp_workers/alert.py`
-- Log bounding: `scripts/supervisor.py`, worker runtime/backoff code, and `RUNBOOK.md`
-
-## Safety invariants
-
-- Never send secrets, credentials, or raw connection strings to AI.
-- AI suggestions are advisory and require explicit operator review; AI never saves or deploys.
-- Preserve capability checks on scheduling and administration; the supported SMB
-  path intentionally permits one authorized administrator to create and schedule.
-- Do not log tracking tokens or client IP addresses.
-- Keep tracking rate-limit storage bounded and validate token hashes before lookup.
-- Keep DSR fulfillment evidence-based; exception requests require legal review.
-- Do not weaken single-tenant enforcement without complete tenant isolation across data, auth, queues, encryption, and tests.
-- Do not delete logs, state, infrastructure, or user data without explicit authorization.
-
-## Ready-to-paste next-session prompt
-
-```text
-Continue development of the phishing-awareness platform at:
-
-/Users/edierks/projects/codex-test/phishing-awareness-platform
-
-Use branch main. Begin by running git status and verifying HEAD matches
-origin/main; preserve any user changes. Read these files completely, in order:
-
-1. docs/NEXT_SESSION_HANDOFF.md
-2. README.md
-3. RUNBOOK.md
-4. docs/AI_HANDOFF.md
-5. docs/REMEDIATION_PLAN.md
-6. docs/AZURE_DEPLOYMENT.md
-
-Run ./scripts/verify_install.sh before making changes. The local console should
-be available at http://127.0.0.1:8000/console/, Mailpit at
-http://127.0.0.1:8025/, and the local training page at
-http://127.0.0.1:8001/v1/training/awareness.
-
-The supported SMB workflow intentionally lets one authorized administrator
-create and schedule a DRAFT directly. Do not restore separate security/privacy
-campaign approvals. Preserve deterministic content safety, recipient caps,
-append-only audit, recall, the scoped kill switch, bounded rate limits, privacy
-controls, and single-tenant enforcement.
-
-Primary task: complete visual qualification of all four Azure deployment wizard
-stages with the in-app Browser, including field guidance, searchable Help,
-keyboard/focus behavior, validation errors and success, privacy-filtered AI help,
-and both configuration downloads. Use disposable fake credential-shaped text
-only. Browser-controller failures are environmental blockers, not application
-defects. Do not perform a real Azure deployment or configure external email or
-infrastructure without explicit authorization.
-
-If genuine defects are found, fix them with regression tests. Before handoff,
-run the full gates listed in this document, update the handoff files with exact
-results and remaining blockers, commit, push main, and leave the worktree clean.
-```
+Only cloud/provider-live evidence can close the corresponding production gate.

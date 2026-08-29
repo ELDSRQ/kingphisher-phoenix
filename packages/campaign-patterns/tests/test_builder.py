@@ -29,6 +29,9 @@ def _item(
     text: str = "",
     content_hash: str = "hash-1",
     confidence: dm.Confidence = dm.Confidence.UNVERIFIED,
+    claimed_actor: str | None = None,
+    claimed_target_sector: str | None = None,
+    extracted_indicators: dict[str, object] | None = None,
 ) -> dm.SourceItem:
     return dm.SourceItem(
         source_id=uuid4(),
@@ -40,6 +43,9 @@ def _item(
         content_hash=content_hash,
         source_reference="ref-1",
         confidence=confidence,
+        claimed_actor=claimed_actor,
+        claimed_target_sector=claimed_target_sector,
+        extracted_indicators=extracted_indicators or {},
     )
 
 
@@ -450,10 +456,65 @@ def test_freshness_rejects_mixed_naive_and_aware_datetimes() -> None:
 # --- supporting_evidence, ownership, defaults ---
 
 
-def test_supporting_evidence_carries_item_id_and_title() -> None:
+def test_supporting_evidence_carries_bounded_source_provenance_and_excerpt() -> None:
     item = _item(title="CEO fraud wave")
     pattern = build_pattern_candidate(item)
-    assert pattern.supporting_evidence == [{"source_item_id": str(item.source_item_id), "title": "CEO fraud wave"}]
+    assert pattern.supporting_evidence == [
+        {
+            "source_item_id": str(item.source_item_id),
+            "title": "CEO fraud wave",
+            "excerpt": "",
+            "source": "test-publisher",
+            "citation": "ref-1",
+            "published_at": _PUBLISHED.isoformat(),
+            "observed_at": _RETRIEVED.isoformat(),
+            "confidence": dm.Confidence.UNVERIFIED.value,
+        }
+    ]
+
+
+def test_explicit_source_claims_and_indicator_context_survive_candidate_construction() -> None:
+    item = _item(
+        text="click " + "source evidence " * 100,
+        confidence=dm.Confidence.HIGH,
+        claimed_actor="Example Threat Group",
+        claimed_target_sector="Energy and utilities",
+        extracted_indicators={"ttp": "T1566.002", "observable": "invoice-themed link"},
+    )
+
+    pattern = build_pattern_candidate(item, as_of=_AS_OF)
+
+    assert pattern.actor_type == "Example Threat Group"
+    assert pattern.sector_targeting == "Energy and utilities"
+    assert len(pattern.supporting_evidence[0]["excerpt"]) == 500
+    context = pattern.attack_mapping["threat_context"]
+    assert context == {
+        "source": "test-publisher",
+        "citation": "ref-1",
+        "published_at": _PUBLISHED.isoformat(),
+        "observed_at": _RETRIEVED.isoformat(),
+        "claimed_actor": "Example Threat Group",
+        "claimed_target_sector": "Energy and utilities",
+        "actor_type": "Example Threat Group",
+        "sector_targeting": "Energy and utilities",
+        "confidence": dm.Confidence.HIGH.value,
+        "indicator_context": {"observable": "invoice-themed link", "ttp": "T1566.002"},
+        "source_text_treatment": "untrusted_data",
+    }
+    assert pattern.attack_mapping["freshness"]["as_of"] == _AS_OF.isoformat()
+    assert pattern.attack_mapping["attack_techniques"][0]["technique_id"] == "T1566.002"
+
+
+def test_indicator_context_is_deterministically_bounded() -> None:
+    indicators = {f"indicator-{index:02d}": "x" * 1_000 for index in range(30)}
+
+    context = build_pattern_candidate(
+        _item(extracted_indicators=indicators),
+        as_of=_AS_OF,
+    ).attack_mapping["threat_context"]["indicator_context"]
+
+    assert list(context) == [f"indicator-{index:02d}" for index in range(20)]
+    assert all(len(value) == 500 for value in context.values())
 
 
 def test_pattern_is_created_unowned_and_in_draft_state() -> None:

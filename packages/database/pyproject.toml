@@ -6,10 +6,12 @@ requires-python = ">=3.13"
 dependencies = [
     "kp-domain-models",
     "kp-auditing",
+    "kp-telemetry",
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.1",
     "alembic>=1.13",
     "cryptography>=42.0",
+    "python-dotenv>=1.0",
 ]
 
 [build-system]

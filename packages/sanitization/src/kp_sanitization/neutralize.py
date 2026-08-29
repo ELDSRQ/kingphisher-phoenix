@@ -10,7 +10,11 @@ punycode/homoglyph domains.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import html
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 # Hidden / dangerous Unicode control characters.
@@ -31,6 +35,8 @@ _CONTROL_CHARS = {
     "\u202e",  # RLO
 }
 _ZERO_WIDTH_PATTERN = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060\u2066\u2067\u2068\u2069]")
+_BASE64_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{20,4096}={0,2}(?![A-Za-z0-9+/=])")
+_OWNED_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.I)
 
 _OVERRIDE_PATTERNS = [
     # "ignore"/"disregard" are the two most common openings for an instruction
@@ -105,10 +111,10 @@ def neutralize(text: str, *, brand_allowlist: set[str] | None = None) -> Sanitiz
     why it was marked untrusted.
     """
     reasons: list[str] = []
-    original = text
 
-    cleaned = _strip_control_chars(text)
-    if cleaned != original:
+    decoded = unicodedata.normalize("NFKC", html.unescape(text))
+    cleaned = _strip_control_chars(decoded)
+    if cleaned != decoded:
         reasons.append("control characters removed")
 
     for pattern in _OVERRIDE_PATTERNS:
@@ -123,6 +129,10 @@ def neutralize(text: str, *, brand_allowlist: set[str] | None = None) -> Sanitiz
     for pattern in _FAKE_ADMIN_PATTERNS:
         if pattern.search(cleaned):
             reasons.append(f"fake-administrator pattern: {pattern.pattern}")
+
+    cleaned, encoded_instruction = _neutralize_encoded_instructions(cleaned)
+    if encoded_instruction:
+        reasons.append("encoded instruction pattern detected")
 
     protected = _PROTECTED_BRANDS
     lookalikes = _find_lookalike_domains(cleaned, protected, owned=brand_allowlist or set())
@@ -182,7 +192,33 @@ def _find_lookalike_domains(text: str, protected_brands: set[str], *, owned: set
 
 
 def _is_owned(domain: str, owned: set[str]) -> bool:
-    return any(domain == owner or domain.endswith(f".{owner}") for owner in owned)
+    normalized: set[str] = set()
+    for value in owned:
+        owner = value.strip().lower().strip(".")
+        if len(owner) <= 253 and "." in owner and all(_OWNED_LABEL_RE.fullmatch(label) for label in owner.split(".")):
+            normalized.add(owner)
+    return any(domain == owner or domain.endswith(f".{owner}") for owner in normalized)
+
+
+def _neutralize_encoded_instructions(text: str) -> tuple[str, bool]:
+    """Remove bounded UTF-8 base64 prompt directives without echoing them."""
+    patterns = _OVERRIDE_PATTERNS + _ACTION_PATTERNS + _FAKE_ADMIN_PATTERNS
+    detected = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal detected
+        token = match.group(0)
+        try:
+            decoded = base64.b64decode(token, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError, ValueError):
+            return token
+        normalized = unicodedata.normalize("NFKC", html.unescape(decoded))
+        if any(pattern.search(normalized) for pattern in patterns):
+            detected = True
+            return "[encoded instruction removed]"
+        return token
+
+    return _BASE64_TOKEN_RE.sub(replace, text), detected
 
 
 def _homoglyph_distance(a: str, b: str) -> int:

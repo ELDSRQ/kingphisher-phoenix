@@ -13,7 +13,12 @@ cannot slip out under the old rules.
 
 from __future__ import annotations
 
+import ipaddress
+import re
 from enum import StrEnum
+
+_DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
+_DOMAIN_SEPARATOR = re.compile(r"[,\s]+")
 
 
 class ApprovalPolicy(StrEnum):
@@ -26,6 +31,48 @@ class ApprovalPolicy(StrEnum):
     SINGLE_ADMIN = "single-admin"
 
 
+def normalize_policy_domain(raw: str, *, allow_config_prefix: bool = False) -> str | None:
+    """Return one unambiguous ASCII DNS name, or ``None``.
+
+    Unicode domain input is deliberately refused. Operators can supply the
+    explicit IDNA A-label (``xn--...``), which is also the exact value proven
+    by DNS verification. This avoids platform-dependent IDNA mappings in a
+    send-authorization boundary.
+
+    ``allow_config_prefix`` accepts exactly one legacy config marker (``@`` or
+    ``.``). Repeated markers are invalid instead of being stripped until an
+    attacker-controlled value happens to look valid.
+    """
+
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip()
+    if allow_config_prefix and candidate.startswith(("@", ".")):
+        candidate = candidate[1:]
+        if candidate.startswith(("@", ".")):
+            return None
+    if candidate.endswith("."):
+        candidate = candidate[:-1]
+        if candidate.endswith("."):
+            return None
+    try:
+        candidate = candidate.encode("ascii").decode("ascii").lower()
+    except UnicodeError:
+        return None
+    if not candidate or len(candidate) > 253:
+        return None
+    labels = candidate.split(".")
+    # A single label (for example ``com``) would authorize every mailbox below
+    # that DNS suffix and is never a suitable campaign boundary.
+    if len(labels) < 2 or any(_DOMAIN_LABEL.fullmatch(label) is None for label in labels):
+        return None
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return candidate
+    return None
+
+
 def parse_domain_allowlist(raw: str | None) -> frozenset[str]:
     """Parse a comma/whitespace-separated domain list into a normalized set.
 
@@ -35,10 +82,19 @@ def parse_domain_allowlist(raw: str | None) -> frozenset[str]:
     "unconfigured" — never as "allow nothing" or "allow everything"; that
     decision belongs to the caller because it differs by auth mode.
     """
-    if not raw:
+    if raw is None or raw == "":
         return frozenset()
-    parts = (piece.strip().lower().lstrip("@").lstrip(".") for piece in raw.replace("\n", ",").split(","))
-    return frozenset(part for part in parts if part)
+    if not isinstance(raw, str):
+        raise ValueError("domain allowlist must be text")
+    normalized: set[str] = set()
+    for piece in _DOMAIN_SEPARATOR.split(raw.strip()):
+        if not piece:
+            continue
+        domain = normalize_policy_domain(piece, allow_config_prefix=True)
+        if domain is None:
+            raise ValueError("domain allowlist contains an invalid domain")
+        normalized.add(domain)
+    return frozenset(normalized)
 
 
 def mailbox_domain(mailbox: str) -> str | None:
@@ -47,11 +103,21 @@ def mailbox_domain(mailbox: str) -> str | None:
     Deliberately strict: exactly one ``@``, and a non-empty local part and
     domain. Anything else is not a mailbox we are willing to send to.
     """
-    candidate = mailbox.strip().lower()
-    local, sep, domain = candidate.rpartition("@")
-    if not sep or not local or not domain or candidate.count("@") != 1:
+    if not isinstance(mailbox, str):
         return None
-    return domain
+    candidate = mailbox.strip()
+    local, sep, domain = candidate.rpartition("@")
+    if (
+        not sep
+        or not local
+        or not domain
+        or candidate.count("@") != 1
+        or len(local) > 64
+        or len(candidate) > 254
+        or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in local)
+    ):
+        return None
+    return normalize_policy_domain(domain)
 
 
 def is_recipient_allowed(mailbox: str, allowlist: frozenset[str]) -> bool:
@@ -64,23 +130,12 @@ def is_recipient_allowed(mailbox: str, allowlist: frozenset[str]) -> bool:
     domain = mailbox_domain(mailbox)
     if domain is None or not allowlist:
         return False
-    if domain in allowlist:
+    normalized_allowlist = frozenset(
+        normalized for item in allowlist if (normalized := normalize_policy_domain(item)) is not None
+    )
+    if domain in normalized_allowlist:
         return True
-    return any(domain.endswith(f".{allowed}") for allowed in allowlist)
-
-
-def parse_sending_domains(raw: str | None) -> frozenset[str]:
-    """Parse the pool of domains this deployment is allowed to send *as*.
-
-    Same normalization as the recipient allowlist. This is the "register once,
-    reuse forever" pool: an operator authenticates a handful of domains
-    (SPF/DKIM/DMARC, or an Azure-managed domain) and then any campaign may send
-    from any of them, with any display name and local part, at no per-campaign
-    cost. It is deliberately an allowlist and not free-form: mail from a domain
-    the deployment has not authenticated will not deliver, so letting a campaign
-    request one would just produce silent failures.
-    """
-    return parse_domain_allowlist(raw)
+    return any(domain.endswith(f".{allowed}") for allowed in normalized_allowlist)
 
 
 def resolve_sender(
@@ -106,6 +161,9 @@ def resolve_sender(
         return default_sender, False
     if not sending_domains:
         return requested_mailbox, True
-    if domain in sending_domains or any(domain.endswith(f".{allowed}") for allowed in sending_domains):
+    normalized_domains = frozenset(
+        normalized for item in sending_domains if (normalized := normalize_policy_domain(item)) is not None
+    )
+    if domain in normalized_domains or any(domain.endswith(f".{allowed}") for allowed in normalized_domains):
         return requested_mailbox, True
     return default_sender, False

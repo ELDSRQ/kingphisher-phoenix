@@ -81,9 +81,12 @@ def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: dat
     digest prevents later linkage or dictionary recovery.
     """
     from kp_database.models import (
+        AudienceGroupMember,
+        Microsoft365IntegrationState,
         Recipient,
         RecipientAssignment,
         RecipientExclusion,
+        ReportedMailReceipt,
         TrackingEvent,
         TrackingToken,
         TrainingAssignment,
@@ -106,10 +109,36 @@ def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: dat
         )
         if token_ids:
             session.execute(delete(TrackingEvent).where(TrackingEvent.token_id.in_(token_ids)))
+        session.execute(
+            delete(ReportedMailReceipt).where(ReportedMailReceipt.recipient_assignment_id.in_(assignment_ids))
+        )
         session.execute(delete(TrackingToken).where(TrackingToken.recipient_assignment_id.in_(assignment_ids)))
     session.execute(delete(TrackingEvent).where(TrackingEvent.recipient_id == recipient_id))
     session.execute(delete(TrainingAssignment).where(TrainingAssignment.recipient_id == recipient_id))
     session.execute(delete(RecipientExclusion).where(RecipientExclusion.recipient_id == recipient_id))
+    session.execute(delete(AudienceGroupMember).where(AudienceGroupMember.recipient_id == recipient_id))
+    pending_states = list(
+        session.scalars(
+            select(Microsoft365IntegrationState)
+            .where(
+                Microsoft365IntegrationState.kind == "directory",
+                Microsoft365IntegrationState.pending_payload.is_not(None),
+            )
+            .limit(1001)
+            .with_for_update()
+        )
+    )
+    if len(pending_states) > 1000:
+        raise RuntimeError("directory preview erasure exceeds the bounded lifecycle limit")
+    for state in pending_states:
+        state.pending_preview_id = None
+        state.pending_preview_hash = None
+        state.pending_payload = None
+        state.pending_created_at = None
+        state.pending_expires_at = None
+        state.status = "discarded"
+        state.last_error = "privacy_erasure"
+        state.updated_at = erased_at
     if assignment_ids:
         session.execute(
             delete(RecipientAssignment).where(RecipientAssignment.recipient_assignment_id.in_(assignment_ids))
@@ -122,5 +151,9 @@ def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: dat
     recipient.display_name = None
     recipient.department = None
     recipient.last_snapshot_source = None
+    recipient.directory_source = None
+    recipient.directory_object_id_hash = None
+    recipient.directory_generation = None
+    recipient.directory_owned = False
     recipient.deleted_at = erased_at
     return True

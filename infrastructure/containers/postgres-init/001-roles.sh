@@ -1,10 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Local dev bootstrap for the Kingphisher-Phoenix stack.
+# Use the image's fixed POSIX shell path. Docker Desktop can expose a macOS bind
+# mount as executable while denying the `/usr/bin/env` shebang interpreter;
+# the PostgreSQL entrypoint must still be able to invoke this initializer.
 # Creates the INSERT-only audit role and the test database used by pytest.
 # Production grants live in infrastructure/terraform; this is disposable-local only.
 # The audit_writer password comes from the container env (AUDIT_WRITER_PASSWORD),
 # which docker-compose injects from the project .env (CRIT-06: no hardcoded creds).
-set -euo pipefail
+set -eu
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
 DO \$\$
@@ -40,6 +43,40 @@ BEGIN
       target
     );
   END LOOP;
+END
+\$\$;
+
+-- Awareness-ledger projection and expiry are a retention-only boundary. This
+-- block is intentionally guarded because fresh local initialization runs
+-- before Alembic creates the table and managed roles.
+DO \$\$
+DECLARE
+  target text;
+BEGIN
+  IF to_regclass('public.awareness_ledger_entries') IS NULL THEN
+    RETURN;
+  END IF;
+  REVOKE ALL ON TABLE public.awareness_ledger_entries FROM PUBLIC;
+  FOREACH target IN ARRAY ARRAY[
+    'worker',
+    'kp_operator',
+    'kp_tracking',
+    'kp_worker_ingestion',
+    'kp_worker_delivery',
+    'kp_worker_reminder',
+    'kp_worker_alert',
+    'kp_worker_audit_anchor',
+    'kp_worker_generation',
+    'kp_worker_directory',
+    'kp_worker_mailbox'
+  ] LOOP
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = target) THEN
+      EXECUTE format('REVOKE ALL ON TABLE public.awareness_ledger_entries FROM %I', target);
+    END IF;
+  END LOOP;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kp_worker_retention') THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.awareness_ledger_entries TO kp_worker_retention;
+  END IF;
 END
 \$\$;
 EOSQL

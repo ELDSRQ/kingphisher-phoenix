@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import time
 from collections.abc import MutableMapping
 from typing import Any
@@ -21,8 +22,25 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 # token hashes (64 hex chars) used as the at-rest identifier.
 _TOKEN_RE = re.compile(r"\b(?:[A-Za-z0-9_-]{43}|[0-9a-fA-F]{64})\b")
 _IP_RE = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+_TRACEPARENT_RE = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
+_SENSITIVE_KEY_PARTS = frozenset(
+    {
+        "authorization",
+        "correlation",
+        "mailbox",
+        "mime",
+        "password",
+        "secret",
+        "token",
+    }
+)
 
 REDACTED = "[REDACTED]"
+
+
+def _sensitive_key(key: object) -> bool:
+    normalized = str(key).casefold().replace("-", "_")
+    return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
 
 
 def redact_value(value: Any) -> Any:
@@ -32,7 +50,7 @@ def redact_value(value: Any) -> Any:
         value = _IP_RE.sub(REDACTED, value)
         return value
     if isinstance(value, dict):
-        return {k: redact_value(v) for k, v in value.items()}
+        return {k: REDACTED if _sensitive_key(k) else redact_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact_value(v) for v in value]
     return value
@@ -43,7 +61,7 @@ def redact_processor(logger: Any, method_name: str, event_dict: MutableMapping[s
     # a safe redaction boundary.  Process every value, including values bound
     # by middleware and third-party integrations.
     for key, value in event_dict.items():
-        event_dict[key] = redact_value(value)
+        event_dict[key] = REDACTED if _sensitive_key(key) else redact_value(value)
     return event_dict
 
 
@@ -110,16 +128,28 @@ class AccessLogMiddleware:
             return
         start = time.perf_counter()
         status_holder: list[int] = [200]
+        trace_id = _request_trace_id(scope)
+        span_id = secrets.token_hex(8)
+        context = structlog.contextvars.bind_contextvars(trace_id=trace_id)
 
         async def _send(message: dict[str, Any]) -> None:
             if message["type"] == "http.response.start":
                 status_holder[0] = message["status"]
+                headers = [header for header in message.get("headers", []) if header[0].lower() != b"traceparent"]
+                headers.append((b"traceparent", f"00-{trace_id}-{span_id}-01".encode("ascii")))
+                message["headers"] = headers
             await send(message)
 
         try:
             await self.app(scope, receive, _send)
-        except Exception:
-            self.logger.exception("request_failed", method=scope.get("method"), route=self._route_template(scope))
+        except Exception as exc:
+            method = scope.get("method")
+            self.logger.error(
+                "request_failed",
+                exception_type=type(exc).__name__[:128],
+                method=method if method in {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"} else "UNKNOWN",
+                route=self._route_template(scope),
+            )
             raise
         finally:
             duration_ms = (time.perf_counter() - start) * 1000
@@ -130,3 +160,20 @@ class AccessLogMiddleware:
                 status=status_holder[0],
                 duration_ms=round(duration_ms, 2),
             )
+            structlog.contextvars.unbind_contextvars(*context)
+
+
+def _request_trace_id(scope: Any) -> str:
+    """Accept a valid W3C trace id or create a fresh non-identifying one."""
+    for raw_name, raw_value in scope.get("headers", ()):
+        if raw_name.lower() != b"traceparent":
+            continue
+        try:
+            candidate = raw_value.decode("ascii").lower()
+        except UnicodeDecodeError:
+            break
+        matched = _TRACEPARENT_RE.fullmatch(candidate)
+        if matched is not None and matched.group(1) != "0" * 32 and matched.group(2) != "0" * 16:
+            return matched.group(1)
+        break
+    return secrets.token_hex(16)

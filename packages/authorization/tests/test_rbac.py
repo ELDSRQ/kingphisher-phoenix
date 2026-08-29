@@ -1,20 +1,15 @@
-"""Characterization tests for the kp_authorization RBAC matrix (AUTH-002).
-
-These pin CURRENT behavior so later waves can refactor safely: the exact
-role→capability mapping, fail-closed handling of unknown roles (HIGH-01
-regression guard), role-name resolution edge cases, and the CAMP-002
-self-approval rule. They assert what the code does today, not what a future
-spec might want; suspicious behavior is flagged with TODO(T-07) notes.
-"""
+"""Security contracts for the kp_authorization RBAC matrix (AUTH-002)."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import Any
 
+import kp_authorization
 import pytest
 from kp_authorization import (
-    APPROVE_CAMPAIGN,
+    APPROVE_PRIVACY,
+    APPROVE_SECURITY,
     EXPORT_BULK,
     HANDLE_PRIVACY,
     USE_KILL_SWITCH,
@@ -35,7 +30,6 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
     Role.CAMPAIGN_AUTHOR: frozenset({"create:campaign", "view_aggregate:results"}),
     Role.SECURITY_APPROVER: frozenset(
         {
-            "approve:campaign",
             "approve_security:campaign",
             # Generated content is security-reviewed before it can be scheduled.
             "approve:template",
@@ -46,7 +40,6 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
     ),
     Role.PRIVACY_APPROVER: frozenset(
         {
-            "approve:campaign",
             "approve_privacy:campaign",
             "handle:privacy_requests",
             "delete:data",
@@ -63,16 +56,15 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
             "use:kill_switch",
             "view_aggregate:results",
             "manage:recipients",
-            "approve:campaign",
             "subscribe:alerts",
             "verify:sending_domain",
             "sign:rules_of_engagement",
+            "manage:job_queue",
         }
     ),
     Role.AUDITOR: frozenset({"view:audit", "view_named:results", "view_aggregate:results"}),
     Role.ADMINISTRATOR: frozenset(
         {
-            "approve:campaign",
             "approve_security:campaign",
             "approve_privacy:campaign",
             "create:campaign",
@@ -96,6 +88,7 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
             "subscribe:alerts",
             "verify:sending_domain",
             "sign:rules_of_engagement",
+            "manage:job_queue",
         }
     ),
 }
@@ -120,6 +113,13 @@ def test_administrator_holds_every_defined_capability() -> None:
     assert _caps(_principal([Role.ADMINISTRATOR])) == all_caps
 
 
+def test_every_capability_has_a_public_module_export() -> None:
+    for name, capability in vars(Capability).items():
+        if isinstance(capability, Capability):
+            assert getattr(kp_authorization, name) is capability
+            assert name in kp_authorization.__all__
+
+
 def test_multi_role_principal_unions_capabilities() -> None:
     principal = _principal([Role.CAMPAIGN_AUTHOR, Role.SECURITY_APPROVER])
     assert _caps(principal) == set(ROLE_CAPABILITY_STRINGS[Role.CAMPAIGN_AUTHOR]) | set(
@@ -134,39 +134,55 @@ def test_principal_with_no_roles_has_no_capabilities() -> None:
     principal = _principal([])
     assert principal.capabilities() == frozenset()
     assert not principal.can(Capability("manage", "roles"))
-    with pytest.raises(AuthorizationError, match="lacks capability manage:roles"):
+    with pytest.raises(AuthorizationError, match="required capability is not assigned: manage:roles"):
         require(principal, Capability("manage", "roles"))
 
 
 def test_unknown_role_name_is_rejected_by_roles_for_names() -> None:
     """HIGH-01: an unrecognized role name must never resolve to capabilities."""
-    with pytest.raises(ValueError, match="not a valid Role"):
+    with pytest.raises(ValueError, match="unknown role name"):
         roles_for_names(["superuser"])
 
 
 def test_principal_with_unrecognized_role_value_grants_nothing() -> None:
-    """Characterization: an unknown role value in `Principal.roles` grants no
-    capabilities, but `capabilities()` raises KeyError instead of returning an
-    empty set — fail-closed, yet loud rather than silent.
-
-    TODO(T-07): consider normalizing unknown role values to zero capabilities
-    (or a typed error) so callers cannot crash the auth path.
-    """
+    """Unknown runtime values neither grant access nor crash the auth path."""
     principal = Principal("subject-1", {"wizard"})  # type: ignore[arg-type]
-    with pytest.raises(KeyError):
-        principal.capabilities()
-    with pytest.raises(KeyError):
-        principal.can(USE_KILL_SWITCH)
+    assert principal.capabilities() == frozenset()
+    assert not principal.can(USE_KILL_SWITCH)
 
 
-def test_plain_string_role_values_resolve_capabilities() -> None:
-    """Characterization: because Role is a StrEnum, a plain string equal to a
-    role value hashes like the enum member, so `Principal.roles` accepts
-    unvalidated strings that happen to match. TODO(T-07): validate at the
-    boundary instead of relying on str hashing.
-    """
-    principal = Principal("subject-1", {"campaign_author"})  # type: ignore[arg-type]
-    assert _caps(principal) == set(ROLE_CAPABILITY_STRINGS[Role.CAMPAIGN_AUTHOR])
+@pytest.mark.parametrize("role_name", [role.value for role in Role])
+def test_plain_string_role_values_grant_no_capabilities(role_name: str) -> None:
+    """StrEnum-compatible strings must not bypass typed role validation."""
+    principal = Principal("subject-1", {role_name})  # type: ignore[arg-type]
+    assert principal.capabilities() == frozenset()
+    assert not principal.has_role(Role(role_name))
+
+
+def test_has_role_requires_typed_arguments_and_assignments() -> None:
+    principal = Principal("subject-1", {Role.AUDITOR})
+
+    assert principal.has_role(Role.AUDITOR)
+    assert not principal.has_role("auditor")  # type: ignore[arg-type]
+
+
+def test_invalid_runtime_role_does_not_remove_valid_typed_role_capabilities() -> None:
+    principal = Principal("subject-1", {Role.AUDITOR, "administrator"})  # type: ignore[arg-type]
+
+    assert _caps(principal) == set(ROLE_CAPABILITY_STRINGS[Role.AUDITOR])
+
+
+def test_principal_snapshots_roles_against_post_authentication_mutation() -> None:
+    assigned = {Role.AUDITOR}
+    principal = Principal("subject-1", assigned)
+
+    assigned.clear()
+    assigned.add(Role.ADMINISTRATOR)
+
+    assert principal.roles == frozenset({Role.AUDITOR})
+    assert not principal.has_role(Role.ADMINISTRATOR)
+    with pytest.raises(AttributeError):
+        principal.roles = frozenset({Role.ADMINISTRATOR})  # type: ignore[misc]
 
 
 # --- Role-name resolution (claims → roles) edge cases ---
@@ -174,11 +190,7 @@ def test_plain_string_role_values_resolve_capabilities() -> None:
 
 @pytest.mark.parametrize("name", ["campaign-author", "Campaign_Author", "CAMPAIGN_AUTHOR", "Administrator", ""])
 def test_role_name_resolution_is_exact_and_has_no_alias_handling(name: str) -> None:
-    """Characterization: only the exact lowercase underscore value resolves.
-    There is no hyphen/underscore alias normalization at this base (the task
-    references an auth.py:83-89 alias layer that does not exist yet).
-    TODO(T-07): add alias handling when the auth module lands.
-    """
+    """Only exact canonical values resolve at this provider-neutral layer."""
     with pytest.raises(ValueError):
         roles_for_names([name])
 
@@ -192,6 +204,12 @@ def test_roles_for_names_resolves_and_deduplicates_valid_names() -> None:
         Role.ADMINISTRATOR,
         Role.AUDITOR,
     }
+
+
+@pytest.mark.parametrize("names", ["administrator", b"administrator", None, 7])
+def test_roles_for_names_rejects_non_iterable_or_scalar_containers(names: object) -> None:
+    with pytest.raises(ValueError):
+        roles_for_names(names)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("bad", [None, 7, 3.14, b"administrator", ["administrator"]])
@@ -209,10 +227,16 @@ def test_use_kill_switch_grants() -> None:
         assert _principal([role]).can(USE_KILL_SWITCH) == (role in granted), role
 
 
-def test_approve_campaign_grants() -> None:
-    granted = {Role.SECURITY_APPROVER, Role.PRIVACY_APPROVER, Role.CAMPAIGN_OPERATOR, Role.ADMINISTRATOR}
+@pytest.mark.parametrize(
+    ("capability", "granted"),
+    [
+        (APPROVE_SECURITY, {Role.SECURITY_APPROVER, Role.ADMINISTRATOR}),
+        (APPROVE_PRIVACY, {Role.PRIVACY_APPROVER, Role.ADMINISTRATOR}),
+    ],
+)
+def test_approval_lane_capabilities_are_separated(capability: Capability, granted: set[Role]) -> None:
     for role in Role:
-        assert _principal([role]).can(APPROVE_CAMPAIGN) == (role in granted), role
+        assert _principal([role]).can(capability) == (role in granted), role
 
 
 def test_handle_privacy_grants() -> None:
@@ -233,9 +257,10 @@ def test_require_passes_when_capability_held() -> None:
     require(_principal([Role.ADMINISTRATOR]), EXPORT_BULK)
 
 
-def test_require_raises_with_subject_and_capability_in_message() -> None:
-    with pytest.raises(AuthorizationError, match="principal author-1 lacks capability export_bulk:results"):
-        require(_principal([Role.CAMPAIGN_AUTHOR], subject_id="author-1"), EXPORT_BULK)
+def test_require_does_not_leak_subject_in_message() -> None:
+    with pytest.raises(AuthorizationError, match="required capability is not assigned") as excinfo:
+        require(_principal([Role.CAMPAIGN_AUTHOR], subject_id="secret-author-1"), EXPORT_BULK)
+    assert "secret-author-1" not in str(excinfo.value)
 
 
 def test_require_any_accepts_any_listed_capability() -> None:
@@ -243,12 +268,12 @@ def test_require_any_accepts_any_listed_capability() -> None:
 
 
 def test_require_any_raises_when_none_held() -> None:
-    with pytest.raises(AuthorizationError, match="lacks any of"):
+    with pytest.raises(AuthorizationError, match="none of the required capabilities"):
         require_any(_principal([Role.AUDITOR]), USE_KILL_SWITCH, HANDLE_PRIVACY)
 
 
 def test_require_any_with_no_capabilities_fails_closed() -> None:
-    with pytest.raises(AuthorizationError, match="lacks any of"):
+    with pytest.raises(AuthorizationError, match="none of the required capabilities"):
         require_any(_principal([Role.ADMINISTRATOR]))
 
 
@@ -270,12 +295,36 @@ def test_self_approval_not_blocked_for_other_authors() -> None:
     assert self_approval_blocked(principal, author_id="author-1", object_type="campaign") is None
 
 
+def test_self_approval_compares_uuid_identifiers_canonically_without_leaking_them() -> None:
+    subject = "A42E8F0C-AD2E-4C25-9E4B-D2D53EC7AC4C"
+    principal = _principal([Role.SECURITY_APPROVER], subject_id=subject)
+
+    with pytest.raises(AuthorizationError, match="self-approval is prohibited") as excinfo:
+        self_approval_blocked(principal, author_id=subject.lower(), object_type="campaign")
+    assert subject not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("action", "object_name"),
+    [("", "campaign"), ("read:*", "campaign"), ("read", ""), ("read", "Campaign")],
+)
+def test_capability_identifiers_must_be_canonical(action: str, object_name: str) -> None:
+    with pytest.raises(ValueError):
+        Capability(action, object_name)
+
+
 # --- Principal basics ---
 
 
 def test_principal_id_aliases_subject_id() -> None:
     principal = _principal([Role.AUDITOR], subject_id="subject-9")
     assert principal.principal_id == principal.subject_id == "subject-9"
+
+
+@pytest.mark.parametrize("subject_id", ["", " ", " subject-1", "subject-1\n", "x" * 256])
+def test_principal_rejects_ambiguous_or_log_unsafe_subject_identifiers(subject_id: str) -> None:
+    with pytest.raises(ValueError, match="subject identifier"):
+        Principal(subject_id, {Role.AUDITOR})
 
 
 def test_has_role_membership_check() -> None:

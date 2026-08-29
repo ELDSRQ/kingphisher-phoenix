@@ -8,8 +8,7 @@ from typing import Any
 from kp_domain_models import models as dm
 from kp_sanitization.fetcher import SecureFetcher
 
-from kp_source_adapters.common import build_item, source_url
-from kp_source_adapters.rss import AdapterError
+from kp_source_adapters.common import AdapterError, build_item, clean_text, source_url, validate_limit
 
 _SUPPORTED_TYPES = {"attack-pattern", "campaign", "indicator", "malware", "threat-actor", "tool", "vulnerability"}
 
@@ -20,14 +19,16 @@ class StixAdapter:
     def __init__(self, source: dm.Source, fetcher: SecureFetcher, *, limit: int = 500) -> None:
         self._source = source
         self._fetcher = fetcher
-        self._limit = limit
+        self._limit = validate_limit(limit, maximum=500)
 
     def fetch(self) -> list[dm.SourceItem]:
         result = self._fetcher.fetch(source_url(self._source))
+        if result.content_type.lower() not in {"application/json", "application/stix+json"}:
+            raise AdapterError("STIX source returned an unsupported content type")
         try:
             document = json.loads(result.content)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AdapterError("source did not return valid JSON") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError):
+            raise AdapterError("source did not return valid JSON") from None
         if not isinstance(document, dict) or document.get("type") != "bundle":
             raise AdapterError("STIX payload must be a bundle")
         objects = document.get("objects")
@@ -39,12 +40,12 @@ class StixAdapter:
                 break
             if not isinstance(obj, dict) or obj.get("type") not in _SUPPORTED_TYPES or obj.get("revoked") is True:
                 continue
-            stix_id = str(obj.get("id", ""))
+            stix_id = clean_text(obj.get("id", ""), limit=255)
             name = obj.get("name") or obj.get("pattern") or stix_id
             body = obj.get("description") or obj.get("pattern") or name
             indicators: dict[str, Any] = {"stix_id": stix_id, "stix_type": obj.get("type")}
             if isinstance(obj.get("pattern"), str):
-                indicators["pattern"] = obj["pattern"][:4096]
+                indicators["pattern"] = clean_text(obj["pattern"], limit=4096)
             items.append(
                 build_item(
                     self._source,

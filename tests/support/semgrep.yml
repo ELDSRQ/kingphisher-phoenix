@@ -1,0 +1,35 @@
+rules:
+  - id: python-dynamic-code-execution
+    message: Dynamic code execution is forbidden in platform runtime code.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: python-unsafe-deserialization
+    message: Unsafe deserialization can execute attacker-controlled code.
+    severity: ERROR
+    languages: [python]
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+      - pattern: marshal.loads(...)
+      - pattern: yaml.load(...)
+
+  - id: python-disabled-tls-verification
+    message: TLS certificate verification must not be disabled.
+    severity: ERROR
+    languages: [python]
+    patterns:
+      - pattern-either:
+          - pattern: requests.$METHOD(..., verify=False, ...)
+          - pattern: httpx.$METHOD(..., verify=False, ...)
+
+  - id: javascript-dynamic-code-execution
+    message: Dynamic JavaScript execution is forbidden in the operator console.
+    severity: ERROR
+    languages: [javascript]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)

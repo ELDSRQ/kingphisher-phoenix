@@ -1,22 +1,22 @@
 """WS-6 CCPA privacy endpoints against a disposable Postgres.
 
-Require the local dev stack (`docker compose up -d postgres`) and the
-`kingphisher_test` database (created by `make db-init`); skipped otherwise.
+These belong to the explicit ``make test-postgres`` profile and require its
+migrated disposable database and roles.
 """
 
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
-from pathlib import Path
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 from kp_database.base import Base
 from kp_database.models import (
     CipherText,
+    Microsoft365IntegrationState,
     PrivacyNotice,
     Recipient,
     RetentionPolicy,
@@ -25,8 +25,11 @@ from kp_database.privacy import hash_mailbox
 from kp_database.session import create_db_engine, make_session_factory
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import create_app
+from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
-load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+pytestmark = pytest.mark.postgres
+
 
 KEK = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 HMAC = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -41,6 +44,8 @@ _available = None
 
 
 def _db_available() -> bool:
+    if os.environ.get("KP_TEST_PROFILE") != "postgres":
+        return False
     global _available
     if _available is None:
         try:
@@ -54,11 +59,11 @@ def _db_available() -> bool:
     return _available
 
 
-requires_db = pytest.mark.skipif(not _db_available(), reason="dev Postgres not reachable")
+requires_db = pytest.mark.skipif(not _db_available(), reason="PostgreSQL integration database is not reachable")
 
 
 @pytest.fixture(scope="module")
-def client() -> TestClient:
+def client() -> Iterator[TestClient]:
     engine = create_db_engine(TEST_URL)
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -78,7 +83,23 @@ def client() -> TestClient:
         training_base_url="http://train.local:3000/training/awareness",
         training_domains="example.com,training.local",
     )
-    return TestClient(create_app(settings))
+    application = create_app(settings)
+    application.state.audit_verifier.status = "ok"
+    test_client = TestClient(application)
+    yield test_client
+    test_client.close()
+    application.state.audit_engine.dispose()
+    application.state.session_factory.kw["bind"].dispose()
+
+
+def _session():
+    engine = create_engine(
+        TEST_URL,
+        pool_pre_ping=True,
+        poolclass=NullPool,
+        connect_args={"connect_timeout": 5},
+    )
+    return make_session_factory(engine)()
 
 
 def _token(roles: list[str]) -> str:
@@ -100,8 +121,8 @@ PRIVACY_HEADERS = {"Authorization": f"Bearer {_token(['privacy_approver'])}"}
 ADMIN_HEADERS = {"Authorization": f"Bearer {_token(['administrator'])}"}
 
 
-def _seed_recipient(mailbox: str) -> str:
-    session = make_session_factory(create_db_engine(TEST_URL))()
+def _seed_recipient(mailbox: str, *, directory_owned: bool = False) -> str:
+    session = _session()
     try:
         recipient = Recipient(
             recipient_id=uuid4(),
@@ -111,8 +132,30 @@ def _seed_recipient(mailbox: str) -> str:
             display_name="Data Subject",
             department="Engineering",
             is_test_account=False,
+            directory_source="m365:privacy-test" if directory_owned else None,
+            directory_object_id_hash=("a" * 64) if directory_owned else None,
+            directory_generation=7 if directory_owned else None,
+            directory_owned=directory_owned,
         )
         session.add(recipient)
+        if directory_owned:
+            now = datetime.now(UTC)
+            session.add(
+                Microsoft365IntegrationState(
+                    integration_state_id=uuid4(),
+                    kind="directory",
+                    provider="microsoft365",
+                    scope_hash="1" * 64,
+                    config_fingerprint="2" * 64,
+                    status="preview_ready",
+                    pending_preview_id=uuid4(),
+                    pending_preview_hash="3" * 64,
+                    pending_payload=f'{{"mailbox":"{mailbox}","entra_id":"privacy-object"}}',
+                    pending_created_at=now,
+                    pending_expires_at=now + timedelta(minutes=15),
+                    last_counts={},
+                )
+            )
         session.commit()
         return str(recipient.recipient_id)
     finally:
@@ -120,7 +163,7 @@ def _seed_recipient(mailbox: str) -> str:
 
 
 def _seed_default_retention_policy() -> None:
-    session = make_session_factory(create_db_engine(TEST_URL))()
+    session = _session()
     try:
         session.add(
             RetentionPolicy(
@@ -138,7 +181,7 @@ def _seed_default_retention_policy() -> None:
 
 
 def _seed_notice() -> None:
-    session = make_session_factory(create_db_engine(TEST_URL))()
+    session = _session()
     try:
         session.add(
             PrivacyNotice(
@@ -169,9 +212,32 @@ def test_privacy_notice_published(client: TestClient) -> None:
 
 
 @requires_db
+def test_privacy_request_listing_is_bounded_and_pageable(client: TestClient) -> None:
+    for index in range(3):
+        response = client.post(
+            "/api/v1/privacy/requests",
+            headers=PRIVACY_HEADERS,
+            json={"request_type": "access_export", "requester_mailbox": f"page-{index}@example.com"},
+        )
+        assert response.status_code == 201, response.text
+
+    first = client.get("/api/v1/privacy/requests?limit=1&offset=0", headers=PRIVACY_HEADERS)
+    second = client.get("/api/v1/privacy/requests?limit=1&offset=1", headers=PRIVACY_HEADERS)
+    assert first.status_code == second.status_code == 200
+    for response in (first, second):
+        assert response.headers["cache-control"] == "private, no-store, max-age=0"
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["expires"] == "0"
+    assert len(first.json()) == len(second.json()) == 1
+    assert first.json()[0]["privacy_request_id"] != second.json()[0]["privacy_request_id"]
+    assert client.get("/api/v1/privacy/requests?limit=501", headers=PRIVACY_HEADERS).status_code == 422
+    assert client.get("/api/v1/privacy/requests?offset=-1", headers=PRIVACY_HEADERS).status_code == 422
+
+
+@requires_db
 def test_privacy_request_lifecycle_and_deletion(client: TestClient) -> None:
     mailbox = "privacy.dsr@example.com"
-    recipient_id = _seed_recipient(mailbox)
+    recipient_id = _seed_recipient(mailbox, directory_owned=True)
 
     submit = client.post(
         "/api/v1/privacy/requests",
@@ -196,21 +262,52 @@ def test_privacy_request_lifecycle_and_deletion(client: TestClient) -> None:
     assert verify.status_code == 200, verify.text
     assert verify.json()["status"] == "verified"
 
-    export = client.get(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
+    old_export = client.get(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
+    assert old_export.status_code == 405
+    export = client.post(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
     assert export.status_code == 200, export.text
+    assert export.headers["cache-control"] == "private, no-store, max-age=0"
+    assert export.headers["pragma"] == "no-cache"
+    assert export.headers["expires"] == "0"
     assert export.json()["records"][0]["recipient_id"] == recipient_id
 
     fulfill = client.post(f"/api/v1/privacy/requests/{request_id}/fulfill", headers=PRIVACY_HEADERS, json={})
     assert fulfill.status_code == 200, fulfill.text
     assert fulfill.json()["deleted"] == 1
 
-    session = make_session_factory(create_db_engine(TEST_URL))()
+    session = _session()
     try:
         recipient = session.get(Recipient, __import__("uuid").UUID(recipient_id))
         assert recipient is not None and recipient.deleted_at is not None
         assert recipient.display_name is None
         assert recipient.department is None
         assert recipient.mailbox.startswith("erased-")
+        assert recipient.directory_source is None
+        assert recipient.directory_object_id_hash is None
+        assert recipient.directory_generation is None
+        assert recipient.directory_owned is False
+
+        raw = session.execute(
+            __import__("sqlalchemy").text(
+                "SELECT employee_key, mailbox, display_name, department, directory_source, "
+                "directory_object_id_hash, directory_generation, directory_owned "
+                "FROM recipients WHERE recipient_id = :recipient_id"
+            ),
+            {"recipient_id": recipient_id},
+        ).one()
+        raw_values = "|".join("" if value is None else str(value) for value in raw)
+        assert mailbox not in raw_values
+        assert "privacy-test" not in raw_values
+        assert "a" * 64 not in raw_values
+        assert raw[4:] == (None, None, None, False)
+        integration = session.scalar(
+            __import__("sqlalchemy")
+            .select(Microsoft365IntegrationState)
+            .where(Microsoft365IntegrationState.kind == "directory")
+        )
+        assert integration is not None
+        assert integration.status == "discarded"
+        assert integration.pending_payload is None
     finally:
         session.close()
 
@@ -233,7 +330,7 @@ def test_recipient_delete_endpoint(client: TestClient) -> None:
 
 @requires_db
 def test_default_retention_policy_seeded(client: TestClient) -> None:
-    session = make_session_factory(create_db_engine(TEST_URL))()
+    session = _session()
     try:
         policy = session.scalar(
             __import__("sqlalchemy").select(RetentionPolicy).where(RetentionPolicy.is_default.is_(True)).limit(1)
@@ -255,7 +352,7 @@ def test_unverified_request_cannot_export_or_fulfill(client: TestClient) -> None
     )
     request_id = submitted.json()["privacy_request_id"]
 
-    export = client.get(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
+    export = client.post(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
     fulfill = client.post(f"/api/v1/privacy/requests/{request_id}/fulfill", headers=PRIVACY_HEADERS, json={})
     assert export.status_code == 409
     assert fulfill.status_code == 409
@@ -285,7 +382,7 @@ def test_correction_updates_supported_fields(client: TestClient) -> None:
     assert fulfilled.status_code == 200, fulfilled.text
     assert fulfilled.json()["corrected"] == 1
 
-    session = make_session_factory(create_db_engine(TEST_URL))()
+    session = _session()
     try:
         recipient = session.get(Recipient, __import__("uuid").UUID(recipient_id))
         assert recipient is not None

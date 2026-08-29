@@ -1,103 +1,96 @@
-# Remediation task matrix
+# Historical remediation register
 
-This matrix tracks the implementation response to the security, privacy, and
-operator review. Work is split into conflict-free waves; shared interfaces are
-integrated by the root task after each wave.
+This file is retained so links to the pre-wave remediation review do not break. It is **historical**, not a current task matrix or readiness statement. The current architecture, findings, task status, dependencies, and acceptance evidence are maintained only in [the integrated build plan](WAVE-BUILD-PLAN.md). In particular, its [goal-aligned priority policy](WAVE-BUILD-PLAN.md#goal-aligned-priority-policy-2026-08-29) supersedes every unfinished commercial-parity task in this register: work that does not support the two-person/125-user threat-curation, safe-simulation, training, reporting, GUI-deployment, or production-qualification loop is deferred. Native ARM64 qualification uses `192.168.1.140`, canonical source `/Users/edierks/Projects/kingphisher-phoenix` mounted read-only in the project-only `kingphisher` Colima engine, and external state rooted at `/Volumes/DockerExternal/KingPhisher-Phoenix`. External preflight/restore passed, and final exact preflight reported approximately 744,006,440 KiB free; the seven internal Docker Desktop project containers are stopped/preserved and unrelated workloads remain running. The legacy encrypted snapshot is unrecoverable because its identity is absent; validated snapshot `20260829T013332Z-tsX1WQ`, archive SHA-256 `e4fb16a735d0c9d3b6aa04381c4c9d7e24269006203c551f50abf671cc3637ff`, satisfies `EXT-002`. External installation and `verify_install.sh` passed, without qualifying later image/browser/cloud gates.
 
-| ID | Outcome | Owner files | Acceptance | Depends | Conflict group | Priority | Status |
-|---|---|---|---|---|---|---|---|
-| SEC-1 | Tracking requests cannot leak identifiers or exhaust limiter memory | `packages/telemetry`, `apps/tracking-api` | Invalid tokens rejected; bounded limiter; emitted logs redact paths/IPs | none | TRACKING | P0 | Complete |
-| UX-1 | GUI supports valid role-aware campaign approval and safe scheduling UX | `apps/operator-ui`, console/API approval tests | Approval body/rationale and both approval types work; UI explains identity separation | none | UI | P0 | Complete |
-| PRIV-1 | DSR handlers, verification gates, export, erasure, and retention have enforceable postconditions | privacy routes/models/tests and retention worker tests | Non-deletion requests cannot be falsely completed; export gated/comprehensive; deletion removes identifiers; retention covers linked data | none | PRIVACY | P0 | Complete |
-| ARCH-1 | Delivery messages are validated against campaign state/ownership and audit appends serialize | queue, delivery, audit store and tests | Cross-campaign assignments rejected; manifest verified; audit head locked and delayed scheduling prevents state race | none | RUNTIME | P0 | Complete |
-| OPS-1 | Analysts receive campaign metrics, evidence export, lifecycle and recall outcomes | reporting/lifecycle API and UI | Campaign funnel/detail/export and terminal lifecycle visible | Wave 1 | API/UI | P1 | Complete |
-| INT-1 | Sources, alerts, worker health, and deployment controls are operationally safe | source/alert/health/infrastructure | Supported adapters explicit; subscription ownership fixed; sources operable; containers hardened | Wave 1 | OPS/META | P1 | Complete |
-| A11Y-1 | Console meets core WCAG 2.2 AA interaction requirements | UI HTML/CSS/JS | labels, focus, live regions, responsive layout and accessible status | UX-1 | UI | Complete |
-| AUTH-2 | Browser OIDC uses authorization-code + PKCE and preserves separate principals | auth/console/UI | Login redirect, callback validation, token storage, logout, and dev fallback tests | UX-1 | AUTH/UI | P1 | Complete |
-| PROVIDER-2 | Source, mailbox, reminder, and training integrations have working provider contracts | adapters/workers | STIX and bulk imports, mailbox report ingestion, reminders, provider contract tests | ARCH-1 | PROVIDER | P1 | Complete |
-| E2E-2 | The complete browser workflow and operational gates are automated | tests/scripts/Makefile | Browser smoke plus lint/operational gates run locally | AUTH-2, PROVIDER-2 | META | P1 | Complete |
-| ALERT-2 | Subscriptions produce retryable signed webhook deliveries | alert models/migration/API/worker | Destination validation, signed delivery, retry/DLQ, audit and tests | ARCH-1 | API/DB/RUNTIME | P1 | Complete |
-| TENANT-2 | Deployment mode is explicitly single-tenant and fails closed for unsupported shared use | config/docs/runtime | Startup invariant and operator disclosure; multi-tenant mode rejected | none | DOMAIN | P1 | Complete |
-| ONBOARD-API | Safe onboarding state, persistence, and connection tests | console API/tests | Secrets never returned/logged; allowlisted writes; bounded fail-closed tests | AUTH-2 | API | P1 | Complete |
-| PROVIDER-WIRE | Local provider contracts accept production SMTP, mailbox, Graph, and AI configuration | worker provider/config/tests | Backward-compatible local defaults; optional auth; safe TLS and bounded calls | PROVIDER-2 | PROVIDER | P1 | Complete |
-| ONBOARD-UI | Accessible guided setup wires and tests each supported external component | console JS/CSS | Automatic first-run launch; progress, save/test/skip/review/restart | ONBOARD-API, PROVIDER-WIRE | UI | P1 | Complete |
-| ONBOARD-E2E | Wizard and provider wiring are documented and regression-tested | E2E/docs/env | No-credential local path passes; production prerequisites are explicit | ONBOARD-UI | META/DOCS | P1 | Complete |
-| FRIENDLY-API | Setup metadata, glossary, and secret-safe AI guidance use plain language | console API/tests | Curated fallback; bounded AI; suggestions restricted to step-owned nonsecret fields | ONBOARD-API | API | P1 | Complete |
-| FRIENDLY-UI | Wizard and help center explain terminology and guide recovery | console JS/CSS | Welcome, contextual help, searchable glossary, explicit AI suggestion review | FRIENDLY-API | UI | P1 | Complete |
-| SETUP-AI | Local AI contract supports deterministic setup assistance | mock AI/tests | Bounded schema; no secrets accepted/echoed; all connector topics covered | PROVIDER-WIRE | PROVIDER | P1 | Complete |
-| FRIENDLY-E2E | Help and AI-assisted setup behavior are documented and live-tested | E2E/docs | Local assistant path and fallback path pass without credentials | FRIENDLY-UI, SETUP-AI | META/DOCS | P1 | Complete |
-| LOG-OPS | Worker failure logging is bounded and rotated | supervisor/worker runtime/runbook/tests | Connection failures back off; files rotate/compress; normal runtime remains bounded | PROVIDER-WIRE | RUNTIME/OPS | P0 | Complete |
-| NTFY-INT | Operators can use ntfy as a minimal-cost alert receiver | alert onboarding/worker/tests/docs | Host allowlist, signed delivery, connection test, retry/DLQ, and explicit save work | ALERT-2, ONBOARD-UI | PROVIDER/UI | P1 | Complete |
-| AZURE-AUTO | Single-tenant Azure infrastructure and release automation are reproducible | Terraform/workflow/scripts/docs | Hardened plan/apply, migrations, health checks, protected approval, and validation gates | TENANT-2 | INFRA/OPS | P1 | Complete |
-| AZURE-WIZARD | Azure preparation is GUI-guided, explainable, and optionally AI-assisted | console API/UI/tests/docs | Non-secret four-stage wizard, field-source help, validation, reviewed exports, and no automatic deployment | AZURE-AUTO, FRIENDLY-API | API/UI/DOCS | P1 | Complete |
-| AZURE-VISUAL | Qualify Azure wizard interaction through the in-app browser | Browser/live console | Focus, help, AI, validation errors/success, and downloads visually verified without real secrets | AZURE-WIZARD | ENVIRONMENT | P2 | Blocked (environmental) — browser controller not attachable (extension not connected). Backend layers qualified without a browser: schema, validation errors/success/warnings, Help, privacy-filtered AI assist, Terraform/GitHub export mapping (184 tests, no defects). Rendered visual/keyboard pass + on-disk downloads still need a working browser controller. |
-| SMB-FLOW | Let one authorized SMB administrator create and schedule campaigns without separate approvers | campaign API/UI/live E2E/docs | DRAFT schedules directly; audit, safety validation, cap, recall, and kill switch remain | UX-1 | API/UI/DOCS | P1 | Complete |
-| LOCAL-TRAINING | Complete local click attribution without DNS or an external training service | tracking API/seed/config/tests | Seeded link records a click and lands on the loopback awareness page | SMB-FLOW | TRACKING/RUNTIME | P1 | Complete |
+Controller context `kp-external-mac` reports
+`colima-kingphisher|aarch64|/var/lib/docker` at exact endpoint
+`ssh://edierks@192.168.1.140/Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock`;
+the default remains `desktop-linux`. The legacy Docker contexts
+`DockerExternal` and `kp-remote-mac` omit the reviewed socket and can select
+shared Docker Desktop; never use them for project work. The external volume
+named `DockerExternal` remains the required storage target. Rosetta/binfmt are
+disabled and unnecessary for native ARM64.
 
----
+## Superseded assumptions
 
-## Status as of 2026-08-26
+The former register was written for a materially older build. Its completion labels must not be read as production evidence. In particular, the following old descriptions are superseded:
 
-Closed since the consolidated review (see `RESUME-HERE.md` for the finding IDs):
-
-| Finding | Status |
+| Historical description | Current design |
 |---|---|
-| NEW-1 zero-width / bidi validator bypass | Fixed (T-01) |
-| NEW-2 two-person approval not enforced | Fixed (T-06) — and extended so the two approvals must come from different people |
-| NEW-3 no template-approval endpoint | Fixed (T-11/T-14) |
-| NEW-4 no external-recipient blocking | Fixed (T-06) |
-| NEW-5 tracking API had no body cap | Fixed (T-02) |
-| NEW-6 prompt-injection neutralizer dormant | Fixed (T-11) — wired onto the AI path, and the override patterns widened to cover "disregard prior instructions" |
-| NEW-7 audit verification on demand only | Fixed (T-09) |
-| NEW-8 stale `.env.bak-qa` | Fixed (T-03) |
-| NEW-9 `.env.example` bind addresses | Fixed (T-03) |
-| NEW-10 `Source.consecutive_failures` dead | Fixed (T-06) — incremented and trips a breaker |
-| ARCH-1 oversized delivery message, per-recipient SMTP connect | Fixed (T-06) |
-| ARCH-2 stuck QUEUED assignments never reconciled | Fixed (T-06) |
-| ARCH-3 Redis persistence disabled | Fixed (T-10) |
-| ARCH-4 RSS placeholder parser | Fixed (T-08) |
-| ARCH-6 open/click dedup race | Fixed (T-02) |
-| ARCH-8 testpaths excluded tests | Fixed (T-03), and `infrastructure/` added in T-11 |
-| ARCH-9 zero tests on two packages | Fixed (T-04) |
-| HIGH-02res non-UUID OIDC subjects | Fixed (T-05) |
-| P-1 generation pipeline dead code | Fixed (T-11) |
-| P-2 single-admin weaponization path | Fixed (T-06) |
-| P-3 console writes `.env` on Container Apps | Fixed — `OPERATOR_API_CONFIG_STORE=managed` makes those endpoints refuse with guidance |
+| Shared console password and HS256 admin JWT as the product identity | Loopback development compatibility only; managed mode uses Entra OIDC, PKCE, exact claims, and application roles |
+| Eight Azure worker applications | One multi-role worker by default; optional isolated delivery worker |
+| All active recipients selected at schedule time | Explicit audience definition, preview, deterministic sample, exclusions, and frozen manifest; legacy campaigns require configuration |
+| Stored tracking-token hash used in the link | Random opaque link bearer with a purpose-scoped keyed verifier stored at rest |
+| Static/tokenless awareness landing page | Token-bound approved lesson, distinct completion bearer, due/reminder state, and reporting |
+| Directory sync/report mailbox were generic or Mailpit-only | Microsoft Graph full/delta directory preview/apply and Microsoft 365 mailbox delta/MIME/correlation flows |
+| Provider acceptance meant delivered | Durable accepted/indeterminate/provider-result states with ACS receipt processing |
+| Audit writer directly appended alongside a separate business transaction | Transactional outbox plus database-owned append-only dispatcher and a locally implemented create-only locked-Blob witness; live external-boundary proof remains |
+| Global kill switch was advisory | Persistent database safety state blocks future scheduling/delivery until authorized release |
+| Azure deployment was production-ready because Terraform validated | Terraform/static validation is only local evidence; disposable Azure/provider/browser/recovery gates remain |
+| Recurring programs and executive analytics were absent | A bounded 2–12 occurrence Program Planner and longitudinal Executive Trends JSON/CSV/GUI are implemented locally; adaptive/new-hire/remedial automation, cohorts/repeats/efficacy/scheduled reporting, and normalized corrections remain |
+| Shared-secret `/v1/corrections` could append unreviewed event corrections | The legacy path is a stable HTTP 410 no-write boundary and the obsolete secret has been removed from runtime/Terraform provisioning; a normalized dual-reviewed correction workflow is deferred |
+| Console navigation/actions inferred authority too loosely | Server-derived, allowlisted capabilities now drive fail-closed session validity, navigation, and controls; API authorization remains authoritative |
+| Source operations were incomplete or one-shot | Audited GUI/API enable, disable, and repeatable manual-ingest operations exist; a post-fetch locked recheck discards fetched content before writes when disable wins, and job IDs are request references only |
+| Production failures emitted or persisted exception messages/tracebacks | Twenty-one logging sites now emit bounded event/type metadata; queue outbox state persists a fixed failure code; and reviewed operator/auth/analytics responses use stable allowlisted messages |
+| Local readiness consumed time before finding environmental blockers and drifted from service topology | The harness now checks disk, bounded Docker/Compose response, required service health, actual supervisor children, and truthful `/readyz` before strict profiles. Installation verification is green after restart and all 8 live local E2Es pass; a loopback-only Mailpit delivery/training/knowledge-check canary also passed with exact canary cleanup. Full recovery and packaged browser/WCAG remain open, and Mailpit acceptance is not inbox/provider proof |
+| Unused production helpers obscured the active design | Four uncalled/unexported helpers (`monotonic_timestamp`, `build_email_body`, `parse_sending_domains`, and `SafetyValidatorError`) were removed, reducing production code by 35 lines without a behavior claim |
+| One pytest command mixed hermetic and unavailable integrations, normalizing skips | Hermetic, PostgreSQL, Redis, E2E, and Azure-live profiles are explicit and skip-rejecting; readiness runs the local profiles only after bounded preflight and does not print connection URLs. PostgreSQL jobs use Redis DB14 and flush only DB14 before/after; the Redis queue contract uses DB15; neither touches application DB0 |
+| Public tracking accepted ambiguous/oversized request forms and had inconsistent early-response hardening | Request targets, declared/streamed bodies, duplicate content lengths, forwarding trust, all-response headers, and public exception translation now have fail-closed boundaries |
+| Generated/static training destinations could bypass the recipient evidence chain | Generation retains a placeholder until delivery resolves it to the recipient's tracking click; click/open/completion/reminder credentials are assignment- and purpose-bound, and legacy static destinations fail closed |
+| An older directory fetch could overwrite or clear a newer preview | A durable latest-request/configuration fence makes stale success and failure attempts `superseded` after Graph I/O |
+| Configuration failures could render secret values or require unrelated provider settings | Operator/tracking/worker settings hide inputs and nested exception chains; managed workers validate only role dependencies and reject unsafe/local provider fallbacks |
+| Integration setup could test or persist the wrong provider, leak inactive secrets to AI, or report reachability as delivery | The GUI uses explicit SMTP/ACS and Mailpit/Microsoft 365 selects; inactive saved fields remain preserved but are hidden/disabled/excluded, setup assistance sees active non-secret fields only, and provider/destination changes validate before atomic credential rebinding. ACS is exact-origin non-sending reachability-only; Microsoft 365 uses one quoted/bounded Graph delta probe and strict bearer/status/redirect handling |
+| Privacy and OIDC browser flows could expose data or follow attacker-controlled transport | Privacy export is authenticated POST, list/export data is `private, no-store`, and cookie mutations require trusted same-origin CSRF metadata. OIDC endpoints are issuer-origin bound and use single-resolution IP-pinned TLS transport with Host/SNI preserved and redirects, environment proxies, HTTP/2, and cross-origin navigation/secret transmission refused |
+| Privacy could have no persisted current notice, multiple current rows, or lose request operations when notice loading failed | Checked-in migration `0030_default_privacy_notice` deterministically reconciles legacy current rows, inserts a safe default only when absent, and enforces one current row with a unique partial index. The console loads requests independently and reduces a notice failure to a bounded warning. External `0030` qualification remains open |
+| Managed AI could be omitted and pattern approval could imply generation finished | Managed validation requires an approved non-local HTTPS gateway implementing `/propose` and `/setup-assist`; pattern approval atomically records a durable generation request and reports only that boundary. Queue/provider completion and live provider behavior remain separate open evidence |
+| Managed tracking could rate-limit every client as the ingress peer or trust spoofed forwarding | Terraform supplies exact bounded `TRACKING_API_TRUSTED_PROXIES` CIDRs from the Container Apps infrastructure subnet plus loopback. The API trusts forwarding only from a trusted direct peer, walks canonical `X-Forwarded-For` right-to-left, and disables Uvicorn proxy rewriting. Live ingress exercise remains open |
+| Azure deployment required workload readiness before it could reveal ACS DNS | Workflow/Terraform/API/GUI now require `foundation_bootstrap`, live-verified/post-apply-proven `foundation_finalize`, then evidence-gated `workloads`. Bootstrap applies the complete `deploy_workloads=false` ACR/private-network/data/ACS/DNS foundation without Terraform targets, initiates verification, and forbids sender/association changes; every stage refuses delete/replacement. Operator readiness fields are rejected, exact resources are read back, bounded artifacts are validated, and resume/advance creates a new digest-bound plan. No stage is live-qualified |
+| Azure could mark an environment healthy while one worker role or revision was failed/unready | The workloads gate requires exactly one active Healthy/Provisioned worker revision, every enabled role simultaneously ready in two consecutive Log Analytics observations, and the same revision healthy at final recheck. This is implemented/static only until exercised live |
+| GUI-exported ACS settings could drift from API, preflight, or Terraform | All four paths enforce the same one-label HTTPS `*.communication.azure.com:443` endpoint contract and reject nested/lookalike/path/query/credential variants; live provider readiness still requires authenticated Azure evidence |
+| Local bootstrap and mock services depended on mutable image/dependency resolution | Local Compose and mock base images are immutable manifest digests; the 17-package mock runtime is fully pinned/hash-verified; normal workspace bootstrap/development/console launch is frozen; the fail-closed audit covers 58 external production packages; and native CycloneDX contains 59 total components/58 external PURLs. The latest all-five native ARM64 snapshot passed hardening and 0 HIGH / 0 CRITICAL / 0 secret scans, but Wave 29 source edits made those interim images stale. External capacity/restore are proven, while exact-final, AMD64, and registry evidence remain open |
+| RoE/RBAC consumers could drift or accept ambiguous identity/domain/time input | Roles are immutable typed snapshots; wildcard/malformed capabilities and unknown roles cannot escalate; UUID self-approval and denial minimization fail closed; domains and RoE v2 signing/window/size boundaries are canonical and bounded; shared campaign/program/training invariants apply to API/worker consumers. The consumer-inclusive suite passed 374 tests plus static/security/offline package gates |
+| Release workflow could build the wrong architecture or lose digest/credential boundaries | Workflow explicitly targets `linux/amd64`, re-resolves immutable ACR digests, binds SBOM/provenance subjects, rejects credentials/tokens in reviewed configuration, avoids persisted checkout credentials, and removes ephemeral registry credentials. The native verifier binds the exact engine/root/platform, five image IDs, unchanged manifests, and pinned Trivy 0.74.0 scan JSON/checksums into no-clobber evidence. Git- and Docker-defined contexts exclude preserved `artifacts/`, `migration-checkpoint/`, generated launcher bundles, and no-clobber launcher backups so recovery payloads cannot enter release manifests or BuildKit cache. Preserved `final-v2` failed closed pre-build on BSD mode/evidence defects; repaired `final-v3` remains evidence-conditional. The connector SHA-256 is `6868067ef5d58c799bc4a07dd832d4852d38dee73e6ff1af9a58c701ce85a4d3` |
+| Unused clone adapter obscured the supported source path | Dead implementation and exports were removed for a net 87-line reduction; 36 focused and 5 downstream tests passed |
+| Public framework discovery and metrics routes expanded the unauthenticated surface | Operator and tracking now return 404 for OpenAPI, Swagger, ReDoc, and HTTP metrics routes; their write-only metric registries were removed, while bounded health/log state and worker snapshots remain |
+| Browser login could drift toward an implicit development-auth path | Authentication-mode discovery now accepts only exact `dev` or `oidc` state and fails closed on errors or unknown values |
+| Recipient ciphertext had no bounded key-version transition | New AES-GCM ciphertext is versioned and key-ID-bound, with one active and at most four prior decrypt-only keys plus bounded legacy reads. Managed prior keys are legacy/recovery-only; the first foundation fixes the active ID, active rotation is blocked, the active KEK remains in Terraform state, and `prevent_destroy` complicates teardown. Pre-stage/prove/promote, decrypt proof, bulk re-encryption, and safe retirement remain debt |
+| Audit scheduling risked retaining sensitive verifier detail | Scheduler state, health output, and logs retain only aggregate verification status and a bounded problem count, not raw problem details |
+| Starlette test compatibility relied on an unofficial client path | Tests use the official Starlette `TestClient` through a test-only `httpx2` compatibility dependency; production HTTP clients are unchanged |
+| Browser controls and backend authority could drift independently | An explicit manifest covers all 113 operator routes—103 capability-protected plus 10 dedicated/public—the browser/backend capability sets must match exactly, visible non-Azure actions are capability-gated, Help uses aggregate-read authority, and approve-only template reviewers receive safe preview without authoring/cloning authority |
+| SQLite fixtures/outbox timestamp binding emitted lifecycle/deprecation warnings | Owned tracking pools and test engines now close deterministically; outbox timestamps use explicit SQLAlchemy datetime typing. The final warning-strict hermetic command passed with zero warnings |
+| Dependency audit could continue after a failed frozen export | The target now fails closed before `pip-audit`; the corrected hash-verified 58-package audit reported zero known vulnerabilities on 2026-08-27 |
+| Generation queue, provider, database, preview, and delivery boundaries could drift | One canonical strict generation request/response contract bounds fields, collections, aggregate request bytes, provider response bytes, and stored/rendered output; the durable queue key converges retries and races without duplicate provider calls/drafts/audit effects |
+| A source could remain enabled or write fetched content without current permission evidence | The API and worker require a complete current terms acknowledgement; the GUI supports acknowledge/inspect/revoke, revocation disables the source, and pre/post-fetch terms/version fences prevent writes after expiry, revocation, or replacement |
+| Training content had no governed reusable library or trustworthy per-row GUI authority | Migration `0026` adds the bounded text-resource library and least-privilege grants; `0028` binds campaigns to exact approved lessons; author submit and independent review/supersession are locked and audited; every response derives strict `can_submit`/`can_review`, which the GUI validates fail closed. Checked-in head is now `0030_default_privacy_notice`; the latest complete external PostgreSQL profile remains the historical 86-test result at exact head `0029` |
+| Recipient reporting and management could load unbounded named rows | Global recipient management and campaign named outcomes use deterministic server pagination with explicit totals/truncation and a maximum of 500; aggregate-only users never receive named rows |
+| Recipient exclusions were one-way and difficult to operate | Migration `0027` adds created/expiry/revoked metadata and encrypted revocation rationale; the GUI provides bounded history, scoped create, and confirmed append-only revoke without expanding mailbox/employee identity |
+| Reporting and alert controls were only partially wired | The GUI separates aggregate, named, and bulk-export capabilities; alert subscriptions are owner-listed/disabled and external HTTPS destinations require a configured hostname allowlist |
+| Identity/setup/AI/deployment connectors could eagerly buffer or reflect hostile provider responses | OIDC discovery/token/JWKS, setup assistance, generation, and GitHub metadata/status/activity use streamed declared/decoded byte caps, strict UTF-8/JSON/schema handling, stable content-free errors, and no-read GitHub dispatch status classification |
+| Browser validation could be mistaken for the storage/security boundary | Campaign/source/privacy/correction/approval/exclusion/rationale inputs are normalized and bounded server-side; operator/tracking validation responses cap structural locations/counts and omit rejected values |
+| Later worker/provider/deployment seams contained retry, identity, lifecycle, and trust ambiguities | Native-UUID outbox completion/reconciliation, Graph/Microsoft 365/ACS-event/reported-MIME bounds, explicit ACS managed-identity client selection, worker preflight/context/reminder/retention wiring, server-derived campaign/pattern flags and privacy bounds, protected GitHub workflow/run/lease validation, and provider-backed Terraform validation were repaired locally. Final acceptance also fixed an audit-store owner-fallback revocation defect, reconciled 36 stranded idempotent queue intents, and left the audit chain green; live external gates remain |
+| Installed or accepted controls led nowhere or reported false success | The broken installed `kp-seed` wrapper and remote full-stack stop routing/capability/marker handling were removed from the browser, supervisor, and launcher; source `make seed`, GUI restart, and host-signal launcher shutdown remain. The stop-removal lane passed 39 focused tests. `make sign` now requires an immutable digest reference, `COSIGN_KEY`, and `cosign` and fails closed otherwise. Ignored reminder, Mailpit-TLS, and queue-prefix settings were retired; training keeps one fixed 72-hour due policy. No external signing evidence is claimed |
+| User-facing collection scans and concurrent scoped stops had insufficient explicit bounds | User-facing lists now use bounded deterministic database pagination, scheduling refuses more than 100 covering RoE candidates before signature work, and a shared/exclusive campaign lock orders delivery against scoped stop. Wave 24 point-in-time evidence passed 52 focused worker lifecycle/security tests and 15 isolated PostgreSQL tests, including 250 ms lock contention. A separate isolated migrated-PostgreSQL scoped-kill persistence test passed 1 in 2.88 seconds at head `0027` and dropped its disposable database; this is not a service-suite or production claim |
+| Recovery could mistake identity/configuration loss for a clean install | Wave 29 freezes the Compose project and PostgreSQL/Redis volume names; refuses replacement credential generation when `.env` is missing/incomplete and preserved state exists or cannot be inspected; minimizes dotenv keys per read-only command; runs `prestart` before Compose and `ready` after migration/seed; and qualifies exact cached images offline, including Redis UID/data-write behavior. Dated controller observations at about 5.9 and 5.6 GiB proved the normal gates blocked safely. Current project capacity uses a UUID-pinned external Colima engine on `.140` with no Docker Desktop fallback. Partial or uncertain state is checkpointed and reconciled in place without automatic cleanup |
 
-Found and fixed during the work, not in the original register:
+## Historical workstreams
 
-- **Inverted `test_send` flag** (introduced in `d9c800a`): scheduled campaigns
-  skipped the "delivery requires an approved template" check and never became
-  ACTIVE, while test sends enforced approval and flipped the campaign live. No
-  test covered it.
-- **One approver could give both approvals**, since only the author was blocked.
-- **`az acr build` / bootstrap gap**: a new Azure tenant could not be stood up at
-  all without pre-existing VNet infrastructure.
+Earlier workstreams covered tracking minimization, role-aware campaign approval, privacy/DSR behavior, delivery ownership, reporting, source/provider contracts, onboarding/help, alert webhooks, local training, log bounding, Azure Terraform, and the Azure preparation wizard. Those changes informed later waves, but their old “Complete” labels represented code/test scope at the time—not a current commercial-parity or production qualification decision.
 
-Sender-realism workstream (2026-08-26, landed on `main`):
+Later audits found and addressed deeper release defects in migrations, Entra claims, workload isolation, RoE signatures, delivery idempotency, campaign targeting, training, audit authority, queue atomicity, content/fetch boundaries, rate limiting, managed health/configuration, packaging, Graph directory state, reported-mail ingestion, and ACS readiness. The integrated build plan contains the exact outcome and residuals.
 
-| Component | Status | Notes |
-|---|---|---|
-| Sender-persona foundation | Complete | `Campaign.sender_display_name` (migration 0012), `policy.resolve_sender` / `parse_sending_domains` |
-| DNS-challenge domain verification | Complete | `kp-domain-verification`: HMAC token, fail-closed TXT observation, exact records (`required_dns_records`) |
-| Verified domains + signed RoE models | Complete | migration 0013; signature binds `terms_hash\|signer\|signed_at` |
-| RoE gate (schedule + delivery) | Complete | unconditional fail-closed; per-recipient `target_domain_not_roe_covered`; revocation stops delivery |
-| Sender personas wired into delivery | Complete | From header display name (SMTP relay path), pool-resolved envelope address |
-| Lookalike generator | Complete | candidates under an operator-controlled base + ready-to-paste DNS |
-| Relay-agnostic send path | Complete | SMTP relay (SES/Mailgun/Postfix) already generic; persona honored through it |
-| Onboarding wizard endpoints | Complete | challenge / verify / list / generate, RoE sign / list / revoke, RBAC `VERIFY_DOMAIN` + `SIGN_ROE` |
-| Brand allowlist for neutralizer | Complete | `brand_allowlist` = operator-owned domains; lookalikes inside them are legit lure content |
+## Current decision
 
-New env keys: `KP_ROE_SIGNING_KEY`, `OPERATOR_API_DOMAIN_VERIFY_KEY`,
-`KP_SENDING_DOMAINS`, `KP_BRAND_ALLOWLIST`. Deliverability truth: mail only
-delivers from operator-controlled domains with valid SPF/DKIM/DMARC; the
-wizard emits the exact records and the pool only accepts verified domains.
+Exact-final ARM64 status is evidence-conditional: only retained no-clobber
+`qualification.json` and scan evidence can prove the exact non-emulated Docker
+server platform, explicit `--platform`, all-five OS/architecture/image-ID
+metadata, unchanged source/context manifests, Trivy 0.74.0, and labeled
+disposable cleanup. The verifier also binds the expected source-manifest digest
+and exact Trivy executable/hash/cache, retained empty config/ignore/secret policy files, rejects ambient `TRIVY_*`, records fresh
+database/check-bundle metadata, and makes the verified cache immutable. Azure workloads scan exact immutable ACR
+`repository@sha256` images with pinned Trivy before SBOM/attestation/deploy and
+retain scan JSON/checksums. These implemented controls do not themselves prove
+an image pass.
 
-Still open:
+The platform remains **NO-GO for production and RSA Conference campaigns** until exact-final ARM64 evidence, AMD64/registry publication/attestation/rollback evidence, protected GitHub configuration and final-source sync, a remote Terraform backend and all three disposable Azure stages, live Entra/Graph/Outlook/ACS/Event Grid/DNS/inbox behavior, browser/WCAG/human acceptance, external-witness qualification, backup/restore, and recovery/rotation canaries pass. The 2026-08-29 read-only GitHub audit of `ELDSRQ/kingphisher-phoenix` proved auth/repository/Actions/workflow access and no billing-disabled run signal, but zero environments/variables/secrets/rulesets/runs, unprotected `main`, disabled secret protections, and old remote `main` at `1403d944a40214714b6cbfcf5cbabc4fa7225eb9`; no workflow dispatch/run occurred. Current Azure management-plane state is unverified because sandbox DNS blocked the re-audit. The 2,329/86/2/8 local/external result and clean 03Z logs are pre-remediation historical evidence; the pre-Wave-36 local hermetic result was 2,469/97 with 0 failures. The final local Wave 36 hermetic suite at checked-in head `0030` passed 2,501/97 with 0 failures in 183.40 seconds. External PostgreSQL/Redis/E2E at `0030`, exact-final images, and every cloud/provider/browser/recovery/human gate remain open. No KnowBe4 parity or production readiness is claimed.
 
-| Finding | Note |
-|---|---|
-| NEW-11 global kill switch advisory-only | Accepted; per-campaign recall is enforced |
-| NEW-12 pattern self-approval vacuous | Minor |
-| ARCH-5 contracts package decorative | Partly addressed — the generation contract is now real and enforced |
-| ARCH-7 in-memory rate limits vs multi-replica | Open. Limits are per-replica on Container Apps; needs a shared store |
+For an RSA-controlled pilot, target only a written, explicitly authorized RSA-owned population and domains. Conference attendance, exhibitor status, or public contact information is not authorization.

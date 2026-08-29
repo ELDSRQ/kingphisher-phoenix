@@ -1,6 +1,18 @@
+name: phishing-awareness-platform
+
+# Required before any pull, create, or recreate that can replace a stateful
+# service image. The command is read by launch/deployment tooling and is also
+# safe to run directly; it never mutates Compose resources or named volumes.
+x-kp-base-image-qualification:
+  command: ["bash", "scripts/operator/base-image-qualification/run.sh"]
+  stateful_services: ["postgres", "redis"]
+
 services:
   postgres:
-    image: postgres:16-alpine
+    # Keep the last locally qualified multi-architecture index. The newer
+    # 16.15 index published zero-byte account data in its ARM64 image and
+    # fails before PostgreSQL can reach the preserved data volume.
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     environment:
       POSTGRES_USER: kingphisher
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -23,7 +35,9 @@ services:
     pids_limit: 256
 
   redis:
-    image: redis:7-alpine
+    # Keep the last locally qualified multi-architecture index. The newer
+    # 7.4.11 ARM64 image published an empty entrypoint and cannot start.
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
     user: "999:999"
     # Queue durability: Redis backs the at-least-once job queue (deliver/generate/
     # retention messages + delayed zset + processing list). AOF (default
@@ -59,7 +73,7 @@ services:
     pids_limit: 128
 
   mailpit:
-    image: axllent/mailpit:v1.20
+    image: axllent/mailpit:v1.20@sha256:7eef0f38dbc85e4e264f2edf5d70fbb694826791e05cb2cae4fc9e3282f968f5
     environment:
       MP_API_PASSWORD: ${MAILPIT_API_PASSWORD:?set MAILPIT_API_PASSWORD in .env}
     ports:
@@ -83,7 +97,7 @@ services:
     pids_limit: 128
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.107.0
+    image: otel/opentelemetry-collector-contrib:0.107.0@sha256:b65527791431d76d058b2813748a3f4a8912540d7b23beac2f6b4e02c872f5b7
     command: ["--config", "/etc/otel-collector.yaml"]
     volumes:
       - ./infrastructure/containers/otel-collector.yaml:/etc/otel-collector.yaml:ro
@@ -154,4 +168,6 @@ services:
 
 volumes:
   postgres_data:
+    name: phishing-awareness-platform_postgres_data
   redis_data:
+    name: phishing-awareness-platform_redis_data

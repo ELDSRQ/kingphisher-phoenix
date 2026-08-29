@@ -24,13 +24,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dotenv import load_dotenv  # noqa: E402
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+if os.environ.get("KP_DISABLE_DOTENV") != "1":
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 from kp_campaign_patterns.builder import build_pattern_candidate  # noqa: E402
 from kp_database.audit_store import AuditStore  # noqa: E402
+from kp_database.campaign_service import (  # noqa: E402
+    AudienceDefinition,
+    bind_campaign_launch_review,
+    bind_campaign_training_resource,
+    configure_campaign_audience,
+    freeze_campaign_audience,
+    preview_campaign_audience,
+)
 from kp_database.models import (  # noqa: E402
     Campaign,
     CampaignApproval,
+    CampaignLaunchGate,
     CampaignPattern,
     CipherText,
     PrivacyNotice,
@@ -39,6 +49,7 @@ from kp_database.models import (  # noqa: E402
     RulesOfEngagement,
     SourceItem,
     TemplateVersion,
+    TrainingResource,
     VerifiedDomain,
 )
 from kp_database.models import (  # noqa: E402
@@ -77,6 +88,25 @@ DEV_KEK = _require_hex_bytes(
     os.environ.get("OPERATOR_API_CIPHERTEXT_KEK", ""),
     "OPERATOR_API_CIPHERTEXT_KEK",
 )
+
+
+def _cipher_prior_keys(raw: str) -> dict[str, bytes]:
+    entries = [entry.strip() for entry in raw.split(",") if entry.strip()]
+    if len(entries) > 4:
+        raise SystemExit("OPERATOR_API_CIPHERTEXT_PRIOR_KEYS supports at most four entries")
+    keys: dict[str, bytes] = {}
+    for entry in entries:
+        key_id, separator, key_hex = entry.partition("=")
+        if not separator or not key_id:
+            raise SystemExit("OPERATOR_API_CIPHERTEXT_PRIOR_KEYS must use comma-separated key-id=64-hex entries")
+        if key_id in keys:
+            raise SystemExit("OPERATOR_API_CIPHERTEXT_PRIOR_KEYS key identifiers must be unique")
+        keys[key_id] = _require_hex_bytes(key_hex, f"OPERATOR_API_CIPHERTEXT_PRIOR_KEYS[{key_id}]")
+    return keys
+
+
+DEV_KEK_ID = os.environ.get("OPERATOR_API_CIPHERTEXT_KEY_ID", "primary").strip()
+DEV_PRIOR_KEKS = _cipher_prior_keys(os.environ.get("OPERATOR_API_CIPHERTEXT_PRIOR_KEYS", ""))
 RECIPIENT_HASH_SALT = _require_hex_bytes(
     os.environ.get("OPERATOR_API_RECIPIENT_HASH_SALT", ""),
     "OPERATOR_API_RECIPIENT_HASH_SALT",
@@ -98,23 +128,56 @@ def main() -> None:
     audit = AuditStore(
         create_db_engine(AUDIT_DATABASE_URL),
         hmac_key=DEV_HMAC_KEY,
+        intent_engine=engine,
     )
-    CipherText.configure_key(DEV_KEK)
+    CipherText.configure_keyring(DEV_KEK_ID, DEV_KEK, DEV_PRIOR_KEKS)
 
     try:
         policy = _seed_retention_and_notice(session)
         source_id = _seed_source(session)
         pattern = _seed_pattern(session, source_id)
         template = _seed_template(session)
+        training_resource = _seed_training_resource(session)
         roe = _seed_roe(session)
         campaign = _seed_campaign(
-            session, pattern.campaign_pattern_id, template.template_version_id, policy, roe.roe_id
+            session,
+            pattern.campaign_pattern_id,
+            template.template_version_id,
+            training_resource,
+            policy,
+            roe.roe_id,
         )
-        _seed_recipients(session)
-        _seed_approvals(session, campaign.campaign_id, template.template_version_id)
+        recipients = _seed_recipients(session)
+        _freeze_seed_campaign(session, campaign, recipients, roe)
+        launch_gate = session.get(CampaignLaunchGate, campaign.campaign_id)
+        if campaign.state is dm.CampaignState.APPROVED:
+            launch_gate = bind_campaign_launch_review(session, campaign, template)
+            _seed_approvals(
+                session,
+                campaign.campaign_id,
+                template.template_version_id,
+                launch_gate.review_manifest_hash,
+            )
+        elif launch_gate is None:
+            raise RuntimeError("existing launched seed campaign has no durable launch review")
         pending = _seed_pending_campaign(
-            session, pattern.campaign_pattern_id, template.template_version_id, policy, roe.roe_id
+            session,
+            pattern.campaign_pattern_id,
+            template.template_version_id,
+            training_resource,
+            policy,
+            roe.roe_id,
         )
+        _freeze_seed_campaign(
+            session,
+            pending,
+            recipients,
+            roe,
+            final_state=dm.CampaignState.PENDING_APPROVAL,
+        )
+        if pending.state is dm.CampaignState.PENDING_APPROVAL:
+            bind_campaign_launch_review(session, pending, template)
+            session.commit()
 
         audit.record(
             actor=SOURCE_OWNER,
@@ -126,10 +189,10 @@ def main() -> None:
                 "pattern": str(pattern.campaign_pattern_id),
                 "template": str(template.template_version_id),
             },
+            session=session,
         )
         session.commit()
 
-        assignment_ids, token_hashes = _prepare_campaign(session)
     finally:
         session.close()
         engine.dispose()
@@ -139,8 +202,7 @@ def main() -> None:
         f" source={source_id} pattern={pattern.campaign_pattern_id}"
         f" template={template.template_version_id} campaign={campaign.campaign_id}"
     )
-    _ = assignment_ids
-    print(f"prepared campaign with {len(token_hashes)} tracking tokens")
+    print("prepared campaign with a durable launch review; run its locked canary from Campaigns")
     print(f"awaiting approval: {pending.title} ({pending.campaign_id})")
     print(
         "  Open Campaigns in the console to walk the approval flow. Under the "
@@ -233,12 +295,12 @@ def _seed_template(session: Session) -> TemplateVersion:
             "<p>Dear {{ recipient.first_name }}, our records show an outstanding invoice "
             "that requires review.</p>"
             "<p>This is a training simulation. "
-            '<a href="{{ tracking.click_url }}">Complete the awareness module</a>.</p>'
+            '<a href="{{ tracking.training_url }}">Complete the awareness module</a>.</p>'
         )
         existing.plain_text = (
             "Dear {{ recipient.first_name }}, our records show an outstanding invoice "
             "that requires review. This is a training simulation — "
-            "learn more at {{ tracking.click_url }}."
+            "learn more at {{ tracking.training_url }}."
         )
         session.commit()
         return existing
@@ -268,12 +330,12 @@ def _seed_template(session: Session) -> TemplateVersion:
             "<p>Dear {{ recipient.first_name }}, our records show an outstanding invoice "
             "that requires review.</p>"
             "<p>This is a training simulation. "
-            '<a href="{{ tracking.click_url }}">Complete the awareness module</a>.</p>'
+            '<a href="{{ tracking.training_url }}">Complete the awareness module</a>.</p>'
         ),
         plain_text=(
             "Dear {{ recipient.first_name }}, our records show an outstanding invoice "
             "that requires review. This is a training simulation — "
-            "learn more at {{ tracking.click_url }}."
+            "learn more at {{ tracking.training_url }}."
         ),
         subject="Invoice requires immediate review",
         synthetic_sender_display="Accounts Payable",
@@ -358,17 +420,31 @@ def _seed_roe(session: Session) -> RulesOfEngagement:
     )
     terms_hash = hashlib.sha256(terms.encode("utf-8")).hexdigest()
     signer = "seed:console-operator"
+    window_start = now - timedelta(days=1)
+    window_end = now + timedelta(days=90)
+    authorizing_party = "Local development"
+    target_domains = ["example.com"]
     roe = RulesOfEngagement(
         roe_id=uuid5(NAMESPACE_URL, "seed-roe"),
         signer=signer,
-        authorizing_party="Local development",
+        authorizing_party=authorizing_party,
         terms_text=terms,
         terms_hash=terms_hash,
-        signature=roe_signature_hex(terms_hash, signer, now, signing_key=ROE_SIGNING_KEY),
+        signature=roe_signature_hex(
+            terms_hash,
+            signer,
+            now,
+            authorizing_party=authorizing_party,
+            target_domains=target_domains,
+            window_start=window_start,
+            window_end=window_end,
+            signing_key=ROE_SIGNING_KEY,
+        ),
+        signature_version=2,
         signed_at=now,
-        window_start=now - timedelta(days=1),
-        window_end=now + timedelta(days=90),
-        target_domains=["example.com"],
+        window_start=window_start,
+        window_end=window_end,
+        target_domains=target_domains,
         created_by=UUID(int=0),
     )
     session.add(roe)
@@ -376,11 +452,53 @@ def _seed_roe(session: Session) -> RulesOfEngagement:
     return roe
 
 
+def _seed_training_resource(session: Session) -> TrainingResource:
+    resource_id = uuid5(NAMESPACE_URL, "seed-training-resource-verify-urgent-requests")
+    existing = session.get(TrainingResource, resource_id)
+    if existing is not None:
+        return existing
+    now = datetime.now(UTC)
+    resource = TrainingResource(
+        training_resource_id=resource_id,
+        title="Verify urgent requests",
+        kind="article",
+        content=(
+            "Pause before acting on an urgent request. Verify the sender and request through "
+            "a trusted, independent channel, and report suspicious messages to the security team."
+        ),
+        version=1,
+        requires_completion=True,
+        source_ref="local-development-seed",
+        approval_state=dm.TemplateApprovalState.APPROVED,
+        created_by=UUID(int=0),
+        created_at=now,
+        submitted_at=now,
+        reviewed_by=uuid5(NAMESPACE_URL, "seed-training-resource-reviewer"),
+        reviewed_at=now,
+        review_rationale="approved local development fixture",
+    )
+    session.add(resource)
+    session.commit()
+    return resource
+
+
 def _seed_campaign(
-    session: Session, pattern_id: UUID, template_id: UUID, policy: RetentionPolicy, roe_id: UUID
+    session: Session,
+    pattern_id: UUID,
+    template_id: UUID,
+    training_resource: TrainingResource,
+    policy: RetentionPolicy,
+    roe_id: UUID,
 ) -> Campaign:
     existing = session.scalar(select(Campaign).where(Campaign.title == "Q3 Invoice Lure Drill"))
     if existing is not None:
+        if existing.state in {
+            dm.CampaignState.DRAFT,
+            dm.CampaignState.PENDING_APPROVAL,
+            dm.CampaignState.APPROVED,
+        }:
+            bind_campaign_training_resource(existing, training_resource)
+            session.commit()
         return existing
     now = datetime.now(UTC)
     campaign = Campaign(
@@ -388,19 +506,21 @@ def _seed_campaign(
         pattern_id=pattern_id,
         current_template_id=template_id,
         title="Q3 Invoice Lure Drill",
-        state=dm.CampaignState.APPROVED,
+        state=dm.CampaignState.DRAFT,
         sender_mailbox="security-drills@example.com",
+        sender_display_name="Account Security",
         roe_id=roe_id,
         training_domain="training.local",
         schedule_start=now - timedelta(days=1),
         schedule_end=now + timedelta(days=13),
         timezone="UTC",
-        max_recipients=100_000,
+        max_recipients=10_000,
         retention_policy_id=policy.retention_policy_id,
         manifest_hash=hashlib.sha256(b"seed-campaign-invoice").hexdigest(),
         created_by=UUID(int=0),
         expires_at=now + timedelta(days=14),
     )
+    bind_campaign_training_resource(campaign, training_resource)
     session.add(campaign)
     session.commit()
     return campaign
@@ -414,7 +534,12 @@ SEED_SECOND_ADMIN = uuid5(NAMESPACE_URL, "seed-admin-campaign-author")
 
 
 def _seed_pending_campaign(
-    session: Session, pattern_id: UUID, template_id: UUID, policy: RetentionPolicy, roe_id: UUID
+    session: Session,
+    pattern_id: UUID,
+    template_id: UUID,
+    training_resource: TrainingResource,
+    policy: RetentionPolicy,
+    roe_id: UUID,
 ) -> Campaign:
     """A campaign awaiting approval, so the two-person flow is demonstrable.
 
@@ -424,6 +549,13 @@ def _seed_pending_campaign(
     title = "Q3 Credential Harvest Drill (awaiting approval)"
     existing = session.scalar(select(Campaign).where(Campaign.title == title))
     if existing is not None:
+        if existing.state in {
+            dm.CampaignState.DRAFT,
+            dm.CampaignState.PENDING_APPROVAL,
+            dm.CampaignState.APPROVED,
+        }:
+            bind_campaign_training_resource(existing, training_resource)
+            session.commit()
         return existing
     now = datetime.now(UTC)
     campaign = Campaign(
@@ -431,19 +563,20 @@ def _seed_pending_campaign(
         pattern_id=pattern_id,
         current_template_id=template_id,
         title=title,
-        state=dm.CampaignState.PENDING_APPROVAL,
+        state=dm.CampaignState.DRAFT,
         sender_mailbox="security-drills@example.com",
         roe_id=roe_id,
         training_domain="training.local",
         schedule_start=now + timedelta(days=1),
         schedule_end=now + timedelta(days=15),
         timezone="UTC",
-        max_recipients=100_000,
+        max_recipients=10_000,
         retention_policy_id=policy.retention_policy_id,
         manifest_hash=hashlib.sha256(b"seed-campaign-pending").hexdigest(),
         created_by=SEED_SECOND_ADMIN,
         expires_at=now + timedelta(days=16),
     )
+    bind_campaign_training_resource(campaign, training_resource)
     session.add(campaign)
     session.commit()
     return campaign
@@ -480,19 +613,55 @@ def _seed_recipients(session: Session) -> list[Recipient]:
     return created
 
 
-def _seed_approvals(session: Session, campaign_id: UUID, template_id: UUID) -> None:
-    existing = session.scalar(
-        select(CampaignApproval).where(
-            CampaignApproval.campaign_id == campaign_id,
-            CampaignApproval.approval_type == dm.ApprovalType.SECURITY,
-        )
-    )
-    if existing is not None:
+def _freeze_seed_campaign(
+    session: Session,
+    campaign: Campaign,
+    recipients: list[Recipient],
+    roe: RulesOfEngagement,
+    *,
+    final_state: dm.CampaignState = dm.CampaignState.APPROVED,
+) -> None:
+    """Converge the demo campaign through the production audience safety path."""
+    if campaign.state not in {
+        dm.CampaignState.DRAFT,
+        dm.CampaignState.PENDING_APPROVAL,
+        dm.CampaignState.APPROVED,
+    }:
+        # Seeding must never rewind a scheduled/active/terminal campaign or
+        # replace its durable canary evidence on a later installer run.
         return
+    definition = AudienceDefinition(
+        include_recipient_ids=tuple(recipient.recipient_id for recipient in recipients),
+        statuses=(dm.RecipientStatus.ACTIVE,),
+    )
+    audience, changed = configure_campaign_audience(session, campaign, definition)
+    if changed or audience.frozen_at is None:
+        preview = preview_campaign_audience(
+            session,
+            campaign,
+            allowed_domains=frozenset({"example.com"}),
+            roe_options=[(roe.roe_id, frozenset(roe.target_domains))],
+        )
+        freeze_campaign_audience(session, campaign, preview, expected_preview_hash=preview.preview_hash)
+    campaign.state = final_state
+    session.commit()
+
+
+def _seed_approvals(
+    session: Session,
+    campaign_id: UUID,
+    template_id: UUID,
+    launch_manifest_hash: str,
+) -> None:
+    existing_by_type = {
+        approval.approval_type: approval
+        for approval in session.scalars(select(CampaignApproval).where(CampaignApproval.campaign_id == campaign_id))
+    }
     now = datetime.now(UTC)
     for approval_type in (dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY, dm.ApprovalType.HR):
-        session.add(
-            CampaignApproval(
+        approval = existing_by_type.get(approval_type)
+        if approval is None:
+            approval = CampaignApproval(
                 campaign_approval_id=uuid4(),
                 campaign_id=campaign_id,
                 approval_type=approval_type,
@@ -502,20 +671,12 @@ def _seed_approvals(session: Session, campaign_id: UUID, template_id: UUID) -> N
                 decided_at=now,
                 template_version_id=template_id,
             )
-        )
+            session.add(approval)
+        # Seeded decisions are deterministic demo fixtures. Bind them to the
+        # exact current launch review so legacy NULL approvals can never
+        # accidentally authorize a new canary or full publication.
+        approval.launch_manifest_hash = launch_manifest_hash
     session.commit()
-
-
-def _prepare_campaign(session: Session) -> tuple[list[str], list[str]]:
-    from kp_database.campaign_service import prepare_campaign
-
-    campaign = session.scalar(select(Campaign).where(Campaign.title == "Q3 Invoice Lure Drill"))
-    if campaign is None:
-        return [], []
-    prepared = prepare_campaign(
-        session, campaign, tracking_base_url="http://localhost:8001", include_test_accounts=True
-    )
-    return [p.assignment_id for p in prepared], [p.token_hash for p in prepared]
 
 
 if __name__ == "__main__":

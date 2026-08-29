@@ -20,4 +20,8 @@ htmlcov/
 logs/
 tmp/
 dist/
+artifacts/
+migration-checkpoint/
+Kingphisher Launcher.app/
+Kingphisher Launcher.app.backup-*/
 infrastructure/terraform/

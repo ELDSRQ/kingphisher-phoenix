@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+from types import SimpleNamespace
 
+import pytest
 from kp_database.privacy import hash_mailbox, minimize_ip, minimize_user_agent
-from kp_telemetry.logging import configure_logging, get_logger, redact_processor, redact_value
+from kp_telemetry.logging import AccessLogMiddleware, configure_logging, get_logger, redact_processor, redact_value
 
 
 def test_redacts_43_char_token() -> None:
@@ -42,6 +45,24 @@ def test_redacts_every_structured_field() -> None:
     }
 
 
+def test_redacts_sensitive_keys_even_when_values_do_not_match_pii_patterns() -> None:
+    event = {
+        "mime_body": "private prose without an address",
+        "provider_correlation": "opaque-provider-value",
+        "mailbox_id": "shared-inbox-alias",
+        "trace_id": "1" * 32,
+    }
+
+    out = redact_processor(None, "info", event)
+
+    assert out == {
+        "mime_body": "[REDACTED]",
+        "provider_correlation": "[REDACTED]",
+        "mailbox_id": "[REDACTED]",
+        "trace_id": "1" * 32,
+    }
+
+
 def test_serialized_log_redacts_arbitrary_context(capsys: object) -> None:
     configure_logging()
     token_hash = "b" * 64
@@ -73,3 +94,42 @@ def test_minimize_user_agent_truncates() -> None:
     assert minimize_user_agent("x" * 500) == "x" * 128
     assert minimize_user_agent("short") == "short"
     assert minimize_user_agent(None) is None
+
+
+def test_access_failure_log_never_serializes_exception_or_request_data(capsys: object) -> None:
+    class DatabasePasswordLeak(RuntimeError):
+        pass
+
+    async def failing_app(scope: object, receive: object, send: object) -> None:
+        del scope, receive, send
+        raise DatabasePasswordLeak("password=must-not-reach-log")
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"secret request body"}
+
+    async def send(message: object) -> None:
+        del message
+
+    configure_logging()
+    middleware = AccessLogMiddleware(failing_app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/api/v1/programs/attacker-controlled?password=secret",
+        "query_string": b"password=secret",
+        "headers": [],
+        "route": SimpleNamespace(path="/api/v1/programs/{program_id}"),
+    }
+    with pytest.raises(DatabasePasswordLeak):
+        asyncio.run(middleware(scope, receive, send))
+
+    output = capsys.readouterr().out  # type: ignore[attr-defined]
+    records = [json.loads(line) for line in output.splitlines()]
+    failed = next(record for record in records if record["event"] == "request_failed")
+    assert failed["exception_type"] == "DatabasePasswordLeak"
+    assert failed["method"] == "POST"
+    assert failed["route"] == "/api/v1/programs/{program_id}"
+    assert "password=must-not-reach-log" not in output
+    assert "attacker-controlled" not in output
+    assert "secret request body" not in output
+    assert "exception" not in failed

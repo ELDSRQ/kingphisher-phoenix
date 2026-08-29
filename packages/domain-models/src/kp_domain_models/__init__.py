@@ -1,4 +1,5 @@
 from kp_domain_models.models import (
+    AlertSubscription,
     ApprovalDecision,
     ApprovalType,
     AuditEvent,
@@ -7,6 +8,9 @@ from kp_domain_models.models import (
     Campaign,
     CampaignApproval,
     CampaignPattern,
+    CampaignProgram,
+    CampaignProgramOccurrence,
+    CampaignProgramState,
     CampaignState,
     Confidence,
     EventType,
@@ -32,10 +36,14 @@ from kp_domain_models.models import (
     TrackingToken,
     TrainingAssignmentStatus,
     TrainingResource,
+    TrainingState,
     VerificationState,
+    training_state,
 )
+from kp_domain_models.source_governance import source_governance_is_current
 
 __all__ = [
+    "AlertSubscription",
     "ApprovalDecision",
     "ApprovalType",
     "AuditOutcome",
@@ -44,6 +52,9 @@ __all__ = [
     "Campaign",
     "CampaignApproval",
     "CampaignPattern",
+    "CampaignProgram",
+    "CampaignProgramOccurrence",
+    "CampaignProgramState",
     "CampaignState",
     "Confidence",
     "EventType",
@@ -68,6 +79,9 @@ __all__ = [
     "TrackingEvent",
     "TrackingToken",
     "TrainingAssignmentStatus",
+    "TrainingState",
     "TrainingResource",
     "VerificationState",
+    "training_state",
+    "source_governance_is_current",
 ]

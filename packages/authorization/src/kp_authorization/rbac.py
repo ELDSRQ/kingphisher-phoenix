@@ -7,10 +7,14 @@ their own campaign.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import re
+import uuid
+from collections.abc import Iterable, Set
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar
+
+_CAPABILITY_PART = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
 class Role(StrEnum):
@@ -28,7 +32,6 @@ class Capability:
     action: str
     object: str
 
-    APPROVE_CAMPAIGN: ClassVar[Capability]
     APPROVE_SECURITY: ClassVar[Capability]
     APPROVE_PRIVACY: ClassVar[Capability]
     CREATE_CAMPAIGN: ClassVar[Capability]
@@ -52,12 +55,18 @@ class Capability:
     SUBSCRIBE_ALERTS: ClassVar[Capability]
     VERIFY_DOMAIN: ClassVar[Capability]
     SIGN_ROE: ClassVar[Capability]
+    MANAGE_QUEUE: ClassVar[Capability]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action, str) or _CAPABILITY_PART.fullmatch(self.action) is None:
+            raise ValueError("capability action is invalid")
+        if not isinstance(self.object, str) or _CAPABILITY_PART.fullmatch(self.object) is None:
+            raise ValueError("capability object is invalid")
 
 
 # Capability identifiers used across the platform. Defined once here as class
 # attributes (so `Capability.CREATE_CAMPAIGN` works) and aliased to module-level
 # names (so `from kp_authorization import CREATE_CAMPAIGN` works).
-Capability.APPROVE_CAMPAIGN = Capability("approve", "campaign")
 Capability.APPROVE_SECURITY = Capability("approve_security", "campaign")
 Capability.APPROVE_PRIVACY = Capability("approve_privacy", "campaign")
 Capability.CREATE_CAMPAIGN = Capability("create", "campaign")
@@ -81,8 +90,8 @@ Capability.USE_KILL_SWITCH = Capability("use", "kill_switch")
 Capability.SUBSCRIBE_ALERTS = Capability("subscribe", "alerts")
 Capability.VERIFY_DOMAIN = Capability("verify", "sending_domain")
 Capability.SIGN_ROE = Capability("sign", "rules_of_engagement")
+Capability.MANAGE_QUEUE = Capability("manage", "job_queue")
 
-APPROVE_CAMPAIGN = Capability.APPROVE_CAMPAIGN
 APPROVE_SECURITY = Capability.APPROVE_SECURITY
 APPROVE_PRIVACY = Capability.APPROVE_PRIVACY
 CREATE_CAMPAIGN = Capability.CREATE_CAMPAIGN
@@ -106,16 +115,16 @@ USE_KILL_SWITCH = Capability.USE_KILL_SWITCH
 SUBSCRIBE_ALERTS = Capability.SUBSCRIBE_ALERTS
 VERIFY_DOMAIN = Capability.VERIFY_DOMAIN
 SIGN_ROE = Capability.SIGN_ROE
+MANAGE_QUEUE = Capability.MANAGE_QUEUE
 
 _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.SOURCE_CURATOR: frozenset([SUBMIT_SOURCE, MANAGE_SOURCES, APPROVE_PATTERN, VIEW_AGGREGATE]),
     Role.CAMPAIGN_AUTHOR: frozenset([CREATE_CAMPAIGN, VIEW_AGGREGATE]),
     Role.SECURITY_APPROVER: frozenset(
-        [APPROVE_CAMPAIGN, APPROVE_SECURITY, APPROVE_TEMPLATE, VIEW_NAMED_RESULTS, VIEW_AGGREGATE, STOP_CAMPAIGN]
+        [APPROVE_SECURITY, APPROVE_TEMPLATE, VIEW_NAMED_RESULTS, VIEW_AGGREGATE, STOP_CAMPAIGN]
     ),
     Role.PRIVACY_APPROVER: frozenset(
         [
-            APPROVE_CAMPAIGN,
             APPROVE_PRIVACY,
             HANDLE_PRIVACY,
             DELETE_DATA,
@@ -132,16 +141,15 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             USE_KILL_SWITCH,
             VIEW_AGGREGATE,
             MANAGE_RECIPIENTS,
-            APPROVE_CAMPAIGN,
             SUBSCRIBE_ALERTS,
             VERIFY_DOMAIN,
             SIGN_ROE,
+            MANAGE_QUEUE,
         ]
     ),
     Role.AUDITOR: frozenset([VIEW_AUDIT, VIEW_NAMED_RESULTS, VIEW_AGGREGATE]),
     Role.ADMINISTRATOR: frozenset(
         [
-            APPROVE_CAMPAIGN,
             APPROVE_SECURITY,
             APPROVE_PRIVACY,
             CREATE_CAMPAIGN,
@@ -165,17 +173,37 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             SUBSCRIBE_ALERTS,
             VERIFY_DOMAIN,
             SIGN_ROE,
+            MANAGE_QUEUE,
         ]
     ),
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class Principal:
     """Authenticated caller. `subject_id` is the opaque principal identifier."""
 
     subject_id: str
-    roles: set[Role] = field(default_factory=set)
+    roles: Set[Role] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.subject_id, str)
+            or not self.subject_id
+            or self.subject_id != self.subject_id.strip()
+            or len(self.subject_id) > 255
+            or any(ord(character) < 32 or ord(character) == 127 for character in self.subject_id)
+        ):
+            raise ValueError("principal subject identifier is required")
+        # Authentication adapters commonly build a mutable ``set``. Snapshot
+        # it here so later caller mutation cannot change the authority already
+        # attached to this authenticated principal. Invalid runtime members
+        # remain fail-closed rather than acquiring StrEnum-equivalent grants.
+        try:
+            roles = frozenset(role for role in self.roles if isinstance(role, Role))
+        except TypeError as exc:
+            raise ValueError("principal roles must be an iterable of roles") from exc
+        object.__setattr__(self, "roles", roles)
 
     @property
     def principal_id(self) -> str:
@@ -183,12 +211,14 @@ class Principal:
         return self.subject_id
 
     def has_role(self, role: Role) -> bool:
+        if not isinstance(role, Role):
+            return False
         return role in self.roles
 
     def capabilities(self) -> frozenset[Capability]:
         caps: set[Capability] = set()
         for role in self.roles:
-            caps |= _ROLE_CAPABILITIES[role]
+            caps.update(_ROLE_CAPABILITIES[role])
         return frozenset(caps)
 
     def can(self, capability: Capability) -> bool:
@@ -201,24 +231,41 @@ class AuthorizationError(PermissionError):
 
 def require(principal: Principal, capability: Capability) -> None:
     if not principal.can(capability):
-        raise AuthorizationError(
-            f"principal {principal.subject_id} lacks capability {capability.action}:{capability.object}"
-        )
+        # Do not put an opaque subject identifier into exception text: callers
+        # may surface or aggregate this message. Audit code already has the
+        # authenticated principal as structured context.
+        raise AuthorizationError(f"required capability is not assigned: {capability.action}:{capability.object}")
 
 
 def require_any(principal: Principal, *capabilities: Capability) -> None:
     if not any(principal.can(capability) for capability in capabilities):
         names = ", ".join(f"{c.action}:{c.object}" for c in capabilities)
-        raise AuthorizationError(f"principal {principal.subject_id} lacks any of: {names}")
+        suffix = f": {names}" if names else ""
+        raise AuthorizationError(f"none of the required capabilities are assigned{suffix}")
 
 
 def self_approval_blocked(principal: Principal, author_id: str, object_type: str) -> None:
     """CAMP-002: an author cannot approve their own campaign."""
-    if principal.subject_id == author_id:
-        raise AuthorizationError(
-            f"self-approval is prohibited: {object_type} author {author_id} may not approve own work"
-        )
+    try:
+        same_subject = uuid.UUID(principal.subject_id) == uuid.UUID(author_id)
+    except (AttributeError, TypeError, ValueError):
+        same_subject = principal.subject_id == author_id
+    if same_subject:
+        raise AuthorizationError("self-approval is prohibited")
 
 
 def roles_for_names(names: Iterable[str]) -> set[Role]:
-    return {Role(name) for name in names}
+    if isinstance(names, (str, bytes)):
+        raise ValueError("role names must be an iterable of canonical names")
+    resolved: set[Role] = set()
+    try:
+        for name in names:
+            if not isinstance(name, str):
+                raise ValueError("role names must be strings")
+            try:
+                resolved.add(Role(name))
+            except ValueError:
+                raise ValueError("unknown role name") from None
+    except TypeError as exc:
+        raise ValueError("role names must be an iterable of canonical names") from exc
+    return resolved

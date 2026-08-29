@@ -1,8 +1,93 @@
 # QA Findings — Operator Console Human-Operation Pass (2026-08-04)
 
+## Current Wave 38 paused QA overlay (2026-08-29)
+
+This file preserves the historical human-operation findings below; it does not
+replace the authoritative goal-aligned policy and evidence matrix in
+`docs/WAVE-BUILD-PLAN.md` and `docs/PRODUCTION-READINESS-TASK-MATRIX.md`.
+The current product target is one 125-person tenant operated by two IT staff.
+Deferred features remain retained and supported but are not expanded; never
+delete potentially valuable functionality merely because it is deferred.
+
+Current local/static status:
+
+- **Complete locally:** `ORG-001`. The creator cannot self-approve; one
+  independent operator with both approval capabilities may complete the
+  separately recorded security and privacy facets. RoE, frozen audience,
+  reviewed canary, provider evidence, immutable review, recipient controls,
+  emergency stop, and worker rechecks remain mandatory.
+- **Complete locally:** `THR-001A` and `DOCSIM-001`. Evidence fidelity is
+  preserved through reviewed generation context, and ICS behavior is
+  recipient-bound instead of claiming a nonexistent tracked link. The focused
+  closure passed 150 tests.
+- **Complete locally:** `IMP-001` and `THR-001B`. Guided CSV import includes
+  explicit/arbitrary headers, bounded preview, digest-bound apply, safe merge
+  and soft-deactivation, and serialized writes. Threats have a bounded GUI
+  workbench, daily governed ingestion, default quarantine, explicit activation,
+  deterministic draft-pattern creation, and source/provenance rechecks.
+- **Retention integration complete locally; consumers open:** `OUT-001`,
+  `RET-005`, and `INT-001` at Alembic head
+  `0032_source_explicit_curation`. Confirmed interaction is distinct from
+  observed events; raw evidence is capped at 365 days; terminal-only projection
+  and all current outcome writers share a lock boundary; the PII-free ledger,
+  pseudonym configuration, grants, and migrated policy bounds are wired.
+  Privacy/RBAC, named-history API, reporting/graph, and export remain open.
+- **Independent review:** no P0. One P1 remains: mirror migration `0032`'s
+  retention-policy check/single-default index in ORM metadata and test it.
+- **Pause gate:** Node syntax, targeted Ruff/format, `git diff --check`, and the
+  focused API/tracking/worker/database suite passed with eight PostgreSQL-profile
+  skips. Full hermetic, mypy, PostgreSQL/Redis/E2E, image, browser, and cloud
+  gates were not rerun after the final edits. The worktree is uncommitted and
+  unpushed at baseline `1403d94`.
+
+The AI QA target is internal-model-first: compare two or three small
+permissively licensed models on a fixed sanitized set, then pin the selected
+`llama.cpp` runtime/weights in the existing worker role/job. Qualify CPU first;
+permit scale-to-zero serverless GPU only when measured, and treat Foundry
+serverless/token inference as optional. Foundry managed compute and always-on
+GPU are out of scope. `.140` is development/qualification infrastructure only.
+
+Release remains **NO-GO for production and RSA Conference use**. Current-head
+`0032` external PostgreSQL/Redis/E2E, exact-final images, native AMD64/registry,
+browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/inbox, recovery/rotation, audit
+witness, and human-acceptance evidence remain open.
+
 Scope: fresh install path exercised against the live stack (DB reset to 0005 + seed,
 all 8 processes under supervisor, browser console flows driven over HTTP as the GUI
 does). Full gate green before and after remediation (111 tests, ruff, mypy).
+
+> **Archived point-in-time record.** This file captures the 2026-08-04 host and
+> must not be used as current Docker or release guidance. The target worker is
+> `192.168.1.140`; canonical source
+> `/Users/edierks/Projects/kingphisher-phoenix` will mount read-only in the
+> project-only `kingphisher` Colima engine rooted under
+> `/Volumes/DockerExternal/KingPhisher-Phoenix`. External preflight/restore
+> passed; the internal seven project containers are stopped/preserved. Project commands select the
+> external socket explicitly while the remote global context remains
+> `desktop-linux`. The shared Docker Desktop engine/unrelated workloads are
+> out of scope, and external-mount drift never falls back to it. See
+> `scripts/operator/remote-docker-worker/README.md`.
+> The legacy encrypted snapshot is unrecoverable because its identity is absent
+> and is not the `EXT-002` source; validated snapshot
+> `20260829T013332Z-tsX1WQ` passed staging/restore. This archived QA result is
+> not production evidence.
+> Controller context `kp-external-mac` reports
+> `colima-kingphisher|aarch64|/var/lib/docker`; its exact endpoint is
+> `ssh://edierks@192.168.1.140/Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock`,
+> and the default remains
+> `desktop-linux`.
+> The legacy Docker contexts `DockerExternal` and `kp-remote-mac` omit that
+> reviewed socket and must never be used for project operations. The similarly
+> named `DockerExternal` volume is the required storage target, not a context.
+> Rosetta and binfmt remain disabled and are not required for native ARM64.
+> The validated snapshot archive SHA-256 is
+> `e4fb16a735d0c9d3b6aa04381c4c9d7e24269006203c551f50abf671cc3637ff`;
+> external restore, installation, and `verify_install.sh` passed. The latest
+> completed external local profiles also passed at head `0029`; subsequent
+> source edits still require the final integrated/image rerun, and
+> browser/cloud gates remain NO-GO. PostgreSQL integration jobs use Redis DB14
+> and flush only DB14 before/after; the Redis queue contract uses DB15; neither
+> test cleanup may touch application DB0.
 
 ## Verified Working (PASS)
 
@@ -52,7 +137,7 @@ mailpit permanently `unhealthy` and failing `verify_install.sh`'s mailpit check.
 Fix: `interval/timeout: 10s` + `start_period: 10s` in docker-compose.yml.
 Verified: mailpit now reports `healthy`; API/SMTP 200.
 
-## Environment Fix — WEDGED DOCKER CLI (RESOLVED)
+## Archived environment fix — wedged Docker CLI (resolved on 2026-08-04)
 
 **Root cause (verified 2026-08-04):** The default CLI proxy socket
 `~/.docker/run/docker.sock` was wedged — `com.docker.backend` held ~10
@@ -60,10 +145,9 @@ accumulated open connections (leaked from hung `docker` invocations) and the
 proxy stopped servicing new connections. The engine itself
 (`docker.raw.sock`) was healthy.
 
-**Permanent fix:** Created a dedicated docker context `kp-engine` pointing at the
-live engine socket and made it the default (`docker context use kp-engine`). All
-`docker` / `docker compose` commands now work instantly with no hang, no env
-vars needed, persisting across shell restarts.
+**Point-in-time fix:** A dedicated Docker context `kp-engine` pointed at that
+host's live engine socket and was made default. This is superseded architecture,
+not permission to change the current controller or `.140` global context.
 
 The repo launchers still include the `bootstrap_docker_host` + `bounded`
 helpers as a safety net — they auto-skip when the default context works.
@@ -77,4 +161,5 @@ helpers as a safety net — they auto-skip when the default context works.
   non-empty for compose interpolation.
 - `OPERATOR_API_CONSOLE_STATIC_DIR` must be absolute or root-relative.
 - Test-DB resets must re-grant schema privileges to `audit_writer`.
-- Stack currently running with demo seed restored (campaign + 5 tracking tokens).
+- At that snapshot, the stack was running with the demo seed restored (campaign
+  + 5 tracking tokens).

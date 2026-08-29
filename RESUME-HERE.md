@@ -1,263 +1,319 @@
-# RESUME-HERE — KingPhisher-Phoenix wave build: findings + remaining work
+# RESUME HERE — current engineering handoff
 
-**Written:** 2026-08-26. **For:** any AI/engineer picking this up cold with zero prior context.
-**Repo:** /Users/edierks/projects/codex-test/phishing-awareness-platform (defensive phishing-awareness
-platform; NOT the offensive upstream King Phisher).
-**Base commit:** `0423079` — the working tree carries ALL wave-build changes UNCOMMITTED on top of it.
-No commits were made (operator will review + commit). `git diff` shows the full work; `git restore`
-per-file is the rollback.
+**Reconciled:** 2026-08-29
 
-## 1. Standing authorization envelope (operator-granted)
+**Repository:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 
-- Operator instructed: "launch subagents to work on non-overlapping tasks and implement the
-  recommendations in waves. Continue until the system is human usable." That grant stands.
-- **Never commit, stage, push, or create PRs** unless the operator explicitly asks.
-- **Never print values from `.env`** (real secrets live there; key names only). `.env.bak-qa` was deleted.
-- Fail-closed everywhere; no AI may approve/schedule/send campaigns autonomously (platform rule).
-- RED-lane items (auth/policy/crypto/audit) may be IMPLEMENTED in-tree but are flagged for operator
-  review before any commit or deploy.
-- Design decisions already authorized (do not re-ask): D1 approval policy, D2 domain allowlist,
-  D3 hidden-char neutralization in validator, D4 enriched AI contract — specs in §5.
+**Decision:** **NO-GO for production and RSA Conference use.**
 
-## 2. Where work stopped
+**Engineering topology:** the controller retains this workspace. The current worker is
+the native ARM64 worker `edierks@192.168.1.140`, canonical source
+`/Users/edierks/Projects/kingphisher-phoenix`, and a read-only source mount in
+the project-only `kingphisher` Colima VM. Its VM disks, cache, client metadata,
+and socket are rooted under `/Volumes/DockerExternal/KingPhisher-Phoenix`.
+External preflight and restore passed; the final preflight re-proved the exact
+engine/volume identity with approximately 744,006,440 KiB free. The inactive `kp-external-mac` context
+has endpoint
+`ssh://edierks@192.168.1.140/Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock`
+and reports `colima-kingphisher|aarch64|/var/lib/docker`; the global
+context remains `desktop-linux`. The seven internal Docker Desktop project
+containers are stopped and preserved; unrelated containers remain running.
+If the exact external volume is absent, read-only, wrong-UUID, or low on
+space, stop—never fall back internally. See
+`scripts/operator/remote-docker-worker/README.md` and
+`docs/PRODUCTION-READINESS-TASK-MATRIX.md`.
+The legacy Docker contexts `DockerExternal` and `kp-remote-mac` do not select
+the reviewed socket and must never be used for project work. `DockerExternal`
+as a volume name is not a Docker context. Rosetta and binfmt are disabled and
+unnecessary for this native ARM64 engine.
 
-**Updated 2026-08-26 (second pass).** Everything below is COMMITTED and PUSHED
-to `origin/main`; the "no commits" rule in §1 was lifted by an explicit operator
-instruction to land the work.
+Cutover evidence is snapshot `20260829T013332Z-tsX1WQ`, archive SHA-256
+`e4fb16a735d0c9d3b6aa04381c4c9d7e24269006203c551f50abf671cc3637ff`;
+it passed staging and external restore and completes `EXT-002`.
 
-- **Waves 1-2 — COMPLETE, gate green.** T-01..T-05, T-07..T-10 landed.
-- **T-06 — COMPLETE.** Approval policy, recipient-domain allowlist, delivery
-  batching with connection reuse, stale-QUEUED reconcile, source circuit
-  breaker. Also fixed an inverted `test_send` flag that let scheduled campaigns
-  skip the approved-template check.
-- **Wave 3 — COMPLETE.** T-11 (generation pipeline end to end + injection guard
-  armed), T-12 (report view, approval lifecycle, real dialogs, live refresh),
-  T-13 (distinct approvers enforced + pending demo campaign).
-- **Wave 4 — COMPLETE.** T-14 (template review UI, categorised connection
-  failures), T-15 (docs).
-- **Azure standup — COMPLETE.** `scripts/azure_bootstrap.sh` removes day zero;
-  `network_mode=starter` allows a hosted-runner first deploy; `az acr build`
-  removes the Docker-daemon requirement; P-3 console honesty on Container Apps.
-- **Sender-realism workstream — COMPLETE** (landed 2026-08-26, all pushed):
-  sender personas (display name + local part + pool domain), DNS-challenge
-  domain verification (`kp-domain-verification`), VerifiedDomain +
-  RulesOfEngagement models (migration 0013), unconditional RoE gate at schedule
-  and delivery, lookalike generator with ready-to-paste DNS records,
-  relay-agnostic SMTP send path, onboarding wizard endpoints, and the
-  neutralizer brand allowlist. New env keys: `KP_ROE_SIGNING_KEY`,
-  `OPERATOR_API_DOMAIN_VERIFY_KEY`, `KP_SENDING_DOMAINS`, `KP_BRAND_ALLOWLIST`
-  (generate via `scripts/bootstrap_env.sh`, then `make db-migrate` + `make seed`).
+This is a concise navigation aid. The authoritative status, evidence, findings, task dependencies, and acceptance gates are in [the integrated build plan](docs/WAVE-BUILD-PLAN.md). Read [the architecture](docs/architecture/README.md) before changing a trust boundary and [the engineering handoff](docs/AI_HANDOFF.md) before implementation.
 
-  **Safety architecture that now gates ALL delivery** (do not regress):
-  recipients may only be in DNS-verified, RoE-covered target domains; a
-  campaign cannot be scheduled or delivered without an active, validly-signed
-  RoE; revocation fails delivery closed; a self-asserted config string is
-  never proof of domain ownership. See `README.md → Sender realism` and
-  `RUNBOOK.md §2.10`.
+## Product direction
 
-**Live dev stack state (2026-08-27):** the local stack is on `origin/main`,
-migrated to head `0013` and seeded (verified example.com + signed demo RoE).
-Two defects found by live verification and fixed since: migration `0009`
-used `min(uuid)` (invalid SQL — no DB could upgrade past `0008`); and
-`schedule_campaign` never committed `campaign.roe_id`, so deliveries failed
-closed with `no_roe` despite a 200 schedule. The console now has the
-persona display-name field and a full "Domains & RoE" screen (wizard,
-lookalike generator, RoE sign/list/revoke). Live E2E verified: schedule
-refuses out-of-RoE recipients per recipient (`refused_roe`), and a test-send
-delivered `Account Security <alerts@corp-benefits.example>` through Mailpit.
+Build for one 125-person organization operated by two IT staff: one
+single-tenant browser console, three managed deployables by default (operator,
+tracking/training, and one multi-role worker), and a bounded one-time bootstrap.
+Routine deployment, mail/directory integration, campaign operation, recovery,
+and evidence export should become GUI-driven.
 
-Gate at the time of writing: lint clean, mypy clean on 87 source files,
-541 passed / 7 skipped.
+AI may advise and draft. Deterministic code must enforce identity, authorization, recipient scope, RoE, approvals, content safety, delivery controls, and audit. AI must never apply infrastructure, grant consent, save secrets, choose audiences, approve campaigns, or send mail.
 
-Remaining known-open items are listed at the end of
-`docs/REMEDIATION_PLAN.md`; the significant one is **ARCH-7** (rate limits are
-per-replica on Container Apps and need a shared store).
+The supported AI direction is internal-model-first. Benchmark two or three
+small permissively licensed instruction models on the fixed sanitized
+evaluation set, then digest-pin the selected weights, license, runtime, prompt,
+and result. Prefer a pinned `llama.cpp` role/job in the existing worker image,
+CPU first; use scale-to-zero serverless GPU only when measurement requires it.
+Foundry serverless/token inference is an optional measured fallback. Foundry
+managed compute and always-on GPU capacity are out of scope. The `.140` worker
+is development/qualification infrastructure only, never a production Azure
+dependency.
 
-## 3. Findings register (consolidated 3-perspective review, 2026-08-26, HEAD 0423079)
+Deferred means retain and support useful existing behavior but do not expand it
+or give it an implementation slot. Never delete a potentially valuable feature
+merely because the new priority policy defers it; remove product claims for
+rejected behavior and require a separate reviewed decision before retiring
+functionality or data.
 
-Source reviews: `~/Downloads/kingphisher_four_perspective_review.md` (Aug-3, 8 Crit/19 High),
-`~/Downloads/kingphisher_remediation_plan.md`, CROW eval
-`/Users/edierks/crow/docs/audit/KINGPHISHER-PHOENIX-INTEGRATION-EVAL.md` (conditional-go, gated on
-security remediation). Aug-3 findings were re-verified against current code: 19 of 27 Crit/High
-already fixed by prior commits. The NEW findings below drove this build.
+### Wave 38 paused checkpoint
 
-### Headline problems
-- **P-1 (Critical, partially open):** AI-curation pipeline dead code — nothing publishes `generate`;
-  no template-approval endpoint (only seed pre-approves); AI contract sends only `pattern_id`
-  (no threat context); reminder/mailbox workers idle. → fixed by T-11 (Wave 3). Pattern-side
-  context now exists (T-07: ATT&CK, difficulty, freshness).
-- **P-2 (Critical, open → T-06):** single-admin weaponization path — DRAFT schedulable without
-  approvals (routers.py ~:246), no external-recipient blocking (import ~:619-637, delivery
-  ~:227-241), validator bypassable via zero-width/bidi chars (FIXED by T-01).
-- **P-3 (High, deferred):** console backend writes `.env` + reads pid files (console.py) —
-  meaningless on Azure Container Apps. Wizard-in-Azure story is Terraform, not console. NOT in
-  this build's scope; document/flag only (T-15).
+- `ORG-001` is complete locally: a campaign creator cannot self-approve, while
+  one independent operator who holds both approval capabilities may complete
+  the separate security and privacy facets. Signed RoE, frozen audience,
+  reviewed canary, provider evidence, emergency stop, immutable review, and all
+  other safety gates remain unchanged.
+- `THR-001A` and `DOCSIM-001` are complete locally. Reviewed generation context
+  now preserves evidence fidelity, and ICS behavior is recipient-bound rather
+  than promising an absent tracked URL. Their focused closure passed 150 tests.
+- `IMP-001` is complete locally: guided CSV preview/apply supports explicit
+  header modes, arbitrary bounded header labels, mapping, skip/update merge,
+  optional soft-deactivation, digest-bound confirmation, and serialized writes.
+  Preview remains recipient-nonmutating; concurrent applies return `409` and
+  require a new preview.
+- `THR-001B` is complete locally: bounded daily ingestion now quarantines new
+  evidence, the GUI exposes the bounded Threat Campaigns workbench, and audited
+  activation alone creates or retains one deterministic draft pattern basis.
+  Rejection/duplicate decisions, current source terms, approval, and generation
+  are rechecked without deleting legacy evidence or human review state.
+- The `OUT-001`/`RET-005`/`INT-001` foundation and retention integration are
+  complete locally at Alembic head `0032_source_explicit_curation`:
+  confirmed interaction is distinct from scanner-observable events; the PII-free
+  ledger retains 1,826 days; raw outcomes remain capped at 365 days; outcome
+  writers and terminal-only project-before-purge share a lock boundary; the
+  pseudonym key, grants, policy bounds, and legacy threat re-review migration are
+  wired. Privacy/RBAC, named-history API, reporting, graph, and export consumers
+  remain open.
+- Independent static review found no P0 defect. One P1 remains: mirror migration
+  `0032`'s `RetentionPolicy` 1–365-day check and single-default partial unique
+  index in ORM `__table_args__`, then add metadata/direct-database tests.
+- The final pause gate passed Node syntax, targeted Ruff/format, `git diff
+  --check`, and the focused API/tracking/worker/database suite with eight
+  PostgreSQL-profile skips. Full hermetic, mypy, PostgreSQL/Redis/E2E, image,
+  browser, and cloud gates were not rerun after the final edits.
+- The worktree is intentionally preserved and not committed or pushed. Local
+  `main`, `HEAD`, and `origin/main` remain `1403d94`; do not reset or clean it.
 
-### Review findings and disposition
-| ID | Finding | Disposition |
-|----|---------|-------------|
-| NEW-1 | ZW/bidi validator bypass | **FIXED** (T-01; 23 tests incl. 5 new) |
-| NEW-2 | Two-person approval not enforced | **T-06 (open)** |
-| NEW-3 | No template-approval endpoint; generation dead-end | **T-11 (open)** |
-| NEW-4 | No external-recipient blocking | **T-06 (open)** |
-| NEW-5 | Tracking API no body cap | **FIXED** (T-02: 64KiB cap, headers, max_length) |
-| NEW-6 | Prompt-injection neutralizer dormant | **T-11 (wire into AI call path)** |
-| NEW-7 | Audit verification on-demand only | **FIXED** (T-09: scheduled verify + revoke DML) |
-| NEW-8 | `.env.bak-qa` stale secrets | **FIXED** (T-03: deleted) |
-| NEW-9 | `.env.example` binds 0.0.0.0; dead CORS key | **FIXED** (T-03) |
-| NEW-10 | `Source.consecutive_failures` dead | **T-06 (open)** |
-| NEW-11 | Global kill switch advisory-only | OPEN (accepted for now; per-campaign recall is enforced) |
-| NEW-12 | Pattern self-approval vacuous | OPEN (minor; T-11 may address via approved_by population) |
-| ARCH-1 | Deliver message >1MB at scale; per-recipient SMTP connection | **T-06 (open)** |
-| ARCH-2 | Stuck-QUEUED assignments never reconciled | **T-06 (open)** |
-| ARCH-3 | Redis persistence disabled | **FIXED** (T-10: AOF + named volume) |
-| ARCH-4 | RSS placeholder parser; www-redirect feeds fail | **FIXED** (T-08: feedparser + host tolerance) |
-| ARCH-5 | Contracts package decorative | Partially addressed by T-11 (AI schema); full decision deferred |
-| ARCH-6 | Race in open/click dedup | **FIXED** (T-02: partial unique index `uq_events_open_click_dedup`, ON CONFLICT) |
-| ARCH-7 | In-memory rate limits vs multi-replica | OPEN (deferred; Azure scaling note) |
-| ARCH-8 | testpaths excluded tests/; zero-marker test-contract | **FIXED** (T-03) |
-| ARCH-9 | Zero tests: authorization/campaign-patterns | **FIXED** (T-04: 88 tests) |
-| HIGH-02res | Non-UUID OIDC subs 500 | **FIXED** (T-05: fail-closed 403 at principal construction) |
-| HIGH-13res | RSS ingestion | **FIXED** (T-08) |
-| UI U-1..U-4 | Approval lifecycle invisible; stop-services no confirm; results=toast; flat connection-test errors | **T-12/T-14 (open)** |
-| UI U-5..U-12 | Monitoring, CSV picker, prompt() modals, i18n, god-file | **T-12/T-14 (open)** |
-| APT-1..4 | No real feeds / ATT&CK / difficulty / freshness in patterns | **FIXED pattern-side (T-07)**; source-side feeds + AI wiring = **T-11** |
+## Current engineering truth
 
-### Strengths to preserve (do not regress)
-Constant-time compares; JWT alg allowlists; hashed-only tracking tokens; DNS-pinned fetcher
-(SSRF-safe); AES-GCM PII; hash-chained+HMAC audit; sandboxed Jinja2; zero innerHTML in SPA;
-clean apps→packages DAG; production-shaped Terraform (Key Vault, managed identity, ACS).
+Completed local/static closures include:
 
-## 4. Task registry status
+- local Compose and mock-service base images pinned by tag plus immutable manifest digest;
+- recovery-safe local deployment now freezes the Compose project as
+  `phishing-awareness-platform` and the stateful volumes as
+  `phishing-awareness-platform_postgres_data` and
+  `phishing-awareness-platform_redis_data`. A missing or incomplete `.env`
+  cannot cause replacement credentials to be generated when those preserved
+  volumes exist or Docker inventory cannot be read; the launcher stops and
+  requires protected recovery material instead;
+- local startup requires 8 GiB of disk by default, then runs the read-only
+  `prestart` phase before Compose, stateful base-image qualification, controlled
+  service start, migrations/audit bootstrap/seed, and the read-only `ready`
+  phase before application processes. Preflight parses `.env` as inert data and
+  supplies only the four Compose credentials to Compose, only `DATABASE_URL` to
+  migration inspection, and no dotenv secrets to Docker/volume inspection;
+- base-image qualification first proves an exact cached image's reviewed digest
+  and platform and uses `--pull=never`, so preserved installations can qualify
+  offline. A cache miss uses the reviewed remote index and exact digest. The
+  hardened probes attach no project volume; Redis additionally runs as
+  `999:999` and must write a disposable `/data` tmpfs before it is qualified;
+- the mock Python runtime locked as a fully pinned, hash-verified 17-package closure;
+- normal workspace bootstrap, development, and console launch consuming the frozen `uv.lock` without lock mutation;
+- `make security-scan` failing closed on export/audit failure and auditing the hash-verified 58-package external production workspace closure in strict no-resolution mode;
+- pinned `pip-audit` 2.10.1 reporting zero known vulnerabilities for that closure on 2026-08-27;
+- `make sbom` emitting native CycloneDX 1.5 with 59 total components, including 58 external package PURLs;
+- operator and tracking public OpenAPI, Swagger, ReDoc, and HTTP metrics routes removed, along with their write-only internal metric registries; bounded health/log state and worker snapshots remain;
+- audit verification retaining only aggregate status and a bounded problem count, never raw problem details in scheduler state, health output, or logs;
+- browser authentication-mode discovery failing closed instead of assuming development authentication;
+- official Starlette `TestClient` compatibility through a test-only `httpx2` dependency; production clients remain on the normal runtime `httpx` dependency;
+- a versioned, key-ID-bound AES-GCM ciphertext format with one active key, at most four prior decrypt-only keys, and bounded legacy-unversioned reads;
+- a complete 113-route operator authorization manifest—103 capability-protected plus 10 dedicated/public routes—exact browser/backend capability inventory, capability-aware non-Azure GUI actions, aggregate-reader Help access, and approve-only safe template preview;
+- warning-strict SQLite lifecycle/outbox cleanup and duplicate `Content-Length` rejection at the public tracking edge.
+- the current loopback Mailpit canary using an explicit seeded `example.com` account passed within the 8-test external E2E profile at exact head `0029`. It proved one canonical approved-template delivery, retry suppression, recipient-bound tracking, assignment reuse, separate training purposes, knowledge-check remediation/pass/replay, and correlated report/audit state before exact cleanup. This is local-live evidence, not provider or inbox proof;
+- native-UUID outbox completion and bounded reconciliation; final local acceptance fixed an audit-store owner-fallback revocation defect, drained 36 stranded idempotent queue intents, and left the audit chain green. Graph/Microsoft 365/ACS-event/reported-MIME seams remain bounded with an explicit ACS managed-identity client ID;
+- a recovered Terraform provider tree that passes provider-backed local initialization and validation, without a remote backend or Azure plan/apply;
+- server-derived campaign/pattern action flags and bounded campaign/pattern/privacy boundaries; protected GitHub environment/workflow/run and owner-bound Redis lease validation; and worker preflight/context/reminder/retention/dead-path repairs.
+- Wave 24 bounded user-facing collection queries and browser paging, including a 100-candidate fail-closed RoE scheduling cap; replaced application/worker runtime `assert` guards with explicit failures; and ordered scoped campaign stops against delivery with a shared/exclusive database lock. The focused worker lifecycle/security lane passed 52 tests in 1.30 seconds, and the isolated PostgreSQL lane passed 15 in 3.07 seconds, including a 250 ms lock-contention proof. A separate isolated migrated-PostgreSQL scoped-kill persistence test passed 1 in 2.88 seconds at head `0027`, then dropped its disposable database. An exploratory PostgreSQL ACS pacing check printed `acs_pacing_upsert_and_durable_fence=ok` after reserving 3 and then 0 sends in one window. These are overlapping point-in-time lanes.
+- final dead-path cleanup removed the broken installed `kp-seed` command while retaining source `make seed`; made `make sign` require an immutable `IMAGE`, `COSIGN_KEY`, and `cosign` and fail closed otherwise, without claiming an external signature; retired ignored reminder/Mailpit-TLS/queue-prefix settings while retaining the fixed 72-hour training due policy; and removed remote full-stack stop routing, capability, and marker handling from the browser application, supervisor, and launcher. Settings still provides GUI restart; a host signal stops the launcher, and full shutdown remains an OS/launcher/terminal recovery operation. The focused stop-removal lane passed 39 tests.
+- one canonical bounded generation contract through queue, provider, storage, review, and delivery, plus durable idempotency that converges retries/races without duplicate provider calls or drafts;
+- current source-terms acknowledgement enforced by API and worker, with audited acknowledge/inspect/revoke GUI lifecycle and a post-fetch terms fence;
+- server-side validation and normalization for campaign, source, privacy, correction, approval, exclusion, and rationale inputs, with capped non-reflective validation output at operator and tracking boundaries;
+- checked-in migration head `0032_source_explicit_curation`: `0031` adds the PII-free confirmed-interaction/1,826-day awareness-ledger foundation; `0032` quarantines legacy automatically active threat evidence for explicit review and enforces migrated retention-policy bounds/default uniqueness. The latest complete external warning-strict PostgreSQL profile remains the historical 86-test result at exact head `0029`; no current-head `0032` external qualification is claimed;
+- server-derived per-resource training `can_submit`/`can_review` flags, independent-review locking, and a GUI that refuses missing or malformed flags instead of reconstructing authority;
+- aggregate and named reporting with separate capability gates, owner-safe alert subscription lifecycle, GUI recipient exclusions, and server-paginated global/campaign recipient results;
+- streamed, bounded, schema-checked OIDC, setup-assistant, AI-generation, and GitHub deployment responses, including duplicate/malformed length rejection and no buffering of GitHub dispatch bodies. The approved non-local HTTPS `/propose` and `/setup-assist` gateway remains a preserved optional adapter; it is not the supported default AI deployment path. Pattern approval records a durable generation request without claiming asynchronous queue/provider completion, and the internal-model worker path plus live AI qualification remain open;
+- provider-aware GUI configuration with explicit SMTP/ACS and Mailpit/Microsoft 365 selects; only active non-secret fields reach setup assistance, inactive controls are hidden/disabled/excluded while saved values remain preserved, and provider or destination changes validate before atomic credential rebinding. ACS testing is non-sending reachability-only at an exact HTTPS `*.communication.azure.com:443` origin; Microsoft 365 tests one quoted, bounded Graph delta path and fail closed on bearer authentication or redirect failures;
+- privacy export is authenticated `POST`, privacy list/export responses are `private, no-store`, and cookie-authenticated mutations require trusted same-origin CSRF metadata. Privacy request operations load independently from the current notice and remain usable with a visible warning if that notice read fails. OIDC discovery, authorization, token, and JWKS endpoints are issuer-origin bound; DNS is pinned for each request with TLS Host/SNI preserved, redirects/proxy inheritance/HTTP2 are disabled, and cross-origin navigation or secret transmission fails closed;
+- managed tracking receives exact bounded `TRACKING_API_TRUSTED_PROXIES` CIDRs derived from the Container Apps infrastructure subnet plus loopback. It accepts forwarding only from a trusted direct peer and resolves the canonical bounded `X-Forwarded-For` chain right-to-left with Uvicorn proxy rewriting disabled;
+- deterministic cleanup for newly added PostgreSQL fixtures so focused database suites do not leak schemas, tables, roles, or engines across runs.
+- a fail-closed integration-test queue boundary: PostgreSQL jobs use Redis DB14 and flush only DB14 before and after their profile; the Redis queue contract uses DB15; application DB0 is never a test cleanup target.
 
-| ID | Title | Status | Files (exclusive allowlist) |
-|----|-------|--------|------------------------------|
-| T-01 | Validator ZW/bidi fix | **DONE+verified** | packages/safety-validation/**, uv.lock |
-| T-02 | Tracking body cap/headers/dedup | **DONE+verified** | apps/tracking-api/**, models.py, migration 0009 |
-| T-03 | Hygiene + test infra | **DONE+verified** | Makefile, pyproject.toml, .env.example; deleted .env.bak-qa |
-| T-04 | Zero-coverage package tests | **DONE+verified** | packages/{authorization,campaign-patterns}/tests/** |
-| T-05 | Non-UUID principal guard | **DONE+verified** | operator auth.py, test_auth.py |
-| T-06 | Approval policy + allowlist + batching + reconcile + circuit breaker | **NOT IMPLEMENTED — DO NEXT** | operator routers.py+config.py, apps/workers/**, .env.example (append), new tests |
-| T-07 | Pattern enrichment (ATT&CK/difficulty/freshness + 3 bug fixes) | **DONE** (90 tests) | packages/campaign-patterns/** |
-| T-08 | RSS feedparser + fetcher www-tolerance | **DONE** (40 tests) | source-adapters/**, fetcher.py, uv.lock |
-| T-09 | Audit ownership + scheduled verify | **DONE+verified** (13 tests) | audit migration 0010, operator main.py, 001-roles.sh, database tests |
-| T-10 | Redis persistence | **DONE** | docker-compose.yml |
-| T-11 | Generation pipeline E2E | PENDING (Wave 3) | operator routers.py, apps/workers/**, packages/contracts/**, packages/authorization/src/**, sanitization neutralize.py (wire-only), infrastructure/mock-services/mock_ai.py + test |
-| T-12 | UI core | PENDING (Wave 3) | apps/operator-ui/src/console/{app.js,styles.css,index.html} |
-| T-13 | Seed second admin + demo approval flow | PENDING (Wave 3) | scripts/seed.py |
-| T-14 | UI finish (template approve+preview, connection-test categories) | PENDING (Wave 4, after T-11) | app.js, operator console.py |
-| T-15 | Docs refresh | PENDING (Wave 4) | README.md, RUNBOOK.md, docs/** |
+Managed prior keys are intentionally limited to metadata-bound legacy/recovery use. The active key ID is fixed after the first foundation dispatch, active rotation is deliberately blocked, and `prevent_destroy` protects the Terraform-generated active key while also complicating teardown. The active KEK remains in protected Terraform state/history. Safe pre-stage/prove/promote rotation, database decrypt proof, bulk re-encryption, and prior-key retirement remain unimplemented debt.
 
-Conflict rules: hotspots routers.py / jobs.py / app.js / models.py / .env.example / uv.lock get
-ONE owner per wave. Central serial gate after every wave (§6).
+The reviewed deployment workflow, Terraform, API, and GUI now agree on exactly
+three execution stages: `foundation_bootstrap`, `foundation_finalize`, and
+`workloads`. The connector is frozen to workflow SHA-256
+`6868067ef5d58c799bc4a07dd832d4852d38dee73e6ff1af9a58c701ce85a4d3`.
+`foundation_bootstrap` plans/applies the complete `deploy_workloads=false`
+foundation—including ACR, private-network, data, ACS/email/domain, and DNS
+resources—without Terraform targets. It initiates four ACS DNS verification
+types but explicitly forbids sender/association changes. `foundation_finalize`
+permits only those exact changes after fresh verification, and every stage
+refuses delete/replacement plans. GUI export, API validation, Terraform, and
+preflight share the exact one-label HTTPS `*.communication.azure.com:443`
+contract. `workloads` requires exactly one active Healthy/Provisioned worker
+revision, two consecutive simultaneous ready observations for every enabled
+role, and a final health check of that same revision before environment health
+can pass.
+The five configuration pages are not execution phases, and the two Event Grid
+passes inside `workloads` are internal workload steps, not extra stages. No
+stage has live GitHub/Azure/provider qualification.
+The 2026-08-29 read-only GitHub re-audit of `ELDSRQ/kingphisher-phoenix` proves
+valid `ELDSRQ` authentication with `repo`/`workflow` scopes; a public, enabled
+repository with default `main`; Actions enabled; and the Azure workflow active,
+with no billing-disabled run signal. It also proves zero environments,
+variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled
+secret scanning and push protection, and remote `main` still at old-tree SHA
+`1403d944a40214714b6cbfcf5cbabc4fa7225eb9`. No workflow dispatch/run or Azure
+plan/apply occurred; current Azure management-plane state remains unverified.
 
-## 5. Specs for remaining work
+Wave 29 makes recovery preservation-first rather than cleanup-driven. Local
+preflight reports `mutation_performed=false` and
+`automatic_cleanup_allowed=false`; partial or drifted state blocks instead of
+creating a parallel volume. Reviewed deployment requests retain append-only,
+hash-chained checkpoints and reconcile an interrupted or indeterminate attempt
+against the same request and provider evidence. Do not delete, prune, reset,
+rename, recreate, or blindly redispatch to obtain a green gate.
 
-### T-06 — implement FIRST (spec was pre-authorized; see decisions D1/D2)
-1. `approval_policy` setting in operator AND worker config (env `OPERATOR_APPROVAL_POLICY`,
-   `enforce`|`single-admin`). oidc auth mode → effective always `enforce` (requesting single-admin
-   under oidc = startup SettingsError). dev-auth default `single-admin`. When `enforce`:
-   `schedule_campaign` (routers.py ~:246) rejects 409 campaigns lacking security+privacy approvals
-   (routers.py ~:222 defines them); delivery (jobs.py ~:195-209) double-checks per batch, fails
-   batch + audit event. Audit both paths. When `single-admin`: current behavior.
-2. `allowed_recipient_domains` list (env `KP_ALLOWED_RECIPIENT_DOMAINS`) in operator+worker config.
-   CSV import (~:619-637): out-of-list rows → per-row errors; oidc + empty list → refuse all imports
-   (422, configure-first message); dev-auth + empty → allow-all + one audited warning per import.
-   Delivery (~:227-241): out-of-list recipient → skip, mark send_failed reason `domain_not_allowed`,
-   audit in batch summary. Never crash.
-3. Batching: schedule path chunks assignment_ids into ≤200-id messages (routers.py ~:260-270
-   currently publishes ALL ids; queue cap 1MB at packages/contracts queue.py:68); delivery worker
-   reuses ONE SMTP/ACS connection per message batch (jobs.py ~:719-729 currently connects+logs in
-   per recipient); per-recipient failure isolation preserved (~:172-194 semantics).
-4. Reconcile: in `reconcile_campaign_lifecycle` (jobs.py ~:347-373), QUEUED assignments older than
-   `KP_WORKER_QUEUED_STALE_HOURS` (default 24) on campaigns past lifecycle bounds → send_failed
-   reason `stale_queued_reconcile` + audit. NO auto-resend.
-5. Circuit breaker: increment `consecutive_failures` (jobs.py ~:133-135); at
-   `KP_WORKER_SOURCE_FAILURE_THRESHOLD` (default 10) disable source + audit; reset on success.
-6. Tests: all behaviors + failure paths; read apps/workers/tests for mock-sender fixtures.
-   Append new keys to .env.example (preserve existing content). Keep
-   apps/operator-api/tests/test_audit_verify_schedule.py untouched (T-09's).
+The closing recovery audit also prevents Compose recreation, validates all
+preserved recovery credentials and key mirrors before dependency sync or
+`.env` writes, rejects malformed/truncated/duplicate Docker evidence, and
+requires both the supervised PID and `/readyz` for an already-running fast
+path. Release verification refuses pre-existing image tags and removes only
+ephemeral resources it proved it created. Supervisor/launcher publication is
+atomic and recoverable. Azure bootstrap uniquely validates an existing console
+application's exact eight-role contract before its first cloud mutation and
+again at point of use.
 
-### T-11 — generation pipeline E2E (Wave 3; after T-06 merges — shares routers/jobs)
-1. Template approval endpoints in operator routers.py: POST approve/reject for TemplateVersion
-   (DRAFT→APPROVED/REJECTED), RBAC-gated (add APPROVE_TEMPLATE capability to
-   packages/authorization), audit events, no self-approval of AI-generated content by the same
-   principal that requested generation where determinable.
-2. Producer: on pattern approval, publish to `generate` topic (jobs/queue conventions as in
-   retention self-tick, jobs.py ~:376-390).
-3. Enriched AI contract (D4): `_call_ai` (jobs.py ~:629-639) currently sends only pattern_id —
-   widen request to include sanitized pattern context (lure category, triggers, attack_mapping
-   incl. ATT&CK/difficulty/freshness from T-07, sanitized source excerpts) run through
-   kp_sanitization.neutralize (NEW-6) BEFORE leaving the process. Define request/response schema in
-   packages/contracts (registry-enforced). Pass `as_of` for freshness. Response → SafetyValidator →
-   TemplateVersion(DRAFT) → human approval via (1).
-4. mock_ai.py: accept enriched payload; return plausible per-pattern template (subject/plain/safe_html
-   honoring lure category + impersonation target); update test_mock_ai.py.
-5. Tests end-to-end at unit level: pattern approve → generate publish → mock AI → validator →
-   template DRAFT → approve → schedulable under `enforce` policy.
+Exact-final ARM64 status is evidence-conditional and requires the exact Docker server platform
+without emulation, explicit `--platform`, all-five OS/architecture/image-ID
+metadata, unchanged source/context manifests, Trivy 0.74.0, retained no-clobber
+`qualification.json` plus scan evidence, labeled-disposable cleanup verification,
+the expected source-manifest digest, exact Trivy executable/hash/cache, retained empty config/ignore/secret policy files,
+ambient-`TRIVY_*` rejection, fresh database/check-bundle metadata, and an
+immutable verified cache. Azure
+workloads must scan exact immutable ACR `repository@sha256` images with pinned
+Trivy before SBOM/attestation/deploy and retain scan JSON and checksums. These
+are implemented gates; only their retained evidence can establish a pass.
+The fixed planned evidence root is
+`/Volumes/DockerExternal/KingPhisher-Phoenix/qualification-evidence/arm64-release-20260829-wave35-final-v3`
+with `verifier/` beneath it and unique prefix
+`kingphisher/verify-arm64-20260829-w35-final-v3`; its validated contents, not
+the path's existence, determine the ARM64 result.
+The preserved `final-v2` attempt failed closed before image build because BSD
+filesystem-mode and evidence-path/source-context handling violated the verifier
+contract. Those failure artifacts were not clobbered; the defects were repaired
+for `final-v3`, whose retained evidence remains conditional and unvalidated.
 
-### T-12 — UI core (Wave 3; app.js/styles.css/index.html ONLY; parallel-safe with T-11/T-13)
-Priority order: (1) campaign detail/report view replacing the results toast — funnel
-delivered→opened→clicked→reported→training (data from existing report endpoint routers.py ~:391-427),
-send-state breakdown incl. failed, per-recipient table (privacy-respecting), Download-CSV button
-(existing `GET /campaigns/{id}/report.csv` ~:439-461); (2) approval lifecycle UI — "Submit for
-approval" (existing `/submit` ~:151), security/privacy checklist with approver+rationale, inline
-explanation of self-approval rule + policy mode; (3) confirm() on Stop/Restart services
-(app.js ~:1135-1150); (4) replace prompt() modals (alert subscribe ~:760-776, rationale, evidence)
-with real dialogs incl. copyable one-time signing secret; (5) CSV file-picker import with per-row
-errors (API returns them); (6) 30s dashboard/campaign polling w/ last-updated; (7) login 429 shows
-lockout duration + "where is my password" hint (RUNBOOK §2.1). Vanilla JS, textContent only (no
-innerHTML — ever), keep CSP-self compatibility, split app.js into per-view modules only if trivially
-safe (no build step). Keep everything ruff-lintable via `node --check` (Makefile lint does this).
+Wave 21 historically added a green local installation check and a strict 7-test E2E result after targeted local bootstrap/audit, token-key, PID/log, mock Graph, and fixture repairs. Shared RoE/RBAC hardening passed 374 owned/consumer tests plus Ruff/mypy, 0-finding Bandit/Semgrep, and offline package build/import. Its 23 CI workflow tests, Actionlint, and Zizmor result belongs to the historical Wave 21 workflow SHA, not the current frozen connector. The dead clone adapter was removed for a net 87-line reduction with 36 focused plus 5 downstream tests passing. The historical pre-Wave-30 result was 1,994 hermetic/87 PostgreSQL/2 Redis/8 E2E, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected using Redis DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit and `verify_install`; its 03Z API/worker log window was clean. The pre-Wave-36 local hermetic `make test` passed 2,469 tests with 97 deselected and 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. Current-head `0032` PostgreSQL/Redis/E2E external profiles, exact-image evidence, and all external release gates remain pending.
 
-### T-13 — seed demo (Wave 3; scripts/seed.py ONLY)
-Add a second seeded admin + a pre-created pending_approval demo campaign so the two-person
-approval flow is demonstrable out of the box (works under both policies). Idempotent (seed re-run
-safe — existing pattern).
+## Evidence boundary
 
-### T-14 — UI finish (Wave 4, after T-11): template list/approve UI + preview via existing
-`/templates/preview` (~:824-869); connection-test failure categories in console.py
-(`_test_smtp`/`_test_http` ~:1470-1506 currently swallow all exceptions into False — return
-error_kind auth/dns/tls/timeout) rendered with specific next-step guidance (Azure SMTP auth vs
-firewall). Filter pattern/template dropdowns to approved items.
+All five native ARM64 images passed the latest completed startup/hardening snapshot, but later source edits make those interim images stale. External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head `0032` PostgreSQL/Redis/E2E external profiles remain pending. The internal seven Docker Desktop project containers are stopped/preserved; unrelated containers remain running. Validated snapshot `20260829T013332Z-tsX1WQ` completes `EXT-002`; older invalid/unrecoverable snapshots remain preserved. Exact-final images, browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, and human-witness evidence remain open. No KnowBe4 parity or production readiness is claimed.
 
-### T-15 — docs (Wave 4): README/RUNBOOK — new env keys (OPERATOR_APPROVAL_POLICY,
-KP_ALLOWED_RECIPIENT_DOMAINS, KP_WORKER_QUEUED_STALE_HOURS, KP_WORKER_SOURCE_FAILURE_THRESHOLD,
-OPERATOR_API_AUDIT_VERIFY_INTERVAL_SECONDS), approval-policy modes + demo credentials, updated
-architecture role count (8 workers), docs/architecture accuracy pass. Update
-docs/REMEDIATION_PLAN.md statuses.
+The exact five image IDs and sizes are recorded in the canonical build plan. They are point-in-time evidence because later source edits changed image inputs.
 
-## 6. Verification procedure (run SERIALLY after each wave, from repo root)
+For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact RSA-controlled population and domains. Conference attendance, exhibitor status, or public contact information is not authorization.
 
+## Do not regress
+
+- Preserve Entra OIDC and server-derived fail-closed roles/capabilities; the shared credential is loopback development compatibility only.
+- Preserve exact previewed/frozen audiences, separate security/privacy approval facets completed by one independent dual-capability approver, signed RoE, verified domains, recipient caps, deterministic rendered-content validation, and the persistent emergency stop. Never restore self-approval.
+- Never blindly retry an `INDETERMINATE` provider send or represent provider acceptance/MTA handoff as inbox placement or reading.
+- Preserve purpose- and assignment-bound tracking/training links and keyed verifiers at rest.
+- Preserve role-specific managed identities/database URLs, the database-owned audit dispatcher, append-only witness boundary, and fixed `queue_dispatch_failed` durable failure code.
+- Keep public OpenAPI/docs/metrics routes absent and audit health aggregate-only.
+- Keep auth-mode discovery fail closed; never default a failed discovery to development login.
+- Keep training actions bound to exact server `can_submit`/`can_review` booleans, source ingestion bound to current terms, recipient results paginated, and ordinary exclusion revocation append-only.
+- Keep provider and identity JSON responses streamed and bounded before decoding; never echo or log provider bodies, tokens, or low-level errors.
+- Keep local image digests, mock dependency hashes, and frozen workspace dependency resolution reproducible. Audit and SBOM must cover the full external production closure.
+- Keep the fixed Compose project/volume identities, preservation-aware `.env`
+  refusal, command-specific preflight environments, `prestart`/`ready` order,
+  and exact-cache base-image probes. Recovery is inspect, checkpoint, and
+  reconcile in place—never automatic deletion, pruning, reset, recreation, or
+  credential regeneration over preserved state.
+- Keep every `.140` project Docker command bound to the exact external volume,
+  profile, socket, and canonical source. Never change the global context or
+  mutate the shared Docker Desktop engine/unrelated workloads. Preserve the
+  internal project copy, external profile, and encrypted snapshots.
+- Keep managed prior keys recovery-only, preserve the immutable active ID and `prevent_destroy`, and do not retire a prior key until bulk migration/proof establishes that no required ciphertext still needs it.
+- Never turn local/static tests, Terraform validation, or dependency audit into Azure/provider/browser/recovery evidence.
+
+## Next execution order
+
+1. Close the single known P1 by mirroring migration `0032`'s retention-policy
+   constraints in ORM metadata and testing them. Then run the full local gates,
+   current-head PostgreSQL concurrency/migration profile, reconcile evidence,
+   commit the preserved worktree, and push `main`. Do not reopen locally complete
+   `ORG-001`, `THR-001A/B`, `IMP-001`, or `DOCSIM-001` without a regression.
+2. Deliver the minimum complete product: benchmark/select the internal model,
+   wire `AI-010` into the existing worker role/job, then complete
+   campaign-specific micro-training and the named five-year trend/disposition
+   experience. Deterministic fallback and human approval remain mandatory.
+3. Simplify the normal Azure/mail path through the GUI after those interfaces
+   stabilize; keep the existing secure three-stage deployment contract and
+   provider adapters supported while hiding engineering internals.
+4. Qualify the exact resulting product: current-head external PostgreSQL/Redis/E2E,
+   all five exact-final native ARM64 images, native AMD64/registry/attestation,
+   real browser/WCAG, disposable Azure, Entra/Graph/Outlook/ACS/DNS/inbox,
+   recovery/rotation, alert/audit witness, and human operator acceptance.
+5. Only after the core is stable, simplify navigation/modules without deleting
+   useful deferred features or weakening stable APIs and safety gates.
+
+Label evidence as **local/static**, **local live**, or **cloud/provider live**. Only the last category can close the corresponding production/RSA gate.
+
+## Copy-ready continuation prompt
+
+```text
+Resume the phishing-awareness-platform build from the preserved Wave 38 paused
+checkpoint in /Users/edierks/projects/codex-test/phishing-awareness-platform.
+Read AGENTS.md, RESUME-HERE.md, docs/WAVE-BUILD-PLAN.md,
+docs/PRODUCTION-READINESS-TASK-MATRIX.md, docs/NEXT_SESSION_HANDOFF.md, and
+docs/AI_HANDOFF.md before editing. Preserve the entire dirty worktree and every
+project/recovery/Docker asset; do not reset, clean, prune, delete, recreate, or
+touch unrelated Docker Desktop workloads. The project-only ARM64 engine remains
+on 192.168.1.140 under /Volumes/DockerExternal/KingPhisher-Phoenix, and no Docker
+or cloud mutation is needed for the first task.
+
+Local main, HEAD, and origin/main are still 1403d94; the large accumulated build
+is intentionally uncommitted/unpushed. Alembic head is
+0032_source_explicit_curation. Independent static review found no P0 and one
+open P1: packages/database/src/kp_database/models.py RetentionPolicy.__table_args__
+must mirror migration 0032's retention_days BETWEEN 1 AND 365 check and its
+PostgreSQL partial unique single-default index. Add metadata assertions and
+direct database rejection coverage. Do not change migration 0032 after treating
+it as landed; add a forward migration only if the database contract itself must
+change.
+
+After that minimal fix, run targeted Ruff/format/tests, make lint, make typecheck,
+and make test. Then run the explicit current-head PostgreSQL profile, including
+the new recipient-import concurrency, outcome-writer-versus-retention, threat
+approval-versus-curation, migration, and grants tests. PostgreSQL/Redis/E2E skips
+are not passes. Reconcile all handoff/build-plan evidence with exact results,
+inspect git diff/status for secrets or unintended files, commit the entire
+preserved project checkpoint, and push origin/main as previously authorized.
+Do not claim production/RSA readiness: exact images, AMD64/registry, browser/WCAG,
+Azure/Entra/Graph/ACS/Outlook/DNS/inbox, recovery, audit witness, and human
+acceptance remain NO-GO.
+
+Once the checkpoint is safely pushed, continue the goal-aligned backlog without
+removing useful deferred features: finish privacy/RBAC and ANA-010 named
+five-year ledger/reporting/graph consumers; then benchmark the internal-model-
+first AI-010 path in the existing worker, add campaign-specific micro-training,
+and simplify GUI Azure/mail deployment. AI may draft/advise but never approve,
+target, apply infrastructure, handle consent, or launch. Prefer simplicity and
+the existing three-deployable modular-monolith architecture.
 ```
-make lint          # ruff check + format check (+ node --check on console JS)
-make typecheck     # mypy strict
-make test          # full pytest (some DB tests skip if Postgres down)
-git diff --stat    # review for unrelated changes / secrets / debug leftovers
-```
-Wave-1 gate result for reference: 296 passed / 7 skipped, lint+mypy clean. Per-task suites already
-green post-Wave-2: campaign-patterns 90, source-adapters+sanitization 40, T-09 13, plus Wave-1
-suites. **The combined Wave-2 central gate is the first thing to run** (after T-06 lands).
-Postgres/Redis/Mailpit containers may already be running (`docker ps | grep phishing-awareness`);
-do not start/stop them without need. `make test` refuses if DATABASE_URL_TEST == app DB (safety).
-Note: after any dependency edit, use `uv sync --all-packages` (plain sync strips workspace members).
-
-## 7. Pending operator decisions (batch at the end; do not block implementation)
-
-1. Review RED-lane diffs before any commit: T-01 (validator), T-05 (auth guard), T-06 (policy),
-   T-09 (audit ownership), T-11 (AI contract). Nothing is committed yet — operator commits.
-2. Confirm D1 default (`single-admin` in dev-auth, always `enforce` under OIDC) matches intent.
-3. Deferred items NOT in this build (flag only): P-3 console/Azure .env split (deployment_mode
-   gating), Redis Streams migration, shared rate-limit store, ARCH-5 contracts decision,
-   NEW-11 global kill-switch persistence, app.js module split, i18n, 8-Container-Apps cost
-   right-sizing, writing the empty security/ threat-model + policies/ dirs.
-
-## 8. Context pointers
-
-- Build plan/registry: docs/WAVE-BUILD-PLAN.md (this file supersedes its statuses)
-- Prior review: ~/Downloads/kingphisher_four_perspective_review.md + kingphisher_remediation_plan.md
-- CROW integration eval (gates on this remediation): /Users/edierks/crow/docs/audit/KINGPHISHER-PHOENIX-INTEGRATION-EVAL.md
-- Done criteria ("human usable"): wizard → campaign create → approval legible per policy → schedule
-  → delivery → results funnel + per-recipient + CSV + reported/training counts; validator bypass
-  closed; allowlist enforced; generation pipeline produces approvable threat-informed templates;
-  all gates green.

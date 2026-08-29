@@ -1,9 +1,9 @@
-"""Two-person rule: the security and privacy approvals must be distinct people.
+"""Two-person approval keeps separate facets without requiring three people.
 
-Blocking only the campaign author is not enough. One approver could otherwise
-supply BOTH decisions and satisfy the gate alone, which is exactly the outcome
-requiring two approvals exists to prevent. Runs against the disposable dev
-Postgres; skipped when it is not reachable.
+The campaign creator remains outside the approval set. One independent
+authorized operator may persist both facet decisions, while a third person may
+still take one facet. Runs against the disposable dev Postgres; skipped when it
+is not reachable.
 """
 
 from __future__ import annotations
@@ -11,18 +11,18 @@ from __future__ import annotations
 import hashlib
 import os
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from dotenv import load_dotenv
 from kp_database.base import Base
 from kp_database.models import Campaign, CampaignApproval, CampaignPattern, CipherText, TemplateVersion
 from kp_database.session import create_db_engine, make_session_factory
 from kp_domain_models import models as dm
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.pool import NullPool
 
-load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+pytestmark = pytest.mark.postgres
+
 
 TEST_URL = os.environ.get(
     "DATABASE_URL_TEST", "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher_test"
@@ -32,6 +32,8 @@ _available = None
 
 
 def _db_available() -> bool:
+    if os.environ.get("KP_TEST_PROFILE") != "postgres":
+        return False
     global _available
     if _available is None:
         try:
@@ -45,7 +47,7 @@ def _db_available() -> bool:
     return _available
 
 
-requires_db = pytest.mark.skipif(not _db_available(), reason="dev Postgres not reachable")
+requires_db = pytest.mark.skipif(not _db_available(), reason="PostgreSQL integration database is not reachable")
 
 
 def _setup() -> None:
@@ -57,7 +59,13 @@ def _setup() -> None:
 
 
 def _session():
-    return make_session_factory(create_db_engine(TEST_URL))()
+    engine = create_engine(
+        TEST_URL,
+        pool_pre_ping=True,
+        poolclass=NullPool,
+        connect_args={"connect_timeout": 5},
+    )
+    return make_session_factory(engine)()
 
 
 def _campaign(session, author) -> Campaign:  # noqa: ANN001
@@ -115,55 +123,64 @@ def _approve(session, campaign, approver, approval_type) -> None:  # noqa: ANN00
             rationale="test",
             decided_at=datetime.now(UTC),
             template_version_id=campaign.current_template_id,
+            launch_manifest_hash=campaign.manifest_hash,
         )
     )
     session.commit()
 
 
-def _other_approval_by(session, campaign, approver, approval_type):  # noqa: ANN001
-    """The query the router uses to detect a same-person second approval."""
-    return session.scalar(
-        select(CampaignApproval).where(
-            CampaignApproval.campaign_id == campaign.campaign_id,
-            CampaignApproval.approval_type != approval_type,
-            CampaignApproval.approver_id == approver,
-            CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+def _approvals_for(session, campaign):  # noqa: ANN001
+    return list(
+        session.scalars(
+            select(CampaignApproval).where(
+                CampaignApproval.campaign_id == campaign.campaign_id,
+                CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+                CampaignApproval.launch_manifest_hash == campaign.manifest_hash,
+            )
         )
     )
 
 
 @requires_db
-def test_same_approver_is_detected_across_approval_types() -> None:
+def test_one_independent_approver_can_complete_both_recorded_facets() -> None:
     _setup()
     session = _session()
     try:
         author, approver = uuid4(), uuid4()
         campaign = _campaign(session, author)
         _approve(session, campaign, approver, dm.ApprovalType.SECURITY)
+        _approve(session, campaign, approver, dm.ApprovalType.PRIVACY)
 
-        # The same person coming back for the privacy decision must be found.
-        assert _other_approval_by(session, campaign, approver, dm.ApprovalType.PRIVACY) is not None
+        approvals = _approvals_for(session, campaign)
+        assert {approval.approval_type for approval in approvals} == {
+            dm.ApprovalType.SECURITY,
+            dm.ApprovalType.PRIVACY,
+        }
+        assert {approval.approver_id for approval in approvals} == {approver}
+        assert {approval.launch_manifest_hash for approval in approvals} == {campaign.manifest_hash}
     finally:
         session.close()
 
 
 @requires_db
-def test_a_different_approver_is_not_blocked() -> None:
+def test_a_third_person_can_take_one_facet_without_being_required() -> None:
     _setup()
     session = _session()
     try:
         author, first, second = uuid4(), uuid4(), uuid4()
         campaign = _campaign(session, author)
         _approve(session, campaign, first, dm.ApprovalType.SECURITY)
+        _approve(session, campaign, second, dm.ApprovalType.PRIVACY)
 
-        # A genuinely separate reviewer must be able to give the other approval.
-        assert _other_approval_by(session, campaign, second, dm.ApprovalType.PRIVACY) is None
+        approvals = _approvals_for(session, campaign)
+        assert {approval.approver_id for approval in approvals} == {first, second}
+        assert len(approvals) == 2
     finally:
         session.close()
 
 
 @requires_db
-def test_a_rejected_decision_does_not_count_as_the_other_approval() -> None:
+def test_a_rejected_decision_does_not_count_as_an_approved_facet() -> None:
     _setup()
     session = _session()
     try:
@@ -179,11 +196,11 @@ def test_a_rejected_decision_does_not_count_as_the_other_approval() -> None:
                 rationale="test",
                 decided_at=datetime.now(UTC),
                 template_version_id=campaign.current_template_id,
+                launch_manifest_hash=campaign.manifest_hash,
             )
         )
         session.commit()
 
-        # Only APPROVED decisions consume a person's one slot.
-        assert _other_approval_by(session, campaign, approver, dm.ApprovalType.PRIVACY) is None
+        assert _approvals_for(session, campaign) == []
     finally:
         session.close()

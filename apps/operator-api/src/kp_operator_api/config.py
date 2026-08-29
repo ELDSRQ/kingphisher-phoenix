@@ -6,16 +6,31 @@ defaults in .env.example are for the disposable dev stack only.
 
 from __future__ import annotations
 
+import re
+import uuid
 from typing import Literal
 
 from kp_domain_models.policy import ApprovalPolicy, parse_domain_allowlist
+from kp_telemetry.settings import local_dotenv_file
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_ACS_TOPIC = re.compile(
+    r"/subscriptions/[0-9a-f-]{36}/resourceGroups/[^/]+/providers/"
+    r"Microsoft\.Communication/CommunicationServices/[^/]+\Z",
+    re.IGNORECASE,
+)
+_CIPHERTEXT_KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
+_MAX_CIPHERTEXT_PRIOR_KEYS = 4
 
 
 class OperatorApiSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="OPERATOR_API_", env_file=".env", extra="ignore", populate_by_name=True
+        env_prefix="OPERATOR_API_",
+        env_file=local_dotenv_file(),
+        extra="ignore",
+        populate_by_name=True,
+        hide_input_in_errors=True,
     )
 
     app_name: str = "kp-operator-api"
@@ -26,8 +41,30 @@ class OperatorApiSettings(BaseSettings):
     audit_database_url: str = "postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher"
     audit_hmac_key: str = ""
     ciphertext_kek: str = ""
+    ciphertext_key_id: str = "primary"
+    ciphertext_prior_keys: str = Field(default="", max_length=512)
     console_jwt_secret: str = ""
     recipient_hash_salt: str = ""
+    tracking_token_hmac_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPERATOR_API_TRACKING_TOKEN_HMAC_KEY", "TRACKING_TOKEN_HMAC_KEY"),
+    )
+    training_token_hmac_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPERATOR_API_TRAINING_TOKEN_HMAC_KEY", "TRAINING_TOKEN_HMAC_KEY"),
+    )
+    # Event Grid uses Entra authentication at the public webhook. This
+    # independent 256-bit key binds the already-authenticated event to the
+    # private Redis job consumed by the delivery worker; it is never sent by
+    # Event Grid or returned through an API.
+    acs_receipt_signing_key: str = ""
+    event_grid_tenant_id: str = ""
+    event_grid_audience: str = ""
+    event_grid_subscription_name: str = ""
+    event_grid_topic: str = ""
+    event_grid_publisher_app_id: str = "4962773b-9cdb-44cf-a8bf-237846a00ab7"
+    event_grid_max_body_bytes: int = Field(default=262_144, ge=1024, le=1_000_000)
+    event_grid_max_events: int = Field(default=64, ge=1, le=64)
     oidc_mode: str = "dev"
     oidc_issuer: str = "http://localhost:8443/realms/kingphisher"
     oidc_audience: str = "kp-operator-api"
@@ -58,6 +95,13 @@ class OperatorApiSettings(BaseSettings):
         validation_alias=AliasChoices(
             "OPERATOR_API_ALLOWED_RECIPIENT_DOMAINS",
             "KP_ALLOWED_RECIPIENT_DOMAINS",
+        ),
+    )
+    alert_webhook_domains: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "OPERATOR_API_ALERT_WEBHOOK_DOMAINS",
+            "KP_WORKER_ALERT_WEBHOOK_DOMAINS",
         ),
     )
     #: Shared key that signs Rules-of-Engagement. RoE creation and the
@@ -98,6 +142,11 @@ class OperatorApiSettings(BaseSettings):
     def recipient_domain_allowlist(self) -> frozenset[str]:
         return parse_domain_allowlist(self.allowed_recipient_domains)
 
+    def alert_webhook_domain_allowlist(self) -> frozenset[str]:
+        """Return the shared operator/worker outbound-alert destination policy."""
+
+        return parse_domain_allowlist(self.alert_webhook_domains)
+
     @model_validator(mode="after")
     def validate_approval_policy(self) -> OperatorApiSettings:
         # Under real OIDC the two-person rule is not optional: relaxing it there
@@ -107,15 +156,36 @@ class OperatorApiSettings(BaseSettings):
                 "OPERATOR_API_APPROVAL_POLICY=single-admin is not permitted when OIDC is enabled; "
                 "use 'enforce' (two-person approval) outside the dev-auth stack"
             )
+        if self.config_is_managed and not self.dev_auth_mode:
+            try:
+                self.require_acs_receipt_signing_key()
+                uuid.UUID(self.event_grid_tenant_id)
+                uuid.UUID(self.event_grid_audience)
+                uuid.UUID(self.event_grid_publisher_app_id)
+            except (RuntimeError, ValueError):
+                raise ValueError(
+                    "managed ACS receipt ingress is not securely configured; verify the signing key and "
+                    "Event Grid identifiers"
+                ) from None
+            if not self.event_grid_subscription_name.strip() or len(self.event_grid_subscription_name) > 128:
+                raise ValueError("managed ACS receipt ingress requires a bounded Event Grid subscription name")
+            if _ACS_TOPIC.fullmatch(self.event_grid_topic.strip()) is None:
+                raise ValueError("managed ACS receipt ingress requires the exact ACS Communication Service topic")
         return self
+
+    def require_acs_receipt_signing_key(self) -> bytes:
+        value = self.acs_receipt_signing_key
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise RuntimeError("OPERATOR_API_ACS_RECEIPT_SIGNING_KEY must be 64 lowercase hexadecimal characters")
+        return bytes.fromhex(value)
 
     def require_secret_key(self) -> bytes:
         if not self.audit_hmac_key:
             raise RuntimeError("OPERATOR_API_AUDIT_HMAC_KEY is required")
         try:
             key = bytes.fromhex(self.audit_hmac_key)
-        except ValueError as exc:
-            raise RuntimeError("OPERATOR_API_AUDIT_HMAC_KEY must be a hex string") from exc
+        except ValueError:
+            raise RuntimeError("OPERATOR_API_AUDIT_HMAC_KEY must be a hex string") from None
         if len(key) != 32:
             raise RuntimeError("OPERATOR_API_AUDIT_HMAC_KEY must be a 256-bit hex key (64 hex chars)")
         return key
@@ -125,8 +195,8 @@ class OperatorApiSettings(BaseSettings):
             raise RuntimeError("KP_ROE_SIGNING_KEY is required to sign Rules-of-Engagement")
         try:
             key = bytes.fromhex(self.roe_signing_key)
-        except ValueError as exc:
-            raise RuntimeError("KP_ROE_SIGNING_KEY must be a hex string") from exc
+        except ValueError:
+            raise RuntimeError("KP_ROE_SIGNING_KEY must be a hex string") from None
         if len(key) != 32:
             raise RuntimeError("KP_ROE_SIGNING_KEY must be a 256-bit hex key (64 hex chars)")
         return key
@@ -136,8 +206,8 @@ class OperatorApiSettings(BaseSettings):
             raise RuntimeError("KP_DOMAIN_VERIFY_KEY is required to run DNS-challenge verification")
         try:
             key = bytes.fromhex(self.domain_verification_key)
-        except ValueError as exc:
-            raise RuntimeError("KP_DOMAIN_VERIFY_KEY must be a hex string") from exc
+        except ValueError:
+            raise RuntimeError("KP_DOMAIN_VERIFY_KEY must be a hex string") from None
         if len(key) != 32:
             raise RuntimeError("KP_DOMAIN_VERIFY_KEY must be a 256-bit hex key (64 hex chars)")
         return key
@@ -145,13 +215,36 @@ class OperatorApiSettings(BaseSettings):
     def require_cipher_kek(self) -> bytes:
         if not self.ciphertext_kek:
             raise RuntimeError("OPERATOR_API_CIPHERTEXT_KEK is required")
-        try:
-            kek = bytes.fromhex(self.ciphertext_kek)
-        except ValueError as exc:
-            raise RuntimeError("OPERATOR_API_CIPHERTEXT_KEK must be a hex string") from exc
-        if len(kek) != 32:
-            raise RuntimeError("OPERATOR_API_CIPHERTEXT_KEK must be a 256-bit hex key (64 hex chars)")
-        return kek
+        if re.fullmatch(r"[0-9a-fA-F]{64}", self.ciphertext_kek) is None:
+            raise RuntimeError("OPERATOR_API_CIPHERTEXT_KEK must be a 256-bit hex key (64 hex chars)") from None
+        return bytes.fromhex(self.ciphertext_kek)
+
+    def require_cipher_keyring(self) -> tuple[str, bytes, dict[str, bytes]]:
+        """Return the active write key and bounded prior decrypt-only keys."""
+        active_key = self.require_cipher_kek()
+        active_key_id = self.ciphertext_key_id.strip()
+        if _CIPHERTEXT_KEY_ID.fullmatch(active_key_id) is None:
+            raise RuntimeError("OPERATOR_API_CIPHERTEXT_KEY_ID must contain 1-32 ASCII letters, digits, '_' or '-'")
+
+        raw_entries = self.ciphertext_prior_keys.split(",") if self.ciphertext_prior_keys.strip() else []
+        if len(raw_entries) > _MAX_CIPHERTEXT_PRIOR_KEYS:
+            raise RuntimeError("OPERATOR_API_CIPHERTEXT_PRIOR_KEYS supports at most four entries")
+        prior_keys: dict[str, bytes] = {}
+        for entry in raw_entries:
+            key_id, separator, key_hex = entry.strip().partition("=")
+            if not separator or _CIPHERTEXT_KEY_ID.fullmatch(key_id) is None:
+                raise RuntimeError("OPERATOR_API_CIPHERTEXT_PRIOR_KEYS must use comma-separated key-id=64-hex entries")
+            if key_id == active_key_id or key_id in prior_keys:
+                raise RuntimeError("OPERATOR_API_CIPHERTEXT_PRIOR_KEYS key identifiers must be unique")
+            if re.fullmatch(r"[0-9a-fA-F]{64}", key_hex) is None:
+                raise RuntimeError(
+                    "OPERATOR_API_CIPHERTEXT_PRIOR_KEYS key material must be 256-bit hexadecimal"
+                ) from None
+            key = bytes.fromhex(key_hex)
+            if key == active_key or key in prior_keys.values():
+                raise RuntimeError("OPERATOR_API_CIPHERTEXT_PRIOR_KEYS must not reuse key material")
+            prior_keys[key_id] = key
+        return active_key_id, active_key, prior_keys
 
     def require_console_jwt_secret(self) -> bytes:
         if not self.console_jwt_secret:
@@ -166,8 +259,30 @@ class OperatorApiSettings(BaseSettings):
             raise RuntimeError("OPERATOR_API_RECIPIENT_HASH_SALT is required")
         try:
             salt = bytes.fromhex(self.recipient_hash_salt)
-        except ValueError as exc:
-            raise RuntimeError("OPERATOR_API_RECIPIENT_HASH_SALT must be a hex string") from exc
+        except ValueError:
+            raise RuntimeError("OPERATOR_API_RECIPIENT_HASH_SALT must be a hex string") from None
         if len(salt) < 16:
             raise RuntimeError("OPERATOR_API_RECIPIENT_HASH_SALT must be at least 16 bytes")
         return salt
+
+    def require_tracking_token_hmac_key(self) -> bytes:
+        if not self.tracking_token_hmac_key:
+            raise RuntimeError("TRACKING_TOKEN_HMAC_KEY is required to issue tracking bearers")
+        try:
+            key = bytes.fromhex(self.tracking_token_hmac_key)
+        except ValueError:
+            raise RuntimeError("TRACKING_TOKEN_HMAC_KEY must be a 256-bit hex key") from None
+        if len(key) != 32:
+            raise RuntimeError("TRACKING_TOKEN_HMAC_KEY must be a 256-bit hex key")
+        return key
+
+    def require_training_token_hmac_key(self) -> bytes:
+        if not self.training_token_hmac_key:
+            raise RuntimeError("TRAINING_TOKEN_HMAC_KEY is required to issue training bearers")
+        try:
+            key = bytes.fromhex(self.training_token_hmac_key)
+        except ValueError:
+            raise RuntimeError("TRAINING_TOKEN_HMAC_KEY must be a 256-bit hex key") from None
+        if len(key) != 32:
+            raise RuntimeError("TRAINING_TOKEN_HMAC_KEY must be a 256-bit hex key")
+        return key

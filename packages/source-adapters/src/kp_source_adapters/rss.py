@@ -8,6 +8,7 @@ goes through SecureFetcher; content is sanitized before it is stored.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from datetime import UTC, datetime
 from typing import Any, Protocol, TypedDict
@@ -16,11 +17,17 @@ import feedparser  # type: ignore[import-untyped]  # feedparser 6.x ships no py.
 from kp_domain_models import models as dm
 from kp_sanitization.fetcher import SecureFetcher
 
-from kp_source_adapters.common import clean_text, parse_datetime, source_url
+from kp_source_adapters.common import (
+    AdapterError,
+    clean_reference,
+    clean_text,
+    parse_datetime,
+    source_url,
+    validate_limit,
+)
 
-
-class AdapterError(Exception):
-    pass
+_RSS_CONTENT_TYPES = {"application/atom+xml", "application/rss+xml", "application/xml", "text/xml"}
+_XML_DECLARATION_RE = re.compile(rb"<!\s*(?:doctype|entity)\b", re.I)
 
 
 class SourceAdapter(Protocol):
@@ -37,10 +44,12 @@ class RssAdapter:
     def __init__(self, source: dm.Source, fetcher: SecureFetcher, *, limit: int = 50) -> None:
         self._source = source
         self._fetcher = fetcher
-        self._limit = limit
+        self._limit = validate_limit(limit, maximum=50)
 
     def fetch(self) -> list[dm.SourceItem]:
         result = self._fetcher.fetch(source_url(self._source))
+        if result.content_type.lower() not in _RSS_CONTENT_TYPES:
+            raise AdapterError("RSS source returned an unsupported content type")
         entries = _extract_items(result.content, limit=self._limit)
         now = datetime.now(UTC)
         items: list[dm.SourceItem] = []
@@ -56,7 +65,7 @@ class RssAdapter:
                     retrieved_at=now,
                     sanitized_text=body,
                     content_hash=hashlib.sha256(body.encode("utf-8")).hexdigest(),
-                    source_reference=clean_text(entry["link"], limit=2048),
+                    source_reference=clean_reference(entry["link"]),
                     license_state_id=self._source.license_state_id,
                     confidence=dm.Confidence.LOW,
                     claimed_actor=None,
@@ -86,10 +95,15 @@ def _extract_items(data: str | bytes, *, limit: int) -> list[_ExtractedItem]:
     either malformed (bozo) or not recognized as RSS/Atom at all (e.g. an HTML
     error page) fail closed with AdapterError.
     """
+    limit = validate_limit(limit, maximum=50)
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    # Feed parsing never needs a DTD. Reject both ordinary ASCII declarations
+    # and their NUL-interleaved UTF-16 representation before the XML parser.
+    if _XML_DECLARATION_RE.search(raw.replace(b"\x00", b"")):
+        raise AdapterError("RSS/Atom feed contains a prohibited XML declaration")
     parsed = feedparser.parse(data)
     if not parsed.entries and (parsed.bozo or not parsed.get("version")):
-        reason = getattr(parsed, "bozo_exception", None)
-        raise AdapterError(f"malformed RSS/Atom feed: {reason or 'no entries parsed'}")
+        raise AdapterError("malformed RSS/Atom feed")
     items: list[_ExtractedItem] = []
     for entry in parsed.entries:
         if len(items) >= limit:

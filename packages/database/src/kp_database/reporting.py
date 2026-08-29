@@ -1,0 +1,597 @@
+"""Small, privacy-minimized aggregate queries for campaign reporting.
+
+The current product is deliberately single-tenant-per-database: the schema
+has no tenant discriminator.  Every query therefore requires the explicit
+``single_tenant_database`` scope and rejects any other value instead of
+pretending that an unenforceable tenant filter exists.
+
+Send-state counts are a current snapshot because the schema does not retain a
+timestamped state-transition history.  Optional evidence windows apply only
+to immutable interaction timestamps and training completion timestamps.
+"""
+
+from __future__ import annotations
+
+import math
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any, Final
+
+from kp_domain_models import models as dm
+from sqlalchemy import case, distinct, exists, func, select
+from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.sql import Select
+
+from kp_database.models import Campaign, RecipientAssignment, TrackingEvent, TrackingToken, TrainingAssignment
+
+SINGLE_TENANT_DATABASE_SCOPE: Final = "single_tenant_database"
+MAX_EVIDENCE_WINDOW: Final = timedelta(days=366)
+MAX_TREND_CAMPAIGNS: Final = 12
+MAX_TREND_WINDOW: Final = timedelta(days=366)
+type CsvCell = str | int | float
+type CsvRow = tuple[CsvCell, ...]
+
+_TERMINAL_TREND_STATES: Final = frozenset(
+    {
+        dm.CampaignState.CANCELLED,
+        dm.CampaignState.COMPLETED,
+        dm.CampaignState.EXPIRED,
+        dm.CampaignState.RECALLED,
+        dm.CampaignState.STOPPED,
+    }
+)
+
+
+class CampaignReportNotFound(LookupError):
+    """The campaign is absent from the explicitly scoped database."""
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceWindow:
+    """Inclusive start and exclusive end for timestamped evidence."""
+
+    start: datetime
+    end: datetime
+
+    def __post_init__(self) -> None:
+        if self.start.tzinfo is None or self.end.tzinfo is None:
+            raise ValueError("evidence window timestamps must include a timezone")
+        normalized_start = self.start.astimezone(UTC)
+        normalized_end = self.end.astimezone(UTC)
+        if normalized_start >= normalized_end:
+            raise ValueError("evidence window start must precede end")
+        if normalized_end - normalized_start > MAX_EVIDENCE_WINDOW:
+            raise ValueError("evidence window cannot exceed 366 days")
+        object.__setattr__(self, "start", normalized_start)
+        object.__setattr__(self, "end", normalized_end)
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignSelectionWindow:
+    """Inclusive/exclusive schedule-start bounds for a longitudinal report."""
+
+    start: datetime
+    end: datetime
+
+    def __post_init__(self) -> None:
+        if self.start.tzinfo is None or self.end.tzinfo is None:
+            raise ValueError("campaign selection timestamps must include a timezone")
+        normalized_start = self.start.astimezone(UTC)
+        normalized_end = self.end.astimezone(UTC)
+        if normalized_start >= normalized_end:
+            raise ValueError("campaign selection start must precede end")
+        if normalized_end - normalized_start > MAX_TREND_WINDOW:
+            raise ValueError("campaign selection window cannot exceed 366 days")
+        object.__setattr__(self, "start", normalized_start)
+        object.__setattr__(self, "end", normalized_end)
+
+
+@dataclass(frozen=True, slots=True)
+class Rate:
+    """One ratio with its denominator made explicit."""
+
+    numerator: int
+    denominator: int
+    denominator_name: str
+
+    @property
+    def value(self) -> float | None:
+        return self.numerator / self.denominator if self.denominator else None
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignFunnel:
+    """Aggregate campaign truth containing no recipient-level attributes."""
+
+    campaign_id: uuid.UUID
+    generated_at: datetime
+    evidence_window: EvidenceWindow | None
+    targeted: int
+    sent: int
+    accepted: int
+    delivered: int
+    failed: int
+    indeterminate: int
+    opened: int
+    clicked: int
+    reported: int
+    training_assigned: int
+    training_completed: int
+
+    @property
+    def rates(self) -> tuple[tuple[str, Rate], ...]:
+        """Stable rate definitions; an empty denominator returns ``None``."""
+
+        return (
+            ("sent", Rate(self.sent, self.targeted, "targeted_assignments")),
+            ("accepted", Rate(self.accepted, self.sent, "provider_attempts")),
+            ("delivered", Rate(self.delivered, self.accepted, "provider_accepted_handoffs")),
+            ("failed", Rate(self.failed, self.targeted, "targeted_assignments")),
+            ("opened", Rate(self.opened, self.accepted, "provider_accepted_handoffs")),
+            ("clicked", Rate(self.clicked, self.accepted, "provider_accepted_handoffs")),
+            ("reported", Rate(self.reported, self.accepted, "provider_accepted_handoffs")),
+            (
+                "training_completed",
+                Rate(self.training_completed, self.training_assigned, "campaign_training_assignments"),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignTrendPoint:
+    """One terminal campaign and its canonical aggregate funnel."""
+
+    campaign_id: uuid.UUID
+    schedule_start: datetime
+    schedule_end: datetime | None
+    state: dm.CampaignState
+    funnel: CampaignFunnel
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignPortfolio:
+    """Weighted assignment-exposure totals across selected campaigns."""
+
+    targeted: int
+    sent: int
+    accepted: int
+    delivered: int
+    failed: int
+    indeterminate: int
+    opened: int
+    clicked: int
+    reported: int
+    training_assigned: int
+    training_completed: int
+
+    @property
+    def rates(self) -> tuple[tuple[str, Rate], ...]:
+        return (
+            ("sent", Rate(self.sent, self.targeted, "campaign_assignment_exposures")),
+            ("accepted", Rate(self.accepted, self.sent, "provider_attempt_exposures")),
+            ("delivered", Rate(self.delivered, self.accepted, "provider_accepted_handoff_exposures")),
+            ("failed", Rate(self.failed, self.targeted, "campaign_assignment_exposures")),
+            ("opened", Rate(self.opened, self.accepted, "provider_accepted_handoff_exposures")),
+            ("clicked", Rate(self.clicked, self.accepted, "provider_accepted_handoff_exposures")),
+            ("reported", Rate(self.reported, self.accepted, "provider_accepted_handoff_exposures")),
+            (
+                "training_completed",
+                Rate(
+                    self.training_completed,
+                    self.training_assigned,
+                    "campaign_training_assignment_exposures",
+                ),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignTrendReport:
+    """A bounded chronological series and denominator-correct portfolio."""
+
+    generated_at: datetime
+    selection_window: CampaignSelectionWindow
+    truncated: bool
+    points: tuple[CampaignTrendPoint, ...]
+    portfolio: CampaignPortfolio
+
+
+def _require_scope(scope: str) -> None:
+    if scope != SINGLE_TENANT_DATABASE_SCOPE:
+        raise ValueError(
+            "reporting supports only an isolated single-tenant database; the schema has no tenant discriminator"
+        )
+
+
+def _windowed(
+    statement: Select[Any],
+    column: InstrumentedAttribute[Any],
+    window: EvidenceWindow | None,
+    generated_at: datetime,
+) -> Select[Any]:
+    statement = statement.where(column <= generated_at)
+    if window is not None:
+        statement = statement.where(column >= window.start, column < window.end)
+    return statement
+
+
+def campaign_funnel(
+    session: Session,
+    campaign_id: uuid.UUID,
+    *,
+    scope: str,
+    evidence_window: EvidenceWindow | None = None,
+    generated_at: datetime | None = None,
+) -> CampaignFunnel:
+    """Return one bounded campaign aggregate.
+
+    ``sent`` means a durable provider attempt was claimed. ``accepted`` means
+    the provider acknowledged handoff and includes subsequently delivered
+    rows. For ACS, ``delivered`` means the destination MTA accepted the
+    message; it never means inbox placement, display, or reading.
+
+    Interaction numerators count distinct accepted assignments, not raw
+    events. Training completion uses its own training-assignment denominator.
+    """
+
+    _require_scope(scope)
+    if not isinstance(campaign_id, uuid.UUID):
+        raise TypeError("campaign_id must be a UUID")
+    report_time = generated_at or datetime.now(UTC)
+    if report_time.tzinfo is None:
+        raise ValueError("generated_at must include a timezone")
+    report_time = report_time.astimezone(UTC)
+    exists = session.scalar(select(Campaign.campaign_id).where(Campaign.campaign_id == campaign_id).limit(1))
+    if exists is None:
+        raise CampaignReportNotFound(str(campaign_id))
+
+    assignment_counts = session.execute(
+        select(
+            func.count(RecipientAssignment.recipient_assignment_id).label("targeted"),
+            func.count(RecipientAssignment.recipient_assignment_id)
+            .filter(RecipientAssignment.delivery_attempt_id.is_not(None))
+            .label("sent"),
+            func.count(RecipientAssignment.recipient_assignment_id)
+            .filter(RecipientAssignment.provider_accepted_at.is_not(None))
+            .label("accepted"),
+            func.count(RecipientAssignment.recipient_assignment_id)
+            .filter(RecipientAssignment.delivery_confirmed_at.is_not(None))
+            .label("delivered"),
+            func.count(RecipientAssignment.recipient_assignment_id)
+            .filter(RecipientAssignment.send_state == dm.SendState.FAILED)
+            .label("failed"),
+            func.count(RecipientAssignment.recipient_assignment_id)
+            .filter(RecipientAssignment.send_state == dm.SendState.INDETERMINATE)
+            .label("indeterminate"),
+        ).where(RecipientAssignment.campaign_id == campaign_id)
+    ).one()
+
+    assignment_for_event = func.coalesce(
+        TrackingEvent.recipient_assignment_id,
+        TrackingToken.recipient_assignment_id,
+    )
+    event_statement = (
+        select(
+            func.count(
+                distinct(
+                    case((TrackingEvent.event_type == dm.EventType.OPENED, RecipientAssignment.recipient_assignment_id))
+                )
+            ).label("opened"),
+            func.count(
+                distinct(
+                    case(
+                        (
+                            TrackingEvent.event_type == dm.EventType.CLICKED,
+                            RecipientAssignment.recipient_assignment_id,
+                        )
+                    )
+                )
+            ).label("clicked"),
+            func.count(
+                distinct(
+                    case(
+                        (
+                            TrackingEvent.event_type == dm.EventType.MESSAGE_REPORTED,
+                            RecipientAssignment.recipient_assignment_id,
+                        )
+                    )
+                )
+            ).label("reported"),
+        )
+        .select_from(TrackingEvent)
+        .outerjoin(TrackingToken, TrackingToken.token_id == TrackingEvent.token_id)
+        .join(RecipientAssignment, RecipientAssignment.recipient_assignment_id == assignment_for_event)
+        .where(
+            RecipientAssignment.campaign_id == campaign_id,
+            RecipientAssignment.provider_accepted_at.is_not(None),
+        )
+    )
+    event_counts = session.execute(
+        _windowed(event_statement, TrackingEvent.occurred_at, evidence_window, report_time)
+    ).one()
+
+    training_statement = (
+        select(func.count(distinct(TrainingAssignment.recipient_assignment_id)).label("assigned"))
+        .select_from(TrainingAssignment)
+        .join(
+            RecipientAssignment,
+            RecipientAssignment.recipient_assignment_id == TrainingAssignment.recipient_assignment_id,
+        )
+        .where(RecipientAssignment.campaign_id == campaign_id)
+    )
+    # The denominator remains all training assigned for the campaign. A
+    # window, when present, limits only completions and is expressed as a
+    # separate scalar so it cannot accidentally remove denominator rows.
+    training_counts = session.execute(training_statement).one()
+    completion_statement = (
+        select(func.count(distinct(TrainingAssignment.recipient_assignment_id)))
+        .select_from(TrainingAssignment)
+        .join(
+            RecipientAssignment,
+            RecipientAssignment.recipient_assignment_id == TrainingAssignment.recipient_assignment_id,
+        )
+        .where(
+            RecipientAssignment.campaign_id == campaign_id,
+            TrainingAssignment.completed_at.is_not(None),
+        )
+    )
+    completed = int(
+        session.scalar(_windowed(completion_statement, TrainingAssignment.completed_at, evidence_window, report_time))
+        or 0
+    )
+
+    return CampaignFunnel(
+        campaign_id=campaign_id,
+        generated_at=report_time,
+        evidence_window=evidence_window,
+        targeted=int(assignment_counts.targeted or 0),
+        sent=int(assignment_counts.sent or 0),
+        accepted=int(assignment_counts.accepted or 0),
+        delivered=int(assignment_counts.delivered or 0),
+        failed=int(assignment_counts.failed or 0),
+        indeterminate=int(assignment_counts.indeterminate or 0),
+        opened=int(event_counts.opened or 0),
+        clicked=int(event_counts.clicked or 0),
+        reported=int(event_counts.reported or 0),
+        training_assigned=int(training_counts.assigned or 0),
+        training_completed=completed,
+    )
+
+
+def _utc_database_instant(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    # PostgreSQL returns aware values for timezone columns. SQLite drops the
+    # marker in unit tests, so treat that backend-compatible representation as
+    # UTC rather than emitting a timezone-less analytics timestamp.
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def campaign_trend(
+    session: Session,
+    *,
+    scope: str,
+    schedule_window: CampaignSelectionWindow,
+    limit: int = MAX_TREND_CAMPAIGNS,
+    generated_at: datetime | None = None,
+) -> CampaignTrendReport:
+    """Return a bounded, chronological series of terminal campaign funnels.
+
+    The schedule window selects campaigns; it does not filter retained event
+    evidence. Every point reuses :func:`campaign_funnel` with one shared
+    ``generated_at`` cutoff. Portfolio rates sum canonical numerators and
+    denominators, so campaigns are never given equal weight regardless of
+    assignment volume.
+    """
+
+    _require_scope(scope)
+    if not isinstance(schedule_window, CampaignSelectionWindow):
+        raise TypeError("schedule_window must be a CampaignSelectionWindow")
+    if type(limit) is not int or not 1 <= limit <= MAX_TREND_CAMPAIGNS:
+        raise ValueError(f"trend limit must be between 1 and {MAX_TREND_CAMPAIGNS}")
+    report_time = generated_at or datetime.now(UTC)
+    if report_time.tzinfo is None:
+        raise ValueError("generated_at must include a timezone")
+    report_time = report_time.astimezone(UTC)
+
+    has_assignment = exists(
+        select(RecipientAssignment.recipient_assignment_id).where(
+            RecipientAssignment.campaign_id == Campaign.campaign_id
+        )
+    )
+    selected = list(
+        session.execute(
+            select(
+                Campaign.campaign_id,
+                Campaign.schedule_start,
+                Campaign.schedule_end,
+                Campaign.state,
+            )
+            .where(
+                Campaign.schedule_start >= schedule_window.start,
+                Campaign.schedule_start < schedule_window.end,
+                Campaign.state.in_(_TERMINAL_TREND_STATES),
+                has_assignment,
+            )
+            .order_by(Campaign.schedule_start.desc(), Campaign.campaign_id.desc())
+            .limit(limit + 1)
+        )
+    )
+    truncated = len(selected) > limit
+    selected = selected[:limit]
+    points: list[CampaignTrendPoint] = []
+    for campaign_id, schedule_start, schedule_end, state in reversed(selected):
+        normalized_start = _utc_database_instant(schedule_start)
+        if normalized_start is None:
+            continue
+        points.append(
+            CampaignTrendPoint(
+                campaign_id=campaign_id,
+                schedule_start=normalized_start,
+                schedule_end=_utc_database_instant(schedule_end),
+                state=state,
+                funnel=campaign_funnel(
+                    session,
+                    campaign_id,
+                    scope=scope,
+                    generated_at=report_time,
+                ),
+            )
+        )
+
+    count_names = (
+        "targeted",
+        "sent",
+        "accepted",
+        "delivered",
+        "failed",
+        "indeterminate",
+        "opened",
+        "clicked",
+        "reported",
+        "training_assigned",
+        "training_completed",
+    )
+    totals = {name: sum(int(getattr(point.funnel, name)) for point in points) for name in count_names}
+    return CampaignTrendReport(
+        generated_at=report_time,
+        selection_window=schedule_window,
+        truncated=truncated,
+        points=tuple(points),
+        portfolio=CampaignPortfolio(**totals),
+    )
+
+
+def campaign_trend_csv_rows(report: CampaignTrendReport) -> tuple[CsvRow, ...]:
+    """Return a fixed, formula-safe, PII-free longitudinal CSV projection."""
+
+    header: CsvRow = (
+        "scope",
+        "campaign_id",
+        "schedule_start",
+        "schedule_end",
+        "state",
+        "generated_at",
+        "selection_start_inclusive",
+        "selection_end_exclusive",
+        "truncated",
+        "kind",
+        "metric",
+        "numerator",
+        "denominator",
+        "denominator_name",
+        "rate",
+    )
+    rows: list[CsvRow] = [header]
+
+    def append_projection(
+        *,
+        scope: str,
+        campaign_id: str = "",
+        schedule_start: str = "",
+        schedule_end: str = "",
+        state: str = "",
+        projection: CampaignFunnel | CampaignPortfolio,
+    ) -> None:
+        prefix: tuple[CsvCell, ...] = (
+            scope,
+            campaign_id,
+            schedule_start,
+            schedule_end,
+            state,
+            report.generated_at.isoformat(),
+            report.selection_window.start.isoformat(),
+            report.selection_window.end.isoformat(),
+            str(report.truncated).lower(),
+        )
+        for name in (
+            "targeted",
+            "sent",
+            "accepted",
+            "delivered",
+            "failed",
+            "indeterminate",
+            "opened",
+            "clicked",
+            "reported",
+            "training_assigned",
+            "training_completed",
+        ):
+            rows.append((*prefix, "count", name, int(getattr(projection, name)), "", "", ""))
+        for name, rate in projection.rates:
+            value = rate.value
+            if value is not None and not math.isfinite(value):
+                raise ValueError("trend rate is not finite")
+            rows.append(
+                (
+                    *prefix,
+                    "rate",
+                    name,
+                    rate.numerator,
+                    rate.denominator,
+                    rate.denominator_name,
+                    "" if value is None else value,
+                )
+            )
+
+    append_projection(scope="portfolio_assignment_exposures", projection=report.portfolio)
+    for point in report.points:
+        append_projection(
+            scope="campaign",
+            campaign_id=str(point.campaign_id),
+            schedule_start=point.schedule_start.isoformat(),
+            schedule_end=point.schedule_end.isoformat() if point.schedule_end else "",
+            state=point.state.value,
+            projection=point.funnel,
+        )
+    return tuple(rows)
+
+
+def campaign_funnel_csv_rows(report: CampaignFunnel) -> tuple[CsvRow, ...]:
+    """Return formula-safe, PII-free primitives ready for ``csv.writer``."""
+
+    rows: list[CsvRow] = [
+        ("metric", "value"),
+        ("campaign_id", str(report.campaign_id)),
+        ("generated_at", report.generated_at.isoformat()),
+        ("semantics.sent", "durable_provider_attempt_claimed"),
+        ("semantics.accepted", "provider_handoff_acknowledged"),
+        ("semantics.delivered", "destination_mta_handoff_not_inbox_or_read"),
+    ]
+    if report.evidence_window is None:
+        rows.append(("evidence_window", "all_retained_evidence"))
+    else:
+        rows.extend(
+            (
+                ("evidence_window_start_inclusive", report.evidence_window.start.isoformat()),
+                ("evidence_window_end_exclusive", report.evidence_window.end.isoformat()),
+            )
+        )
+    for name in (
+        "targeted",
+        "sent",
+        "accepted",
+        "delivered",
+        "failed",
+        "indeterminate",
+        "opened",
+        "clicked",
+        "reported",
+        "training_assigned",
+        "training_completed",
+    ):
+        rows.append((f"count.{name}", int(getattr(report, name))))
+    for name, rate in report.rates:
+        value = rate.value
+        if value is not None and not math.isfinite(value):
+            raise ValueError("report rate is not finite")
+        rows.extend(
+            (
+                (f"rate.{name}.numerator", rate.numerator),
+                (f"rate.{name}.denominator", rate.denominator),
+                (f"rate.{name}.denominator_name", rate.denominator_name),
+                (f"rate.{name}.value", "" if value is None else value),
+            )
+        )
+    return tuple(rows)

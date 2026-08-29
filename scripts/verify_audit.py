@@ -17,7 +17,8 @@ from dotenv import load_dotenv  # noqa: E402
 from kp_database.audit_store import AuditStore  # noqa: E402
 from kp_database.session import create_db_engine  # noqa: E402
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+if os.environ.get("KP_DISABLE_DOTENV") != "1":
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
 
 
 def main() -> int:

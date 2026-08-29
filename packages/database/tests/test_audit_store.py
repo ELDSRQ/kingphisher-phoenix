@@ -1,23 +1,21 @@
 """Audit store integration tests against a disposable Postgres.
 
-These require the local dev stack (`docker compose up -d postgres`) and the
-`kingphisher_test` database (created by `make db-init`). They are skipped when
-the database is unreachable so the unit suite still runs anywhere.
+These belong to the explicit ``make test-postgres`` profile and require its
+migrated disposable database and roles.
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
-from dotenv import load_dotenv
 from kp_database.audit_store import AuditStore
 from kp_database.base import Base
 from kp_database.session import create_db_engine
 from sqlalchemy import text
 
-load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=False)
+pytestmark = pytest.mark.postgres
+
 
 TEST_URL = os.environ.get(
     "DATABASE_URL_TEST", "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher_test"
@@ -32,6 +30,8 @@ _available = None
 
 
 def _db_available() -> bool:
+    if os.environ.get("KP_TEST_PROFILE") != "postgres":
+        return False
     global _available
     if _available is None:
         try:
@@ -45,7 +45,7 @@ def _db_available() -> bool:
     return _available
 
 
-requires_db = pytest.mark.skipif(not _db_available(), reason="dev Postgres not reachable")
+requires_db = pytest.mark.skipif(not _db_available(), reason="PostgreSQL integration database is not reachable")
 
 
 def _drop_tables() -> None:
@@ -76,40 +76,58 @@ def test_audit_store_roundtrip_and_chain() -> None:
     _drop_tables()
     _create_tables()
     engine = create_db_engine(TEST_URL)
-    audit = AuditStore(create_db_engine(AUDIT_URL), hmac_key=HMAC_KEY)
+    audit_engine = create_db_engine(AUDIT_URL)
+    try:
+        audit = AuditStore(audit_engine, hmac_key=HMAC_KEY)
 
-    first = audit.record(
-        actor="seed", action="seed.complete", object_type="campaign", object_id="c1", detail={"pattern": "p1"}
-    )
-    second = audit.record(
-        actor="worker", action="campaign.deliver", object_type="campaign", object_id="c1", detail={"sent": 5}
-    )
+        first = audit.record(
+            actor="seed",
+            action="seed.complete",
+            object_type="campaign",
+            object_id="c1",
+            detail={"pattern": "p1"},
+        )
+        second = audit.record(
+            actor="worker", action="campaign.deliver", object_type="campaign", object_id="c1", detail={"sent": 5}
+        )
 
-    assert first.prev_hash == "0" * 64
-    assert second.prev_hash == first.event_hash
-    assert audit.verify() == []
+        assert first.prev_hash == "0" * 64
+        assert second.prev_hash == first.event_hash
+        assert audit.verify() == []
+        snapshot = audit.head_snapshot()
+        assert snapshot is not None
+        assert snapshot.sequence == 2
+        assert snapshot.event_hash == second.event_hash
+        assert snapshot.signed_at.tzinfo is not None
 
-    with engine.connect() as conn:
-        rows = conn.execute(text("SELECT action, detail FROM audit_events ORDER BY occurred_at")).mappings().all()
-    assert [r["action"] for r in rows] == ["seed.complete", "campaign.deliver"]
-    assert rows[1]["detail"] == {"sent": 5}
-    engine.dispose()
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT action, detail FROM audit_events ORDER BY occurred_at")).mappings().all()
+        assert [r["action"] for r in rows] == ["seed.complete", "campaign.deliver"]
+        assert rows[1]["detail"] == {"sent": 5}
+    finally:
+        audit_engine.dispose()
+        engine.dispose()
 
 
 @requires_db
 def test_audit_store_resumes_from_persisted_head() -> None:
     _drop_tables()
     _create_tables()
+    engine_a = create_db_engine(AUDIT_URL)
+    engine_b = create_db_engine(AUDIT_URL)
+    try:
+        store_a = AuditStore(engine_a, hmac_key=HMAC_KEY)
+        store_a.record(actor="api", action="campaign.create", object_type="campaign", object_id="c1")
+        first = store_a.record(actor="api", action="campaign.update", object_type="campaign", object_id="c1")
 
-    store_a = AuditStore(create_db_engine(AUDIT_URL), hmac_key=HMAC_KEY)
-    store_a.record(actor="api", action="campaign.create", object_type="campaign", object_id="c1")
-    first = store_a.record(actor="api", action="campaign.update", object_type="campaign", object_id="c1")
+        store_b = AuditStore(engine_b, hmac_key=HMAC_KEY)
+        second = store_b.record(actor="worker", action="campaign.deliver", object_type="campaign", object_id="c1")
 
-    store_b = AuditStore(create_db_engine(AUDIT_URL), hmac_key=HMAC_KEY)
-    second = store_b.record(actor="worker", action="campaign.deliver", object_type="campaign", object_id="c1")
-
-    assert second.prev_hash == first.event_hash
-    assert store_b.verify() == []
+        assert second.prev_hash == first.event_hash
+        assert store_b.verify() == []
+    finally:
+        engine_b.dispose()
+        engine_a.dispose()
 
 
 @requires_db
@@ -117,10 +135,14 @@ def test_verify_detects_tampered_detail() -> None:
     _drop_tables()
     _create_tables()
     engine = create_db_engine(TEST_URL)
-    audit = AuditStore(create_db_engine(AUDIT_URL), hmac_key=HMAC_KEY)
-    audit.record(actor="a", action="campaign.create", object_type="campaign", object_id="c1")
+    audit_engine = create_db_engine(AUDIT_URL)
+    try:
+        audit = AuditStore(audit_engine, hmac_key=HMAC_KEY)
+        audit.record(actor="a", action="campaign.create", object_type="campaign", object_id="c1")
 
-    with engine.begin() as conn:
-        conn.execute(text("UPDATE audit_events SET detail = '{\"evil\": true}' WHERE actor = 'a'"))
-    assert audit.verify() != []
-    engine.dispose()
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE audit_events SET detail = '{\"evil\": true}' WHERE actor = 'a'"))
+        assert audit.verify() != []
+    finally:
+        audit_engine.dispose()
+        engine.dispose()

@@ -1,22 +1,24 @@
 # Multi-stage build for the tracking API image.
 # Build context is the repository root.
-FROM ghcr.io/astral-sh/uv:0.11.28 AS uvbin
-FROM python:3.13-slim AS builder
+FROM ghcr.io/astral-sh/uv:0.11.28@sha256:0f36cb9361a3346885ca3677e3767016687b5a170c1a6b88465ec14aefec90aa AS uvbin
+FROM cgr.dev/chainguard/python@sha256:aa8fd2447b8b52922db57deb3894b622c3229387aaaec5934d64b85dbff6eb17 AS builder
 COPY --from=uvbin /uv /uvx /usr/local/bin/
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
-COPY packages ./packages
-COPY apps ./apps
-RUN uv sync --frozen --no-dev --no-editable --package kp-tracking-api
+COPY --chown=65532:65532 pyproject.toml uv.lock ./
+COPY --chown=65532:65532 packages ./packages
+COPY --chown=65532:65532 apps ./apps
+RUN UV_PYTHON_DOWNLOADS=never uv sync --frozen --no-dev --no-editable --package kp-tracking-api
 
-FROM python:3.13-slim
+FROM cgr.dev/chainguard/python@sha256:ee37f5e4fb445732409626797dccb6f2a6337872def2bab48729ee61b335fa77
 WORKDIR /app
-RUN groupadd --system --gid 10001 app \
-    && useradd --system --uid 10001 --gid app --home-dir /app --no-create-home app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
-COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --from=builder --chown=65532:65532 /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
-USER 10001:10001
+USER 65532:65532
 EXPOSE 8001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/livez', timeout=3).read()"]
+STOPSIGNAL SIGTERM
+ENTRYPOINT []
 CMD ["kp-tracking-api"]

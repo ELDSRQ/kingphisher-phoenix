@@ -68,3 +68,36 @@ def test_kill_switch_requires_auth() -> None:
     with TestClient(app) as client:
         resp = client.post("/api/v1/kill-switch", json={"confirm": True})
         assert resp.status_code == 401
+
+
+def test_global_kill_switch_requires_reason() -> None:
+    app = create_app(_settings())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/kill-switch",
+            json={"confirm": True, "reason": "   "},
+            headers={"Authorization": f"Bearer {_token(_settings())}"},
+        )
+        assert resp.status_code == 422
+
+
+def test_kill_switch_reset_requires_reason_confirmation_and_auth() -> None:
+    app = create_app(_settings())
+    # This test exercises auth/request validation before any persistence. Its
+    # audit-health assumption is explicit rather than relying on localhost DB.
+    app.state.audit_health_check = lambda: True
+    with TestClient(app) as client:
+        headers = {"Authorization": f"Bearer {_token(_settings())}"}
+        assert client.post("/api/v1/kill-switch/reset", json={"confirm": True, "reason": "reset"}).status_code == 401
+        assert (
+            client.post(
+                "/api/v1/kill-switch/reset", json={"confirm": False, "reason": "reset"}, headers=headers
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                "/api/v1/kill-switch/reset", json={"confirm": True, "reason": "   "}, headers=headers
+            ).status_code
+            == 422
+        )

@@ -1,0 +1,6 @@
+# Direct runtime dependencies for the disposable local mock services.
+# Regenerate requirements.txt with the command recorded in its header.
+cryptography==50.0.0
+fastapi==0.141.1
+PyJWT==2.13.0
+uvicorn==0.52.1

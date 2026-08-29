@@ -1,10 +1,9 @@
 """Migration 0010: DB-enforced audit ownership separation (CRIT-06).
 
 The DDL assertions inspect the SQL the migration emits (no database needed).
-The optional integration test executes the migration through a real Alembic
-Operations context against the disposable dev Postgres and checks
-ownership/privileges, skipping when the database or the audit_writer role is
-unavailable.
+The marked integration test executes the migration through a real Alembic
+Operations context against the disposable Postgres profile and checks
+ownership/privileges; ``make test-postgres`` rejects missing prerequisites.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from alembic.operations import Operations
 from kp_database.session import create_db_engine
 from sqlalchemy import text
 
-# Shared dev-database helpers: same TEST_URL, same skip gate, and the
+# Shared dev-database helpers: same TEST_URL, same availability gate, and the
 # table setup/teardown that later suites (e.g. operator-api test_privacy)
 # depend on being runnable in this order.
 from test_audit_store import TEST_URL, _create_tables, _drop_tables, requires_db
@@ -75,6 +74,7 @@ def test_downgrade_restores_app_ownership(monkeypatch: pytest.MonkeyPatch) -> No
     assert f"OWNER TO {migration.AUDIT_ROLE}" not in sql
 
 
+@pytest.mark.postgres
 @requires_db
 def test_upgrade_sql_hardens_live_database() -> None:
     engine = create_db_engine(TEST_URL)

@@ -22,6 +22,20 @@ def test_render_whitelisted_variables() -> None:
     assert "ops@example.com" in out
 
 
+def test_training_placeholder_renders_only_the_supplied_recipient_bound_value() -> None:
+    renderer = MessageRenderer()
+    recipient_bound_url = "https://tracking.example/v1/track/click/recipient-bearer"
+    out = renderer.render(
+        "Complete training: {{ tracking.training_url }}",
+        recipient=RecipientContext(),
+        campaign=CampaignContext(),
+        tracking=TrackingContext(training_url=recipient_bound_url),
+        sender_email="ops@example.com",
+    )
+
+    assert out == f"Complete training: {recipient_bound_url}"
+
+
 def test_render_rejects_unauthorized_variable() -> None:
     renderer = MessageRenderer()
     with pytest.raises(TemplateVariableError):

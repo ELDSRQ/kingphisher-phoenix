@@ -1,46 +1,64 @@
-"""Console endpoints: GUI-driven configuration and lifecycle control.
+"""Browser-console authentication, configuration, and lifecycle endpoints.
 
-The operator console is a browser single-page app. This module provides the
-few non-operator endpoints it needs:
-
-* ``POST /api/v1/console/session``  — password login issuing a short-lived
-  admin bearer token (the console has no external identity provider).
-* ``GET /api/v1/console/config``    — masked view of the local ``.env``.
-* ``PUT /api/v1/console/config``    — apply configuration edits to ``.env``.
-* ``GET /api/v1/console/status``    — process + dependency health for the UI.
-* ``POST /api/v1/console/restart``  — signal the supervisor to restart services.
-
-The console password is stored in ``.env`` as ``KP_CONSOLE_PASSWORD``. It is
-read only from the on-disk env file (not the process environment), so a
-freshly written value takes effect without a process restart.
+Local development uses password login plus editable ``.env`` configuration
+and process controls. Managed Azure deployments use OIDC, disable password
+login, and expose managed configuration and lifecycle status as read-only.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime
+import fcntl
 import hashlib
 import hmac
+import http.client
+import ipaddress
+import json
 import os
 import re
 import secrets
 import smtplib
 import socket
 import ssl
+import stat
+import tempfile
+import threading
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlencode, urlparse
+from typing import Any, cast
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 import jwt
 from dotenv import dotenv_values, set_key
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
-from kp_authorization.rbac import Capability, Principal
+from kp_authorization.rbac import Capability, Principal, Role
 from kp_telemetry.errors import AuthenticationError, ConflictError, PermissionDeniedError
 from pydantic import BaseModel, Field
 
-from kp_operator_api.auth import OidcIdP, require_capability
+from kp_operator_api.auth import (
+    OidcEndpointPolicyError,
+    OidcIdP,
+    require_capability,
+    resolve_oidc_endpoint,
+    validate_oidc_endpoint,
+)
+from kp_operator_api.deployment_orchestration import (
+    DeploymentConflict,
+    DeploymentOrchestrator,
+    DeploymentUnavailable,
+    public_deployment_error,
+)
+from kp_operator_api.oidc_provider import (
+    MAX_OIDC_DISCOVERY_BYTES,
+    MAX_OIDC_TOKEN_RESPONSE_BYTES,
+    OidcProviderResponseError,
+    bounded_json_async,
+)
 from kp_operator_api.ratelimit import LoginThrottle
 
 router = APIRouter(prefix="/api/v1/console", tags=["console"])
@@ -65,6 +83,7 @@ _SECRET_KEYS: frozenset[str] = frozenset(
         "KP_WORKER_AUDIT_HMAC_KEY",
         "KP_WORKER_CIPHERTEXT_KEK",
         "KP_WORKER_SMTP_PASSWORD",
+        "KP_WORKER_ACS_EMAIL_CONNECTION_STRING",
         "KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN",
         "KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD",
         "KP_WORKER_AI_BEARER_TOKEN",
@@ -108,6 +127,337 @@ def _env_values(path: Path) -> dict[str, str]:
     return {k: v for k, v in dotenv_values(path).items() if v is not None}
 
 
+class _AtomicEnvUpdateError(RuntimeError):
+    """A sanitized, fail-closed local configuration commit failure."""
+
+
+_ENV_UPDATE_THREAD_LOCK = threading.Lock()
+_MAX_ENV_VALUE_BYTES = 64 * 1024
+_OIDC_CALLBACK_PATH = "/api/v1/console/oidc/callback"
+_LOCAL_OIDC_REDIRECT_URI = f"http://localhost:8000{_OIDC_CALLBACK_PATH}"
+_MAX_EGRESS_DNS_ANSWERS = 32
+
+
+def _selected_binding_destination(values: dict[str, str], primary: str, fallback: str) -> str:
+    return values.get(primary) or values.get(fallback, "")
+
+
+def _require_fresh_credentials_for_rebound_destinations(
+    current: dict[str, str],
+    desired: dict[str, str],
+) -> None:
+    """Keep stored credentials bound to the destination they were entered for.
+
+    This runs under the same advisory lock as the eventual env-file replace.
+    Consequently another console process cannot change a destination between
+    this comparison and the atomic commit. Blank secret fields retain their
+    normal meaning only when the credential's destination is unchanged.
+    """
+
+    candidate = {**current, **desired}
+    email_provider = candidate.get("KP_WORKER_EMAIL_PROVIDER", "smtp").strip() or "smtp"
+    mailbox_provider = candidate.get("KP_WORKER_REPORTED_MAILBOX_PROVIDER", "mailpit").strip() or "mailpit"
+    oidc_mode = candidate.get("OPERATOR_API_OIDC_MODE", "dev").strip()
+    bindings: tuple[tuple[str, object, object, tuple[str, ...], bool], ...] = (
+        (
+            "OIDC issuer",
+            (
+                current.get("OPERATOR_API_OIDC_MODE", "dev").strip(),
+                current.get("OPERATOR_API_OIDC_ISSUER", ""),
+                current.get("OPERATOR_API_OIDC_CLIENT_ID", ""),
+            ),
+            (
+                oidc_mode,
+                candidate.get("OPERATOR_API_OIDC_ISSUER", ""),
+                candidate.get("OPERATOR_API_OIDC_CLIENT_ID", ""),
+            ),
+            ("OPERATOR_API_OIDC_CLIENT_SECRET",),
+            oidc_mode == "oidc",
+        ),
+        (
+            "AI service base URL",
+            _selected_binding_destination(current, "KP_WORKER_AI_BASE_URL", "MOCK_AI_URL"),
+            _selected_binding_destination(candidate, "KP_WORKER_AI_BASE_URL", "MOCK_AI_URL"),
+            ("KP_WORKER_AI_BEARER_TOKEN", "KP_WORKER_AI_API_KEY"),
+            bool(_selected_binding_destination(candidate, "KP_WORKER_AI_BASE_URL", "MOCK_AI_URL")),
+        ),
+        (
+            "Graph service base URL",
+            _selected_binding_destination(current, "KP_WORKER_GRAPH_BASE_URL", "MOCK_GRAPH_URL"),
+            _selected_binding_destination(candidate, "KP_WORKER_GRAPH_BASE_URL", "MOCK_GRAPH_URL"),
+            ("KP_WORKER_GRAPH_BEARER_TOKEN", "KP_WORKER_GRAPH_API_KEY"),
+            bool(_selected_binding_destination(candidate, "KP_WORKER_GRAPH_BASE_URL", "MOCK_GRAPH_URL")),
+        ),
+        (
+            "reported-mailbox provider or base URL",
+            (
+                current.get("KP_WORKER_REPORTED_MAILBOX_PROVIDER", "mailpit").strip() or "mailpit",
+                _selected_binding_destination(
+                    current,
+                    "KP_WORKER_REPORTED_MAILBOX_URL",
+                    "KP_WORKER_MAILPIT_API_URL",
+                ),
+            ),
+            (
+                mailbox_provider,
+                _selected_binding_destination(
+                    candidate,
+                    "KP_WORKER_REPORTED_MAILBOX_URL",
+                    "KP_WORKER_MAILPIT_API_URL",
+                ),
+            ),
+            ("KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN", "KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD"),
+            mailbox_provider in {"mailpit", "microsoft365"},
+        ),
+        (
+            "SMTP provider or destination",
+            (
+                current.get("KP_WORKER_EMAIL_PROVIDER", "smtp").strip() or "smtp",
+                _selected_binding_destination(current, "KP_WORKER_SMTP_ADDRESS", "KP_WORKER_MAILPIT_SMTP"),
+            ),
+            (
+                email_provider,
+                _selected_binding_destination(candidate, "KP_WORKER_SMTP_ADDRESS", "KP_WORKER_MAILPIT_SMTP"),
+            ),
+            ("KP_WORKER_SMTP_PASSWORD",),
+            email_provider == "smtp",
+        ),
+        (
+            "ACS provider or endpoint",
+            (
+                current.get("KP_WORKER_EMAIL_PROVIDER", "smtp").strip() or "smtp",
+                current.get("KP_WORKER_ACS_EMAIL_ENDPOINT", ""),
+            ),
+            (email_provider, candidate.get("KP_WORKER_ACS_EMAIL_ENDPOINT", "")),
+            ("KP_WORKER_ACS_EMAIL_CONNECTION_STRING",),
+            email_provider == "azure_communication_services",
+        ),
+    )
+    for label, previous_identity, candidate_identity, credential_keys, active in bindings:
+        if not active or previous_identity == candidate_identity:
+            continue
+        existing_credentials = tuple(key for key in credential_keys if current.get(key, "").strip())
+        if existing_credentials and any(not desired.get(key, "").strip() for key in existing_credentials):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"changing the {label} requires re-entering every configured credential in the same save; "
+                    "blank secret fields cannot preserve credentials across destinations"
+                ),
+            )
+
+
+def _validate_env_fields(values: dict[str, str]) -> None:
+    """Validate every proposed field before creating staging or recovery files."""
+    for key, value in values.items():
+        if key not in _ALLOWED_KEYS:
+            raise PermissionDeniedError(f"rejected configuration keys: {[key]}")
+        if "\x00" in value or "\r" in value or "\n" in value:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{key} must be a single-line value",
+            )
+        if key in _SECRET_KEYS and value and not value.strip():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{key} cannot be a whitespace-only secret",
+            )
+        if len(value.encode("utf-8")) > _MAX_ENV_VALUE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"{key} exceeds the configuration value size limit",
+            )
+
+
+def _safe_env_mode(original_mode: int | None) -> int:
+    """Preserve an owner-readable mode only when it does not expose secrets."""
+    if original_mode is None:
+        return 0o600
+    mode = stat.S_IMODE(original_mode)
+    # Owner read/write plus optional group read is sufficiently restrictive for
+    # a local secret-bearing env file. Never retain execute, group-write, or
+    # any world permission from a mistakenly permissive source file.
+    if mode in {0o600, 0o640}:
+        return mode
+    return 0o600
+
+
+def _write_private_file(fd: int, content: bytes) -> None:
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(content)
+        handle.flush()
+
+
+def _fsync_path(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _replace_env_file(source: Path, target: Path) -> None:
+    os.replace(source, target)
+
+
+def _create_recovery_copy(path: Path, content: bytes) -> Path:
+    descriptor, raw_recovery = tempfile.mkstemp(
+        prefix=f"{path.name}.recovery.",
+        suffix=".bak",
+        dir=path.parent,
+    )
+    recovery = Path(raw_recovery)
+    try:
+        os.fchmod(descriptor, 0o600)
+        _write_private_file(descriptor, content)
+        _fsync_path(recovery)
+    except Exception:
+        # This copy belongs only to the failed current attempt and was never a
+        # valid recovery artifact. Older recovery copies are never touched.
+        with suppress(OSError):
+            recovery.unlink(missing_ok=True)
+        raise
+    return recovery
+
+
+def _restore_original_after_sync_failure(
+    path: Path,
+    original: bytes,
+    original_existed: bool,
+    mode: int,
+    directory_fd: int,
+) -> bool:
+    """Best-effort rollback when the post-replace directory sync fails."""
+    try:
+        if not original_existed:
+            path.unlink(missing_ok=True)
+            with suppress(OSError):
+                os.fsync(directory_fd)
+            return True
+        descriptor, raw_rollback = tempfile.mkstemp(
+            prefix=f"{path.name}.rollback.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        rollback = Path(raw_rollback)
+        try:
+            _write_private_file(descriptor, original)
+            os.chmod(rollback, mode)
+            # Even a repeated sync error must not prevent restoring the
+            # original logical contents. The retained recovery copy remains
+            # the durability fallback if the filesystem cannot sync.
+            with suppress(OSError):
+                _fsync_path(rollback)
+            _replace_env_file(rollback, path)
+            with suppress(OSError):
+                os.fsync(directory_fd)
+            return True
+        finally:
+            rollback.unlink(missing_ok=True)
+    except OSError:
+        return False
+
+
+def _atomic_update_env(
+    path: Path,
+    desired: dict[str, str],
+    *,
+    validate_candidate: Callable[[dict[str, str]], None] | None = None,
+) -> list[str]:
+    """Apply a complete env update with one durable, recoverable replacement.
+
+    A process-local lock prevents same-process thread races, while an advisory
+    lock on the containing directory coordinates independent API processes
+    without creating lock metadata before validation. All mutation happens in
+    an isolated file on the same filesystem as the target.
+    """
+    parent = path.parent
+    staged: Path | None = None
+    replaced = False
+    original = b""
+    original_existed = False
+    mode = 0o600
+    directory_fd = -1
+    with _ENV_UPDATE_THREAD_LOCK:
+        try:
+            directory_fd = os.open(parent, os.O_RDONLY)
+            fcntl.flock(directory_fd, fcntl.LOCK_EX)
+            try:
+                original = path.read_bytes()
+                original_existed = True
+                mode = _safe_env_mode(path.stat().st_mode)
+            except FileNotFoundError:
+                original = b""
+                original_existed = False
+                mode = 0o600
+
+            current = _env_values(path)
+            effective = {key: value for key, value in desired.items() if not (key in _SECRET_KEYS and not value)}
+            _validate_env_fields(effective)
+            _require_fresh_credentials_for_rebound_destinations(current, desired)
+            candidate = {**current, **effective}
+            if validate_candidate is not None:
+                validate_candidate(candidate)
+            changed = [key for key, value in effective.items() if current.get(key, "") != value]
+            if not changed:
+                return []
+
+            descriptor, raw_staged = tempfile.mkstemp(
+                prefix=f"{path.name}.staged.",
+                suffix=".tmp",
+                dir=parent,
+            )
+            staged = Path(raw_staged)
+            os.fchmod(descriptor, 0o600)
+            _write_private_file(descriptor, original)
+            for key in changed:
+                result = set_key(str(staged), key, effective[key])
+                if result[0] is not True:
+                    raise _AtomicEnvUpdateError("configuration staging failed")
+
+            staged_values = _env_values(staged)
+            if any(staged_values.get(key) != effective[key] for key in changed):
+                raise _AtomicEnvUpdateError("configuration staging verification failed")
+            os.chmod(staged, mode)
+            _fsync_path(staged)
+            _create_recovery_copy(path, original)
+            os.fsync(directory_fd)
+            _replace_env_file(staged, path)
+            staged = None
+            replaced = True
+            try:
+                os.fsync(directory_fd)
+            except OSError:
+                restored = _restore_original_after_sync_failure(
+                    path,
+                    original,
+                    original_existed,
+                    mode,
+                    directory_fd,
+                )
+                replaced = not restored
+                raise
+            return changed
+        except (HTTPException, PermissionDeniedError):
+            raise
+        except Exception:
+            message = "configuration update failed"
+            if not replaced:
+                message += "; original configuration is unchanged"
+            else:
+                message += "; use the retained recovery copy"
+            raise _AtomicEnvUpdateError(message) from None
+        finally:
+            if staged is not None:
+                with suppress(OSError):
+                    staged.unlink(missing_ok=True)
+            if directory_fd >= 0:
+                try:
+                    fcntl.flock(directory_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(directory_fd)
+
+
 def _console_password(path: Path) -> str | None:
     return _env_values(path).get(CONSOLE_PASSWORD_KEY)
 
@@ -133,6 +483,18 @@ class SessionResponse(BaseModel):
     #: draft can be scheduled directly or must go through two-person approval,
     #: so an operator is not offered an action the API will reject.
     approval_policy: str = "single-admin"
+    roles: tuple[str, ...]
+    capabilities: tuple[str, ...]
+
+
+def _session_authority(principal: Principal) -> dict[str, tuple[str, ...]]:
+    """Return deterministic, non-secret authority facts for console rendering."""
+    return {
+        "roles": tuple(sorted(role.value for role in principal.roles)),
+        "capabilities": tuple(
+            sorted(f"{capability.action}:{capability.object}" for capability in principal.capabilities())
+        ),
+    }
 
 
 class OidcStartResponse(BaseModel):
@@ -152,6 +514,61 @@ def _b64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
+def _valid_uri_hostname(value: str) -> bool:
+    if not value or "%" in value or value.endswith(".") or len(value) > 253:
+        return False
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        try:
+            labels = value.rstrip(".").encode("idna").decode("ascii").split(".")
+        except UnicodeError:
+            return False
+        return bool(labels) and all(
+            label
+            and len(label) <= 63
+            and not label.startswith("-")
+            and not label.endswith("-")
+            and all(character.isalnum() or character == "-" for character in label)
+            for label in labels
+        )
+
+
+def _validated_oidc_redirect_uri(raw: str) -> str:
+    """Accept the exact local callback or an HTTPS callback at that path."""
+    if (
+        not raw
+        or raw != raw.strip()
+        or len(raw.encode("utf-8")) > 2048
+        or any(character.isspace() or ord(character) == 127 for character in raw)
+    ):
+        raise ValueError("invalid OIDC redirect URI")
+    try:
+        parsed = urlparse(raw)
+        port = parsed.port
+    except ValueError:
+        raise ValueError("invalid OIDC redirect URI") from None
+    if (
+        not parsed.hostname
+        or not _valid_uri_hostname(parsed.hostname)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != _OIDC_CALLBACK_PATH
+        or port is not None
+        and not 1 <= port <= 65535
+    ):
+        raise ValueError("invalid OIDC redirect URI")
+    if raw == _LOCAL_OIDC_REDIRECT_URI:
+        return raw
+    if parsed.scheme != "https":
+        raise ValueError("invalid OIDC redirect URI")
+    return raw
+
+
 def _transaction_secret(request: Request) -> bytes:
     return bytes(request.app.state.settings.require_console_jwt_secret())
 
@@ -159,15 +576,80 @@ def _transaction_secret(request: Request) -> bytes:
 async def _oidc_metadata(issuer: str) -> dict[str, Any]:
     url = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
     try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-            response = await client.get(url)
+        endpoint = await asyncio.to_thread(
+            resolve_oidc_endpoint,
+            url,
+            issuer=issuer,
+            endpoint_name="discovery endpoint",
+        )
+        async with (
+            httpx.AsyncClient(
+                timeout=5.0,
+                follow_redirects=False,
+                trust_env=False,
+                http2=False,
+            ) as client,
+            client.stream(
+                "GET",
+                endpoint.request_url,
+                headers={"Host": endpoint.host_header},
+                extensions=endpoint.extensions,
+            ) as response,
+        ):
+            if response.is_redirect:
+                raise OidcProviderResponseError("identity provider discovery redirected")
             response.raise_for_status()
-        metadata = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
+            metadata = await bounded_json_async(response, max_bytes=MAX_OIDC_DISCOVERY_BYTES)
+    except (httpx.HTTPError, OidcEndpointPolicyError, OidcProviderResponseError) as exc:
         raise AuthenticationError("identity provider discovery failed") from exc
-    if not isinstance(metadata, dict) or metadata.get("issuer", "").rstrip("/") != issuer.rstrip("/"):
+    if not isinstance(metadata, dict):
+        raise AuthenticationError("identity provider discovery returned an invalid issuer")
+    metadata_issuer = metadata.get("issuer")
+    if not isinstance(metadata_issuer, str) or metadata_issuer.rstrip("/") != issuer.rstrip("/"):
         raise AuthenticationError("identity provider discovery returned an invalid issuer")
     return metadata
+
+
+async def _oidc_token_response(
+    token_endpoint: str,
+    form: dict[str, str],
+    *,
+    issuer: str,
+) -> dict[str, Any]:
+    try:
+        endpoint = await asyncio.to_thread(
+            resolve_oidc_endpoint,
+            token_endpoint,
+            issuer=issuer,
+            endpoint_name="token endpoint",
+        )
+        async with (
+            httpx.AsyncClient(
+                timeout=5.0,
+                follow_redirects=False,
+                trust_env=False,
+                http2=False,
+            ) as client,
+            client.stream(
+                "POST",
+                endpoint.request_url,
+                data=form,
+                headers={"Host": endpoint.host_header},
+                extensions=endpoint.extensions,
+            ) as response,
+        ):
+            if response.is_redirect:
+                raise OidcProviderResponseError("identity provider token endpoint redirected")
+            if response.status_code != 200:
+                raise AuthenticationError("identity provider rejected the authorization code")
+            tokens = await bounded_json_async(response, max_bytes=MAX_OIDC_TOKEN_RESPONSE_BYTES)
+    except (httpx.HTTPError, OidcEndpointPolicyError) as exc:
+        raise AuthenticationError("identity provider token exchange failed") from exc
+    except OidcProviderResponseError as exc:
+        raise AuthenticationError("identity provider returned an invalid token response") from exc
+    if not isinstance(tokens, dict):
+        raise AuthenticationError("identity provider returned an invalid token response")
+    return tokens
 
 
 @router.get("/oidc/start", response_model=OidcStartResponse)
@@ -175,10 +657,22 @@ async def oidc_start(request: Request) -> JSONResponse:
     settings = request.app.state.settings
     if settings.oidc_mode != "oidc":
         raise AuthenticationError("OIDC login is not enabled")
+    try:
+        redirect_uri = _validated_oidc_redirect_uri(settings.oidc_redirect_uri)
+    except ValueError as exc:
+        raise AuthenticationError("OIDC redirect URI is invalid") from exc
     metadata = await _oidc_metadata(settings.oidc_issuer)
     authorization_endpoint = metadata.get("authorization_endpoint")
     if not isinstance(authorization_endpoint, str):
         raise AuthenticationError("identity provider has no authorization endpoint")
+    try:
+        authorization_endpoint = validate_oidc_endpoint(
+            authorization_endpoint,
+            issuer=settings.oidc_issuer,
+            endpoint_name="authorization endpoint",
+        )
+    except OidcEndpointPolicyError as exc:
+        raise AuthenticationError("identity provider has an invalid authorization endpoint") from exc
     state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(64)
     now = datetime.datetime.now(datetime.UTC)
     transaction = jwt.encode(
@@ -196,7 +690,7 @@ async def oidc_start(request: Request) -> JSONResponse:
         {
             "response_type": "code",
             "client_id": settings.oidc_client_id,
-            "redirect_uri": settings.oidc_redirect_uri,
+            "redirect_uri": redirect_uri,
             "scope": settings.oidc_scopes,
             "state": state,
             "nonce": nonce,
@@ -211,7 +705,7 @@ async def oidc_start(request: Request) -> JSONResponse:
         transaction,
         max_age=_OIDC_TRANSACTION_TTL_SECONDS,
         httponly=True,
-        secure=urlparse(settings.oidc_redirect_uri).scheme == "https",
+        secure=urlparse(redirect_uri).scheme == "https",
         samesite="lax",
         path="/api/v1/console/oidc",
     )
@@ -223,6 +717,10 @@ async def oidc_callback(request: Request, code: str = "", state: str = "", error
     settings = request.app.state.settings
     if settings.oidc_mode != "oidc" or error or not code or not state:
         raise AuthenticationError("identity provider login was not completed")
+    try:
+        redirect_uri = _validated_oidc_redirect_uri(settings.oidc_redirect_uri)
+    except ValueError as exc:
+        raise AuthenticationError("OIDC redirect URI is invalid") from exc
     raw_transaction = request.cookies.get(_OIDC_TRANSACTION_COOKIE, "")
     try:
         transaction = jwt.decode(raw_transaction, _transaction_secret(request), algorithms=["HS256"])
@@ -234,26 +732,24 @@ async def oidc_callback(request: Request, code: str = "", state: str = "", error
     token_endpoint = metadata.get("token_endpoint")
     if not isinstance(token_endpoint, str):
         raise AuthenticationError("identity provider has no token endpoint")
+    try:
+        token_endpoint = validate_oidc_endpoint(
+            token_endpoint,
+            issuer=settings.oidc_issuer,
+            endpoint_name="token endpoint",
+        )
+    except OidcEndpointPolicyError as exc:
+        raise AuthenticationError("identity provider has an invalid token endpoint") from exc
     form = {
         "grant_type": "authorization_code",
         "client_id": settings.oidc_client_id,
-        "redirect_uri": settings.oidc_redirect_uri,
+        "redirect_uri": redirect_uri,
         "code": code,
         "code_verifier": str(transaction["verifier"]),
     }
     if settings.oidc_client_secret:
         form["client_secret"] = settings.oidc_client_secret
-    try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-            token_response = await client.post(token_endpoint, data=form)
-    except httpx.HTTPError as exc:
-        raise AuthenticationError("identity provider token exchange failed") from exc
-    if token_response.status_code != 200:
-        raise AuthenticationError("identity provider rejected the authorization code")
-    try:
-        tokens = token_response.json()
-    except ValueError as exc:
-        raise AuthenticationError("identity provider returned an invalid token response") from exc
+    tokens = await _oidc_token_response(token_endpoint, form, issuer=settings.oidc_issuer)
     access_token, id_token = tokens.get("access_token"), tokens.get("id_token")
     if not isinstance(access_token, str) or not isinstance(id_token, str):
         raise AuthenticationError("identity provider returned an incomplete token response")
@@ -272,7 +768,7 @@ async def oidc_callback(request: Request, code: str = "", state: str = "", error
         access_token,
         max_age=_SESSION_TTL_SECONDS,
         httponly=True,
-        secure=urlparse(settings.oidc_redirect_uri).scheme == "https",
+        secure=urlparse(redirect_uri).scheme == "https",
         samesite="lax",
         path="/",
     )
@@ -294,6 +790,7 @@ def current_session(request: Request) -> SessionResponse:
         principal_id=principal.subject_id,
         approval_limited=False,
         approval_policy=request.app.state.settings.approval_policy.value,
+        **_session_authority(principal),
     )
 
 
@@ -335,6 +832,7 @@ def create_session(
         "realm_access": {"roles": ["administrator"]},
     }
     token = jwt.encode(claims, settings.require_console_jwt_secret(), algorithm="HS256")
+    principal = Principal(subject_id=CONSOLE_OPERATOR_UUID, roles={Role.ADMINISTRATOR})
     return SessionResponse(
         token=token,
         expires_in=_SESSION_TTL_SECONDS,
@@ -342,6 +840,7 @@ def create_session(
         principal_id=CONSOLE_OPERATOR_UUID,
         approval_limited=False,
         approval_policy=request.app.state.settings.approval_policy.value,
+        **_session_authority(principal),
     )
 
 
@@ -375,11 +874,9 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "KP_WORKER_POLL_SECONDS",
         "KP_WORKER_LOG_LEVEL",
         "KP_WORKER_MAILPIT_SMTP",
-        "KP_WORKER_MAILPIT_SMTP_TLS",
         "KP_WORKER_MAILPIT_API_URL",
         "KP_WORKER_PROVIDER_TIMEOUT_SECONDS",
         "KP_WORKER_MAILBOX_POLL_LIMIT",
-        "KP_WORKER_REMINDER_AFTER_HOURS",
         "KP_WORKER_REMINDER_BATCH_SIZE",
         "KP_WORKER_REMINDER_SENDER",
         "KP_WORKER_ALERT_WEBHOOK_DOMAINS",
@@ -390,7 +887,27 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "KP_WORKER_SMTP_STARTTLS",
         "KP_WORKER_SMTP_SSL",
         "KP_WORKER_SMTP_SENDER",
+        "KP_WORKER_EMAIL_PROVIDER",
+        "KP_WORKER_ACS_EMAIL_ENDPOINT",
+        "KP_WORKER_ACS_CLIENT_ID",
+        "KP_WORKER_ACS_EMAIL_CONNECTION_STRING",
+        "KP_WORKER_ACS_SENDING_DOMAIN",
+        "KP_WORKER_ACS_SENDER_LOCAL_PART",
+        "KP_WORKER_ACS_SENDER_DISPLAY_NAME",
+        "KP_WORKER_ACS_DOMAIN_VERIFICATION_STATUS",
+        "KP_WORKER_ACS_SPF_VERIFICATION_STATUS",
+        "KP_WORKER_ACS_DKIM_VERIFICATION_STATUS",
+        "KP_WORKER_ACS_DKIM2_VERIFICATION_STATUS",
+        "KP_WORKER_ACS_READINESS_CHECKED_AT",
+        "KP_WORKER_ACS_DAILY_MESSAGE_LIMIT",
+        "KP_WORKER_ACS_MESSAGES_PER_MINUTE",
+        "KP_WORKER_ACS_RAMP_BATCH_SIZE",
+        "KP_WORKER_ACS_RAMP_INTERVAL_SECONDS",
         "KP_WORKER_REPORTED_MAILBOX_URL",
+        "KP_WORKER_REPORTED_MAILBOX_PROVIDER",
+        "KP_WORKER_REPORTED_MAILBOX_CLIENT_ID",
+        "KP_WORKER_REPORTED_MAILBOX_ID",
+        "KP_WORKER_REPORTED_MAILBOX_FOLDER_ID",
         "KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN",
         "KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME",
         "KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD",
@@ -398,6 +915,9 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "KP_WORKER_AI_BEARER_TOKEN",
         "KP_WORKER_AI_API_KEY",
         "KP_WORKER_GRAPH_BASE_URL",
+        "KP_WORKER_GRAPH_CLIENT_ID",
+        "KP_WORKER_GRAPH_GROUP_IDS",
+        "KP_WORKER_MICROSOFT_TENANT_ID",
         "KP_WORKER_GRAPH_BEARER_TOKEN",
         "KP_WORKER_GRAPH_API_KEY",
         "KP_WORKER_GRAPH_MAX_USERS",
@@ -416,8 +936,9 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "MAILPIT_API_PASSWORD",
     }
 )
-# Database DSNs embed credentials and are deliberately NOT exposed or writable
-# through the console (rotation happens in .env/run_console.sh).
+# Database DSNs embed credentials and are deliberately not exposed or writable
+# through the console. ``scripts/bootstrap_env.sh`` generates and synchronizes
+# those credentials; the local console launcher invokes that bootstrap step.
 
 
 class ConfigPatch(BaseModel):
@@ -430,6 +951,8 @@ class ConfigPatch(BaseModel):
 class ConfigResponse(BaseModel):
     values: dict[str, str]
     masked: dict[str, bool]
+    config_store: str = "env_file"
+    mutable: bool = True
 
 
 _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
@@ -473,28 +996,31 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
     {
         "id": "graph",
         "title": "Employee directory",
-        "description": (
-            "Connect a bounded Microsoft Graph-compatible users endpoint for encrypted recipient synchronization."
-        ),
+        "description": ("Use a dedicated managed identity to synchronize only selected Microsoft Entra groups."),
         "optional": True,
         "estimated_minutes": 5,
         "prerequisites": (
-            "A read-only directory application or gateway",
-            "Permission to read the users collection",
+            "A dedicated directory managed identity",
+            "Tenant-admin consent for GroupMember.Read.All and User.ReadBasic.All",
+            "One or more selected Entra group object IDs",
             "An expected upper bound for employee records",
         ),
         "configured_any": (("KP_WORKER_GRAPH_BASE_URL",), ("MOCK_GRAPH_URL",)),
         "fields": (
             ("KP_WORKER_GRAPH_BASE_URL", "Graph base URL", "url", True, False, "https://graph.microsoft.com/v1.0"),
-            ("KP_WORKER_GRAPH_BEARER_TOKEN", "Bearer token", "password", False, True, "short-lived access token"),
-            ("KP_WORKER_GRAPH_API_KEY", "API key", "password", False, True, "optional gateway key"),
+            ("KP_WORKER_MICROSOFT_TENANT_ID", "Microsoft tenant ID", "text", True, False, "tenant UUID"),
+            ("KP_WORKER_GRAPH_CLIENT_ID", "Directory identity client ID", "text", True, False, "identity UUID"),
+            ("KP_WORKER_GRAPH_GROUP_IDS", "Selected group object IDs", "text", True, False, "UUIDs, comma-separated"),
             ("KP_WORKER_GRAPH_MAX_USERS", "Maximum users", "number", False, False, "1000"),
         ),
     },
     {
         "id": "smtp",
+        "provider_key": "KP_WORKER_EMAIL_PROVIDER",
         "title": "Email delivery",
-        "description": "Connect an SMTP relay. STARTTLS is automatic for non-local hosts unless SSL is selected.",
+        "description": (
+            "Choose SMTP or ACS. Managed ACS requires a verified customer domain and current readiness evidence."
+        ),
         "optional": False,
         "estimated_minutes": 5,
         "prerequisites": (
@@ -502,32 +1028,92 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "The sender mailbox authorized by that relay",
             "The relay's TLS requirement and port",
         ),
-        "configured_any": (("KP_WORKER_SMTP_ADDRESS",), ("KP_WORKER_MAILPIT_SMTP",)),
+        "configured_any": (("KP_WORKER_SMTP_ADDRESS",), ("KP_WORKER_MAILPIT_SMTP",), ("KP_WORKER_ACS_EMAIL_ENDPOINT",)),
         "fields": (
+            ("KP_WORKER_EMAIL_PROVIDER", "Email provider", "text", True, False, "Choose a provider"),
             ("KP_WORKER_SMTP_ADDRESS", "SMTP host and port", "text", True, False, "smtp.example.com:587"),
             ("KP_WORKER_SMTP_USERNAME", "SMTP username", "text", False, False, "service account"),
             ("KP_WORKER_SMTP_PASSWORD", "SMTP password", "password", False, True, "leave blank to keep existing"),
             ("KP_WORKER_SMTP_STARTTLS", "Use STARTTLS", "text", False, False, "true or false"),
             ("KP_WORKER_SMTP_SSL", "Use implicit TLS", "text", False, False, "true or false"),
             ("KP_WORKER_SMTP_SENDER", "Sender mailbox", "email", False, False, "awareness@example.com"),
+            (
+                "KP_WORKER_ACS_EMAIL_ENDPOINT",
+                "ACS endpoint",
+                "url",
+                False,
+                False,
+                "https://name.communication.azure.com",
+            ),
+            (
+                "KP_WORKER_ACS_CLIENT_ID",
+                "ACS sending identity client ID",
+                "text",
+                False,
+                False,
+                "identity UUID",
+            ),
+            (
+                "KP_WORKER_ACS_EMAIL_CONNECTION_STRING",
+                "ACS connection string",
+                "password",
+                False,
+                True,
+                "local use only",
+            ),
+            ("KP_WORKER_ACS_SENDING_DOMAIN", "ACS customer domain", "text", False, False, "mail.example.com"),
+            ("KP_WORKER_ACS_SENDER_LOCAL_PART", "ACS sender local part", "text", False, False, "awareness"),
+            (
+                "KP_WORKER_ACS_SENDER_DISPLAY_NAME",
+                "ACS sender display name",
+                "text",
+                False,
+                False,
+                "Security Awareness",
+            ),
         ),
     },
     {
         "id": "mailbox",
+        "provider_key": "KP_WORKER_REPORTED_MAILBOX_PROVIDER",
         "title": "Reported-message mailbox",
-        "description": "Poll a Mailpit-compatible reporting API for messages explicitly marked as reported.",
+        "description": "Poll one Microsoft 365 report mailbox using a separate mailbox-scoped managed identity.",
         "optional": True,
         "estimated_minutes": 4,
         "prerequisites": (
-            "A Mailpit-compatible reported-message API",
-            "One supported authentication method: bearer token or basic authentication",
+            "A dedicated report mailbox",
+            "A dedicated mailbox managed identity",
+            "Exchange Online Application RBAC scoped to only that mailbox",
         ),
         "configured_any": (("KP_WORKER_REPORTED_MAILBOX_URL",), ("KP_WORKER_MAILPIT_API_URL",)),
         "fields": (
-            ("KP_WORKER_REPORTED_MAILBOX_URL", "Mailbox API base URL", "url", True, False, "https://mail.example/api"),
-            ("KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN", "Bearer token", "password", False, True, "optional"),
-            ("KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME", "Basic-auth username", "text", False, False, "optional"),
-            ("KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD", "Basic-auth password", "password", False, True, "optional"),
+            ("KP_WORKER_REPORTED_MAILBOX_PROVIDER", "Mailbox provider", "text", True, False, "Choose a provider"),
+            (
+                "KP_WORKER_REPORTED_MAILBOX_URL",
+                "Mailbox API base URL",
+                "url",
+                True,
+                False,
+                "https://graph.microsoft.com/v1.0",
+            ),
+            (
+                "KP_WORKER_REPORTED_MAILBOX_CLIENT_ID",
+                "Mailbox identity client ID",
+                "text",
+                True,
+                False,
+                "identity UUID",
+            ),
+            ("KP_WORKER_REPORTED_MAILBOX_ID", "Report mailbox", "email", True, False, "phish-reports@example.com"),
+            ("KP_WORKER_REPORTED_MAILBOX_FOLDER_ID", "Mailbox folder", "text", False, False, "inbox"),
+            (
+                "KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN",
+                "Development bearer token",
+                "password",
+                False,
+                True,
+                "optional local test credential",
+            ),
         ),
     },
     {
@@ -624,6 +1210,94 @@ class AzureDeploymentValidationRequest(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
 
+class AzureDeploymentConfirmationRequest(BaseModel):
+    confirm: bool
+    review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rationale: str = Field(min_length=10, max_length=500)
+
+
+class AzureDeploymentAdvanceRequest(BaseModel):
+    confirm: bool
+    review_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def _azure_release_readiness() -> dict[str, Any]:
+    """Return immutable implementation truth, never operator attestation."""
+    return {
+        "evidence_level": "local_contract_only",
+        "production_plan_allowed": False,
+        "staging_plan_allowed": True,
+        "summary": (
+            "Application controls are locally testable, but production edge and recovery readiness has not "
+            "been proven in Azure."
+        ),
+        "gates": [
+            {
+                "id": "operator_hsts_application",
+                "label": "Operator HSTS application contract",
+                "status": "implemented_unproven_at_edge",
+                "detail": "Every operator response emits HSTS; browser-to-edge delivery has not been observed live.",
+            },
+            {
+                "id": "operator_custom_domain",
+                "label": "Operator custom-domain binding",
+                "status": "external_unverified",
+                "detail": "The selected hostname is configuration only; no live Azure binding is inspected here.",
+            },
+            {
+                "id": "tracking_custom_domain",
+                "label": "Tracking custom-domain binding",
+                "status": "external_unverified",
+                "detail": "The selected hostname is configuration only; no live Azure binding is inspected here.",
+            },
+            {
+                "id": "managed_certificates",
+                "label": "Custom-domain certificates",
+                "status": "external_unverified",
+                "detail": "Certificate issuance, hostname coverage, expiry, and renewal are not inspected here.",
+            },
+            {
+                "id": "default_host_restriction",
+                "label": "Default Container Apps host restriction",
+                "status": "not_implemented",
+                "detail": "Direct default-host access is not restricted by the current infrastructure.",
+            },
+            {
+                "id": "waf_edge",
+                "label": "WAF and edge policy",
+                "status": "not_implemented",
+                "detail": "No Azure edge or WAF policy is implemented by the current deployment.",
+            },
+            {
+                "id": "live_hsts_observation",
+                "label": "Live custom-host HSTS observation",
+                "status": "external_unverified",
+                "detail": "The local header contract is not proof of the response seen through the production edge.",
+            },
+            {
+                "id": "backup_restore",
+                "label": "Backup and restore qualification",
+                "status": "external_unverified",
+                "detail": "No disposable-Azure restore exercise is recorded by this GUI.",
+            },
+            {
+                "id": "rollback",
+                "label": "Reviewed rollback workflow",
+                "status": "unsupported",
+                "detail": "No allowlisted GUI rollback workflow or previously qualified revision target exists.",
+            },
+        ],
+    }
+
+
+_DEPLOYMENT_RATIONALE_SECRET = re.compile(
+    r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|"
+    r"(?:password|secret|token|api[_-]?key|authorization|accountkey)\s*[:=]\s*\S+|"
+    r"bearer\s+[A-Za-z0-9._~+/=-]{8,})",
+    re.IGNORECASE,
+)
+
+
 _AZURE_DEPLOYMENT_STEPS: tuple[dict[str, Any], ...] = (
     {
         "id": "azure_foundation",
@@ -651,6 +1325,14 @@ _AZURE_DEPLOYMENT_STEPS: tuple[dict[str, Any], ...] = (
                 True,
                 "staging",
                 "Choose staging for the first deployment. Production enables HA and stronger retention controls.",
+            ),
+            (
+                "deployment_stage",
+                "Deployment stage",
+                "select",
+                True,
+                "foundation_bootstrap",
+                "Run the three stages in order. The server advances only after exact protected-workflow evidence.",
             ),
             (
                 "location",
@@ -716,13 +1398,126 @@ _AZURE_DEPLOYMENT_STEPS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "id": "azure_email",
+        "title": "ACS customer sending domain",
+        "description": (
+            "Provision dedicated ACS email resources or reference reviewed existing resources, then verify a "
+            "customer-managed domain."
+        ),
+        "estimated_minutes": 15,
+        "prerequisites": (
+            "A dedicated customer-managed simulation domain",
+            "Access to its public DNS zone or a DNS administrator",
+            "Current ACS quota and ramp limits approved for the campaign",
+        ),
+        "fields": (
+            (
+                "acs_resource_mode",
+                "ACS resource mode",
+                "select",
+                True,
+                "provision",
+                "Choose provision unless an approved Communication Service and email domain already exist.",
+            ),
+            (
+                "acs_existing_communication_service_id",
+                "Existing Communication Service resource ID",
+                "text",
+                False,
+                "",
+                "Azure portal → Communication Service → JSON view → Resource ID. This is not a secret.",
+            ),
+            (
+                "acs_existing_email_endpoint",
+                "Existing Communication Service endpoint",
+                "text",
+                False,
+                "",
+                "Use the non-secret HTTPS endpoint ending in .communication.azure.com; "
+                "never paste a connection string.",
+            ),
+            (
+                "acs_existing_email_domain_id",
+                "Existing email-domain resource ID",
+                "text",
+                False,
+                "",
+                "Azure portal → Email Communication Service → custom domain → JSON view → Resource ID.",
+            ),
+            (
+                "acs_sending_domain",
+                "Customer sending domain",
+                "text",
+                True,
+                "mail.example.com",
+                "Use a dedicated public domain controlled by the organization; Azure-managed test domains are blocked.",
+            ),
+            (
+                "acs_sender_local_part",
+                "Sender local part",
+                "text",
+                True,
+                "awareness",
+                "Choose the mailbox text before @; Terraform provisions it in provision mode.",
+            ),
+            (
+                "acs_sender_display_name",
+                "Sender display name",
+                "text",
+                True,
+                "Security Awareness",
+                "Use a recognizable 1–64 character name without control characters.",
+            ),
+            (
+                "acs_dns_zone_id",
+                "Azure DNS zone resource ID",
+                "text",
+                False,
+                "",
+                "Optional: supply only a same-subscription public Azure DNS zone containing the sending domain.",
+            ),
+            (
+                "acs_daily_message_limit",
+                "Daily message limit",
+                "number",
+                True,
+                "1000",
+                "Use the reviewed limit shown for the ACS resource/support-approved quota.",
+            ),
+            (
+                "acs_messages_per_minute",
+                "Messages per minute",
+                "number",
+                True,
+                "20",
+                "Choose a value no greater than the reviewed ACS rate limit.",
+            ),
+            (
+                "acs_ramp_batch_size",
+                "Initial ramp batch",
+                "number",
+                True,
+                "10",
+                "Start below the per-minute limit and increase only after deliverability review.",
+            ),
+            (
+                "acs_ramp_interval_seconds",
+                "Ramp interval seconds",
+                "number",
+                True,
+                "60",
+                "Use 1–3600 seconds between planned ramp batches.",
+            ),
+        ),
+    },
+    {
         "id": "azure_integrations",
-        "title": "Azure services and optional integrations",
-        "description": "Choose email data residency and optional private AI and alert endpoints.",
+        "title": "Azure services and integrations",
+        "description": "Choose email data residency, the required private AI gateway, and optional alert endpoints.",
         "estimated_minutes": 5,
         "prerequisites": (
             "Organizational data-residency policy",
-            "An approved Azure-hosted AI gateway if AI guidance is required",
+            "An approved Azure-hosted AI gateway implementing the platform generation contract",
             "An authenticated Azure-hosted webhook or ntfy service if alerts are required",
         ),
         "fields": (
@@ -738,9 +1533,50 @@ _AZURE_DEPLOYMENT_STEPS: tuple[dict[str, Any], ...] = (
                 "ai_endpoint",
                 "AI gateway endpoint",
                 "url",
-                False,
+                True,
                 "https://ai-gateway.example.com",
-                "Azure-hosted gateway → Overview → endpoint. It must expose /propose and /setup-assist.",
+                "Azure-hosted gateway → Overview → endpoint. Managed deployments require it to expose "
+                "/propose and /setup-assist so the first approved pattern can produce a template.",
+            ),
+            (
+                "enable_directory_sync",
+                "Enable selected-group directory sync",
+                "select",
+                True,
+                "false",
+                "Enable only after a tenant administrator reviews and grants the directory permission matrix.",
+            ),
+            (
+                "directory_group_ids",
+                "Selected Entra group object IDs",
+                "text",
+                False,
+                "UUIDs, comma-separated",
+                "Microsoft Entra admin center → Groups → each approved group → Object ID.",
+            ),
+            (
+                "enable_reported_mailbox",
+                "Enable Microsoft 365 report mailbox",
+                "select",
+                True,
+                "false",
+                "Enable only after Exchange Application RBAC is scoped and tested for the report mailbox.",
+            ),
+            (
+                "reported_mailbox_address",
+                "Report mailbox address",
+                "email",
+                False,
+                "phish-reports@example.com",
+                "Exchange admin center → Recipients → the dedicated mailbox receiving reported simulations.",
+            ),
+            (
+                "reported_mailbox_folder",
+                "Report mailbox folder",
+                "text",
+                False,
+                "inbox",
+                "Use inbox or the immutable Microsoft Graph folder ID selected for reported messages.",
             ),
             (
                 "alert_webhook_domains",
@@ -751,19 +1587,46 @@ _AZURE_DEPLOYMENT_STEPS: tuple[dict[str, Any], ...] = (
                 "Copy hostname only from each approved Azure-hosted HTTPS webhook; separate multiple hosts "
                 "with commas.",
             ),
+            (
+                "allowed_recipient_domains",
+                "Allowed recipient domains",
+                "text",
+                True,
+                "example.com",
+                "Enter only organization-owned mail domains authorized by the Rules of Engagement; "
+                "separate multiple domains with commas.",
+            ),
         ),
     },
     {
         "id": "azure_automation",
         "title": "Deployment automation",
-        "description": "Identify the private Terraform-state location and confirm the protected deployment runner.",
+        "description": "Choose the reviewed network path, Terraform-state location, and protected deployment runner.",
         "estimated_minutes": 8,
         "prerequisites": (
             "Azure Storage account with blob versioning and RBAC",
-            "A private self-hosted GitHub runner attached to the deployment network",
+            "A private azure-vnet runner for all three guided deployment stages",
             "GitHub staging and production environments with required production reviewers",
         ),
         "fields": (
+            (
+                "network_mode",
+                "Azure network mode",
+                "select",
+                True,
+                "private",
+                "The guided three-stage deployment uses the private azure-vnet runner from bootstrap through "
+                "workloads.",
+            ),
+            (
+                "azure_deployment_client_id",
+                "Azure deployment identity client ID",
+                "text",
+                True,
+                "00000000-0000-0000-0000-000000000000",
+                "Microsoft Entra ID → App registrations → the GitHub OIDC deployment application → "
+                "Application (client) ID. This is not the operator-console application ID.",
+            ),
             (
                 "tf_state_resource_group",
                 "Terraform-state resource group",
@@ -792,9 +1655,36 @@ _AZURE_DEPLOYMENT_STEPS: tuple[dict[str, Any], ...] = (
                 "runner_label",
                 "Private runner label",
                 "text",
-                True,
+                False,
                 "azure-vnet",
                 "GitHub repository → Settings → Actions → Runners → labels. The workflow expects azure-vnet.",
+            ),
+            (
+                "ciphertext_active_key_id",
+                "Active ciphertext key ID",
+                "text",
+                True,
+                "primary",
+                "Choose the non-secret 1–32 character identifier shared by the operator and every worker. "
+                "It is fixed after foundation deployment; active-key rotation is not yet supported.",
+            ),
+            (
+                "ciphertext_prior_key_ids",
+                "Prior decrypt-only key IDs",
+                "text",
+                False,
+                "2026q2,2026q1",
+                "For legacy recovery, list up to four retired key IDs in the external Key Vault keyring value. "
+                "This does not rotate the active key. Do not enter key material here.",
+            ),
+            (
+                "ciphertext_prior_keys_secret_id",
+                "Prior-key Key Vault reference",
+                "text",
+                False,
+                "/subscriptions/.../vaults/.../secrets/ciphertext-prior-keys",
+                "After foundation, create the legacy decrypt-only keyring directly in this deployment's Key "
+                "Vault and paste its versionless Azure resource ID. Never paste its value.",
             ),
         ),
     },
@@ -807,9 +1697,29 @@ def _azure_deployment_schema() -> dict[str, Any]:
             {"value": "staging", "label": "Staging (recommended first)"},
             {"value": "production", "label": "Production"},
         ],
+        "deployment_stage": [
+            {"value": "foundation_bootstrap", "label": "1. Bootstrap ACS and publish DNS guidance"},
+            {"value": "foundation_finalize", "label": "2. Verify DNS and finalize the sender"},
+            {"value": "workloads", "label": "3. Deploy workloads after final evidence"},
+        ],
+        "network_mode": [
+            {"value": "private", "label": "Private network (guided deployment)"},
+        ],
         "communication_data_location": [
             {"value": value, "label": value}
             for value in ("United States", "Canada", "Europe", "UK", "Australia", "Asia Pacific")
+        ],
+        "enable_directory_sync": [
+            {"value": "false", "label": "Disabled"},
+            {"value": "true", "label": "Enabled"},
+        ],
+        "enable_reported_mailbox": [
+            {"value": "false", "label": "Disabled"},
+            {"value": "true", "label": "Enabled"},
+        ],
+        "acs_resource_mode": [
+            {"value": "provision", "label": "Provision dedicated resources"},
+            {"value": "existing", "label": "Use reviewed existing resources"},
         ],
     }
     return {
@@ -823,6 +1733,7 @@ def _azure_deployment_schema() -> dict[str, Any]:
                         "type": input_type,
                         "required": required,
                         "secret": False,
+                        "server_controlled": key == "deployment_stage",
                         "placeholder": placeholder,
                         "where_to_find": location,
                         "choices": select_choices.get(key, []),
@@ -834,6 +1745,35 @@ def _azure_deployment_schema() -> dict[str, Any]:
         ],
         "safety_note": "This wizard never asks for Azure passwords, client secrets, access keys, or Terraform state.",
         "workflow": ".github/workflows/azure-deploy.yml",
+        "microsoft_graph": {
+            "endpoint": "https://graph.microsoft.com/v1.0",
+            "identity_separation": "Directory and report-mailbox roles use different user-assigned identities.",
+            "permission_matrix": [
+                {
+                    "role": "directory",
+                    "permissions": ["GroupMember.Read.All", "User.ReadBasic.All"],
+                    "scope": "Queries are limited to selected group object IDs.",
+                    "admin_required": True,
+                },
+                {
+                    "role": "mailbox",
+                    "permissions": ["Application Mail.Read"],
+                    "scope": "Exchange Online Application RBAC must target only the report mailbox.",
+                    "admin_required": True,
+                },
+            ],
+            "manual_steps_required": True,
+            "readiness_claim": "configuration_only",
+        },
+        "acs_email": {
+            "managed_domain_fallback": False,
+            "dns_automation": "only_when_same_subscription_azure_dns_zone_id_is_supplied",
+            "readiness_claim": "configuration_only",
+            "provider_acceptance_is_delivery": False,
+            "delivery_events_implemented": True,
+        },
+        "release_readiness": _azure_release_readiness(),
+        "orchestration": DeploymentOrchestrator.public_configuration(),
     }
 
 
@@ -852,16 +1792,32 @@ def validate_azure_deployment(
     allowed = {field[0] for step in _AZURE_DEPLOYMENT_STEPS for field in step["fields"]}
     unknown = set(body.values) - allowed
     if unknown:
-        raise PermissionDeniedError(f"rejected Azure deployment keys: {sorted(unknown)}")
+        raise PermissionDeniedError("rejected unrecognized Azure deployment keys")
     values = {key: value.strip() for key, value in body.values.items()}
     errors: dict[str, str] = {}
-    uuid_keys = ("subscription_id", "entra_tenant_id", "entra_client_id")
+    for key, value in values.items():
+        if _DEPLOYMENT_RATIONALE_SECRET.search(value):
+            errors[key] = "Do not enter credentials, access keys, connection strings, or tokens."
+    uuid_keys = ("subscription_id", "entra_tenant_id", "entra_client_id", "azure_deployment_client_id")
     uuid_pattern = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
     for key in uuid_keys:
         if not uuid_pattern.fullmatch(values.get(key, "")):
             errors[key] = "Enter the complete UUID shown in Azure or Microsoft Entra."
     if values.get("environment") not in {"staging", "production"}:
         errors["environment"] = "Choose staging or production."
+    deployment_stage = values.get("deployment_stage", "")
+    if deployment_stage not in {"foundation_bootstrap", "foundation_finalize", "workloads"}:
+        errors["deployment_stage"] = "Choose one of the three deployment stages."
+    network_mode = values.get("network_mode", "")
+    if network_mode not in {"private", "starter"}:
+        errors["network_mode"] = "Choose private or the staging-foundation starter path."
+    elif network_mode == "starter" and (
+        values.get("environment") != "staging"
+        or deployment_stage not in {"foundation_bootstrap", "foundation_finalize"}
+    ):
+        errors["network_mode"] = "Starter mode is allowed only for staging foundation stages."
+    elif deployment_stage == "workloads" and network_mode != "private":
+        errors["network_mode"] = "Workloads require private mode and the azure-vnet runner."
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,10}", values.get("name_prefix", "")):
         errors["name_prefix"] = "Use 2–11 lowercase letters, numbers, or hyphens."
     if not re.fullmatch(r"[a-z0-9]+", values.get("location", "")):
@@ -872,25 +1828,160 @@ def validate_azure_deployment(
             errors[key] = "Enter a hostname only, without https:// or a path."
     if values.get("operator_fqdn", "").lower() == values.get("tracking_fqdn", "").lower():
         errors["tracking_fqdn"] = "Use a hostname separate from the operator console."
+    acs_mode = values.get("acs_resource_mode", "")
+    if acs_mode not in {"provision", "existing"}:
+        errors["acs_resource_mode"] = "Choose provision or existing."
+    acs_domain = values.get("acs_sending_domain", "").lower().rstrip(".")
+    if (
+        not hostname_pattern.fullmatch(acs_domain)
+        or acs_domain == "azurecomm.net"
+        or acs_domain.endswith(".azurecomm.net")
+    ):
+        errors["acs_sending_domain"] = "Use a customer-managed public DNS domain, not an Azure test domain."
+    local_part = values.get("acs_sender_local_part", "").lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._+-]{0,63}", local_part):
+        errors["acs_sender_local_part"] = "Use 1–64 lowercase mailbox characters before @."
+    display_name = values.get("acs_sender_display_name", "")
+    if not 1 <= len(display_name) <= 64 or any(ord(character) < 32 for character in display_name):
+        errors["acs_sender_display_name"] = "Use 1–64 printable characters."
+    if acs_mode == "existing":
+        if not re.fullmatch(
+            r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Communication/"
+            r"CommunicationServices/[^/]+",
+            values.get("acs_existing_communication_service_id", ""),
+            flags=re.IGNORECASE,
+        ):
+            errors["acs_existing_communication_service_id"] = (
+                "Enter the complete Communication Service Azure resource ID."
+            )
+        try:
+            _validated_acs_endpoint(values.get("acs_existing_email_endpoint", ""))
+        except ValueError:
+            errors["acs_existing_email_endpoint"] = (
+                "Enter the non-secret HTTPS Communication Service endpoint, not a connection string."
+            )
+        if not re.fullmatch(
+            r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Communication/"
+            r"emailServices/[^/]+/domains/[^/]+",
+            values.get("acs_existing_email_domain_id", ""),
+            flags=re.IGNORECASE,
+        ):
+            errors["acs_existing_email_domain_id"] = "Enter the complete customer email-domain Azure resource ID."
+    dns_zone_id = values.get("acs_dns_zone_id", "")
+    if dns_zone_id:
+        match = re.fullmatch(
+            r"/subscriptions/([^/]+)/resourceGroups/[^/]+/providers/Microsoft\.Network/dnszones/([^/]+)",
+            dns_zone_id,
+            flags=re.IGNORECASE,
+        )
+        if not match or match.group(1).lower() != values.get("subscription_id", "").lower():
+            errors["acs_dns_zone_id"] = "Use a complete same-subscription public Azure DNS zone resource ID."
+        elif acs_domain != match.group(2).lower() and not acs_domain.endswith(f".{match.group(2).lower()}"):
+            errors["acs_dns_zone_id"] = "The Azure DNS zone must contain the customer sending domain."
+    pacing: dict[str, int] = {}
+    for key, minimum, maximum in (
+        ("acs_daily_message_limit", 1, 1_000_000),
+        ("acs_messages_per_minute", 1, 10_000),
+        ("acs_ramp_batch_size", 1, 2_000),
+        ("acs_ramp_interval_seconds", 1, 3_600),
+    ):
+        try:
+            pacing[key] = int(values.get(key, ""))
+        except ValueError:
+            errors[key] = "Enter a whole number."
+            continue
+        if not minimum <= pacing[key] <= maximum:
+            errors[key] = f"Enter a value from {minimum} to {maximum}."
+    if pacing.get("acs_messages_per_minute", 1) > pacing.get("acs_daily_message_limit", 1):
+        errors["acs_messages_per_minute"] = "The per-minute limit cannot exceed the daily limit."
+    if pacing.get("acs_ramp_batch_size", 1) > pacing.get("acs_messages_per_minute", 1):
+        errors["acs_ramp_batch_size"] = "The initial batch cannot exceed the per-minute limit."
     endpoint = values.get("ai_endpoint", "")
-    if endpoint:
+    if not endpoint:
+        errors["ai_endpoint"] = (
+            "Enter the approved HTTPS AI gateway that exposes /propose and /setup-assist; "
+            "managed deployments cannot create their first template without it."
+        )
+    else:
         parsed = urlparse(endpoint)
         if (
             parsed.scheme != "https"
             or not parsed.hostname
+            or _explicit_loopback_host(parsed.hostname)
             or parsed.username
             or parsed.password
             or parsed.query
             or parsed.fragment
         ):
-            errors["ai_endpoint"] = "Use an HTTPS base URL without credentials or query parameters."
+            errors["ai_endpoint"] = (
+                "Use a non-local HTTPS base URL without credentials, query parameters, or fragments."
+            )
+    for key in ("enable_directory_sync", "enable_reported_mailbox"):
+        if values.get(key) not in {"true", "false"}:
+            errors[key] = "Choose enabled or disabled."
+    group_ids = [item.strip() for item in values.get("directory_group_ids", "").split(",") if item.strip()]
+    if values.get("enable_directory_sync") == "true":
+        if not group_ids:
+            errors["directory_group_ids"] = "Select at least one Entra group object ID."
+        elif any(not uuid_pattern.fullmatch(group_id) for group_id in group_ids):
+            errors["directory_group_ids"] = "Enter comma-separated Entra group object UUIDs."
+    mailbox = values.get("reported_mailbox_address", "")
+    if values.get("enable_reported_mailbox") == "true" and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", mailbox):
+        errors["reported_mailbox_address"] = "Enter the dedicated Microsoft 365 report mailbox address."
+    if values.get("enable_reported_mailbox") == "true" and not values.get("reported_mailbox_folder", ""):
+        errors["reported_mailbox_folder"] = "Enter inbox or a Microsoft Graph mail folder ID."
     domains = [item.strip().lower() for item in values.get("alert_webhook_domains", "").split(",") if item.strip()]
     if any(not hostname_pattern.fullmatch(domain) for domain in domains):
         errors["alert_webhook_domains"] = "Enter hostnames only, separated by commas."
+    recipient_domains = [
+        item.strip().lower() for item in values.get("allowed_recipient_domains", "").split(",") if item.strip()
+    ]
+    if not recipient_domains or any(not hostname_pattern.fullmatch(domain) for domain in recipient_domains):
+        errors["allowed_recipient_domains"] = "Enter at least one authorized mail domain, separated by commas."
+    if not re.fullmatch(r"[A-Za-z0-9_.()\-]{1,90}", values.get("tf_state_resource_group", "")):
+        errors["tf_state_resource_group"] = "Enter the 1–90 character Azure resource-group name."
     if not re.fullmatch(r"[a-z0-9]{3,24}", values.get("tf_state_storage_account", "")):
         errors["tf_state_storage_account"] = "Use the 3–24 character lowercase Azure Storage account name."
     if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?", values.get("tf_state_container", "")):
         errors["tf_state_container"] = "Enter the lowercase blob container name."
+    ciphertext_key_id_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
+    active_ciphertext_key_id = values.get("ciphertext_active_key_id", "")
+    if ciphertext_key_id_pattern.fullmatch(active_ciphertext_key_id) is None:
+        errors["ciphertext_active_key_id"] = "Use 1–32 ASCII letters, digits, underscores, or hyphens."
+    prior_ciphertext_key_ids = (
+        [item.strip() for item in values.get("ciphertext_prior_key_ids", "").split(",")]
+        if values.get("ciphertext_prior_key_ids", "").strip()
+        else []
+    )
+    if (
+        len(prior_ciphertext_key_ids) > 4
+        or len(set(prior_ciphertext_key_ids)) != len(prior_ciphertext_key_ids)
+        or any(ciphertext_key_id_pattern.fullmatch(key_id) is None for key_id in prior_ciphertext_key_ids)
+        or active_ciphertext_key_id in prior_ciphertext_key_ids
+    ):
+        errors["ciphertext_prior_key_ids"] = "List at most four unique valid key IDs, excluding the active key ID."
+    prior_ciphertext_secret_id = values.get("ciphertext_prior_keys_secret_id", "")
+    secret_id_match = re.fullmatch(
+        r"/subscriptions/([^/]+)/resourceGroups/([^/]+)/providers/Microsoft\.KeyVault/"
+        r"vaults/([A-Za-z0-9-]{3,24})/secrets/([A-Za-z0-9-]{1,127})",
+        prior_ciphertext_secret_id,
+        flags=re.IGNORECASE,
+    )
+    if bool(prior_ciphertext_key_ids) != bool(prior_ciphertext_secret_id):
+        rotation_reference_error = "Prior key IDs and their versionless Key Vault reference must be supplied together."
+        errors["ciphertext_prior_keys_secret_id"] = rotation_reference_error
+    elif prior_ciphertext_secret_id and (
+        secret_id_match is None or secret_id_match.group(1).lower() != values.get("subscription_id", "").lower()
+    ):
+        rotation_reference_error = (
+            "Use a versionless secret resource ID from the selected subscription; never paste a secret value."
+        )
+        errors["ciphertext_prior_keys_secret_id"] = rotation_reference_error
+    if deployment_stage != "workloads" and (prior_ciphertext_key_ids or prior_ciphertext_secret_id):
+        rotation_reference_error = (
+            "Prior-key recovery is allowed only in the workloads phase after the deployment Key Vault exists."
+        )
+        errors["ciphertext_prior_keys_secret_id"] = rotation_reference_error
     if values.get("communication_data_location") not in {
         "United States",
         "Canada",
@@ -905,11 +1996,223 @@ def validate_azure_deployment(
         if not values.get(key):
             errors.setdefault(key, "This value is required.")
     warnings = []
-    if not endpoint:
-        warnings.append("No AI gateway is configured; deterministic local setup guidance will remain available.")
-    if values.get("runner_label") != "azure-vnet":
-        warnings.append("The checked-in workflow currently selects the azure-vnet runner label.")
-    return {"ok": not errors, "errors": errors, "warnings": warnings}
+    if network_mode == "private" and values.get("runner_label") != "azure-vnet":
+        errors["runner_label"] = "Private mode requires the exact protected runner label azure-vnet."
+    elif network_mode == "starter":
+        warnings.append("Starter mode uses a hosted runner and must transition to private before workloads.")
+    enabled_roles = [
+        role
+        for role, enabled in (
+            ("directory", values.get("enable_directory_sync") == "true"),
+            ("mailbox", values.get("enable_reported_mailbox") == "true"),
+        )
+        if enabled
+    ]
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "provider_readiness": {
+            "enabled_roles": enabled_roles,
+            "configuration_valid": not any(
+                key in errors
+                for key in (
+                    "enable_directory_sync",
+                    "directory_group_ids",
+                    "enable_reported_mailbox",
+                    "reported_mailbox_address",
+                    "reported_mailbox_folder",
+                )
+            ),
+            "admin_consent_verified": False,
+            "live_connectivity_verified": False,
+        },
+        "acs_email_readiness": {
+            "configuration_valid": not any(
+                key in errors for key in ({field[0] for field in _AZURE_DEPLOYMENT_STEPS[2]["fields"]})
+            ),
+            "resource_mode": acs_mode,
+            "deployment_stage": deployment_stage,
+            "sender_address": f"{local_part}@{acs_domain}" if local_part and acs_domain else "",
+            "dns_status": "azure_dns_automation_planned"
+            if dns_zone_id and "acs_dns_zone_id" not in errors
+            else "manual_dns_required",
+            "evidence_source": "protected_workflow_artifact_only",
+            "advance_blocked_until_verified_artifact": deployment_stage != "workloads",
+            "live_verification_performed": False,
+            "provider_acceptance_is_confirmed_delivery": False,
+            "delivery_events_implemented": True,
+            "pacing": pacing,
+        },
+        "release_readiness": _azure_release_readiness(),
+    }
+
+
+def _deployment_orchestrator(request: Request) -> DeploymentOrchestrator:
+    existing = getattr(request.app.state, "deployment_orchestrator", None)
+    if existing is not None:
+        return cast(DeploymentOrchestrator, existing)
+    try:
+        orchestrator = DeploymentOrchestrator.from_environment(request.app.state.settings.redis_url)
+    except DeploymentUnavailable as exc:
+        raise ConflictError(public_deployment_error(exc)) from None
+    request.app.state.deployment_orchestrator = orchestrator
+    return orchestrator
+
+
+@router.post("/azure-deployment/orchestration/plan", response_model=dict[str, Any])
+def plan_azure_deployment(
+    body: AzureDeploymentValidationRequest,
+    request: Request,
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    validation = validate_azure_deployment(body, principal)
+    if not validation["ok"]:
+        return validation
+    values = {key: value.strip() for key, value in body.values.items()}
+    if values.get("environment") == "production":
+        raise ConflictError(
+            "production deployment planning is blocked until custom-domain, certificate, edge restriction, "
+            "live HSTS, backup/restore, and rollback gates are verifiable; use staging for bootstrap"
+        )
+    if values.get("deployment_stage") != "foundation_bootstrap":
+        raise ConflictError(
+            "a new GUI deployment must begin with foundation bootstrap; use the verified stage advance action"
+        )
+    if values.get("network_mode") != "private":
+        raise ConflictError(
+            "the GUI stage sequence requires the private azure-vnet runner from bootstrap through workloads"
+        )
+    try:
+        plan = _deployment_orchestrator(request).create_plan(values, actor=principal.principal_id)
+    except (DeploymentUnavailable, DeploymentConflict) as exc:
+        raise ConflictError(public_deployment_error(exc)) from None
+    request.app.state.audit_store.record(
+        actor=principal.principal_id,
+        action="deployment.plan.review",
+        object_type="azure_deployment",
+        object_id=str(plan["plan_id"]),
+        detail={
+            "review_digest": plan["review_digest"],
+            "environment": plan["review"]["environment"],
+            "deployment_stage": plan["review"]["deployment_stage"],
+            "workflow": plan["workflow"],
+            "commit_sha": plan["source_revision"]["commit_sha"],
+            "workflow_content_sha256": plan["source_revision"]["workflow_content_sha256"],
+        },
+    )
+    return plan
+
+
+@router.get("/azure-deployment/orchestration/latest", response_model=dict[str, Any])
+def get_latest_azure_deployment_plan(
+    request: Request,
+    environment: str = "staging",
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    try:
+        plan = _deployment_orchestrator(request).get_latest_plan(environment, actor=principal.principal_id)
+    except (DeploymentUnavailable, DeploymentConflict) as exc:
+        raise ConflictError(public_deployment_error(exc)) from None
+    return {"environment": environment, "plan": plan}
+
+
+@router.get("/azure-deployment/orchestration/plans/{plan_id}", response_model=dict[str, Any])
+def get_azure_deployment_plan(
+    plan_id: str,
+    request: Request,
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    try:
+        return _deployment_orchestrator(request).get_plan(plan_id, actor=principal.principal_id)
+    except (DeploymentUnavailable, DeploymentConflict) as exc:
+        raise ConflictError(public_deployment_error(exc)) from None
+
+
+def _submit_azure_deployment_plan(
+    plan_id: str,
+    body: AzureDeploymentConfirmationRequest,
+    request: Request,
+    principal: Principal,
+    *,
+    retry: bool,
+) -> dict[str, Any]:
+    if not body.confirm:
+        raise PermissionDeniedError("deployment dispatch requires explicit reviewed confirmation")
+    if _DEPLOYMENT_RATIONALE_SECRET.search(body.rationale):
+        raise PermissionDeniedError("authorization reasons must not contain credentials or tokens")
+
+    def audit(detail: dict[str, Any]) -> None:
+        request.app.state.audit_store.record(
+            actor=principal.principal_id,
+            action="deployment.retry.request" if retry else "deployment.apply.request",
+            object_type="azure_deployment",
+            object_id=plan_id,
+            detail=detail,
+        )
+
+    try:
+        return _deployment_orchestrator(request).apply(
+            plan_id,
+            body.review_digest,
+            actor=principal.principal_id,
+            rationale=body.rationale.strip(),
+            retry=retry,
+            audit=audit,
+        )
+    except (DeploymentUnavailable, DeploymentConflict) as exc:
+        raise ConflictError(public_deployment_error(exc)) from None
+
+
+@router.post("/azure-deployment/orchestration/plans/{plan_id}/apply", response_model=dict[str, Any])
+def apply_azure_deployment_plan(
+    plan_id: str,
+    body: AzureDeploymentConfirmationRequest,
+    request: Request,
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    return _submit_azure_deployment_plan(plan_id, body, request, principal, retry=False)
+
+
+@router.post("/azure-deployment/orchestration/plans/{plan_id}/retry", response_model=dict[str, Any])
+def retry_azure_deployment_plan(
+    plan_id: str,
+    body: AzureDeploymentConfirmationRequest,
+    request: Request,
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    return _submit_azure_deployment_plan(plan_id, body, request, principal, retry=True)
+
+
+@router.post("/azure-deployment/orchestration/plans/{plan_id}/advance", response_model=dict[str, Any])
+def advance_azure_deployment_plan(
+    plan_id: str,
+    body: AzureDeploymentAdvanceRequest,
+    request: Request,
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    if not body.confirm:
+        raise PermissionDeniedError("deployment stage advance requires explicit reviewed confirmation")
+    try:
+        plan = _deployment_orchestrator(request).advance_plan(
+            plan_id,
+            body.review_digest,
+            actor=principal.principal_id,
+        )
+    except (DeploymentUnavailable, DeploymentConflict) as exc:
+        raise ConflictError(public_deployment_error(exc)) from None
+    request.app.state.audit_store.record(
+        actor=principal.principal_id,
+        action="deployment.stage.advance",
+        object_type="azure_deployment",
+        object_id=str(plan["plan_id"]),
+        detail={
+            "review_digest": plan["review_digest"],
+            "deployment_stage": plan["review"]["deployment_stage"],
+            "predecessor": plan["stage_predecessor"],
+        },
+    )
+    return plan
 
 
 _FIELD_HELP: dict[str, tuple[str, str]] = {
@@ -1070,6 +2373,61 @@ _FIELD_CHOICES: dict[str, tuple[dict[str, str], ...]] = {
         {"value": "false", "label": "No implicit TLS"},
         {"value": "true", "label": "Use implicit TLS"},
     ),
+    "KP_WORKER_EMAIL_PROVIDER": (
+        {"value": "smtp", "label": "SMTP relay"},
+        {"value": "azure_communication_services", "label": "Azure Communication Services Email"},
+    ),
+    "KP_WORKER_REPORTED_MAILBOX_PROVIDER": (
+        {"value": "mailpit", "label": "Local Mailpit (development)"},
+        {"value": "microsoft365", "label": "Microsoft 365 reported mailbox"},
+    ),
+}
+
+_FIELD_PROVIDER_RULES: dict[str, dict[str, tuple[str, ...]]] = {
+    "KP_WORKER_SMTP_ADDRESS": {"providers": ("smtp",), "required_for": ("smtp",)},
+    "KP_WORKER_SMTP_USERNAME": {"providers": ("smtp",)},
+    "KP_WORKER_SMTP_PASSWORD": {"providers": ("smtp",)},
+    "KP_WORKER_SMTP_STARTTLS": {"providers": ("smtp",)},
+    "KP_WORKER_SMTP_SSL": {"providers": ("smtp",)},
+    "KP_WORKER_SMTP_SENDER": {
+        "providers": ("smtp", "azure_communication_services"),
+        "required_for": ("smtp", "azure_communication_services"),
+    },
+    "KP_WORKER_ACS_EMAIL_ENDPOINT": {
+        "providers": ("azure_communication_services",),
+        "required_for": ("azure_communication_services",),
+    },
+    "KP_WORKER_ACS_CLIENT_ID": {"providers": ("azure_communication_services",)},
+    "KP_WORKER_ACS_EMAIL_CONNECTION_STRING": {"providers": ("azure_communication_services",)},
+    "KP_WORKER_ACS_SENDING_DOMAIN": {
+        "providers": ("azure_communication_services",),
+        "required_for": ("azure_communication_services",),
+    },
+    "KP_WORKER_ACS_SENDER_LOCAL_PART": {
+        "providers": ("azure_communication_services",),
+        "required_for": ("azure_communication_services",),
+    },
+    "KP_WORKER_ACS_SENDER_DISPLAY_NAME": {
+        "providers": ("azure_communication_services",),
+        "required_for": ("azure_communication_services",),
+    },
+    "KP_WORKER_REPORTED_MAILBOX_URL": {
+        "providers": ("mailpit", "microsoft365"),
+        "required_for": ("mailpit", "microsoft365"),
+    },
+    "KP_WORKER_REPORTED_MAILBOX_CLIENT_ID": {
+        "providers": ("microsoft365",),
+        "required_for": ("microsoft365",),
+    },
+    "KP_WORKER_REPORTED_MAILBOX_ID": {
+        "providers": ("microsoft365",),
+        "required_for": ("microsoft365",),
+    },
+    "KP_WORKER_REPORTED_MAILBOX_FOLDER_ID": {
+        "providers": ("microsoft365",),
+        "required_for": ("microsoft365",),
+    },
+    "KP_WORKER_REPORTED_MAILBOX_BEARER_TOKEN": {"providers": ("microsoft365",)},
 }
 
 _GLOSSARY: tuple[dict[str, str], ...] = (
@@ -1153,6 +2511,50 @@ _TOPICS: tuple[dict[str, str], ...] = (
 )
 
 
+def _has_values(values: dict[str, str], *keys: str) -> bool:
+    return all(bool(values.get(key, "").strip()) for key in keys)
+
+
+def _onboarding_step_configured(definition: dict[str, Any], values: dict[str, str]) -> bool:
+    step_id = definition["id"]
+    if step_id == "smtp":
+        provider = values.get("KP_WORKER_EMAIL_PROVIDER", "").strip()
+        if provider == "smtp":
+            return bool(
+                (values.get("KP_WORKER_SMTP_ADDRESS") or values.get("KP_WORKER_MAILPIT_SMTP", "")).strip()
+                and values.get("KP_WORKER_SMTP_SENDER", "").strip()
+            )
+        if provider == "azure_communication_services":
+            return _has_values(
+                values,
+                "KP_WORKER_ACS_EMAIL_ENDPOINT",
+                "KP_WORKER_ACS_SENDING_DOMAIN",
+                "KP_WORKER_ACS_SENDER_LOCAL_PART",
+                "KP_WORKER_ACS_SENDER_DISPLAY_NAME",
+                "KP_WORKER_SMTP_SENDER",
+            ) and bool(
+                values.get("KP_WORKER_ACS_CLIENT_ID", "").strip()
+                or values.get("KP_WORKER_ACS_EMAIL_CONNECTION_STRING", "").strip()
+            )
+        return False
+    if step_id == "mailbox":
+        provider = values.get("KP_WORKER_REPORTED_MAILBOX_PROVIDER", "").strip()
+        base = (values.get("KP_WORKER_REPORTED_MAILBOX_URL") or values.get("KP_WORKER_MAILPIT_API_URL", "")).strip()
+        if provider == "mailpit":
+            return bool(base)
+        if provider == "microsoft365":
+            return bool(base) and _has_values(
+                values,
+                "KP_WORKER_REPORTED_MAILBOX_CLIENT_ID",
+                "KP_WORKER_REPORTED_MAILBOX_ID",
+                "KP_WORKER_REPORTED_MAILBOX_FOLDER_ID",
+            )
+        return False
+    return any(
+        all(bool(values.get(key, "").strip()) for key in key_group) for key_group in definition["configured_any"]
+    )
+
+
 def _onboarding_state(path: Path) -> dict[str, Any]:
     values = _env_values(path)
     effective_values = dict(values)
@@ -1166,9 +2568,7 @@ def _onboarding_state(path: Path) -> dict[str, Any]:
             effective_values[preferred] = effective_values.get(fallback, "")
     steps = []
     for definition in _ONBOARDING_STEPS:
-        configured = any(
-            all(bool(values.get(key, "").strip()) for key in key_group) for key_group in definition["configured_any"]
-        )
+        configured = _onboarding_step_configured(definition, values)
         fields = [
             {
                 "key": key,
@@ -1186,6 +2586,8 @@ def _onboarding_state(path: Path) -> dict[str, Any]:
                     key, "See the provider's administration or integration documentation."
                 ),
                 "choices": list(_FIELD_CHOICES.get(key, ())),
+                "providers": list(_FIELD_PROVIDER_RULES.get(key, {}).get("providers", ())),
+                "required_for": list(_FIELD_PROVIDER_RULES.get(key, {}).get("required_for", ())),
                 "value": "" if secret else effective_values.get(key, ""),
             }
             for key, label, input_type, required, secret, placeholder in definition["fields"]
@@ -1194,6 +2596,7 @@ def _onboarding_state(path: Path) -> dict[str, Any]:
             {
                 "id": definition["id"],
                 "component": definition["id"],
+                "provider_key": definition.get("provider_key"),
                 "title": definition["title"],
                 "description": definition["description"],
                 "optional": definition["optional"],
@@ -1223,7 +2626,7 @@ def get_onboarding(
 
 @router.get("/help", response_model=dict[str, Any])
 def get_console_help(
-    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+    _principal: Principal = Depends(require_capability(Capability.VIEW_AGGREGATE)),
 ) -> dict[str, Any]:
     """Return curated setup help without exposing environment configuration."""
     return {
@@ -1233,13 +2636,40 @@ def get_console_help(
     }
 
 
+_AZURE_ASSIST_PROTECTED_KEYS = frozenset(
+    {
+        "environment",
+        "deployment_stage",
+        "network_mode",
+        "subscription_id",
+        "entra_tenant_id",
+        "entra_client_id",
+        "azure_deployment_client_id",
+        "tf_state_resource_group",
+        "tf_state_storage_account",
+        "tf_state_container",
+        "runner_label",
+        "acs_resource_mode",
+        "acs_existing_communication_service_id",
+        "acs_existing_email_endpoint",
+        "acs_existing_email_domain_id",
+        "acs_dns_zone_id",
+    }
+)
+_AZURE_EMAIL_PROTECTED_AI_OUTPUT = re.compile(
+    r"(?:foundation_bootstrap|foundation_finalize|\bworkloads\b|\bverified\b|verification[_ ]status|"
+    r"readiness[_ ]checked|subscription[_ ]id|tenant[_ ]id|resource[_ ]id|dns[_ ]zone[_ ]id|\bauthority\b)",
+    re.IGNORECASE,
+)
+
+
 def _component_nonsecret_keys(component: str) -> frozenset[str]:
     for definition in _ONBOARDING_STEPS:
         if definition["id"] == component:
             return frozenset(field[0] for field in definition["fields"] if not field[4])
     for definition in _AZURE_DEPLOYMENT_STEPS:
         if definition["id"] == component:
-            return frozenset(field[0] for field in definition["fields"])
+            return frozenset(field[0] for field in definition["fields"]) - _AZURE_ASSIST_PROTECTED_KEYS
     return frozenset()
 
 
@@ -1249,18 +2679,35 @@ _CREDENTIAL_VALUE = re.compile(
     r"sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})",
     re.IGNORECASE,
 )
+_MAX_SETUP_ASSIST_RESPONSE_BYTES = 32 * 1024
+_MAX_SETUP_ASSIST_SUGGESTIONS = 32
+_MAX_SETUP_ASSIST_WARNINGS = 5
+_MAX_SETUP_ASSIST_WARNING_LENGTH = 500
+
+
+def _assist_secret_values(values: dict[str, str], environment: dict[str, str]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                value
+                for key, value in {**environment, **values}.items()
+                if value and (_CREDENTIAL_KEY.search(key) or key in _SECRET_KEYS) and len(value) >= 4
+            },
+            key=len,
+            reverse=True,
+        )
+    )
+
+
+def _redact_assist_text(value: str, secret_values: tuple[str, ...]) -> str:
+    result = _CREDENTIAL_VALUE.sub("[credential removed]", value)
+    for secret in secret_values:
+        result = result.replace(secret, "[credential removed]")
+    return result
 
 
 def _safe_assist_question(question: str, values: dict[str, str], environment: dict[str, str]) -> str:
-    result = _CREDENTIAL_VALUE.sub("[credential removed]", question.strip())
-    possible_secrets = [
-        value
-        for key, value in {**environment, **values}.items()
-        if value and (_CREDENTIAL_KEY.search(key) or key in _SECRET_KEYS) and len(value) >= 4
-    ]
-    for secret in sorted(possible_secrets, key=len, reverse=True):
-        result = result.replace(secret, "[credential removed]")
-    return result
+    return _redact_assist_text(question.strip(), _assist_secret_values(values, environment))
 
 
 def _curated_assistance(component: str) -> str:
@@ -1293,6 +2740,11 @@ def _curated_assistance(component: str) -> str:
             "Find the tenant ID under Microsoft Entra ID → Overview and the client ID under App registrations. "
             "Ask the DNS administrator for separate operator and tracking hostnames; never paste a client secret."
         ),
+        "azure_email": (
+            "Use a dedicated customer-managed simulation domain and a recognizable sender. Start with conservative "
+            "daily, per-minute, and batch limits. The protected workflow—not AI or an operator checkbox—reads live "
+            "Domain, SPF, DKIM, DKIM2, association, and sender state from Azure before advancing."
+        ),
         "azure_integrations": (
             "Choose the ACS data geography required by policy. An AI value must be an approved Azure-hosted "
             "gateway exposing /propose and /setup-assist, not a raw model endpoint. Use hostnames only for alerts."
@@ -1314,14 +2766,47 @@ def _curated_assistance(component: str) -> str:
     return guidance.get(component, "Choose a setup component and use its field help and connection test before saving.")
 
 
-def _validated_ai_assistance(payload: Any, allowed_keys: frozenset[str]) -> tuple[str, dict[str, str], list[str]]:
-    if not isinstance(payload, dict) or not isinstance(payload.get("answer"), str):
+async def _bounded_setup_assist_json(response: httpx.Response) -> Any:
+    content_lengths = response.headers.get_list("content-length")
+    if len(content_lengths) > 1:
+        raise ValueError("invalid setup assistant response length")
+    if content_lengths:
+        declared = content_lengths[0]
+        if len(declared) > 10 or re.fullmatch(r"[0-9]+", declared) is None:
+            raise ValueError("invalid setup assistant response length")
+        if int(declared) > _MAX_SETUP_ASSIST_RESPONSE_BYTES:
+            raise ValueError("setup assistant response is too large")
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        if len(body) + len(chunk) > _MAX_SETUP_ASSIST_RESPONSE_BYTES:
+            raise ValueError("setup assistant response is too large")
+        body.extend(chunk)
+    try:
+        text = bytes(body).decode("utf-8")
+        return json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        raise ValueError("invalid setup assistant JSON") from None
+
+
+def _validated_ai_assistance(
+    payload: Any,
+    allowed_keys: frozenset[str],
+    *,
+    secret_values: tuple[str, ...] = (),
+) -> tuple[str, dict[str, str], list[str]]:
+    if (
+        not isinstance(payload, dict)
+        or set(payload) - {"answer", "suggestions", "warnings"}
+        or not isinstance(payload.get("answer"), str)
+    ):
         raise ValueError("invalid setup assistant response")
-    answer = payload["answer"].strip()
-    if not answer or len(answer) > 4000:
+    raw_answer = payload["answer"].strip()
+    if not raw_answer or len(raw_answer) > 4000:
         raise ValueError("invalid setup assistant answer")
+    answer = _redact_assist_text(raw_answer, secret_values)
     raw_suggestions = payload.get("suggestions", {})
-    if not isinstance(raw_suggestions, dict):
+    if not isinstance(raw_suggestions, dict) or len(raw_suggestions) > _MAX_SETUP_ASSIST_SUGGESTIONS:
         raise ValueError("invalid setup assistant suggestions")
     suggestions: dict[str, str] = {}
     warnings: list[str] = []
@@ -1331,14 +2816,23 @@ def _validated_ai_assistance(payload: Any, allowed_keys: frozenset[str]) -> tupl
             if warning not in warnings:
                 warnings.append(warning)
             continue
-        if not isinstance(value, str) or len(value) > 2048 or _CREDENTIAL_VALUE.search(value):
-            warnings.append(f"An unsafe suggestion for {key} was ignored.")
+        if not isinstance(value, str) or len(value) > 2048 or _redact_assist_text(value, secret_values) != value:
+            if len(warnings) < _MAX_SETUP_ASSIST_WARNINGS:
+                warnings.append(f"An unsafe suggestion for {key} was ignored.")
             continue
         suggestions[key] = value
     raw_warnings = payload.get("warnings", [])
-    if isinstance(raw_warnings, list):
-        warnings.extend(str(item)[:500] for item in raw_warnings[:5] if isinstance(item, str))
-    return answer, suggestions, warnings
+    if (
+        not isinstance(raw_warnings, list)
+        or len(raw_warnings) > _MAX_SETUP_ASSIST_WARNINGS
+        or any(not isinstance(item, str) or len(item) > _MAX_SETUP_ASSIST_WARNING_LENGTH for item in raw_warnings)
+    ):
+        raise ValueError("invalid setup assistant warnings")
+    for item in raw_warnings:
+        redacted = _redact_assist_text(item, secret_values)
+        if redacted not in warnings and len(warnings) < _MAX_SETUP_ASSIST_WARNINGS:
+            warnings.append(redacted)
+    return answer, suggestions, warnings[:_MAX_SETUP_ASSIST_WARNINGS]
 
 
 @router.post("/onboarding/assist", response_model=SetupAssistResponse)
@@ -1348,6 +2842,7 @@ async def assist_onboarding(
     _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> SetupAssistResponse:
     """Provide advisory setup guidance without persisting or auditing prompt content."""
+    _reject_if_managed(request, MANAGED_CONFIG_MESSAGE)
     component = body.component.lower()
     allowed_keys = _component_nonsecret_keys(component)
     if not allowed_keys:
@@ -1367,27 +2862,53 @@ async def assist_onboarding(
         and not (urlparse(value).username or urlparse(value).password)
     }
     safe_question = _safe_assist_question(body.question, body.values, environment)
-    base_url = environment.get("KP_WORKER_AI_BASE_URL") or environment.get("MOCK_AI_URL", "")
+    destination_key, base_url = _selected_destination(environment, "KP_WORKER_AI_BASE_URL", "MOCK_AI_URL")
     warnings = ["AI suggestions are advisory. Review them and run the connection test before saving."]
     if base_url:
-        headers = _auth_headers(environment, "KP_WORKER_AI")
         try:
-            endpoint = _safe_url(base_url.rstrip("/") + "/setup-assist")
-            async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
-                response = await client.post(
-                    endpoint,
+            endpoint = await asyncio.to_thread(
+                _resolve_setup_assist_endpoint,
+                base_url,
+                settings=request.app.state.settings,
+                destination_key=destination_key,
+            )
+            headers = {**_auth_headers(environment, "KP_WORKER_AI"), "Host": endpoint.host_header}
+            async with (
+                httpx.AsyncClient(
+                    timeout=5.0,
+                    follow_redirects=False,
+                    trust_env=False,
+                    http2=False,
+                ) as client,
+                client.stream(
+                    "POST",
+                    endpoint.request_url,
                     headers=headers,
                     json={"component": component, "question": safe_question, "values": safe_values},
-                )
+                    extensions=endpoint.extensions,
+                ) as response,
+            ):
+                if response.is_redirect:
+                    raise ValueError("setup assistant redirected")
                 response.raise_for_status()
-            answer, suggestions, provider_warnings = _validated_ai_assistance(response.json(), allowed_keys)
+                payload = await _bounded_setup_assist_json(response)
+            answer, suggestions, provider_warnings = _validated_ai_assistance(
+                payload,
+                allowed_keys,
+                secret_values=_assist_secret_values(body.values, environment),
+            )
+            if component == "azure_email" and any(
+                _AZURE_EMAIL_PROTECTED_AI_OUTPUT.search(value)
+                for value in (answer, *provider_warnings, *suggestions.values())
+            ):
+                raise ValueError("AI attempted to influence protected Azure deployment state")
             return SetupAssistResponse(
                 answer=answer,
                 suggestions=suggestions,
                 source="configured-ai",
                 warnings=warnings + provider_warnings,
             )
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, OSError, ValueError):
             warnings.append(
                 "The configured AI service was unavailable or returned an invalid response; local guidance is "
                 "shown instead."
@@ -1416,14 +2937,43 @@ def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Prin
             desired[target] = desired[source]
     if body.completed is not None:
         desired["OPERATOR_API_ONBOARDING_COMPLETED"] = str(body.completed).lower()
-    path = _env_path(request)
-    current = _env_values(path)
-    proposed = {**current, **desired}
+
+    def validate(proposed: dict[str, str]) -> None:
+        _validate_config_candidate(proposed, require_complete=body.completed is True)
+
+    try:
+        changed = _atomic_update_env(_env_path(request), desired, validate_candidate=validate)
+    except _AtomicEnvUpdateError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from None
+    request.app.state.audit_store.record(
+        actor=principal.principal_id,
+        action="console.onboarding.update",
+        object_type="system",
+        object_id=".env",
+        detail={"changed": changed},
+    )
+    return changed
+
+
+def _validate_config_candidate(proposed: dict[str, str], *, require_complete: bool = False) -> None:
+    """Validate cross-field invariants against the complete post-update view."""
     if proposed.get("OPERATOR_API_OIDC_MODE", "dev") not in {"dev", "oidc"}:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="authentication mode must be dev or oidc",
         )
+    redirect_uri = proposed.get("OPERATOR_API_OIDC_REDIRECT_URI", "")
+    if redirect_uri:
+        try:
+            _validated_oidc_redirect_uri(redirect_uri)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "OIDC redirect URI must use HTTPS and the exact console callback path; only the documented "
+                    "http://localhost:8000 development callback is permitted"
+                ),
+            ) from None
     boolean_keys = ("KP_WORKER_SMTP_STARTTLS", "KP_WORKER_SMTP_SSL")
     if any(proposed.get(key, "").lower() not in {"", "true", "false"} for key in boolean_keys):
         raise HTTPException(
@@ -1438,37 +2988,130 @@ def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Prin
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="SMTP SSL and STARTTLS are exclusive",
         )
-    if body.completed:
+    email_provider = proposed.get("KP_WORKER_EMAIL_PROVIDER", "").strip()
+    if email_provider and email_provider not in {"smtp", "azure_communication_services"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="email provider must be smtp or azure_communication_services",
+        )
+    if email_provider == "smtp":
+        smtp_address = (proposed.get("KP_WORKER_SMTP_ADDRESS") or proposed.get("KP_WORKER_MAILPIT_SMTP", "")).strip()
+        try:
+            _parse_smtp_address(smtp_address)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="SMTP provider requires a valid relay host and port",
+            ) from None
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", proposed.get("KP_WORKER_SMTP_SENDER", "").strip()):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="SMTP provider requires a valid sender mailbox",
+            )
+        if bool(proposed.get("KP_WORKER_SMTP_USERNAME", "").strip()) != bool(
+            proposed.get("KP_WORKER_SMTP_PASSWORD", "").strip()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="SMTP username and password must be configured together",
+            )
+    elif email_provider == "azure_communication_services":
+        endpoint = proposed.get("KP_WORKER_ACS_EMAIL_ENDPOINT", "")
+        try:
+            _validated_acs_endpoint(endpoint)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="ACS provider requires an exact HTTPS *.communication.azure.com endpoint on port 443",
+            ) from None
+        if not (
+            proposed.get("KP_WORKER_ACS_CLIENT_ID", "").strip()
+            or proposed.get("KP_WORKER_ACS_EMAIL_CONNECTION_STRING", "").strip()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="ACS provider requires a managed identity client ID or local connection string",
+            )
+        domain = proposed.get("KP_WORKER_ACS_SENDING_DOMAIN", "").strip().lower().rstrip(".")
+        local_part = proposed.get("KP_WORKER_ACS_SENDER_LOCAL_PART", "").strip().lower()
+        sender = proposed.get("KP_WORKER_SMTP_SENDER", "").strip().lower()
+        display_name = proposed.get("KP_WORKER_ACS_SENDER_DISPLAY_NAME", "").strip()
+        if (
+            re.fullmatch(r"(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", domain) is None
+            or domain == "azurecomm.net"
+            or domain.endswith(".azurecomm.net")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="ACS provider requires a customer-managed public sending domain",
+            )
+        if re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}", local_part) is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="ACS provider sender local part is malformed",
+            )
+        if sender != f"{local_part}@{domain}":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="ACS sender mailbox must match its local part and sending domain",
+            )
+        if not display_name or len(display_name) > 64 or any(ord(character) < 32 for character in display_name):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="ACS sender display name must be 1-64 printable characters",
+            )
+    mailbox_provider = proposed.get("KP_WORKER_REPORTED_MAILBOX_PROVIDER", "").strip()
+    if mailbox_provider and mailbox_provider not in {"mailpit", "microsoft365"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="reported mailbox provider must be mailpit or microsoft365",
+        )
+    if mailbox_provider:
+        mailbox_base = (
+            proposed.get("KP_WORKER_REPORTED_MAILBOX_URL") or proposed.get("KP_WORKER_MAILPIT_API_URL", "")
+        ).strip()
+        try:
+            _safe_url(mailbox_base, https_only=mailbox_provider == "microsoft365")
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="reported mailbox provider requires a valid base URL",
+            ) from None
+        if mailbox_provider == "microsoft365":
+            try:
+                _microsoft365_probe_url(
+                    mailbox_base,
+                    proposed.get("KP_WORKER_REPORTED_MAILBOX_ID", ""),
+                    proposed.get("KP_WORKER_REPORTED_MAILBOX_FOLDER_ID", ""),
+                )
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Microsoft 365 provider requires a valid mailbox and folder",
+                ) from None
+            client_id = proposed.get("KP_WORKER_REPORTED_MAILBOX_CLIENT_ID", "").strip()
+            if (
+                re.fullmatch(
+                    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                    client_id,
+                )
+                is None
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Microsoft 365 provider requires the mailbox managed identity client ID",
+                )
+    if require_complete:
         missing = [
             definition["title"]
             for definition in _ONBOARDING_STEPS
-            if not definition["optional"]
-            and not any(
-                all(bool(proposed.get(key, "").strip()) for key in key_group)
-                for key_group in definition["configured_any"]
-            )
+            if not definition["optional"] and not _onboarding_step_configured(definition, proposed)
         ]
         if missing:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=f"required setup steps are incomplete: {', '.join(missing)}",
             )
-    changed: list[str] = []
-    for key, value in desired.items():
-        if key in _SECRET_KEYS and not value:
-            continue
-        if current.get(key, "") == value:
-            continue
-        set_key(str(path), key, value)
-        changed.append(key)
-    request.app.state.audit_store.record(
-        actor=principal.principal_id,
-        action="console.onboarding.update",
-        object_type="system",
-        object_id=".env",
-        detail={"changed": changed},
-    )
-    return changed
 
 
 @router.put("/onboarding", response_model=dict[str, Any])
@@ -1498,6 +3141,225 @@ def _safe_url(raw: str, *, https_only: bool = False) -> str:
     return raw
 
 
+_ACS_ENDPOINT_HOST = re.compile(r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.communication\.azure\.com\Z")
+
+
+def _validated_acs_endpoint(raw: str) -> str:
+    """Return one exact public ACS endpoint; reject lookalikes and URL paths."""
+    if not raw or raw != raw.strip():
+        raise ValueError("invalid ACS endpoint")
+    try:
+        parsed = urlparse(_safe_url(raw, https_only=True))
+    except ValueError:
+        raise ValueError("invalid ACS endpoint") from None
+    host = (parsed.hostname or "").lower()
+    if (
+        _ACS_ENDPOINT_HOST.fullmatch(host) is None
+        or (parsed.port or 443) != 443
+        or parsed.params
+        or parsed.query
+        or parsed.path not in {"", "/"}
+    ):
+        raise ValueError("invalid ACS endpoint")
+    return raw
+
+
+def _microsoft365_probe_url(base: str, mailbox: str, folder: str) -> str:
+    safe_base = _safe_url(base.strip(), https_only=True)
+    parsed = urlparse(safe_base)
+    if parsed.query:
+        raise ValueError("Microsoft Graph base URL must not contain a query")
+    normalized_mailbox = mailbox.strip()
+    normalized_folder = folder.strip()
+    if (
+        len(normalized_mailbox) > 320
+        or re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized_mailbox) is None
+        or any(ord(character) < 32 for character in normalized_mailbox)
+    ):
+        raise ValueError("reported mailbox identifier is malformed")
+    if (
+        not normalized_folder
+        or len(normalized_folder) > 256
+        or any(ord(character) < 32 for character in normalized_folder)
+    ):
+        raise ValueError("reported mailbox folder identifier is malformed")
+    endpoint = (
+        f"{safe_base.rstrip('/')}/users/{quote(normalized_mailbox, safe='')}"
+        f"/mailFolders/{quote(normalized_folder, safe='')}/messages/delta?$top=1&$select=id"
+    )
+    if len(endpoint) > 4096:
+        raise ValueError("Microsoft Graph probe URL is too long")
+    return endpoint
+
+
+class _EndpointPolicyError(ValueError):
+    """The endpoint resolves outside the connection-test egress policy."""
+
+
+class _ResolvedTarget:
+    """One already-vetted socket address used without a second DNS lookup."""
+
+    def __init__(self, family: int, sockaddr: tuple[Any, ...], ip: str) -> None:
+        self.family = family
+        self.sockaddr = sockaddr
+        self.ip = ip
+
+
+def _explicit_loopback_host(host: str) -> bool:
+    normalized = host.rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _resolve_pinned_target(host: str, port: int, *, allow_loopback: bool = False) -> _ResolvedTarget:
+    """Resolve once, reject non-public results, and return one pinned address.
+
+    Every answer is checked rather than only the first one. A hostname with a
+    public answer plus a private/link-local answer therefore fails closed. The
+    returned numeric socket address is used directly by the protocol clients,
+    closing the validate-then-resolve DNS-rebinding gap.
+    """
+
+    answers = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
+    if not answers or len(answers) > _MAX_EGRESS_DNS_ANSWERS:
+        raise _EndpointPolicyError("endpoint returned an invalid number of addresses")
+
+    loopback_host = allow_loopback and _explicit_loopback_host(host)
+    resolved: list[_ResolvedTarget] = []
+    for family, _socktype, _proto, _canonname, sockaddr in answers:
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            raise _EndpointPolicyError("endpoint resolved to an unsupported address family")
+        ip_text = str(sockaddr[0]).split("%", 1)[0]
+        address = ipaddress.ip_address(ip_text)
+        if loopback_host and address.is_loopback:
+            pass
+        elif not address.is_global or address.is_multicast or address.is_unspecified or address.is_reserved:
+            raise _EndpointPolicyError("endpoint must resolve only to public addresses")
+        resolved.append(_ResolvedTarget(family, cast(tuple[Any, ...], sockaddr), str(address)))
+    return resolved[0]
+
+
+class _ResolvedSetupAssistEndpoint:
+    """A setup-assist URL pinned to one vetted address with its TLS identity."""
+
+    def __init__(self, request_url: str, host_header: str, sni_hostname: str | None) -> None:
+        self.request_url = request_url
+        self.host_header = host_header
+        self.sni_hostname = sni_hostname
+
+    @property
+    def extensions(self) -> dict[str, str]:
+        return {"sni_hostname": self.sni_hostname} if self.sni_hostname is not None else {}
+
+
+def _resolve_setup_assist_endpoint(
+    base_url: str,
+    *,
+    settings: Any,
+    destination_key: str,
+) -> _ResolvedSetupAssistEndpoint:
+    """Validate, resolve once, and pin the configured setup-assist service."""
+    if (
+        not base_url
+        or base_url != base_url.strip()
+        or len(base_url.encode("utf-8")) > 2048
+        or any(character.isspace() or ord(character) == 127 for character in base_url)
+    ):
+        raise _EndpointPolicyError("setup assistant endpoint is invalid")
+    try:
+        safe_base = _safe_url(base_url)
+        parsed_base = urlparse(safe_base)
+    except ValueError:
+        raise _EndpointPolicyError("setup assistant endpoint is invalid") from None
+    if parsed_base.params or parsed_base.query or parsed_base.fragment:
+        raise _EndpointPolicyError("setup assistant endpoint is invalid")
+    allow_loopback = _allow_development_loopback(settings, destination_key, safe_base)
+    if parsed_base.scheme != "https" and not allow_loopback:
+        raise _EndpointPolicyError("setup assistant endpoint requires HTTPS")
+
+    raw_endpoint = safe_base.rstrip("/") + "/setup-assist"
+    parsed = urlparse(raw_endpoint)
+    host = cast(str, parsed.hostname)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    target = _resolve_pinned_target(host, port, allow_loopback=allow_loopback)
+    ip_literal = f"[{target.ip}]" if ":" in target.ip else target.ip
+    default_port = 443 if parsed.scheme == "https" else 80
+    pinned_netloc = ip_literal if port == default_port else f"{ip_literal}:{port}"
+    host_literal = f"[{host}]" if ":" in host else host
+    host_header = host_literal if port == default_port else f"{host_literal}:{port}"
+    return _ResolvedSetupAssistEndpoint(
+        request_url=parsed._replace(netloc=pinned_netloc).geturl(),
+        host_header=host_header,
+        sni_hostname=host if parsed.scheme == "https" else None,
+    )
+
+
+def _connect_pinned(target: _ResolvedTarget, *, timeout: float) -> socket.socket:
+    connection = socket.socket(target.family, socket.SOCK_STREAM)
+    try:
+        connection.settimeout(timeout)
+        connection.connect(target.sockaddr)
+    except Exception:
+        connection.close()
+        raise
+    return connection
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, host: str, port: int, target: _ResolvedTarget, *, timeout: float) -> None:
+        self._pinned_target = target
+        super().__init__(host, port, timeout=timeout)
+
+    def connect(self) -> None:
+        self.sock = _connect_pinned(self._pinned_target, timeout=cast(float, self.timeout))
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, port: int, target: _ResolvedTarget, *, timeout: float) -> None:
+        self._pinned_target = target
+        self._tls_context = ssl.create_default_context()
+        super().__init__(host, port, timeout=timeout, context=self._tls_context)
+
+    def connect(self) -> None:
+        raw_socket = _connect_pinned(self._pinned_target, timeout=cast(float, self.timeout))
+        try:
+            # Keep the operator-supplied hostname for SNI and certificate
+            # validation even though the TCP connection uses the pinned IP.
+            self.sock = self._tls_context.wrap_socket(raw_socket, server_hostname=self.host)
+        except Exception:
+            raw_socket.close()
+            raise
+
+
+def _pinned_http_status(raw: str, target: _ResolvedTarget, headers: dict[str, str] | None) -> int:
+    parsed = urlparse(raw)
+    host = cast(str, parsed.hostname)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    connection: http.client.HTTPConnection
+    if parsed.scheme == "https":
+        connection = _PinnedHTTPSConnection(host, port, target, timeout=3.0)
+    else:
+        connection = _PinnedHTTPConnection(host, port, target, timeout=3.0)
+    target_path = parsed.path or "/"
+    if parsed.params:
+        target_path += f";{parsed.params}"
+    if parsed.query:
+        target_path += f"?{parsed.query}"
+    try:
+        connection.request("GET", target_path, headers=headers or {})
+        response = connection.getresponse()
+        try:
+            return response.status
+        finally:
+            response.close()
+    finally:
+        connection.close()
+
+
 #: Categorised connection failures. "It failed" is not actionable; an operator
 #: needs to know whether to fix a credential, a firewall rule, a DNS record or
 #: a TLS setting, and those need different people and different escalations.
@@ -1514,6 +3376,11 @@ CONNECTION_GUIDANCE: dict[str, str] = {
         "that the certificate is trusted."
     ),
     "config": "The address is not usable as written. Check the format, scheme and port.",
+    "policy": (
+        "The endpoint is blocked by outbound safety policy. Use a public address; only the documented "
+        "localhost development services are permitted exceptions."
+    ),
+    "transport": "Credentials are not sent over plaintext connections. Enable TLS and try again.",
     "http_error": (
         "The endpoint answered, but not with a success status. Check the path and whether the service is healthy."
     ),
@@ -1522,8 +3389,18 @@ CONNECTION_GUIDANCE: dict[str, str] = {
 
 
 def _http_failure_kind(exc: Exception) -> str:
+    if isinstance(exc, _EndpointPolicyError):
+        return "policy"
     if isinstance(exc, ValueError):
         return "config"
+    if isinstance(exc, socket.gaierror):
+        return "dns"
+    if isinstance(exc, ssl.SSLError):
+        return "tls"
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, ConnectionRefusedError):
+        return "refused"
     if isinstance(exc, httpx.ConnectTimeout | httpx.ReadTimeout | httpx.PoolTimeout):
         return "timeout"
     if isinstance(exc, httpx.ConnectError):
@@ -1543,25 +3420,97 @@ def _http_failure_kind(exc: Exception) -> str:
 
 
 def _probe_http(
-    url: str, *, headers: dict[str, str] | None = None, reachable_only: bool = False
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    reachable_only: bool = False,
+    accept_auth_challenge: bool = False,
+    require_2xx: bool = False,
+    allow_loopback: bool = False,
 ) -> tuple[bool, str | None]:
     """Return (ok, error_kind). error_kind is None on success."""
     try:
-        response = httpx.get(_safe_url(url), headers=headers, timeout=3.0, follow_redirects=False)
-    except (httpx.HTTPError, ValueError) as exc:
+        safe_url = _safe_url(url)
+        parsed = urlparse(safe_url)
+        loopback_transport = allow_loopback and _explicit_loopback_host(cast(str, parsed.hostname))
+        if headers and parsed.scheme != "https" and not loopback_transport:
+            return False, "transport"
+        target = _resolve_pinned_target(
+            cast(str, parsed.hostname),
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            allow_loopback=allow_loopback,
+        )
+        status_code = _pinned_http_status(safe_url, target, headers)
+    except (http.client.HTTPException, httpx.HTTPError, OSError, ValueError) as exc:
         return False, _http_failure_kind(exc)
-    if response.status_code in {401, 403}:
-        return (False, "auth") if not reachable_only else (False, "auth")
+    if status_code in {401, 403}:
+        if reachable_only and accept_auth_challenge:
+            return True, None
+        return False, "auth"
+    if require_2xx:
+        return (True, None) if 200 <= status_code < 300 else (False, "http_error")
     if reachable_only:
-        return (response.status_code < 500, None if response.status_code < 500 else "http_error")
-    if 200 <= response.status_code < 400:
+        return (status_code < 500, None if status_code < 500 else "http_error")
+    if 200 <= status_code < 400:
         return True, None
     return False, "http_error"
 
 
-def _test_http(url: str, *, headers: dict[str, str] | None = None, reachable_only: bool = False) -> bool:
-    ok, _ = _probe_http(url, headers=headers, reachable_only=reachable_only)
+def _test_http(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    reachable_only: bool = False,
+    allow_loopback: bool = False,
+) -> bool:
+    ok, _ = _probe_http(url, headers=headers, reachable_only=reachable_only, allow_loopback=allow_loopback)
     return ok
+
+
+def _parse_smtp_address(address: str) -> tuple[str, int]:
+    try:
+        parsed = urlparse(f"//{address}")
+        host, port = parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise ValueError("invalid SMTP endpoint") from exc
+    if (
+        not host
+        or port is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or any(char.isspace() for char in host)
+    ):
+        raise ValueError("invalid SMTP endpoint")
+    return host, port
+
+
+class _PinnedSMTP(smtplib.SMTP):
+    def __init__(self, host: str, port: int, target: _ResolvedTarget, *, timeout: float) -> None:
+        self._pinned_target = target
+        super().__init__(host, port, timeout=timeout)
+
+    def _get_socket(self, _host: str, _port: int, timeout: float) -> socket.socket:
+        return _connect_pinned(self._pinned_target, timeout=timeout)
+
+
+class _PinnedSMTPSSL(smtplib.SMTP_SSL):
+    def __init__(self, host: str, port: int, target: _ResolvedTarget, *, timeout: float) -> None:
+        self._pinned_target = target
+        self._tls_hostname = host
+        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+
+    def _get_socket(self, _host: str, _port: int, timeout: float) -> socket.socket:
+        raw_socket = _connect_pinned(self._pinned_target, timeout=timeout)
+        try:
+            # ``self._host`` remains the original hostname, preserving SNI and
+            # certificate hostname verification for implicit TLS.
+            return self.context.wrap_socket(raw_socket, server_hostname=self._tls_hostname)
+        except Exception:
+            raw_socket.close()
+            raise
 
 
 def _probe_smtp(
@@ -1571,28 +3520,36 @@ def _probe_smtp(
     use_ssl: bool = False,
     username: str | None = None,
     password: str | None = None,
+    allow_loopback: bool = False,
 ) -> tuple[bool, str | None]:
     """Return (ok, error_kind). Distinguishes auth, TLS, DNS and firewall cases."""
     try:
-        host, raw_port = address.rsplit(":", 1)
-        port = int(raw_port)
-    except (TypeError, ValueError):
-        return False, "config"
-    if not host or not 1 <= port <= 65535 or any(char.isspace() for char in host):
-        return False, "config"
+        host, port = _parse_smtp_address(address)
+        loopback_transport = allow_loopback and _explicit_loopback_host(host)
+        if username and password and not (use_tls or use_ssl or loopback_transport):
+            return False, "transport"
+        target = _resolve_pinned_target(host, port, allow_loopback=allow_loopback)
+    except (OSError, ValueError) as exc:
+        return False, _http_failure_kind(exc)
     try:
         client = (
-            smtplib.SMTP_SSL(host, port, timeout=3, context=ssl.create_default_context())
-            if use_ssl
-            else smtplib.SMTP(host, port, timeout=3)
+            _PinnedSMTPSSL(host, port, target, timeout=3.0) if use_ssl else _PinnedSMTP(host, port, target, timeout=3.0)
         )
         with client:
             if use_tls:
+                # The pinned SMTP client retains the original hostname in
+                # ``_host``; smtplib passes it to wrap_socket for verification.
                 client.starttls(context=ssl.create_default_context())
             if username and password:
                 client.login(username, password)
             client.noop()
         return True, None
+    except _EndpointPolicyError:
+        return False, "policy"
+    except socket.gaierror:
+        return False, "dns"
+    except (TypeError, ValueError):
+        return False, "config"
     except smtplib.SMTPAuthenticationError:
         return False, "auth"
     except ssl.SSLError:
@@ -1622,8 +3579,16 @@ def _test_smtp(
     use_ssl: bool = False,
     username: str | None = None,
     password: str | None = None,
+    allow_loopback: bool = False,
 ) -> bool:
-    ok, _ = _probe_smtp(address, use_tls, use_ssl=use_ssl, username=username, password=password)
+    ok, _ = _probe_smtp(
+        address,
+        use_tls,
+        use_ssl=use_ssl,
+        username=username,
+        password=password,
+        allow_loopback=allow_loopback,
+    )
     return ok
 
 
@@ -1638,19 +3603,112 @@ def _auth_headers(values: dict[str, str], prefix: str) -> dict[str, str]:
     return headers
 
 
-def _test_webhook(raw: str) -> bool:
+def _selected_destination(values: dict[str, str], primary_key: str, fallback_key: str | None = None) -> tuple[str, str]:
+    primary = values.get(primary_key, "")
+    if primary or fallback_key is None:
+        return primary_key, primary
+    return fallback_key, values.get(fallback_key, "")
+
+
+def _credentials_for_destination(
+    transient: dict[str, str], merged: dict[str, str], *, destination_changed: bool
+) -> dict[str, str]:
+    # A caller may test a new endpoint before saving it, but credentials loaded
+    # from the env file belong to the saved endpoint. Never attach those saved
+    # secrets to a different caller-supplied destination. Transient credentials
+    # remain usable so a complete new configuration can still be tested.
+    return transient if destination_changed else merged
+
+
+_DEV_LOOPBACK_PORTS: dict[str, frozenset[int]] = {
+    "OPERATOR_API_OIDC_ISSUER": frozenset({8443}),
+    "MOCK_GRAPH_URL": frozenset({8181}),
+    "MOCK_AI_URL": frozenset({8282}),
+    "KP_WORKER_MAILPIT_API_URL": frozenset({8025}),
+    "KP_WORKER_MAILPIT_SMTP": frozenset({1025}),
+    "OPERATOR_API_TRAINING_BASE_URL": frozenset({8001}),
+}
+
+
+def _allow_development_loopback(settings: Any, destination_key: str, raw: str, *, smtp: bool = False) -> bool:
+    if not settings.dev_auth_mode or destination_key not in _DEV_LOOPBACK_PORTS:
+        return False
+    try:
+        if smtp:
+            host, port = _parse_smtp_address(raw)
+        else:
+            parsed = urlparse(_safe_url(raw))
+            host = cast(str, parsed.hostname)
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except (TypeError, ValueError):
+        return False
+    return _explicit_loopback_host(host) and port in _DEV_LOOPBACK_PORTS[destination_key]
+
+
+def _probe_webhook(raw: str) -> tuple[bool, str | None]:
     try:
         parsed = urlparse(_safe_url(raw, https_only=True))
         host = parsed.hostname
-        assert host is not None
+        if host is None:
+            return False, "config"
         port = parsed.port or 443
-        with (
-            socket.create_connection((host, port), timeout=3) as connection,
-            ssl.create_default_context().wrap_socket(connection, server_hostname=host),
-        ):
-            return True
-    except (OSError, ValueError, ssl.SSLError):
-        return False
+        target = _resolve_pinned_target(host, port)
+        raw_socket = _connect_pinned(target, timeout=3.0)
+        try:
+            tls_socket = ssl.create_default_context().wrap_socket(raw_socket, server_hostname=host)
+        except Exception:
+            raw_socket.close()
+            raise
+        with tls_socket:
+            return True, None
+    except (OSError, ValueError, ssl.SSLError) as exc:
+        return False, _http_failure_kind(exc)
+
+
+def _test_webhook(raw: str) -> bool:
+    ok, _ = _probe_webhook(raw)
+    return ok
+
+
+def _connection_test_result(
+    component: str,
+    *,
+    ok: bool,
+    error_kind: str | None,
+    verification_scope: str,
+    message: str | None = None,
+    reachable_unverified: bool = False,
+) -> dict[str, Any]:
+    if reachable_unverified:
+        return {
+            "component": component,
+            "ok": False,
+            "outcome": "reachable_unverified",
+            "save_allowed": True,
+            "verification_scope": verification_scope,
+            "error_kind": None,
+            "message": message or "The endpoint is reachable, but authentication was not verified.",
+        }
+    if ok:
+        return {
+            "component": component,
+            "ok": True,
+            "outcome": "verified",
+            "save_allowed": True,
+            "verification_scope": verification_scope,
+            "error_kind": None,
+            "message": message or "Connection successful.",
+        }
+    kind = error_kind or "unknown"
+    return {
+        "component": component,
+        "ok": False,
+        "outcome": "failed",
+        "save_allowed": False,
+        "verification_scope": verification_scope,
+        "error_kind": kind,
+        "message": message or CONNECTION_GUIDANCE.get(kind, CONNECTION_GUIDANCE["unknown"]),
+    }
 
 
 @router.post("/onboarding/test", response_model=dict[str, Any])
@@ -1659,57 +3717,196 @@ def test_onboarding_connection(
     request: Request,
     _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
+    if request.app.state.settings.config_is_managed:
+        raise ConflictError(
+            "connection tests based on a local env file are disabled for managed deployments. "
+            "Use the Azure deployment workflow's validation results; this endpoint cannot safely read "
+            "Key Vault-backed values."
+        )
     forbidden = set(body.values) - _ALLOWED_KEYS
     if forbidden:
         raise PermissionDeniedError(f"rejected configuration keys: {sorted(forbidden)}")
-    values = {**_env_values(_env_path(request)), **body.values}
+    saved = _env_values(_env_path(request))
+    values = {**saved, **body.values}
+    settings = request.app.state.settings
     component = body.component.lower()
+    scope = "connection"
     if component in {"identity", "oidc"}:
-        endpoint = values.get("OPERATOR_API_OIDC_ISSUER", "").rstrip("/") + "/.well-known/openid-configuration"
-        ok, kind = _probe_http(endpoint)
+        scope = "oidc_discovery"
+        destination_key = "OPERATOR_API_OIDC_ISSUER"
+        base = values.get(destination_key, "")
+        endpoint = base.rstrip("/") + "/.well-known/openid-configuration"
+        ok, kind = _probe_http(
+            endpoint,
+            allow_loopback=_allow_development_loopback(settings, destination_key, base),
+        )
     elif component == "graph":
-        base = values.get("KP_WORKER_GRAPH_BASE_URL") or values.get("MOCK_GRAPH_URL", "")
-        ok, kind = _probe_http(base.rstrip("/") + "/users", headers=_auth_headers(values, "KP_WORKER_GRAPH"))
+        scope = "directory_read"
+        destination_key, base = _selected_destination(values, "KP_WORKER_GRAPH_BASE_URL", "MOCK_GRAPH_URL")
+        _saved_key, saved_base = _selected_destination(saved, "KP_WORKER_GRAPH_BASE_URL", "MOCK_GRAPH_URL")
+        credentials = _credentials_for_destination(body.values, values, destination_changed=base != saved_base)
+        ok, kind = _probe_http(
+            base.rstrip("/") + "/users",
+            headers=_auth_headers(credentials, "KP_WORKER_GRAPH"),
+            allow_loopback=_allow_development_loopback(settings, destination_key, base),
+        )
     elif component == "ai":
-        base = values.get("KP_WORKER_AI_BASE_URL") or values.get("MOCK_AI_URL", "")
+        scope = "ai_endpoint_reachability"
+        destination_key, base = _selected_destination(values, "KP_WORKER_AI_BASE_URL", "MOCK_AI_URL")
+        _saved_key, saved_base = _selected_destination(saved, "KP_WORKER_AI_BASE_URL", "MOCK_AI_URL")
+        credentials = _credentials_for_destination(body.values, values, destination_changed=base != saved_base)
         ok, kind = _probe_http(
             base.rstrip("/") + "/propose",
-            headers=_auth_headers(values, "KP_WORKER_AI"),
+            headers=_auth_headers(credentials, "KP_WORKER_AI"),
             reachable_only=True,
+            allow_loopback=_allow_development_loopback(settings, destination_key, base),
         )
     elif component == "mailbox":
-        base = values.get("KP_WORKER_REPORTED_MAILBOX_URL") or values.get("KP_WORKER_MAILPIT_API_URL", "")
-        headers = _auth_headers(values, "KP_WORKER_REPORTED_MAILBOX")
-        basic_username = values.get("KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME", "")
-        basic_password = values.get("KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD", "")
-        if basic_username and basic_password:
-            token = base64.b64encode(f"{basic_username}:{basic_password}".encode()).decode()
-            headers["Authorization"] = f"Basic {token}"
-        ok, kind = _probe_http(base.rstrip("/") + "/api/v1/messages", headers=headers)
-    elif component == "training":
-        ok, kind = _probe_http(values.get("OPERATOR_API_TRAINING_BASE_URL", ""))
-    elif component == "smtp":
-        ok, kind = _probe_smtp(
-            values.get("KP_WORKER_SMTP_ADDRESS") or values.get("KP_WORKER_MAILPIT_SMTP", ""),
-            values.get("KP_WORKER_SMTP_STARTTLS", values.get("KP_WORKER_MAILPIT_SMTP_TLS", "false")).lower() == "true",
-            use_ssl=values.get("KP_WORKER_SMTP_SSL", "false").lower() == "true",
-            username=values.get("KP_WORKER_SMTP_USERNAME") or None,
-            password=values.get("KP_WORKER_SMTP_PASSWORD") or None,
+        provider = values.get("KP_WORKER_REPORTED_MAILBOX_PROVIDER", "mailpit").strip() or "mailpit"
+        if provider not in {"mailpit", "microsoft365"}:
+            return _connection_test_result(
+                component,
+                ok=False,
+                error_kind="config",
+                verification_scope="reported_mailbox",
+                message="Choose Mailpit or Microsoft 365 before testing the reported mailbox.",
+            )
+        destination_key, base = _selected_destination(
+            values, "KP_WORKER_REPORTED_MAILBOX_URL", "KP_WORKER_MAILPIT_API_URL"
         )
+        _saved_key, saved_base = _selected_destination(
+            saved, "KP_WORKER_REPORTED_MAILBOX_URL", "KP_WORKER_MAILPIT_API_URL"
+        )
+        saved_provider = saved.get("KP_WORKER_REPORTED_MAILBOX_PROVIDER", "mailpit").strip() or "mailpit"
+        credentials = _credentials_for_destination(
+            body.values,
+            values,
+            destination_changed=base != saved_base or provider != saved_provider,
+        )
+        if provider == "mailpit":
+            scope = "mailpit_mailbox_read"
+            headers = _auth_headers(credentials, "KP_WORKER_REPORTED_MAILBOX")
+            basic_username = credentials.get("KP_WORKER_REPORTED_MAILBOX_BASIC_USERNAME", "")
+            basic_password = credentials.get("KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD", "")
+            if basic_username and basic_password:
+                token = base64.b64encode(f"{basic_username}:{basic_password}".encode()).decode()
+                headers["Authorization"] = f"Basic {token}"
+            ok, kind = _probe_http(
+                base.rstrip("/") + "/api/v1/messages",
+                headers=headers,
+                allow_loopback=_allow_development_loopback(settings, destination_key, base),
+            )
+        else:
+            try:
+                endpoint = _microsoft365_probe_url(
+                    base,
+                    values.get("KP_WORKER_REPORTED_MAILBOX_ID", ""),
+                    values.get("KP_WORKER_REPORTED_MAILBOX_FOLDER_ID", ""),
+                )
+            except ValueError:
+                return _connection_test_result(
+                    component,
+                    ok=False,
+                    error_kind="config",
+                    verification_scope="microsoft365_mailbox_read",
+                )
+            headers = _auth_headers(credentials, "KP_WORKER_REPORTED_MAILBOX")
+            if headers.get("Authorization"):
+                scope = "microsoft365_mailbox_read"
+                ok, kind = _probe_http(endpoint, headers=headers, require_2xx=True)
+            else:
+                scope = "microsoft365_endpoint_reachability"
+                ok, kind = _probe_http(
+                    endpoint,
+                    reachable_only=True,
+                    accept_auth_challenge=True,
+                )
+                if ok:
+                    return _connection_test_result(
+                        component,
+                        ok=False,
+                        error_kind=None,
+                        verification_scope=scope,
+                        reachable_unverified=True,
+                        message=(
+                            "Microsoft Graph is reachable. The dedicated managed identity, Exchange Application "
+                            "RBAC, and mailbox read remain unverified; run the bounded reported-mailbox poll after "
+                            "deployment."
+                        ),
+                    )
+    elif component == "training":
+        scope = "training_page"
+        destination_key = "OPERATOR_API_TRAINING_BASE_URL"
+        base = values.get(destination_key, "")
+        ok, kind = _probe_http(
+            base,
+            allow_loopback=_allow_development_loopback(settings, destination_key, base),
+        )
+    elif component == "smtp":
+        provider = values.get("KP_WORKER_EMAIL_PROVIDER", "smtp").strip() or "smtp"
+        if provider == "azure_communication_services":
+            scope = "acs_endpoint_reachability"
+            endpoint = values.get("KP_WORKER_ACS_EMAIL_ENDPOINT", "")
+            try:
+                endpoint = _validated_acs_endpoint(endpoint)
+            except ValueError:
+                return _connection_test_result(
+                    component,
+                    ok=False,
+                    error_kind="config",
+                    verification_scope=scope,
+                )
+            ok, kind = _probe_http(
+                endpoint,
+                reachable_only=True,
+                accept_auth_challenge=True,
+            )
+            if ok:
+                return _connection_test_result(
+                    component,
+                    ok=False,
+                    error_kind=None,
+                    verification_scope=scope,
+                    reachable_unverified=True,
+                    message=(
+                        "The ACS endpoint is reachable. No message or credential was sent; managed-identity access, "
+                        "custom-domain readiness, delivery, and inbox placement remain unverified."
+                    ),
+                )
+        elif provider == "smtp":
+            scope = "smtp_session"
+            destination_key, address = _selected_destination(values, "KP_WORKER_SMTP_ADDRESS", "KP_WORKER_MAILPIT_SMTP")
+            _saved_key, saved_address = _selected_destination(saved, "KP_WORKER_SMTP_ADDRESS", "KP_WORKER_MAILPIT_SMTP")
+            credentials = _credentials_for_destination(
+                body.values, values, destination_changed=address != saved_address
+            )
+            ok, kind = _probe_smtp(
+                address,
+                values.get("KP_WORKER_SMTP_STARTTLS", "false").lower() == "true",
+                use_ssl=values.get("KP_WORKER_SMTP_SSL", "false").lower() == "true",
+                username=credentials.get("KP_WORKER_SMTP_USERNAME") or None,
+                password=credentials.get("KP_WORKER_SMTP_PASSWORD") or None,
+                allow_loopback=_allow_development_loopback(settings, destination_key, address, smtp=True),
+            )
+        else:
+            return _connection_test_result(
+                component,
+                ok=False,
+                error_kind="config",
+                verification_scope="email_provider",
+                message="Choose SMTP or Azure Communication Services before testing email delivery.",
+            )
     elif component == "webhook":
-        ok = _test_webhook(values.get("KP_WORKER_ALERT_WEBHOOK_URL", ""))
-        kind = None if ok else "unknown"
+        scope = "webhook_tls"
+        ok, kind = _probe_webhook(values.get("KP_WORKER_ALERT_WEBHOOK_URL", ""))
     else:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unsupported component")
-    if ok:
-        return {"component": component, "ok": True, "error_kind": None, "message": "Connection successful."}
-    error_kind = kind or "unknown"
-    return {
-        "component": component,
-        "ok": False,
-        "error_kind": error_kind,
-        "message": CONNECTION_GUIDANCE.get(error_kind, CONNECTION_GUIDANCE["unknown"]),
-    }
+    return _connection_test_result(
+        component,
+        ok=ok,
+        error_kind=kind,
+        verification_scope=scope,
+    )
 
 
 @router.get("/config", response_model=ConfigResponse)
@@ -1717,7 +3914,11 @@ def get_config(
     request: Request,
     _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> ConfigResponse:
-    values = _env_values(_env_path(request))
+    settings = request.app.state.settings
+    # An env file inside a managed container is neither the source of truth nor
+    # durable. Do not present its incidental contents as current Azure
+    # configuration. The UI can use ``mutable`` to render this view read-only.
+    values = {} if settings.config_is_managed else _env_values(_env_path(request))
     masked: dict[str, bool] = {}
     display: dict[str, str] = {}
     for key in _ALLOWED_KEYS:
@@ -1726,7 +3927,12 @@ def get_config(
         # round-trip a masked placeholder back into .env (CRIT-01).
         display[key] = "" if key in _SECRET_KEYS else raw
         masked[key] = key in _SECRET_KEYS
-    return ConfigResponse(values=display, masked=masked)
+    return ConfigResponse(
+        values=display,
+        masked=masked,
+        config_store=settings.config_store,
+        mutable=not settings.config_is_managed,
+    )
 
 
 @router.put("/config", response_model=dict[str, Any])
@@ -1740,16 +3946,14 @@ def put_config(
     if forbidden:
         raise PermissionDeniedError(f"rejected configuration keys: {sorted(forbidden)}")
 
-    env_path = _env_path(request)
-    changed: list[str] = []
-    current = _env_values(env_path)
-    for key, value in body.values.items():
-        if key in _SECRET_KEYS and not value:
-            continue  # blank secret means "keep the current value"
-        if value == current.get(key, ""):
-            continue
-        set_key(str(env_path), key, value)
-        changed.append(key)
+    try:
+        changed = _atomic_update_env(
+            _env_path(request),
+            body.values,
+            validate_candidate=_validate_config_candidate,
+        )
+    except _AtomicEnvUpdateError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from None
 
     audit = request.app.state.audit_store
     audit.record(
@@ -1762,15 +3966,24 @@ def put_config(
     return {"ok": True, "changed": changed}
 
 
+class RuntimeCapabilities(BaseModel):
+    config_mutation: bool
+    process_restart: bool
+    local_component_probes: bool
+
+
 class StatusResponse(BaseModel):
     operator_api: bool
-    tracking_api: bool
-    postgres: bool
-    redis: bool
-    console_password_set: bool
+    tracking_api: bool | None
+    postgres: bool | None
+    redis: bool | None
+    console_password_set: bool | None
     #: "env_file" (console may edit config) or "managed" (Terraform/Key Vault).
     config_store: str = "env_file"
     workers: dict[str, bool]
+    runtime_control: str
+    status_message: str
+    capabilities: RuntimeCapabilities
 
 
 @router.get("/status", response_model=StatusResponse)
@@ -1778,19 +3991,51 @@ def get_status(
     request: Request,
     _principal: Principal = Depends(require_capability(Capability.VIEW_AGGREGATE)),
 ) -> StatusResponse:
-    run_dir = _run_dir(request.app.state.settings)
+    settings = request.app.state.settings
+    if settings.config_is_managed:
+        # There is no local supervisor in Container Apps, and localhost probes
+        # say nothing authoritative about managed Postgres, Redis, or separate
+        # worker revisions. Azure health belongs to the external control plane.
+        return StatusResponse(
+            operator_api=True,
+            tracking_api=None,
+            postgres=None,
+            redis=None,
+            console_password_set=None,
+            config_store=settings.config_store,
+            workers={},
+            runtime_control="azure_control_plane",
+            status_message=(
+                "Component health and lifecycle are managed by Azure Container Apps; "
+                "this console does not have Azure control-plane access."
+            ),
+            capabilities=RuntimeCapabilities(
+                config_mutation=False,
+                process_restart=False,
+                local_component_probes=False,
+            ),
+        )
+
+    run_dir = _run_dir(settings)
     workers: dict[str, bool] = {}
     for name in ("ingestion", "generation", "delivery", "retention", "mailbox", "reminder", "alert", "directory"):
         workers[name] = _process_alive(run_dir / f"worker-{name}.pid")
-    tracking_health = request.app.state.settings.tracking_base_url.rstrip("/") + "/healthz"
+    tracking_health = settings.tracking_base_url.rstrip("/") + "/healthz"
     return StatusResponse(
         operator_api=True,
         tracking_api=_http_ok(tracking_health),
         postgres=_tcp_ok("127.0.0.1", 5432),
         redis=_tcp_ok("127.0.0.1", 6379),
         console_password_set=_console_password(_env_path(request)) is not None,
-        config_store=request.app.state.settings.config_store,
+        config_store=settings.config_store,
         workers=workers,
+        runtime_control="local_supervisor",
+        status_message="Status is based on local dependency probes and supervisor process identifiers.",
+        capabilities=RuntimeCapabilities(
+            config_mutation=True,
+            process_restart=True,
+            local_component_probes=True,
+        ),
     )
 
 
@@ -1805,18 +4050,6 @@ def restart_stack(
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
     return {"ok": True, "message": "restart requested"}
-
-
-@router.post("/stop", response_model=dict[str, Any])
-def stop_stack(
-    request: Request,
-    _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
-) -> dict[str, Any]:
-    """Signal the launcher supervisor to shut down every service."""
-    marker = _run_dir(request.app.state.settings) / "stop"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
-    return {"ok": True, "message": "stop requested"}
 
 
 def _run_dir(settings: Any) -> Path:

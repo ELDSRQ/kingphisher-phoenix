@@ -14,6 +14,7 @@ hash, so no schema change is required.
 
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime
 from typing import Any
@@ -119,6 +120,54 @@ _SOPHISTICATED_ACTOR_TYPES = frozenset({"nation-state"})
 _FULL_FRESHNESS_DAYS = 7.0
 _STALE_DAYS = 90.0
 
+# Source evidence remains deliberately small even before the worker applies
+# the stricter serialized generation-request boundary. The candidate is
+# durable review material, not an archive of the originating threat report.
+_MAX_EVIDENCE_TEXT_CHARS = 500
+_MAX_INDICATOR_ITEMS = 20
+_MAX_INDICATOR_KEY_CHARS = 64
+_MAX_INDICATOR_DEPTH = 2
+_OMITTED = object()
+
+
+def _bounded_text(value: object, *, max_chars: int = _MAX_EVIDENCE_TEXT_CHARS) -> str:
+    return str(value or "")[:max_chars]
+
+
+def _bounded_indicator_value(value: Any, *, depth: int = 0) -> Any:
+    """Return a deterministic, JSON-safe subset of source indicator data."""
+
+    if depth > _MAX_INDICATOR_DEPTH:
+        return _OMITTED
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value if len(str(value)) <= 64 else _OMITTED
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _OMITTED
+    if isinstance(value, str):
+        return _bounded_text(value)
+    if isinstance(value, list):
+        items = [_bounded_indicator_value(item, depth=depth + 1) for item in value[:_MAX_INDICATOR_ITEMS]]
+        return [item for item in items if item is not _OMITTED]
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        keys = sorted(key for key in value if isinstance(key, str) and key)
+        for key in keys[:_MAX_INDICATOR_ITEMS]:
+            bounded_key = _bounded_text(key, max_chars=_MAX_INDICATOR_KEY_CHARS)
+            if not bounded_key or bounded_key in result:
+                continue
+            item = _bounded_indicator_value(value[key], depth=depth + 1)
+            if item is not _OMITTED:
+                result[bounded_key] = item
+        return result
+    return _OMITTED
+
+
+def _indicator_context(value: object) -> dict[str, Any]:
+    bounded = _bounded_indicator_value(value if isinstance(value, dict) else {})
+    return bounded if isinstance(bounded, dict) else {}
+
 
 def _attack_techniques(triggers: list[str]) -> list[dict[str, str]]:
     """Map fired lure themes to ATT&CK techniques, deduped in trigger order."""
@@ -213,8 +262,31 @@ def build_pattern_candidate(item: dm.SourceItem, *, as_of: datetime | None = Non
     sectors = [s for s, patterns in _SECTOR_PATTERNS.items() if any(p.search(text) for p in patterns)]
     actors = [a for a, kws in _ACTOR_KEYWORDS.items() if any(k in text for k in kws)]
 
-    claimed_actor = actors[0] if actors else None
-    claimed_target_sector = sectors[0] if sectors else None
+    # Preserve explicit source claims verbatim (within the durable evidence
+    # bound); use deterministic classification only when the source made no
+    # claim. The distinction remains visible in ``threat_context`` below.
+    actor_type = _bounded_text(item.claimed_actor) if item.claimed_actor else (actors[0] if actors else None)
+    sector_targeting = (
+        _bounded_text(item.claimed_target_sector) if item.claimed_target_sector else (sectors[0] if sectors else None)
+    )
+
+    source_item_id = str(item.source_item_id)
+    published_at = item.published_at.isoformat()
+    observed_at = item.retrieved_at.isoformat()
+    evidence = {
+        "source_item_id": source_item_id,
+        "title": _bounded_text(item.title),
+        "excerpt": _bounded_text(item.sanitized_text),
+        "source": _bounded_text(item.publisher),
+        "citation": _bounded_text(item.source_reference),
+        "published_at": published_at,
+        "observed_at": observed_at,
+        "confidence": item.confidence.value,
+    }
+    if item.claimed_actor:
+        evidence["claimed_actor"] = _bounded_text(item.claimed_actor)
+    if item.claimed_target_sector:
+        evidence["claimed_target_sector"] = _bounded_text(item.claimed_target_sector)
 
     return dm.CampaignPattern(
         pattern_version=1,
@@ -225,22 +297,32 @@ def build_pattern_candidate(item: dm.SourceItem, *, as_of: datetime | None = Non
         requested_action="click_link" if "link" in triggers else "none",
         delivery_method="email",
         warning_cues=["urgent-language", "unexpected-sender"] if "urgent" in triggers else ["none"],
-        actor_type=claimed_actor,
-        sector_targeting=claimed_target_sector,
+        actor_type=actor_type,
+        sector_targeting=sector_targeting,
         attack_mapping={
             "source_hash": item.content_hash,
-            "source_item_id": str(item.source_item_id) if item.source_item_id else None,
+            "source_item_id": source_item_id,
             "attack_techniques": _attack_techniques(triggers),
-            "difficulty": _difficulty(lure_category, triggers, claimed_actor),
+            "difficulty": _difficulty(lure_category, triggers, actor_type),
             "freshness": _freshness(item.published_at, as_of),
+            "threat_context": {
+                "source": _bounded_text(item.publisher),
+                "citation": _bounded_text(item.source_reference),
+                "published_at": published_at,
+                "observed_at": observed_at,
+                "claimed_actor": _bounded_text(item.claimed_actor) if item.claimed_actor else None,
+                "claimed_target_sector": (
+                    _bounded_text(item.claimed_target_sector) if item.claimed_target_sector else None
+                ),
+                "actor_type": actor_type,
+                "sector_targeting": sector_targeting,
+                "confidence": item.confidence.value,
+                "indicator_context": _indicator_context(item.extracted_indicators),
+                "source_text_treatment": "untrusted_data",
+            },
         },
         confidence=item.confidence,
-        supporting_evidence=[
-            {
-                "source_item_id": str(item.source_item_id),
-                "title": item.title,
-            }
-        ],
+        supporting_evidence=[evidence],
         prohibited_content_indicators=[],
         approval_state=dm.PatternApprovalState.DRAFT,
         approved_by=None,

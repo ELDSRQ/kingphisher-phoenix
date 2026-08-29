@@ -12,12 +12,14 @@ import os
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-import jwt
 import pytest
+
+pytestmark = pytest.mark.e2e
 
 OPERATOR_URL = os.getenv("KP_E2E_OPERATOR_URL", "http://127.0.0.1:8000").rstrip("/")
 TRACKING_URL = os.getenv("KP_E2E_TRACKING_URL", "http://127.0.0.1:8001").rstrip("/")
@@ -45,7 +47,7 @@ def _json_request(
     token: str | None = None,
     method: str = "GET",
     body: dict[str, object] | None = None,
-) -> tuple[int, object]:
+) -> tuple[int, Any]:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     data = None
     if body is not None:
@@ -59,7 +61,7 @@ def _json_request(
             return response.status, json.load(response)
     except HTTPError as error:
         try:
-            payload: object = json.load(error)
+            payload: Any = json.load(error)
         except json.JSONDecodeError:
             payload = error.read().decode(errors="replace")
         return error.code, payload
@@ -79,24 +81,19 @@ def _login() -> str:
         body = json.load(response)
     token = body.get("token")
     assert isinstance(token, str) and token
+    assert body.get("auth_mode") == "dev"
+    assert body.get("approval_limited") is False
+    assert body.get("roles") == ["administrator"]
+    capabilities = body.get("capabilities")
+    assert isinstance(capabilities, list)
+    assert "manage:roles" in capabilities
+    # Authority is derived by the server from the authenticated principal. It
+    # must remain display-safe and must never be populated with the bearer
+    # credential. The password is request-only and is not echoed at all.
+    authority = json.dumps({"roles": body["roles"], "capabilities": capabilities}, sort_keys=True)
+    assert token not in authority
+    assert "password" not in body
     return token
-
-
-def _principal_token(*roles: str) -> str:
-    secret = os.environ["OPERATOR_API_CONSOLE_JWT_SECRET"]
-    now = datetime.now(UTC)
-    return jwt.encode(
-        {
-            "sub": str(uuid.uuid4()),
-            "iss": os.getenv("OPERATOR_API_OIDC_ISSUER", "http://localhost:8443/realms/kingphisher"),
-            "aud": os.getenv("OPERATOR_API_OIDC_AUDIENCE", "kp-operator-api"),
-            "nbf": now - timedelta(seconds=5),
-            "exp": now + timedelta(minutes=10),
-            "realm_access": {"roles": list(roles)},
-        },
-        secret,
-        algorithm="HS256",
-    )
 
 
 def test_health_endpoints() -> None:
@@ -137,9 +134,6 @@ def test_single_administrator_campaign_lifecycle_and_alert_health() -> None:
         pytest.skip("set KP_E2E_LIFECYCLE=1 to permit local lifecycle mutations")
     if urlparse(OPERATOR_URL).hostname not in {"127.0.0.1", "localhost", "::1"}:
         pytest.fail("campaign lifecycle E2E is restricted to a loopback operator API")
-    if not os.getenv("OPERATOR_API_CONSOLE_JWT_SECRET"):
-        pytest.fail("OPERATOR_API_CONSOLE_JWT_SECRET is required to mint local dev principals")
-
     status, mode = _json_request("/api/v1/console/auth-mode")
     assert status == 200 and mode == {"auth_mode": "dev", "deployment_mode": "single_tenant"}
 
@@ -147,12 +141,32 @@ def test_single_administrator_campaign_lifecycle_and_alert_health() -> None:
 
     patterns_status, patterns = _json_request("/api/v1/patterns", token=administrator)
     templates_status, templates = _json_request("/api/v1/templates", token=administrator)
+    training_status, training_resources = _json_request(
+        "/api/v1/training-resources?approval_state=approved", token=administrator
+    )
     recipients_status, recipients = _json_request("/api/v1/recipients", token=administrator)
-    assert patterns_status == templates_status == 200
+    assert patterns_status == templates_status == training_status == 200
     assert recipients_status == 200
-    approved_patterns = [row for row in patterns if row["approval_state"] == "approved"]  # type: ignore[union-attr]
-    approved_templates = [row for row in templates if row["approval_state"] == "approved"]  # type: ignore[union-attr]
-    assert approved_patterns and approved_templates, "seed at least one approved pattern and template"
+    assert isinstance(recipients, dict)
+    recipient_rows = recipients.get("items")
+    assert isinstance(recipient_rows, list)
+    assert recipients.get("total", 0) >= len(recipient_rows)
+    approved_patterns = [row for row in patterns if row["approval_state"] == "approved"]
+    approved_templates = [row for row in templates if row["approval_state"] == "approved"]
+    approved_training = [row for row in training_resources if row["approval_state"] == "approved"]
+    assert approved_patterns and approved_templates and approved_training, (
+        "seed at least one approved pattern, template, and training lesson"
+    )
+    seeded_test_recipient_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "seed-recipient-3"))
+    eligible_recipients = [
+        row
+        for row in recipient_rows
+        if row["recipient_id"] == seeded_test_recipient_id
+        and row["status"] == "active"
+        and row["is_test_account"] is True
+    ]
+    assert len(eligible_recipients) == 1, "seed the active local example.com test recipient"
+    recipient_id = eligible_recipients[0]["recipient_id"]
 
     start = datetime.now(UTC) + timedelta(days=1)
     created_status, created = _json_request(
@@ -162,19 +176,18 @@ def test_single_administrator_campaign_lifecycle_and_alert_health() -> None:
         body={
             "pattern_id": approved_patterns[0]["campaign_pattern_id"],
             "template_version_id": approved_templates[0]["template_version_id"],
+            "training_resource_id": approved_training[0]["training_resource_id"],
             "title": f"E2E readiness {uuid.uuid4()}",
             "sender_mailbox": "awareness@example.com",
             "training_domain": "example.com",
             "schedule_start": start.isoformat(),
             "schedule_end": (start + timedelta(hours=1)).isoformat(),
             "timezone": "UTC",
-            # The campaign engine intentionally fails closed instead of
-            # sampling when eligible recipients exceed the declared cap.
-            "max_recipients": max(1, len(recipients)),  # type: ignore[arg-type]
+            "max_recipients": 1,
         },
     )
     assert created_status == 201, created
-    campaign_id = created["campaign_id"]  # type: ignore[index]
+    campaign_id = created["campaign_id"]
 
     subscription_status, subscription = _json_request(
         "/api/v1/alerts/subscriptions",
@@ -182,34 +195,64 @@ def test_single_administrator_campaign_lifecycle_and_alert_health() -> None:
         method="POST",
         body={"campaign_id": campaign_id, "channel": "web"},
     )
-    assert subscription_status == 201 and subscription["active"] is True  # type: ignore[index]
+    assert subscription_status == 201 and subscription["active"] is True
+
+    audience_status, audience = _json_request(
+        f"/api/v1/campaigns/{campaign_id}/audience",
+        token=administrator,
+        method="PUT",
+        body={"include_recipient_ids": [recipient_id]},
+    )
+    assert audience_status == 200, audience
+    preview_status, preview = _json_request(f"/api/v1/campaigns/{campaign_id}/audience/preview", token=administrator)
+    assert preview_status == 200, preview
+    assert preview["selected_count"] == 1
+    assert preview["included_count"] == 1
+    preview_hash = preview["preview_hash"]
+    assert isinstance(preview_hash, str) and len(preview_hash) == 64
+    freeze_status, frozen = _json_request(
+        f"/api/v1/campaigns/{campaign_id}/audience/freeze",
+        token=administrator,
+        method="POST",
+        body={"preview_hash": preview_hash},
+    )
+    assert freeze_status == 200, frozen
+
+    review_status, review = _json_request(f"/api/v1/campaigns/{campaign_id}/submit", token=administrator, method="POST")
+    assert review_status == 200, review
+    assert review["state"] == "approved"
+    assert isinstance(review["launch_manifest_hash"], str) and len(review["launch_manifest_hash"]) == 64
 
     scheduled_status, scheduled = _json_request(
         f"/api/v1/campaigns/{campaign_id}/schedule", token=administrator, method="POST"
     )
-    assert scheduled_status == 200 and scheduled["state"] == "scheduled"  # type: ignore[index]
+    assert scheduled_status == 200 and scheduled["state"] == "scheduled"
+    assert scheduled["prepared"] > 0 and scheduled["queued"] > 0
 
     alerts_status, alerts = _json_request(
         f"/api/v1/alerts/subscriptions?campaign_id={campaign_id}", token=administrator
     )
-    assert alerts_status == 200 and any(item["active"] for item in alerts)  # type: ignore[union-attr]
-    ntfy_status, ntfy = _json_request(
-        "/api/v1/alerts/subscriptions",
-        token=administrator,
-        method="POST",
-        body={
-            "campaign_id": campaign_id,
-            "channel": "ntfy",
-            "destination_url": f"https://ntfy.sh/kp-disposable-{campaign_id}",
-        },
-    )
-    assert ntfy_status == 201 and ntfy["active"] is True  # type: ignore[index]
-    assert isinstance(ntfy["signing_secret"], str) and ntfy["signing_secret"]  # type: ignore[index]
+    assert alerts_status == 200
+    assert any(item["active"] and item["channel"] == "web" for item in alerts)
+    assert all(item["channel"] == "web" for item in alerts)
     provider_status, provider = _json_request("/api/v1/console/status", token=administrator)
     assert provider_status == 200
-    assert provider["operator_api"] and provider["tracking_api"]  # type: ignore[index]
-    assert provider["postgres"] and provider["redis"]  # type: ignore[index]
-    assert provider["workers"]["alert"] and provider["workers"]["directory"]  # type: ignore[index]
+    assert provider["operator_api"] and provider["tracking_api"]
+    assert provider["postgres"] and provider["redis"]
+    assert provider["runtime_control"] == "local_supervisor"
+    assert provider["capabilities"]["local_component_probes"] is True
+    worker_status = provider["workers"]
+    assert set(worker_status) == {
+        "ingestion",
+        "generation",
+        "delivery",
+        "retention",
+        "mailbox",
+        "reminder",
+        "alert",
+        "directory",
+    }
+    assert all(worker_status.values())
 
 
 def test_onboarding_contract_and_local_connectors() -> None:
@@ -232,47 +275,94 @@ def test_onboarding_contract_and_local_connectors() -> None:
             method="POST",
             body={"component": component, "values": {}},
         )
-        assert test_status == 200 and result["ok"] is True, (component, result)  # type: ignore[index]
+        assert test_status == 200 and result["ok"] is True, (component, result)
 
+    before_status, before = _json_request("/api/v1/integrations/microsoft365/status", token=administrator)
+    assert before_status == 200
+    previous_preview_id = before["directory"].get("preview_id")
     sync_status, sync = _json_request("/api/v1/recipients/sync-directory", token=administrator, method="POST")
-    assert sync_status == 202 and sync["queued"] is True  # type: ignore[index]
-    job_id = sync["job_id"]  # type: ignore[index]
-    for _ in range(10):
+    assert sync_status == 202 and sync["queued"] is True
+    job_id = sync["job_id"]
+    for _ in range(20):
+        state_status, integration = _json_request("/api/v1/integrations/microsoft365/status", token=administrator)
+        assert state_status == 200
+        directory = integration["directory"]
+        preview_id = directory.get("preview_id")
         audit_status, events = _json_request("/api/v1/audit", token=administrator)
         assert audit_status == 200
-        if any(
-            event.get("action") == "directory.sync" and event.get("object_id") == job_id
-            for event in events  # type: ignore[union-attr]
+        request_recorded = any(
+            event.get("action") == "directory.preview.request" and event.get("object_id") == job_id for event in events
+        )
+        preview_recorded = any(
+            event.get("action") == "directory.preview" and event.get("object_id") == preview_id for event in events
+        )
+        if (
+            directory.get("status") == "preview_ready"
+            and preview_id
+            and preview_id != previous_preview_id
+            and request_recorded
+            and preview_recorded
         ):
             break
         time.sleep(0.5)
     else:
-        pytest.fail("directory worker did not record a completed sync")
+        pytest.fail("directory worker did not expose and audit a completed preview")
 
 
 def test_azure_deployment_wizard_contract() -> None:
     administrator = _login()
     status, wizard = _json_request("/api/v1/console/azure-deployment", token=administrator)
     assert status == 200
-    steps = wizard["steps"]  # type: ignore[index]
+    steps = wizard["steps"]
     assert {step["id"] for step in steps} == {
         "azure_foundation",
         "azure_identity_dns",
+        "azure_email",
         "azure_integrations",
         "azure_automation",
     }
     assert all(field["secret"] is False for step in steps for field in step["fields"])
     assert all(field["where_to_find"] for step in steps for field in step["fields"])
+    readiness = wizard["release_readiness"]
+    assert readiness["evidence_level"] == "local_contract_only"
+    assert readiness["production_plan_allowed"] is False
+    assert readiness["staging_plan_allowed"] is True
     values = {
         "subscription_id": "11111111-1111-1111-1111-111111111111",
         "environment": "staging",
+        "deployment_stage": "foundation_bootstrap",
+        "network_mode": "private",
         "location": "eastus2",
         "name_prefix": "kp",
         "entra_tenant_id": "22222222-2222-2222-2222-222222222222",
         "entra_client_id": "33333333-3333-3333-3333-333333333333",
+        "azure_deployment_client_id": "44444444-4444-4444-4444-444444444444",
         "operator_fqdn": "awareness.example.com",
         "tracking_fqdn": "awareness-track.example.com",
         "communication_data_location": "United States",
+        "acs_resource_mode": "provision",
+        "acs_existing_communication_service_id": "",
+        "acs_existing_email_endpoint": "",
+        "acs_existing_email_domain_id": "",
+        "acs_sending_domain": "mail.example.com",
+        "acs_sender_local_part": "awareness",
+        "acs_sender_display_name": "Security Awareness",
+        "acs_dns_zone_id": "",
+        "acs_daily_message_limit": "1000",
+        "acs_messages_per_minute": "20",
+        "acs_ramp_batch_size": "10",
+        "acs_ramp_interval_seconds": "60",
+        "ai_endpoint": "https://ai-gateway.example.com",
+        "enable_directory_sync": "false",
+        "directory_group_ids": "",
+        "enable_reported_mailbox": "false",
+        "reported_mailbox_address": "",
+        "reported_mailbox_folder": "inbox",
+        "alert_webhook_domains": "",
+        "allowed_recipient_domains": "example.com",
+        "ciphertext_active_key_id": "primary",
+        "ciphertext_prior_key_ids": "",
+        "ciphertext_prior_keys_secret_id": "",
         "tf_state_resource_group": "rg-kp-state",
         "tf_state_storage_account": "kptfstateprod",
         "tf_state_container": "tfstate",
@@ -284,16 +374,19 @@ def test_azure_deployment_wizard_contract() -> None:
         method="POST",
         body={"values": values},
     )
-    assert validation_status == 200 and validation["ok"] is True  # type: ignore[index]
+    assert validation_status == 200 and validation["ok"] is True
+    validation_readiness = validation["release_readiness"]
+    assert validation_readiness["evidence_level"] == "local_contract_only"
+    assert validation_readiness["production_plan_allowed"] is False
 
 
 def test_setup_help_and_assistant() -> None:
     administrator = _login()
     help_status, help_content = _json_request("/api/v1/console/help", token=administrator)
     assert help_status == 200
-    assert any(item["term"] == "OIDC" for item in help_content["glossary"])  # type: ignore[index]
-    assert any(item["term"] == "Terraform state" for item in help_content["glossary"])  # type: ignore[index]
-    assert any(item["id"] == "azure-deployment" for item in help_content["topics"])  # type: ignore[index]
+    assert any(item["term"] == "OIDC" for item in help_content["glossary"])
+    assert any(item["term"] == "Terraform state" for item in help_content["glossary"])
+    assert any(item["id"] == "azure-deployment" for item in help_content["topics"])
 
     assist_status, assistance = _json_request(
         "/api/v1/console/onboarding/assist",
@@ -302,9 +395,9 @@ def test_setup_help_and_assistant() -> None:
         body={"component": "identity", "question": "What is OIDC?", "values": {}},
     )
     assert assist_status == 200
-    assert isinstance(assistance["answer"], str) and assistance["answer"]  # type: ignore[index]
-    assert assistance["source"] in {"configured-ai", "curated"}  # type: ignore[index]
-    assert assistance["warnings"]  # type: ignore[index]
+    assert isinstance(assistance["answer"], str) and assistance["answer"]
+    assert assistance["source"] in {"configured-ai", "curated"}
+    assert assistance["warnings"]
 
     fake_token = "FAKE-DISPOSABLE-token=not-a-real-credential"
     fake_api_key = "sk-disposable-only-123456789"
@@ -319,7 +412,7 @@ def test_setup_help_and_assistant() -> None:
         },
     )
     assert filtered_status == 200
-    assert filtered["warnings"]  # type: ignore[index]
+    assert filtered["warnings"]
     response_text = str(filtered)
     assert fake_token not in response_text
     assert fake_api_key not in response_text
@@ -336,8 +429,8 @@ def test_setup_help_and_assistant() -> None:
         },
     )
     assert webhook_status == 200
-    assert "does not require an MTA or mail relay" in webhook_help["answer"]  # type: ignore[index]
-    assert webhook_help["suggestions"] == {}  # type: ignore[index]
-    assert webhook_help["warnings"] == [  # type: ignore[index]
+    assert "does not require an MTA or mail relay" in webhook_help["answer"]
+    assert webhook_help["suggestions"] == {}
+    assert webhook_help["warnings"] == [
         "AI suggestions are advisory. Review them and run the connection test before saving."
     ]

@@ -48,7 +48,8 @@ class SmtpReminderSender:
         message["From"] = self._sender
         message["To"] = reminder.recipient
         message.set_content(reminder.text)
-        self._transport.send(message)
+        with self._transport:
+            self._transport.send(message)
 
 
 class ProviderReminderSender:
@@ -62,4 +63,8 @@ class ProviderReminderSender:
         message["From"] = self._sender
         message["To"] = reminder.recipient
         message.set_content(reminder.text)
-        self._transport.send(message)
+        # Reminder jobs create a transport per message. Entering it here preserves
+        # one self-contained SMTP send and deterministically closes ACS HTTP
+        # and managed-identity clients instead of waiting for garbage collection.
+        with self._transport:
+            self._transport.send(message)

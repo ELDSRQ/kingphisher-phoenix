@@ -1,17 +1,21 @@
 name: Azure deployment
+run-name: ${{ inputs.deployment_request_id }}
 
 # Two supported shapes, chosen by `network_mode`:
 #
 #   starter  - data-plane services stay publicly reachable, so a GitHub-hosted
-#              runner can deploy a brand-new tenant in a single dispatch with no
-#              pre-existing VNet or self-hosted runner. For evaluation and first
+#              runner can bootstrap a brand-new tenant with no pre-existing VNet
+#              or self-hosted runner. For evaluation and first
 #              bring-up only; Terraform refuses it for production.
 #   private  - the hardened default. Postgres, Redis, Key Vault and the registry
 #              sit behind private endpoints, so the deploy job must run on a
 #              runner inside the VNet.
 #
-# Images are built with `az acr build` in both modes: the build happens inside
-# the registry, so no runner needs a Docker daemon.
+# Deployment images are built with `az acr build` in both modes. Before a
+# workloads deployment, the qualification job also builds and starts the exact
+# candidate on the hosted runner's explicitly bound Docker daemon. Azure
+# Container Apps runs linux/amd64; native developer evidence is deliberately
+# not interchangeable with this CI and registry qualification.
 
 on:
   workflow_dispatch:
@@ -29,10 +33,27 @@ on:
         default: private
         type: choice
         options: [private, starter]
+      deployment_phase:
+        description: Bootstrap ACS/DNS, finalize verified sender binding, or deploy workloads
+        required: true
+        default: foundation_bootstrap
+        type: choice
+        options: [foundation_bootstrap, foundation_finalize, workloads]
+      deployment_config:
+        description: Canonical non-secret configuration emitted by the reviewed GUI
+        required: true
+        type: string
+      deployment_request_id:
+        description: Opaque GUI deployment correlation (kp-<32 lowercase hex>-<attempt>)
+        required: true
+        type: string
+      reviewed_commit_sha:
+        description: Commit SHA resolved and reviewed by the fixed GUI deployment connector
+        required: true
+        type: string
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: azure-${{ inputs.environment }}
@@ -40,21 +61,245 @@ concurrency:
 
 jobs:
   qualify:
+    name: Qualify source and release gates
+    needs: guard
     runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      DATABASE_URL_TEST: postgresql+psycopg://kingphisher:kingphisher@127.0.0.1:5432/kingphisher_test
+      AUDIT_DATABASE_URL_TEST: postgresql+psycopg://audit_writer:audit_writer@127.0.0.1:5432/kingphisher_test
+      REDIS_URL_POSTGRES_TEST: redis://127.0.0.1:6379/14
+    services:
+      postgres:
+        image: postgres:16@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94
+        env:
+          POSTGRES_USER: kingphisher
+          POSTGRES_PASSWORD: kingphisher
+          POSTGRES_DB: kingphisher_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kingphisher -d kingphisher_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - name: Record runner disk headroom before qualification
+        env:
+          DEPLOYMENT_REQUEST_ID: ${{ inputs.deployment_request_id }}
+          REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+          DEPLOYMENT_PHASE: ${{ inputs.deployment_phase }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/qualification-evidence"
+          evidence_file="$evidence_dir/checkpoints.ndjson"
+          mkdir -p "$evidence_dir"
+          echo "KP_QUALIFICATION_EVIDENCE_FILE=$evidence_file" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          request_id = os.environ["DEPLOYMENT_REQUEST_ID"]
+          reviewed_commit = os.environ["REVIEWED_COMMIT_SHA"]
+          environment = os.environ["DEPLOYMENT_ENVIRONMENT"]
+          phase = os.environ["DEPLOYMENT_PHASE"]
+          if re.fullmatch(r"kp-[0-9a-f]{32}-[1-9][0-9]{0,2}", request_id) is None:
+              raise SystemExit("deployment request correlation is invalid")
+          if re.fullmatch(r"[0-9a-f]{40}", reviewed_commit) is None:
+              raise SystemExit("reviewed commit is invalid")
+          if environment not in {"staging", "production"} or phase not in {
+              "foundation_bootstrap", "foundation_finalize", "workloads"
+          }:
+              raise SystemExit("deployment environment or phase is invalid")
+
+          target = Path(os.environ["RUNNER_TEMP"]) / "qualification-evidence" / "checkpoints.ndjson"
+          minimum_free_bytes = 10 * 1024**3
+          free_bytes = shutil.disk_usage(target.parent).free
+          status = "passed" if free_bytes >= minimum_free_bytes else "blocked"
+          record = {
+              "schema": "kp.azure-deployment-checkpoint.v1",
+              "sequence": 1,
+              "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+              "correlation": {
+                  "deployment_request_id": request_id,
+                  "reviewed_commit_sha": reviewed_commit,
+                  "environment": environment,
+                  "phase": phase,
+              },
+              "workflow_run": {
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+                  "job": "qualify",
+              },
+              "stage": "qualification_runner_preflight",
+              "status": status,
+              "evidence": {
+                  "free_bytes": free_bytes,
+                  "minimum_free_bytes": minimum_free_bytes,
+                  "automatic_cleanup_allowed": False,
+                  "mutation_performed": False,
+              },
+              "safe_next_action": (
+                  "Continue with dependency and image qualification."
+                  if status == "passed"
+                  else "Use a runner with sufficient capacity; do not prune project images, caches, or evidence."
+              ),
+              "previous_record_sha256": None,
+          }
+          canonical = json.dumps(record, separators=(",", ":"), sort_keys=True)
+          record["record_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          with target.open("x", encoding="utf-8") as output:
+              output.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
+              output.flush()
+              os.fsync(output.fileno())
+          if status != "passed":
+              raise SystemExit("runner disk headroom is below the required 10 GiB; no cleanup was attempted")
+          PY
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.28
       - run: uv sync --frozen --all-packages
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+      - name: Install pinned security scanners
+        run: |
+          uv tool install bandit==1.9.4
+          uv tool install pip-audit==2.10.1
+          uv tool install semgrep==1.171.0
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.6
+        with:
+          version: v0.74.0
+          cache: true
       - run: make lint
       - run: make typecheck
-      - run: uv run pytest -q
+      - run: make security-scan
+      - name: Required hermetic no-skip suite
+        run: make test
+      - name: Validate Terraform without a backend
+        working-directory: infrastructure/terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: Prepare required database roles and schema
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          DATABASE_URL: postgresql+psycopg://kingphisher:kingphisher@127.0.0.1:5432/kingphisher_test
+        run: |
+          uv run python -c 'import psycopg; c=psycopg.connect("postgresql://kingphisher:kingphisher@127.0.0.1:5432/kingphisher_test"); c.autocommit=True; c.execute("CREATE ROLE audit_writer LOGIN PASSWORD " + chr(39) + "audit_writer" + chr(39)); c.close()'
+          make db-migrate
+      - name: Required PostgreSQL integration gate
+        if: inputs.deployment_phase == 'workloads'
+        run: make test-postgres
+      - name: Required Redis integration gate
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          REDIS_URL_TEST: redis://127.0.0.1:6379/15
+        run: make test-redis
+      - name: Required fresh-migration gate
+        if: inputs.deployment_phase == 'workloads'
+        run: make test-fresh-migration
+      - name: Build and start every release image
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_CONTEXT: ""
+          KP_IMAGE_EXPECTED_DOCKER_ENDPOINT: unix:///var/run/docker.sock
+          KP_IMAGE_EXPECTED_DOCKER_ROOT_DIR: /var/lib/docker
+          KP_IMAGE_EXPECTED_PLATFORM: linux/amd64
+          KP_IMAGE_PREFIX: kingphisher/verify-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          KP_IMAGE_BUILD_STORAGE_PATH: ${{ runner.temp }}
+          KP_IMAGE_QUALIFICATION_EVIDENCE_DIR: ${{ runner.temp }}/qualification-evidence/release-images
+        run: |
+          mkdir -p "$RUNNER_TEMP/qualification-evidence"
+          trivy_executable="$(realpath "$(command -v trivy)")"
+          trivy_sha256="d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791"
+          trivy_cache="$RUNNER_TEMP/trivy-qualification-cache"
+          mkdir -p "$trivy_cache"
+          expected_source_digest="$(/bin/bash scripts/operator/release/verify_images.sh --print-source-manifest-digest)"
+          while IFS='=' read -r name _; do
+            case "$name" in
+              TRIVY_*) unset "$name" ;;
+            esac
+          done < <(env)
+          KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST="$expected_source_digest" \
+          KP_TRIVY_EXECUTABLE="$trivy_executable" \
+          KP_TRIVY_EXPECTED_SHA256="$trivy_sha256" \
+          KP_TRIVY_CACHE_DIR="$trivy_cache" \
+            make verify-images
+      - name: Recheck the verifier-bound release images
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+          DOCKER_CONTEXT: ""
+          KP_IMAGE_EXPECTED_DOCKER_ENDPOINT: unix:///var/run/docker.sock
+          KP_IMAGE_EXPECTED_DOCKER_ROOT_DIR: /var/lib/docker
+          KP_IMAGE_EXPECTED_PLATFORM: linux/amd64
+          KP_IMAGE_PREFIX: kingphisher/verify-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          KP_IMAGE_BUILD_STORAGE_PATH: ${{ runner.temp }}
+          KP_IMAGE_QUALIFICATION_EVIDENCE_DIR: ${{ runner.temp }}/qualification-evidence/release-images
+        run: make security-scan-images
+      - name: Upload qualification recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: azure-qualification-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification-evidence
+          if-no-files-found: error
+          retention-days: 90
 
   guard:
+    name: Guard reviewed deployment inputs
     # Cheap, explicit refusal before any Azure call. Terraform enforces this too
     # (terraform_data.network_mode_guard), but failing here keeps the reason
     # legible instead of surfacing as a plan error deep in the deploy job.
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
+      - name: Validate opaque deployment request correlation
+        env:
+          DEPLOYMENT_REQUEST_ID: ${{ inputs.deployment_request_id }}
+        run: |
+          if [[ ! "$DEPLOYMENT_REQUEST_ID" =~ ^kp-[0-9a-f]{32}-[1-9][0-9]{0,2}$ ]]; then
+            echo "::error::deployment_request_id must be an opaque GUI-issued correlation value"
+            exit 1
+          fi
+      - name: Refuse source drift after GUI review
+        env:
+          REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          if [[ ! "$REVIEWED_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::reviewed_commit_sha must be a full lowercase commit SHA"
+            exit 1
+          fi
+          if [[ "$GITHUB_SHA" != "$REVIEWED_COMMIT_SHA" ]]; then
+            echo "::error::the deployment ref moved after GUI review; create and review a new plan"
+            exit 1
+          fi
       - name: Refuse starter mode for production
         if: inputs.environment == 'production' && inputs.network_mode == 'starter'
         run: |
@@ -63,37 +308,412 @@ jobs:
           echo "::error::Deploy production with network_mode=private."
           exit 1
       - name: Record selected mode
-        run: echo "Deploying ${{ inputs.environment }} in ${{ inputs.network_mode }} network mode."
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+          DEPLOYMENT_NETWORK_MODE: ${{ inputs.network_mode }}
+        run: echo "Deploying $DEPLOYMENT_ENVIRONMENT in $DEPLOYMENT_NETWORK_MODE network mode."
 
   deploy:
+    name: Deploy reviewed Azure phase
     needs: [qualify, guard]
     environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write # Azure OIDC login; no stored Azure credential.
+      attestations: write # Publish provenance and SBOM attestations for immutable images.
+      artifact-metadata: write # Publish OCI-backed attestation metadata for image subjects.
     # Starter mode reaches public endpoints, so a hosted runner suffices and a
     # new tenant needs no bootstrap VM. Private mode must run inside the VNet.
     runs-on: ${{ inputs.network_mode == 'starter' && 'ubuntu-latest' || fromJSON('["self-hosted","linux","azure-vnet"]') }}
+    timeout-minutes: 120
     env:
-      TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      TF_VAR_operator_fqdn: ${{ vars.OPERATOR_FQDN }}
-      TF_VAR_tracking_fqdn: ${{ vars.TRACKING_FQDN }}
-      TF_VAR_entra_tenant_id: ${{ vars.AZURE_TENANT_ID }}
-      TF_VAR_entra_client_id: ${{ vars.ENTRA_APPLICATION_CLIENT_ID }}
-      TF_VAR_ai_endpoint: ${{ vars.AI_GATEWAY_ENDPOINT }}
-      TF_VAR_alert_webhook_domains: ${{ vars.ALERT_WEBHOOK_DOMAINS }}
-      TF_VAR_allowed_recipient_domains: ${{ vars.ALLOWED_RECIPIENT_DOMAINS }}
-      TF_VAR_network_mode: ${{ inputs.network_mode }}
+      DEPLOYMENT_REQUEST_ID: ${{ inputs.deployment_request_id }}
+      REVIEWED_COMMIT_SHA: ${{ inputs.reviewed_commit_sha }}
+      DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+      DEPLOYMENT_NETWORK_MODE: ${{ inputs.network_mode }}
+      DEPLOYMENT_PHASE: ${{ inputs.deployment_phase }}
+      TF_VAR_deployment_orchestration_mode: ${{ vars.DEPLOYMENT_ORCHESTRATION_MODE || 'disabled' }}
+      TF_VAR_deployment_github_repository: ${{ vars.DEPLOYMENT_GITHUB_REPOSITORY }}
+      TF_VAR_deployment_github_ref: ${{ vars.DEPLOYMENT_GITHUB_REF || 'main' }}
+      TF_VAR_deployment_github_token_secret_id: ${{ vars.DEPLOYMENT_GITHUB_TOKEN_SECRET_ID }}
       TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
       TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
       TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - name: Initialize append-only deployment checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/deployment-evidence"
+          evidence_file="$evidence_dir/checkpoints.ndjson"
+          helper="$RUNNER_TEMP/append-deployment-checkpoint.py"
+          mkdir -p "$evidence_dir"
+          echo "KP_DEPLOYMENT_EVIDENCE_FILE=$evidence_file" >> "$GITHUB_ENV"
+          echo "KP_CHECKPOINT_HELPER=$helper" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          helper = Path(os.environ["RUNNER_TEMP"]) / "append-deployment-checkpoint.py"
+          helper.write_text(r'''#!/usr/bin/env python3
+          import argparse
+          import hashlib
+          import json
+          import os
+          import re
+          import shutil
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          SCHEMA = "kp.azure-deployment-checkpoint.v1"
+          STAGES = {
+              "runner_preflight", "reviewed_configuration", "azure_authenticated",
+              "terraform_state_initialized", "acs_control_plane_observed",
+              "foundation_bootstrap_plan_safe", "foundation_bootstrap_applied",
+              "bootstrap_integration_plan_published", "acs_verification_initiated",
+              "foundation_finalize_plan_safe", "foundation_finalize_applied",
+              "foundation_finalize_readback", "acs_stage_result_recorded",
+              "immutable_images_verified", "workload_plan_safe",
+              "workloads_applied", "migration_health_passed", "receipt_plan_safe",
+              "receipts_activated", "cloud_operations_complete", "workflow_interrupted",
+          }
+          STATUSES = {"passed", "blocked", "uncertain"}
+          DIGEST_NAMES = ("operator_api", "tracking_api", "worker", "migration")
+          MAX_LEDGER_BYTES = 1_048_576
+          MAX_RECORDS = 64
+
+          def fail(message):
+              raise SystemExit(message)
+
+          def validated_context():
+              context = {
+                  "deployment_request_id": os.environ.get("DEPLOYMENT_REQUEST_ID", ""),
+                  "reviewed_commit_sha": os.environ.get("REVIEWED_COMMIT_SHA", ""),
+                  "environment": os.environ.get("DEPLOYMENT_ENVIRONMENT", ""),
+                  "phase": os.environ.get("DEPLOYMENT_PHASE", ""),
+                  "network_mode": os.environ.get("DEPLOYMENT_NETWORK_MODE", ""),
+              }
+              if re.fullmatch(r"kp-[0-9a-f]{32}-[1-9][0-9]{0,2}", context["deployment_request_id"]) is None:
+                  fail("deployment request correlation is invalid")
+              if re.fullmatch(r"[0-9a-f]{40}", context["reviewed_commit_sha"]) is None:
+                  fail("reviewed commit is invalid")
+              if context["environment"] not in {"staging", "production"}:
+                  fail("deployment environment is invalid")
+              if context["phase"] not in {"foundation_bootstrap", "foundation_finalize", "workloads"}:
+                  fail("deployment phase is invalid")
+              if context["network_mode"] not in {"starter", "private"}:
+                  fail("deployment network mode is invalid")
+              return context
+
+          def validated_state_identity(environment):
+              identity = {
+                  "resource_group": os.environ.get("TF_STATE_RESOURCE_GROUP", ""),
+                  "storage_account": os.environ.get("TF_STATE_STORAGE_ACCOUNT", ""),
+                  "container": os.environ.get("TF_STATE_CONTAINER", ""),
+                  "key": f"{environment}/kingphisher.tfstate",
+              }
+              patterns = {
+                  "resource_group": r"[A-Za-z0-9_.()\-]{1,90}",
+                  "storage_account": r"[a-z0-9]{3,24}",
+                  "container": r"[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?",
+                  "key": r"(?:staging|production)/kingphisher\.tfstate",
+              }
+              if any(re.fullmatch(patterns[key], value) is None for key, value in identity.items()):
+                  fail("non-secret Terraform state identity is missing or malformed")
+              return identity
+
+          def read_ledger(path, context, state_identity, workflow_run):
+              if not path.exists():
+                  return []
+              if path.stat().st_size > MAX_LEDGER_BYTES:
+                  fail("checkpoint ledger exceeds the fixed size limit")
+              records = []
+              previous_hash = None
+              for raw_line in path.read_text(encoding="utf-8").splitlines():
+                  try:
+                      record = json.loads(raw_line)
+                  except (TypeError, ValueError):
+                      fail("checkpoint ledger contains malformed JSON")
+                  if not isinstance(record, dict) or record.get("schema") != SCHEMA:
+                      fail("checkpoint ledger schema is invalid")
+                  supplied_hash = record.pop("record_sha256", None)
+                  canonical = json.dumps(record, separators=(",", ":"), sort_keys=True)
+                  calculated_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+                  if supplied_hash != calculated_hash or record.get("previous_record_sha256") != previous_hash:
+                      fail("checkpoint ledger integrity validation failed")
+                  record["record_sha256"] = supplied_hash
+                  if record.get("correlation") != context:
+                      fail("checkpoint ledger correlation changed during the workflow")
+                  if record.get("state_identity") != state_identity:
+                      fail("checkpoint ledger Terraform state identity changed during the workflow")
+                  if record.get("workflow_run") != workflow_run:
+                      fail("checkpoint ledger workflow run identity changed during the workflow")
+                  records.append(record)
+                  previous_hash = supplied_hash
+              if len(records) >= MAX_RECORDS:
+                  fail("checkpoint ledger reached its fixed record limit")
+              return records
+
+          def carried_evidence(records):
+              carried = {}
+              for record in records:
+                  evidence = record.get("evidence")
+                  if not isinstance(evidence, dict):
+                      continue
+                  for key in ("image_digests", "migration_result", "health_result"):
+                      if key in evidence:
+                          carried[key] = evidence[key]
+                  for key in (
+                      "reviewed_deployment_digest", "acs_live_readiness_digest",
+                      "acs_verification_initiation_digest", "acs_finalize_readback_digest",
+                      "acs_stage_result_digest",
+                  ):
+                      if key in evidence:
+                          carried[key] = evidence[key]
+              return carried
+
+          parser = argparse.ArgumentParser()
+          parser.add_argument("--stage", choices=sorted(STAGES), required=True)
+          parser.add_argument("--status", choices=sorted(STATUSES), required=True)
+          args = parser.parse_args()
+          context = validated_context()
+          state_identity = validated_state_identity(context["environment"])
+          workflow_run = {
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+              "job": "deploy",
+          }
+          if not workflow_run["run_id"].isdigit() or not workflow_run["run_attempt"].isdigit():
+              fail("workflow run identity is invalid")
+          path = Path(os.environ["KP_DEPLOYMENT_EVIDENCE_FILE"])
+          records = read_ledger(path, context, state_identity, workflow_run)
+          if any(record.get("stage") == args.stage for record in records):
+              fail("checkpoint stage was already recorded for this workflow run")
+          evidence = carried_evidence(records)
+
+          digest_values = {name: os.environ.get(f"KP_{name.upper()}_DIGEST", "") for name in DIGEST_NAMES}
+          if any(digest_values.values()):
+              if not all(re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in digest_values.values()):
+                  fail("immutable image digest evidence is incomplete or malformed")
+              evidence["image_digests"] = digest_values
+          for field, environment_name in (
+              ("reviewed_deployment_digest", "KP_REVIEWED_DEPLOYMENT_DIGEST"),
+              ("acs_live_readiness_digest", "KP_ACS_LIVE_READINESS_DIGEST"),
+              ("acs_verification_initiation_digest", "KP_ACS_VERIFICATION_INITIATION_DIGEST"),
+              ("acs_finalize_readback_digest", "KP_ACS_FINALIZE_READBACK_DIGEST"),
+              ("acs_stage_result_digest", "KP_ACS_STAGE_RESULT_DIGEST"),
+          ):
+              value = os.environ.get(environment_name, "")
+              if value:
+                  if re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None:
+                      fail(f"{field} evidence is malformed")
+                  evidence[field] = value
+          for field, environment_name in (
+              ("migration_result", "KP_MIGRATION_RESULT"),
+              ("health_result", "KP_HEALTH_RESULT"),
+          ):
+              value = os.environ.get(environment_name, "")
+              if value:
+                  if value not in {"passed", "blocked", "uncertain", "not_applicable"}:
+                      fail(f"{field} evidence is invalid")
+                  evidence[field] = value
+          if args.stage == "runner_preflight":
+              minimum = 10 * 1024**3
+              free = shutil.disk_usage(path.parent).free
+              evidence.update({
+                  "free_bytes": free,
+                  "minimum_free_bytes": minimum,
+                  "automatic_cleanup_allowed": False,
+                  "mutation_performed": False,
+              })
+              if free < minimum:
+                  args.status = "blocked"
+
+          if args.status != "passed":
+              evidence["last_successful_stage"] = next(
+                  (
+                      record.get("stage")
+                      for record in reversed(records)
+                      if record.get("status") == "passed"
+                  ),
+                  None,
+              )
+
+          safe_next_action = (
+              "Cloud operations completed; do not automatically retry. Require the uploaded evidence artifact "
+              "and reconcile the workflow run status."
+              if args.stage == "cloud_operations_complete" and args.status == "passed"
+              else "Continue from the recorded checkpoint through the reviewed deployment workflow."
+              if args.status == "passed"
+              else "Reconcile this correlation ID with Terraform and Azure state before retrying; "
+                   "do not destroy, delete, or recreate resources."
+          )
+          previous_hash = records[-1]["record_sha256"] if records else None
+          record = {
+              "schema": SCHEMA,
+              "sequence": len(records) + 1,
+              "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+              "correlation": context,
+              "workflow_run": workflow_run,
+              "state_identity": state_identity,
+              "stage": args.stage,
+              "status": args.status,
+              "evidence": evidence,
+              "safe_next_action": safe_next_action,
+              "previous_record_sha256": previous_hash,
+          }
+          canonical = json.dumps(record, separators=(",", ":"), sort_keys=True)
+          record["record_sha256"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          with path.open("a", encoding="utf-8") as output:
+              output.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
+              output.flush()
+              os.fsync(output.fileno())
+          if args.stage == "runner_preflight" and args.status != "passed":
+              fail("runner disk headroom is below the required 10 GiB; no cleanup was attempted")
+          ''', encoding="utf-8")
+          PY
+          python3 "$helper" --stage runner_preflight --status passed
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate and materialize reviewed deployment values
+        env:
+          REVIEWED_DEPLOYMENT_CONFIG: ${{ inputs.deployment_config }}
+          PROTECTED_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          PROTECTED_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          expected = {
+              "subscription_id", "location", "name_prefix", "operator_fqdn", "tracking_fqdn",
+              "entra_tenant_id", "entra_client_id", "acs_resource_mode",
+              "acs_existing_communication_service_id", "acs_existing_email_endpoint",
+              "acs_existing_email_domain_id", "acs_sending_domain", "acs_sender_local_part",
+              "acs_sender_display_name", "acs_dns_zone_id", "acs_domain_verification_status",
+              "acs_spf_verification_status", "acs_dkim_verification_status",
+              "acs_dkim2_verification_status", "acs_sender_username_status",
+              "acs_domain_association_status", "acs_readiness_checked_at", "acs_daily_message_limit",
+              "acs_messages_per_minute", "acs_ramp_batch_size", "acs_ramp_interval_seconds",
+              "communication_data_location", "ai_endpoint", "enable_directory_sync",
+              "directory_group_ids", "enable_reported_mailbox", "reported_mailbox_address",
+              "reported_mailbox_folder", "alert_webhook_domains", "allowed_recipient_domains",
+              "ciphertext_active_key_id", "ciphertext_prior_key_ids",
+              "ciphertext_prior_keys_secret_id",
+          }
+          raw = os.environ["REVIEWED_DEPLOYMENT_CONFIG"]
+          if len(raw.encode("utf-8")) > 32_768:
+              raise SystemExit("reviewed deployment configuration exceeds the fixed limit")
+          config = json.loads(raw)
+          if not isinstance(config, dict) or set(config) != expected:
+              raise SystemExit("reviewed deployment configuration has an invalid key contract")
+          if any(
+              not isinstance(value, str) or len(value) > 2_048 or "\n" in value or "\r" in value
+              for value in config.values()
+          ):
+              raise SystemExit("reviewed deployment configuration values must be bounded single-line strings")
+          credential_pattern = re.compile(
+              r"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16}|"
+              r"(?:password|secret|token|api[_-]?key|authorization|accountkey)\s*[:=]\s*\S+|"
+              r"bearer\s+[A-Za-z0-9._~+/=-]{8,})",
+              re.IGNORECASE,
+          )
+          if any(credential_pattern.search(value) for value in config.values()):
+              raise SystemExit("reviewed deployment configuration must not contain credentials or tokens")
+          if config["subscription_id"].lower() != os.environ["PROTECTED_SUBSCRIPTION_ID"].lower():
+              raise SystemExit("reviewed subscription does not match the protected deployment identity")
+          if config["entra_tenant_id"].lower() != os.environ["PROTECTED_TENANT_ID"].lower():
+              raise SystemExit("reviewed tenant does not match the protected deployment identity")
+          reviewed_canonical = json.dumps(config, separators=(",", ":"), sort_keys=True)
+          reviewed_digest = "sha256:" + hashlib.sha256(reviewed_canonical.encode("utf-8")).hexdigest()
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_environment:
+              github_environment.write(f"KP_REVIEWED_DEPLOYMENT_DIGEST={reviewed_digest}\n")
+          key_id_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
+          active_key_id = config["ciphertext_active_key_id"]
+          prior_key_ids = (
+              [value.strip() for value in config["ciphertext_prior_key_ids"].split(",")]
+              if config["ciphertext_prior_key_ids"].strip()
+              else []
+          )
+          prior_secret_id = config["ciphertext_prior_keys_secret_id"]
+          if key_id_pattern.fullmatch(active_key_id) is None:
+              raise SystemExit("ciphertext active key identifier is invalid")
+          if (
+              len(prior_key_ids) > 4
+              or len(set(prior_key_ids)) != len(prior_key_ids)
+              or active_key_id in prior_key_ids
+              or any(key_id_pattern.fullmatch(value) is None for value in prior_key_ids)
+          ):
+              raise SystemExit("ciphertext prior key identifiers are invalid")
+          if bool(prior_key_ids) != bool(prior_secret_id):
+              raise SystemExit("ciphertext prior key IDs and Key Vault reference must be supplied together")
+          if prior_secret_id and re.fullmatch(
+              r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.KeyVault/"
+              r"vaults/[A-Za-z0-9-]{3,24}/secrets/[A-Za-z0-9-]{1,127}",
+              prior_secret_id,
+              flags=re.IGNORECASE,
+          ) is None:
+              raise SystemExit("ciphertext prior key reference must be a versionless Key Vault secret ID")
+          if os.environ["DEPLOYMENT_PHASE"] != "workloads" and (prior_key_ids or prior_secret_id):
+              raise SystemExit("ciphertext prior-key recovery is allowed only during the workloads phase")
+          # Reviewed values describe operator intent, not proof. Always replace
+          # every ACS readiness assertion before Terraform sees this file. The
+          # authenticated control-plane step below is the only code allowed to
+          # promote these fields to verified and attach a current timestamp.
+          for key in (
+              "acs_domain_verification_status", "acs_spf_verification_status",
+              "acs_dkim_verification_status", "acs_dkim2_verification_status",
+              "acs_sender_username_status", "acs_domain_association_status",
+          ):
+              config[key] = "pending_live_readback"
+          config["acs_readiness_checked_at"] = ""
+          for key in (
+              "acs_daily_message_limit", "acs_messages_per_minute", "acs_ramp_batch_size",
+              "acs_ramp_interval_seconds",
+          ):
+              config[key] = int(config[key])
+          config["graph_endpoint"] = (
+              "https://graph.microsoft.com/v1.0" if config.pop("enable_directory_sync") == "true" else ""
+          )
+          config["reported_mailbox_endpoint"] = (
+              "https://graph.microsoft.com/v1.0" if config.pop("enable_reported_mailbox") == "true" else ""
+          )
+          target = Path(os.environ["RUNNER_TEMP"]) / "reviewed.auto.tfvars.json"
+          target.write_text(json.dumps(config, separators=(",", ":"), sort_keys=True), encoding="utf-8")
+          PY
+      - name: Checkpoint reviewed configuration
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage reviewed_configuration --status passed
+      - name: Authenticate to Azure
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - uses: hashicorp/setup-terraform@v3
+      - name: Checkpoint Azure authentication
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage azure_authenticated --status passed
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.9.8
+      - name: Install pinned Syft
+        if: inputs.deployment_phase == 'workloads'
+        id: syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.42.3
+      - name: Install pinned Trivy for immutable registry scans
+        if: inputs.deployment_phase == 'workloads'
+        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.6
+        with:
+          version: v0.74.0
+          cache: true
       - name: Initialize Terraform
         working-directory: infrastructure/terraform
         run: >-
@@ -101,56 +721,1995 @@ jobs:
           -backend-config="resource_group_name=$TF_STATE_RESOURCE_GROUP"
           -backend-config="storage_account_name=$TF_STATE_STORAGE_ACCOUNT"
           -backend-config="container_name=$TF_STATE_CONTAINER"
-          -backend-config="key=${{ inputs.environment }}/kingphisher.tfstate"
+          -backend-config="key=$DEPLOYMENT_ENVIRONMENT/kingphisher.tfstate"
           -backend-config="use_azuread_auth=true"
-      - name: Provision foundation
+      - name: Checkpoint Terraform state identity
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage terraform_state_initialized --status passed
+      - name: Read ACS readiness from the authenticated Azure control plane
+        env:
+          PROTECTED_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          PROTECTED_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from datetime import UTC, datetime
+          from pathlib import Path
+          from urllib.parse import quote
+
+          API_VERSION = "2023-04-01"
+          READY_PROVISIONING_STATES = {"running", "succeeded"}
+          MAX_CONTROL_PLANE_BYTES = 65_536
+          UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.I)
+          DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z")
+          SENDER = re.compile(r"[a-z0-9][a-z0-9._+-]{0,63}\Z")
+
+          def fail(message):
+              raise SystemExit(message)
+
+          def run_json(command, label, *, max_bytes=MAX_CONTROL_PLANE_BYTES):
+              try:
+                  result = subprocess.run(
+                      command,
+                      check=False,
+                      capture_output=True,
+                      timeout=60,
+                  )
+              except (OSError, subprocess.TimeoutExpired):
+                  fail(f"{label} is inaccessible")
+              if result.returncode != 0:
+                  # Provider response bodies can contain operational detail and
+                  # are deliberately not echoed into the workflow log.
+                  fail(f"{label} is missing, ambiguous, or inaccessible")
+              if len(result.stdout) > max_bytes:
+                  fail(f"{label} exceeds the fixed response limit")
+              try:
+                  value = json.loads(result.stdout)
+              except (TypeError, ValueError):
+                  fail(f"{label} returned malformed JSON")
+              return value
+
+          def terraform_json_output(name):
+              result = subprocess.run(
+                  ["terraform", "-chdir=infrastructure/terraform", "output", "-json", name],
+                  check=False,
+                  capture_output=True,
+                  timeout=30,
+              )
+              if result.returncode != 0:
+                  return None
+              if len(result.stdout) > 16_384:
+                  fail(f"Terraform output {name} exceeds the fixed response limit")
+              try:
+                  return json.loads(result.stdout)
+              except (TypeError, ValueError):
+                  fail(f"Terraform output {name} is malformed")
+
+          def terraform_raw_output(name):
+              result = subprocess.run(
+                  ["terraform", "-chdir=infrastructure/terraform", "output", "-raw", name],
+                  check=False,
+                  capture_output=True,
+                  timeout=30,
+              )
+              if result.returncode != 0:
+                  return None
+              if len(result.stdout) > 512:
+                  fail(f"Terraform output {name} exceeds the fixed response limit")
+              try:
+                  return result.stdout.decode("utf-8").strip()
+              except UnicodeDecodeError:
+                  fail(f"Terraform output {name} is malformed")
+
+          def az_rest(resource_id, query):
+              return run_json(
+                  [
+                      "az", "rest", "--method", "get", "--uri",
+                      f"https://management.azure.com{resource_id}?api-version={API_VERSION}",
+                      "--query", query, "--output", "json", "--only-show-errors",
+                  ],
+                  "selected ACS control-plane resource",
+              )
+
+          def split_resource_id(resource_id, expected_segments, label):
+              if not isinstance(resource_id, str) or len(resource_id) > 2_048 or any(
+                  marker in resource_id for marker in ("?", "#", "\n", "\r")
+              ):
+                  fail(f"{label} resource ID is malformed")
+              segments = resource_id.strip("/").split("/")
+              if len(segments) != expected_segments or any(not segment for segment in segments):
+                  fail(f"{label} resource ID is malformed")
+              if segments[0].lower() != "subscriptions" or UUID.fullmatch(segments[1]) is None:
+                  fail(f"{label} resource ID is malformed")
+              if segments[2].lower() != "resourcegroups" or segments[4].lower() != "providers":
+                  fail(f"{label} resource ID is malformed")
+              if segments[5].lower() != "microsoft.communication":
+                  fail(f"{label} resource ID is malformed")
+              if segments[1].lower() != subscription_id:
+                  fail(f"{label} belongs to a different subscription")
+              return segments
+
+          def require_resource_identity(value, expected_id, expected_type, label):
+              if not isinstance(value, dict):
+                  fail(f"{label} selected fields are malformed")
+              if str(value.get("id", "")).lower() != expected_id.lower():
+                  fail(f"{label} readback does not match the reviewed resource ID")
+              if str(value.get("type", "")).lower() != expected_type.lower():
+                  fail(f"{label} readback has an unexpected resource type")
+
+          def require_ready_state(value, label):
+              state = value.get("provisioningState") if isinstance(value, dict) else None
+              if not isinstance(state, str) or state.lower() not in READY_PROVISIONING_STATES:
+                  fail(f"{label} is not in a ready provisioning state")
+              return state.lower()
+
+          def discover_one(resource_group, resource_type, label):
+              encoded_group = quote(resource_group, safe="._()-")
+              selected = run_json(
+                  [
+                      "az", "rest", "--method", "get", "--uri",
+                      f"https://management.azure.com/subscriptions/{subscription_id}/resourceGroups/"
+                      f"{encoded_group}/resources?api-version=2021-04-01",
+                      "--query", "{value:value[].{id:id,type:type,application:tags.application,environment:tags.environment},nextLink:nextLink}",
+                      "--output", "json", "--only-show-errors",
+                  ],
+                  f"{label} discovery",
+              )
+              if not isinstance(selected, dict) or selected.get("nextLink"):
+                  fail(f"{label} discovery is ambiguous or paginated")
+              values = selected.get("value")
+              if not isinstance(values, list) or len(values) > 256:
+                  fail(f"{label} discovery is malformed")
+              matches = [
+                  item["id"] for item in values
+                  if isinstance(item, dict)
+                  and str(item.get("type", "")).lower() == resource_type.lower()
+                  and item.get("application") == "kingphisher-phoenix"
+                  and item.get("environment") == os.environ["DEPLOYMENT_ENVIRONMENT"]
+                  and isinstance(item.get("id"), str)
+              ]
+              if len(matches) != 1:
+                  fail(f"{label} discovery did not resolve exactly one project resource")
+              return matches[0]
+
+          config_path = Path(os.environ["RUNNER_TEMP"]) / "reviewed.auto.tfvars.json"
+          config = json.loads(config_path.read_text(encoding="utf-8"))
+          subscription_id = os.environ["PROTECTED_SUBSCRIPTION_ID"].lower()
+          tenant_id = os.environ["PROTECTED_TENANT_ID"].lower()
+          if UUID.fullmatch(subscription_id) is None or UUID.fullmatch(tenant_id) is None:
+              fail("protected Azure identity is malformed")
+          reviewed_digest = os.environ.get("KP_REVIEWED_DEPLOYMENT_DIGEST", "")
+          if re.fullmatch(r"sha256:[0-9a-f]{64}", reviewed_digest) is None:
+              fail("reviewed deployment digest is missing or malformed")
+          reviewed_commit = os.environ["REVIEWED_COMMIT_SHA"]
+          if re.fullmatch(r"[0-9a-f]{40}", reviewed_commit) is None:
+              fail("reviewed commit is malformed")
+
+          account = run_json(
+              [
+                  "az", "account", "show", "--query", "{subscriptionId:id,tenantId:tenantId}",
+                  "--output", "json", "--only-show-errors",
+              ],
+              "authenticated Azure account",
+              max_bytes=4_096,
+          )
+          if not isinstance(account, dict) or str(account.get("subscriptionId", "")).lower() != subscription_id:
+              fail("authenticated Azure subscription does not match the reviewed deployment")
+          if str(account.get("tenantId", "")).lower() != tenant_id:
+              fail("authenticated Azure tenant does not match the reviewed deployment")
+
+          mode = config.get("acs_resource_mode")
+          phase = os.environ["DEPLOYMENT_PHASE"]
+          sending_domain = str(config.get("acs_sending_domain", "")).strip().lower()
+          sender_local_part = str(config.get("acs_sender_local_part", "")).strip().lower()
+          if mode not in {"existing", "provision"}:
+              fail("ACS resource mode is invalid")
+          if DOMAIN.fullmatch(sending_domain) is None or SENDER.fullmatch(sender_local_part) is None:
+              fail("reviewed ACS sender identity is malformed")
+
+          resources = None
+          resource_group = None
+          if mode == "existing":
+              communication_service_id = config.get("acs_existing_communication_service_id")
+              email_domain_id = config.get("acs_existing_email_domain_id")
+          else:
+              resources = terraform_json_output("acs_control_plane_resources")
+              if resources is None:
+                  resource_group = terraform_raw_output("resource_group_name")
+                  if resource_group is None:
+                      if phase != "foundation_bootstrap":
+                          fail("finalize and workloads require an applied ACS bootstrap before live readiness")
+                      communication_service_id = None
+                      email_domain_id = None
+                  else:
+                      communication_service_id = discover_one(
+                          resource_group,
+                          "Microsoft.Communication/CommunicationServices",
+                          "Communication Service",
+                      )
+                      email_service_id = discover_one(
+                          resource_group,
+                          "Microsoft.Communication/EmailServices",
+                          "Email Communication Service",
+                      )
+                      email_domain_id = f"{email_service_id}/domains/{sending_domain}"
+              else:
+                  if not isinstance(resources, dict) or set(resources) != {
+                      "resource_group_name", "communication_service_id", "email_domain_id", "sender_username_id"
+                  }:
+                      fail("stored ACS control-plane resource identities are malformed")
+                  resource_group = resources["resource_group_name"]
+                  communication_service_id = resources["communication_service_id"]
+                  email_domain_id = resources["email_domain_id"]
+
+          observed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+          statuses = {
+              "domain": "not_observed",
+              "spf": "not_observed",
+              "dkim": "not_observed",
+              "dkim2": "not_observed",
+              "sender": "not_observed",
+              "association": "not_observed",
+          }
+          resource_ids = {}
+          evidence_result = "foundation_bootstrap_pending"
+
+          if communication_service_id is not None and email_domain_id is not None:
+              communication_parts = split_resource_id(
+                  communication_service_id, 8, "Communication Service"
+              )
+              domain_parts = split_resource_id(email_domain_id, 10, "email domain")
+              if communication_parts[6].lower() != "communicationservices":
+                  fail("Communication Service resource ID is malformed")
+              if domain_parts[6].lower() != "emailservices" or domain_parts[8].lower() != "domains":
+                  fail("email domain resource ID is malformed")
+              if domain_parts[9].lower() != sending_domain:
+                  fail("email domain resource ID does not match the reviewed sending domain")
+              if mode == "provision" and (
+                  communication_parts[3].lower() != str(resource_group).lower()
+                  or domain_parts[3].lower() != str(resource_group).lower()
+              ):
+                  fail("provisioned ACS resources do not belong to the Terraform resource group")
+              email_service_id = "/" + "/".join(domain_parts[:8])
+              sender_username_id = f"{email_domain_id}/senderUsernames/{sender_local_part}"
+              if resources is not None and str(resources["sender_username_id"]).lower() != sender_username_id.lower():
+                  fail("stored sender username identity does not match the reviewed local part")
+
+              communication = az_rest(
+                  communication_service_id,
+                  "{id:id,type:type,provisioningState:properties.provisioningState,linkedDomains:properties.linkedDomains,hostName:properties.hostName,dataLocation:properties.dataLocation}",
+              )
+              email_service = az_rest(
+                  email_service_id,
+                  "{id:id,type:type,provisioningState:properties.provisioningState,dataLocation:properties.dataLocation}",
+              )
+              domain = az_rest(
+                  email_domain_id,
+                  "{id:id,type:type,provisioningState:properties.provisioningState,domainManagement:properties.domainManagement,fromSenderDomain:properties.fromSenderDomain,Domain:properties.verificationStates.Domain.status,SPF:properties.verificationStates.SPF.status,DKIM:properties.verificationStates.DKIM.status,DKIM2:properties.verificationStates.DKIM2.status,dataLocation:properties.dataLocation}",
+              )
+              require_resource_identity(
+                  communication, communication_service_id,
+                  "Microsoft.Communication/CommunicationServices", "Communication Service",
+              )
+              require_resource_identity(
+                  email_service, email_service_id,
+                  "Microsoft.Communication/EmailServices", "Email Communication Service",
+              )
+              require_resource_identity(
+                  domain, email_domain_id,
+                  "Microsoft.Communication/EmailServices/Domains", "email domain",
+              )
+              require_ready_state(communication, "Communication Service")
+              require_ready_state(email_service, "Email Communication Service")
+              require_ready_state(domain, "email domain")
+              if mode == "existing":
+                  reviewed_endpoint = str(config.get("acs_existing_email_endpoint", "")).rstrip("/").lower()
+                  live_endpoint = f"https://{str(communication.get('hostName', '')).lower()}"
+                  if live_endpoint != reviewed_endpoint:
+                      fail("live Communication Service endpoint differs from the reviewed endpoint")
+              if str(domain.get("fromSenderDomain", "")).lower() != sending_domain:
+                  fail("live email domain does not match the reviewed sending domain")
+              if domain.get("domainManagement") not in {"CustomerManaged", "CustomerManagedInExchangeOnline"}:
+                  fail("live email domain is not customer managed")
+              expected_data_location = str(config.get("communication_data_location", "")).strip().lower()
+              for value, label in (
+                  (communication, "Communication Service"),
+                  (email_service, "Email Communication Service"),
+                  (domain, "email domain"),
+              ):
+                  if str(value.get("dataLocation", "")).strip().lower() != expected_data_location:
+                      fail(f"{label} data location differs from the reviewed deployment")
+
+              statuses.update({
+                  key.lower(): str(domain.get(key, "")).lower()
+                  for key in ("Domain", "SPF", "DKIM", "DKIM2")
+              })
+              domain_verified = all(statuses[key] == "verified" for key in ("domain", "spf", "dkim", "dkim2"))
+              if phase in {"foundation_finalize", "workloads"} and not domain_verified:
+                  fail("finalize and workloads require live Verified Domain, SPF, DKIM, and DKIM2 states")
+
+              linked_domains = communication.get("linkedDomains")
+              if linked_domains is None:
+                  linked_domains = []
+              if not isinstance(linked_domains, list) or len(linked_domains) > 64 or any(
+                  not isinstance(value, str) for value in linked_domains
+              ):
+                  fail("Communication Service domain associations are malformed or ambiguous")
+              association_matches = sum(
+                  value.lower() == email_domain_id.lower() for value in linked_domains
+              )
+              statuses["association"] = "verified" if association_matches == 1 else "not_linked"
+              if association_matches > 1:
+                  fail("Communication Service has an ambiguous duplicate domain association")
+
+              if phase == "workloads":
+                  if association_matches != 1:
+                      fail("workloads require the exact live ACS email-domain association")
+                  sender = az_rest(
+                      sender_username_id,
+                      "{id:id,type:type,provisioningState:properties.provisioningState,username:properties.username,displayName:properties.displayName,dataLocation:properties.dataLocation}",
+                  )
+                  require_resource_identity(
+                      sender, sender_username_id,
+                      "Microsoft.Communication/EmailServices/Domains/SenderUsernames", "sender username",
+                  )
+                  # SenderUsername provisioningState is optional in the
+                  # 2023-04-01 response and Microsoft's own valid sample omits
+                  # it. When Azure does report a state, it must be ready. A
+                  # successful exact GET still has to pass identity, username,
+                  # display-name, and any explicitly reported data-location
+                  # check below. The three required parent locations remain
+                  # authoritative when SenderUsername omits that optional field.
+                  if sender.get("provisioningState") is not None:
+                      require_ready_state(sender, "sender username")
+                  if str(sender.get("username", "")).lower() != sender_local_part:
+                      fail("live sender username does not match the reviewed local part")
+                  if str(sender.get("displayName", "")) != str(config.get("acs_sender_display_name", "")).strip():
+                      fail("live sender display name does not match the reviewed deployment")
+                  sender_data_location = sender.get("dataLocation")
+                  if (
+                      sender_data_location is not None
+                      and str(sender_data_location).strip().lower() != expected_data_location
+                  ):
+                      fail("live sender data location differs from the reviewed deployment")
+                  statuses["sender"] = "verified"
+                  evidence_result = "workloads_verified"
+              elif phase == "foundation_finalize" and domain_verified:
+                  evidence_result = "foundation_finalize_domain_verified_preapply"
+              elif domain_verified:
+                  evidence_result = "foundation_bootstrap_domain_already_verified"
+              else:
+                  evidence_result = "foundation_bootstrap_domain_pending"
+
+              resource_ids = {
+                  "communication_service_id": communication_service_id,
+                  "email_service_id": email_service_id,
+                  "email_domain_id": email_domain_id,
+                  "sender_username_id": sender_username_id,
+              }
+
+          for key, config_key in (
+              ("domain", "acs_domain_verification_status"),
+              ("spf", "acs_spf_verification_status"),
+              ("dkim", "acs_dkim_verification_status"),
+              ("dkim2", "acs_dkim2_verification_status"),
+              ("sender", "acs_sender_username_status"),
+              ("association", "acs_domain_association_status"),
+          ):
+              config[config_key] = statuses[key]
+          config["acs_readiness_checked_at"] = (
+              observed_at if all(statuses[key] == "verified" for key in ("domain", "spf", "dkim", "dkim2")) else ""
+          )
+          config_path.write_text(json.dumps(config, separators=(",", ":"), sort_keys=True), encoding="utf-8")
+
+          evidence = {
+              "schema": "kp.acs-live-readiness.v1",
+              "observed_at": observed_at,
+              "result": evidence_result,
+              "phase": phase,
+              "resource_mode": mode,
+              "subscription_id": subscription_id,
+              "tenant_id": tenant_id,
+              "resource_ids": resource_ids,
+              "statuses": statuses,
+              "reviewed_commit_sha": reviewed_commit,
+              "reviewed_deployment_digest": reviewed_digest,
+              "workflow_run": {
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              },
+              "api_version": API_VERSION,
+              "scope_limits": {
+                  "dns_provider_state_only": True,
+                  "inbox_placement_proven": False,
+                  "event_grid_delivery_proven": False,
+                  "human_mailbox_validation_proven": False,
+              },
+          }
+          canonical = json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+          evidence_digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          evidence["evidence_digest"] = evidence_digest
+          evidence_path = Path(os.environ["RUNNER_TEMP"]) / "deployment-evidence" / "acs-live-readiness.json"
+          with evidence_path.open("x", encoding="utf-8") as output:
+              output.write(json.dumps(evidence, separators=(",", ":"), sort_keys=True) + "\n")
+              output.flush()
+              os.fsync(output.fileno())
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_environment:
+              github_environment.write(f"KP_ACS_LIVE_READINESS_DIGEST={evidence_digest}\n")
+          PY
+      - name: Checkpoint live ACS control-plane observation
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage acs_control_plane_observed --status passed
+      - name: Validate ciphertext key-rotation lifecycle metadata
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import re
+          import subprocess
+          from datetime import UTC, datetime
+          from pathlib import Path
+          import os
+          from urllib.parse import urlsplit
+
+          config = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "reviewed.auto.tfvars.json").read_text(encoding="utf-8")
+          )
+
+          def terraform_outputs():
+              result = subprocess.run(
+                  ["terraform", "output", "-json"],
+                  check=False,
+                  capture_output=True,
+                  text=True,
+              )
+              if result.returncode != 0:
+                  raise SystemExit("ciphertext lifecycle state is inaccessible")
+              try:
+                  outputs = json.loads(result.stdout)
+              except (TypeError, ValueError):
+                  raise SystemExit("stored ciphertext lifecycle metadata is malformed") from None
+              if not isinstance(outputs, dict):
+                  raise SystemExit("stored ciphertext lifecycle metadata is malformed")
+              return outputs
+
+          phase = os.environ["DEPLOYMENT_PHASE"]
+          outputs = terraform_outputs()
+          keyring_output = outputs.get("ciphertext_keyring")
+          if keyring_output is None:
+              if phase == "foundation_bootstrap" and not outputs:
+                  # A brand-new foundation has no outputs. Every subsequent
+                  # dispatch has state and must preserve the established active ID.
+                  raise SystemExit(0)
+              raise SystemExit("ACS bootstrap state is required before ciphertext lifecycle validation")
+          if not isinstance(keyring_output, dict) or "value" not in keyring_output:
+              raise SystemExit("stored ciphertext lifecycle metadata is malformed")
+          previous = keyring_output["value"]
+          if not isinstance(previous, dict):
+              raise SystemExit("stored ciphertext lifecycle metadata is malformed")
+          active_key_id = config["ciphertext_active_key_id"]
+          prior_key_ids = (
+              [value.strip() for value in config["ciphertext_prior_key_ids"].split(",")]
+              if config["ciphertext_prior_key_ids"].strip()
+              else []
+          )
+          prior_secret_id = config["ciphertext_prior_keys_secret_id"]
+          previous_active = previous.get("active_key_id")
+          previous_prior = previous.get("prior_key_ids")
+          if not isinstance(previous_active, str) or not isinstance(previous_prior, list) or any(
+              not isinstance(value, str) for value in previous_prior
+          ):
+              raise SystemExit("stored ciphertext lifecycle metadata is malformed")
+          if not set(previous_prior).issubset(prior_key_ids):
+              raise SystemExit("prior decrypt-only keys cannot be removed without a reviewed re-encryption gate")
+          if active_key_id != previous_active:
+              raise SystemExit(
+                  "active ciphertext key changes are blocked until rolling pre-stage and promotion are implemented"
+              )
+          if not prior_key_ids:
+              if prior_secret_id:
+                  raise SystemExit("ciphertext prior key reference is inconsistent")
+              raise SystemExit(0)
+          vault_output = outputs.get("key_vault_id")
+          if not isinstance(vault_output, dict) or not isinstance(vault_output.get("value"), str):
+              raise SystemExit("stored ciphertext lifecycle metadata is malformed")
+          vault_id = vault_output["value"]
+          expected_prefix = f"{vault_id}/secrets/".lower()
+          if not prior_secret_id.lower().startswith(expected_prefix):
+              raise SystemExit("ciphertext prior key reference belongs to a different Key Vault")
+          reference_match = re.fullmatch(
+              r"/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.KeyVault/"
+              r"vaults/([A-Za-z0-9-]{3,24})/secrets/([A-Za-z0-9-]{1,127})",
+              prior_secret_id,
+              flags=re.IGNORECASE,
+          )
+          if reference_match is None:
+              raise SystemExit("ciphertext prior key reference is malformed")
+          vault_name, secret_name = reference_match.groups()
+
+          metadata_result = subprocess.run(
+              [
+                  "az", "keyvault", "secret", "show", "--vault-name", vault_name, "--name", secret_name,
+                  "--query", "{id:id,enabled:attributes.enabled,expires:attributes.expires,tags:tags}",
+                  "--output", "json",
+              ],
+              check=False,
+              capture_output=True,
+              text=True,
+          )
+          if metadata_result.returncode != 0:
+              raise SystemExit("ciphertext prior-key reference is missing or inaccessible")
+          if len(metadata_result.stdout.encode("utf-8")) > 16_384:
+              raise SystemExit("ciphertext prior-key lifecycle metadata exceeds the fixed limit")
+          try:
+              metadata = json.loads(metadata_result.stdout)
+              metadata_id = metadata["id"]
+              tags = metadata["tags"]
+              enabled = metadata["enabled"] is True
+              expires = metadata.get("expires")
+          except (KeyError, TypeError, ValueError):
+              raise SystemExit("ciphertext prior-key lifecycle metadata is malformed") from None
+          parsed_metadata_id = urlsplit(metadata_id) if isinstance(metadata_id, str) else None
+          if (
+              parsed_metadata_id is None
+              or parsed_metadata_id.scheme != "https"
+              or parsed_metadata_id.hostname != f"{vault_name.lower()}.vault.azure.net"
+              or not parsed_metadata_id.path.lower().startswith(f"/secrets/{secret_name.lower()}/")
+          ):
+              raise SystemExit("ciphertext prior-key lifecycle metadata does not match its versionless reference")
+          if not enabled:
+              raise SystemExit("ciphertext prior-key reference is disabled")
+          if expires:
+              try:
+                  expiry = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+              except ValueError:
+                  raise SystemExit("ciphertext prior-key expiry metadata is malformed") from None
+              if expiry.tzinfo is None or expiry.astimezone(UTC) <= datetime.now(UTC):
+                  raise SystemExit("ciphertext prior-key reference is expired")
+          expected_tags = {
+              "kp-ciphertext-format": "kpct-rotation-v1",
+              "kp-ciphertext-prior-key-ids": ",".join(prior_key_ids),
+              "kp-ciphertext-active-key-id": active_key_id,
+          }
+          if not isinstance(tags, dict) or any(tags.get(key) != value for key, value in expected_tags.items()):
+              raise SystemExit("ciphertext prior-key reference tags do not match the reviewed key lifecycle")
+          PY
+      - name: Plan ACS foundation bootstrap
+        if: inputs.deployment_phase == 'foundation_bootstrap'
         working-directory: infrastructure/terraform
         run: >-
-          terraform apply -auto-approve
-          -var-file="environments/${{ inputs.environment }}.tfvars"
+          terraform plan -out=foundation-bootstrap.tfplan
+          -var-file="environments/$DEPLOYMENT_ENVIRONMENT.tfvars"
+          -var-file="$RUNNER_TEMP/reviewed.auto.tfvars.json"
+          -var="environment=$DEPLOYMENT_ENVIRONMENT"
+          -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
           -var="deploy_workloads=false"
+          -var="acs_deployment_stage=foundation_bootstrap"
+      - name: Enforce ACS foundation bootstrap plan allowlist
+        if: inputs.deployment_phase == 'foundation_bootstrap'
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          result = subprocess.run(
+              ["terraform", "show", "-json", "foundation-bootstrap.tfplan"],
+              check=False,
+              capture_output=True,
+              timeout=30,
+          )
+          if result.returncode != 0 or len(result.stdout) > 4_194_304 or len(result.stderr) > 65_536:
+              raise SystemExit("foundation bootstrap plan is inaccessible or exceeds the fixed limit")
+          try:
+              plan = json.loads(result.stdout)
+          except (TypeError, ValueError):
+              raise SystemExit("foundation bootstrap plan is malformed") from None
+          if not isinstance(plan, dict):
+              raise SystemExit("foundation bootstrap plan is malformed")
+          changes = plan.get("resource_changes", [])
+          if not isinstance(changes, list) or len(changes) > 128:
+              raise SystemExit("foundation bootstrap plan change set is malformed or exceeds the fixed limit")
+          destructive = sorted(
+              change["address"]
+              for change in changes
+              if isinstance(change, dict) and "delete" in change.get("change", {}).get("actions", [])
+          )
+          if destructive:
+              raise SystemExit(
+                  "foundation bootstrap is create/update-only and refuses deletes or replacements; "
+                  "review the existing deployment before continuing"
+              )
+          changed = {
+              change.get("address")
+              for change in changes
+              if isinstance(change, dict) and change.get("change", {}).get("actions") != ["no-op"]
+          }
+          if None in changed:
+              raise SystemExit("foundation bootstrap plan contains an unidentified change")
+          # Bootstrap the complete non-workload foundation. In particular ACR
+          # and its private network path must exist before the workloads phase
+          # can build and resolve immutable images. Targeting only ACS leaves a
+          # fresh deployment in an unrecoverable ACR-before-create blind alley.
+          forbidden = {
+              "azurerm_communication_service_email_domain_association.main[0]",
+              "azurerm_email_communication_service_domain_sender_username.main[0]",
+          }
+          if changed & forbidden:
+              raise SystemExit("foundation bootstrap must not create an ACS association or sender username")
+          PY
+      - name: Checkpoint allowlisted foundation bootstrap plan
+        if: inputs.deployment_phase == 'foundation_bootstrap'
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage foundation_bootstrap_plan_safe --status passed
+      - name: Apply ACS foundation bootstrap
+        if: inputs.deployment_phase == 'foundation_bootstrap'
+        working-directory: infrastructure/terraform
+        run: terraform apply -auto-approve foundation-bootstrap.tfplan
+      - name: Checkpoint ACS foundation bootstrap apply
+        if: inputs.deployment_phase == 'foundation_bootstrap'
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage foundation_bootstrap_applied --status passed
+      - name: Publish non-secret integration bootstrap plan
+        if: inputs.deployment_phase == 'foundation_bootstrap'
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          {
+            echo "### ACS customer-domain setup plan"
+            echo ""
+            echo '```json'
+            terraform output -json acs_delivery_readiness
+            echo '```'
+            echo ""
+            echo "> Domain verification remains pending until a later foundation_finalize dispatch reads all four live Verified states."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Checkpoint integration bootstrap plan
+        if: inputs.deployment_phase == 'foundation_bootstrap'
+        env:
+          KP_MIGRATION_RESULT: not_applicable
+          KP_HEALTH_RESULT: not_applicable
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage bootstrap_integration_plan_published --status passed
+      - name: Initiate pending ACS customer-domain verification
+        if: inputs.deployment_phase == 'foundation_bootstrap'
+        env:
+          PROTECTED_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          PROTECTED_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          API_VERSION = "2023-04-01"
+          VERIFICATION_TYPES = ("Domain", "SPF", "DKIM", "DKIM2")
+          MAX_CONTROL_PLANE_BYTES = 32_768
+          UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.I)
+          DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z")
+          RESOURCE_GROUP = re.compile(r"[A-Za-z0-9_.()\-]{1,90}\Z")
+          EMAIL_SERVICE = re.compile(r"[A-Za-z0-9-]{1,63}\Z")
+
+          def fail(message):
+              raise SystemExit(message)
+
+          def run_bounded(command, label, *, timeout=30, max_bytes=MAX_CONTROL_PLANE_BYTES):
+              try:
+                  result = subprocess.run(
+                      command,
+                      check=False,
+                      capture_output=True,
+                      timeout=timeout,
+                  )
+              except (OSError, subprocess.TimeoutExpired):
+                  fail(f"{label} is inaccessible")
+              if len(result.stdout) > max_bytes or len(result.stderr) > max_bytes:
+                  fail(f"{label} exceeded the fixed output limit")
+              return result
+
+          def run_json(command, label, *, max_bytes=MAX_CONTROL_PLANE_BYTES):
+              result = run_bounded(command, label, max_bytes=max_bytes)
+              if result.returncode != 0:
+                  # Provider bodies may contain operational details. Never
+                  # reproduce stdout or stderr in workflow logs or evidence.
+                  fail(f"{label} is missing, ambiguous, or inaccessible")
+              try:
+                  value = json.loads(result.stdout)
+              except (TypeError, ValueError):
+                  fail(f"{label} returned malformed JSON")
+              return value
+
+          def terraform_output(name):
+              return run_json(
+                  ["terraform", "-chdir=infrastructure/terraform", "output", "-json", name],
+                  f"Terraform output {name}",
+                  max_bytes=65_536,
+              )
+
+          def split_domain_id(resource_id, subscription_id):
+              if not isinstance(resource_id, str) or len(resource_id) > 2_048 or any(
+                  marker in resource_id for marker in ("?", "#", "\n", "\r")
+              ):
+                  fail("ACS email-domain resource ID is malformed")
+              segments = resource_id.strip("/").split("/")
+              if len(segments) != 10 or any(not segment for segment in segments):
+                  fail("ACS email-domain resource ID is malformed")
+              if (
+                  segments[0].lower() != "subscriptions"
+                  or UUID.fullmatch(segments[1]) is None
+                  or segments[1].lower() != subscription_id
+                  or segments[2].lower() != "resourcegroups"
+                  or RESOURCE_GROUP.fullmatch(segments[3]) is None
+                  or segments[4].lower() != "providers"
+                  or segments[5].lower() != "microsoft.communication"
+                  or segments[6].lower() != "emailservices"
+                  or EMAIL_SERVICE.fullmatch(segments[7]) is None
+                  or segments[8].lower() != "domains"
+                  or DOMAIN.fullmatch(segments[9].lower()) is None
+              ):
+                  fail("ACS email-domain resource ID is malformed or outside the protected subscription")
+              return segments
+
+          def validate_dns_guidance(value, sending_domain):
+              if not isinstance(value, dict):
+                  fail("ACS DNS guidance is malformed")
+              if value.get("resource_mode") != "provision" or value.get("sending_domain") != sending_domain:
+                  fail("ACS DNS guidance does not match the reviewed provisioned domain")
+              automation = value.get("dns_automation")
+              status = value.get("dns_status")
+              if not isinstance(automation, bool) or status not in {
+                  "azure_dns_records_managed_verification_pending", "manual_dns_required"
+              }:
+                  fail("ACS DNS guidance has an invalid publication status")
+              expected_status = (
+                  "azure_dns_records_managed_verification_pending" if automation else "manual_dns_required"
+              )
+              if status != expected_status:
+                  fail("ACS DNS guidance publication status is inconsistent")
+              records = value.get("dns_records")
+              if not isinstance(records, list) or len(records) != 4:
+                  fail("ACS DNS guidance must contain exactly four verification records")
+              expected_types = {"domain": "TXT", "spf": "TXT", "dkim": "CNAME", "dkim2": "CNAME"}
+              observed = {}
+              for record in records:
+                  if not isinstance(record, dict) or set(record) != {"purpose", "name", "type", "value", "ttl"}:
+                      fail("ACS DNS guidance record is malformed")
+                  purpose = record.get("purpose")
+                  if purpose not in expected_types or purpose in observed:
+                      fail("ACS DNS guidance record purpose is invalid or duplicated")
+                  if record.get("type") != expected_types[purpose]:
+                      fail("ACS DNS guidance record type is invalid")
+                  if not isinstance(record.get("ttl"), int) or not 60 <= record["ttl"] <= 86_400:
+                      fail("ACS DNS guidance record TTL is invalid")
+                  for field in ("name", "value"):
+                      item = record.get(field)
+                      if not isinstance(item, str) or not item or len(item) > 2_048 or "\n" in item or "\r" in item:
+                          fail("ACS DNS guidance record value is invalid")
+                  observed[purpose] = True
+              if set(observed) != set(expected_types):
+                  fail("ACS DNS guidance record set is incomplete")
+              return status
+
+          def post_verification(domain_id, verification_type):
+              if VERIFICATION_TYPES != ("Domain", "SPF", "DKIM", "DKIM2"):
+                  fail("ACS verification type allowlist is invalid")
+              body = {"verificationType": verification_type}
+              if set(body) != {"verificationType"} or body["verificationType"] not in VERIFICATION_TYPES:
+                  fail("ACS verification request body is outside the fixed allowlist")
+              serialized = json.dumps(body, separators=(",", ":"), sort_keys=True)
+              if json.loads(serialized) != body or len(serialized.encode("utf-8")) > 64:
+                  fail("ACS verification request body is invalid")
+              uri = (
+                  f"https://management.azure.com{domain_id}/initiateVerification"
+                  f"?api-version={API_VERSION}"
+              )
+              result = run_bounded(
+                  [
+                      "az", "rest", "--method", "post", "--uri", uri,
+                      "--headers", "Content-Type=application/json", "--body", serialized,
+                      "--output", "none", "--only-show-errors",
+                  ],
+                  f"ACS {verification_type} verification initiation",
+              )
+              if result.returncode != 0:
+                  # The stable API documents 202 Accepted. On retries, an
+                  # already-started request is treated as accepted only when
+                  # the authenticated client reports success; no provider
+                  # error is inferred to be idempotent from an untrusted body.
+                  fail(f"ACS {verification_type} verification initiation was not accepted")
+
+          if os.environ.get("DEPLOYMENT_PHASE") != "foundation_bootstrap":
+              fail("ACS verification initiation is restricted to foundation_bootstrap")
+          subscription_id = os.environ.get("PROTECTED_SUBSCRIPTION_ID", "").lower()
+          tenant_id = os.environ.get("PROTECTED_TENANT_ID", "").lower()
+          if UUID.fullmatch(subscription_id) is None or UUID.fullmatch(tenant_id) is None:
+              fail("protected Azure identity is malformed")
+          reviewed_digest = os.environ.get("KP_REVIEWED_DEPLOYMENT_DIGEST", "")
+          reviewed_commit = os.environ.get("REVIEWED_COMMIT_SHA", "")
+          request_id = os.environ.get("DEPLOYMENT_REQUEST_ID", "")
+          if re.fullmatch(r"sha256:[0-9a-f]{64}", reviewed_digest) is None:
+              fail("reviewed deployment digest is missing or malformed")
+          if re.fullmatch(r"[0-9a-f]{40}", reviewed_commit) is None:
+              fail("reviewed commit is malformed")
+          if re.fullmatch(r"kp-[0-9a-f]{32}-[1-9][0-9]{0,2}", request_id) is None:
+              fail("deployment request correlation is malformed")
+
+          account = run_json(
+              [
+                  "az", "account", "show", "--query", "{subscriptionId:id,tenantId:tenantId}",
+                  "--output", "json", "--only-show-errors",
+              ],
+              "authenticated Azure account",
+              max_bytes=4_096,
+          )
+          if not isinstance(account, dict) or str(account.get("subscriptionId", "")).lower() != subscription_id:
+              fail("authenticated Azure subscription does not match the reviewed deployment")
+          if str(account.get("tenantId", "")).lower() != tenant_id:
+              fail("authenticated Azure tenant does not match the reviewed deployment")
+
+          config_path = Path(os.environ["RUNNER_TEMP"]) / "reviewed.auto.tfvars.json"
+          if not config_path.is_file() or config_path.stat().st_size > 32_768:
+              fail("reviewed deployment configuration is missing or exceeds the fixed limit")
+          try:
+              config = json.loads(config_path.read_text(encoding="utf-8"))
+          except (OSError, TypeError, ValueError):
+              fail("reviewed deployment configuration is malformed")
+          if not isinstance(config, dict) or config.get("acs_resource_mode") not in {"existing", "provision"}:
+              fail("reviewed ACS resource mode is invalid")
+
+          resources = terraform_output("acs_control_plane_resources")
+          if not isinstance(resources, dict) or set(resources) != {
+              "resource_group_name", "communication_service_id", "email_domain_id", "sender_username_id"
+          }:
+              fail("stored ACS control-plane resource identities are malformed")
+          domain_id = resources.get("email_domain_id")
+          domain_parts = split_domain_id(domain_id, subscription_id)
+          if str(resources.get("resource_group_name", "")).lower() != domain_parts[3].lower():
+              fail("stored ACS email domain does not belong to the Terraform resource group")
+          sending_domain = str(config.get("acs_sending_domain", "")).strip().lower()
+          if DOMAIN.fullmatch(sending_domain) is None or domain_parts[9].lower() != sending_domain:
+              fail("stored ACS email domain does not match the reviewed sending domain")
+
+          mode = config["acs_resource_mode"]
+          initiated = []
+          dns_status = "existing_domain_dns_external"
+          result_name = "not_applicable_existing_resource_no_mutation"
+          verification_state = "existing_resource_not_mutated"
+          if mode == "existing":
+              if str(config.get("acs_existing_email_domain_id", "")).lower() != domain_id.lower():
+                  fail("stored ACS email domain does not match the reviewed existing resource ID")
+          else:
+              dns_status = validate_dns_guidance(terraform_output("acs_delivery_readiness"), sending_domain)
+              prior_states = [
+                  config.get(key)
+                  for key in (
+                      "acs_domain_verification_status", "acs_spf_verification_status",
+                      "acs_dkim_verification_status", "acs_dkim2_verification_status",
+                  )
+              ]
+              if any(
+                  not isinstance(state, str) or not state or len(state) > 64 or "\n" in state or "\r" in state
+                  for state in prior_states
+              ):
+                  fail("authenticated ACS verification readback is malformed")
+              if all(state.lower() == "verified" for state in prior_states):
+                  # The earlier authenticated GET already established this
+                  # fact. Do not restart completed verification or mutate the
+                  # status fields; the workload gate still owns promotion.
+                  result_name = "already_verified_by_authenticated_readback_no_mutation"
+                  verification_state = "verified_by_prior_authenticated_control_plane_readback"
+              else:
+                  for verification_type in VERIFICATION_TYPES:
+                      post_verification(domain_id, verification_type)
+                      initiated.append(verification_type)
+                  result_name = "accepted_pending_control_plane_verification"
+                  verification_state = "pending_external_dns_and_control_plane_readback"
+
+          recorded_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+          evidence = {
+              "schema": "kp.acs-verification-initiation.v1",
+              "recorded_at": recorded_at,
+              "result": result_name,
+              "phase": "foundation_bootstrap",
+              "resource_mode": mode,
+              "subscription_id": subscription_id,
+              "tenant_id": tenant_id,
+              "email_domain_id": domain_id,
+              "api_version": API_VERSION,
+              "verification_types": initiated,
+              "verification_state": verification_state,
+              "dns_guidance_status": dns_status,
+              "reviewed_commit_sha": reviewed_commit,
+              "reviewed_deployment_digest": reviewed_digest,
+              "deployment_request_id": request_id,
+              "workflow_run": {
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              },
+              "scope_limits": {
+                  "provider_response_body_recorded": False,
+                  "verification_marked_complete": False,
+                  "workloads_unlocked": False,
+                  "repeat_foundation_dispatch_may_be_required": True,
+              },
+          }
+          canonical = json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+          if len(canonical.encode("utf-8")) > 16_384:
+              fail("ACS verification initiation evidence exceeds the fixed limit")
+          evidence_digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          evidence["evidence_digest"] = evidence_digest
+          evidence_path = (
+              Path(os.environ["RUNNER_TEMP"]) / "deployment-evidence" / "acs-verification-initiation.json"
+          )
+          with evidence_path.open("x", encoding="utf-8") as output:
+              output.write(json.dumps(evidence, separators=(",", ":"), sort_keys=True) + "\n")
+              output.flush()
+              os.fsync(output.fileno())
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_environment:
+              github_environment.write(f"KP_ACS_VERIFICATION_INITIATION_DIGEST={evidence_digest}\n")
+          PY
+      - name: Checkpoint ACS verification initiation
+        if: inputs.deployment_phase == 'foundation_bootstrap'
+        env:
+          KP_MIGRATION_RESULT: not_applicable
+          KP_HEALTH_RESULT: not_applicable
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage acs_verification_initiated --status passed
+      - name: Plan ACS foundation finalize
+        if: inputs.deployment_phase == 'foundation_finalize'
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform plan -out=foundation-finalize.tfplan
+          -var-file="environments/$DEPLOYMENT_ENVIRONMENT.tfvars"
+          -var-file="$RUNNER_TEMP/reviewed.auto.tfvars.json"
+          -var="environment=$DEPLOYMENT_ENVIRONMENT"
+          -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
+          -var="deploy_workloads=false"
+          -var="acs_deployment_stage=foundation_finalize"
+          -target=azurerm_communication_service_email_domain_association.main
+          -target=azurerm_email_communication_service_domain_sender_username.main
+      - name: Enforce ACS foundation finalize plan allowlist
+        if: inputs.deployment_phase == 'foundation_finalize'
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          result = subprocess.run(
+              ["terraform", "show", "-json", "foundation-finalize.tfplan"],
+              check=False,
+              capture_output=True,
+              timeout=30,
+          )
+          if result.returncode != 0 or len(result.stdout) > 4_194_304 or len(result.stderr) > 65_536:
+              raise SystemExit("foundation finalize plan is inaccessible or exceeds the fixed limit")
+          try:
+              plan = json.loads(result.stdout)
+          except (TypeError, ValueError):
+              raise SystemExit("foundation finalize plan is malformed") from None
+          if not isinstance(plan, dict):
+              raise SystemExit("foundation finalize plan is malformed")
+          changes = plan.get("resource_changes", [])
+          if not isinstance(changes, list) or len(changes) > 64:
+              raise SystemExit("foundation finalize plan change set is malformed or exceeds the fixed limit")
+          destructive = sorted(
+              change["address"]
+              for change in changes
+              if isinstance(change, dict) and "delete" in change.get("change", {}).get("actions", [])
+          )
+          if destructive:
+              raise SystemExit(
+                  "foundation finalize is create/update-only and refuses deletes or replacements; "
+                  "review the existing deployment before continuing"
+              )
+          changed = {
+              change.get("address")
+              for change in changes
+              if isinstance(change, dict) and change.get("change", {}).get("actions") != ["no-op"]
+          }
+          if None in changed:
+              raise SystemExit("foundation finalize plan contains an unidentified change")
+          allowed = {
+              "azurerm_communication_service_email_domain_association.main[0]",
+              "azurerm_email_communication_service_domain_sender_username.main[0]",
+          }
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f"foundation finalize plan contains unrelated changes: {sorted(unexpected)}")
+          PY
+      - name: Checkpoint allowlisted foundation finalize plan
+        if: inputs.deployment_phase == 'foundation_finalize'
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage foundation_finalize_plan_safe --status passed
+      - name: Apply ACS foundation finalize
+        if: inputs.deployment_phase == 'foundation_finalize'
+        working-directory: infrastructure/terraform
+        run: terraform apply -auto-approve foundation-finalize.tfplan
+      - name: Checkpoint ACS foundation finalize apply
+        if: inputs.deployment_phase == 'foundation_finalize'
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage foundation_finalize_applied --status passed
+      - name: Prove finalized ACS association and sender from Azure
+        if: inputs.deployment_phase == 'foundation_finalize'
+        env:
+          PROTECTED_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          PROTECTED_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          API_VERSION = "2023-04-01"
+          MAX_CONTROL_PLANE_BYTES = 65_536
+          UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.I)
+          DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\Z")
+          SENDER = re.compile(r"[a-z0-9][a-z0-9._+-]{0,63}\Z")
+
+          def fail(message):
+              raise SystemExit(message)
+
+          def run_json(command, label, *, max_bytes=MAX_CONTROL_PLANE_BYTES):
+              try:
+                  result = subprocess.run(
+                      command,
+                      check=False,
+                      capture_output=True,
+                      timeout=45,
+                  )
+              except (OSError, subprocess.TimeoutExpired):
+                  fail(f"{label} is inaccessible")
+              if len(result.stdout) > max_bytes or len(result.stderr) > max_bytes:
+                  fail(f"{label} exceeds the fixed response limit")
+              if result.returncode != 0:
+                  # Provider response bodies remain private to the bounded
+                  # subprocess and are never copied to logs or evidence.
+                  fail(f"{label} is missing, ambiguous, or inaccessible")
+              try:
+                  return json.loads(result.stdout)
+              except (TypeError, ValueError):
+                  fail(f"{label} returned malformed JSON")
+
+          def az_get(resource_id, query):
+              return run_json(
+                  [
+                      "az", "rest", "--method", "get", "--uri",
+                      f"https://management.azure.com{resource_id}?api-version={API_VERSION}",
+                      "--query", query, "--output", "json", "--only-show-errors",
+                  ],
+                  "selected finalized ACS control-plane resource",
+              )
+
+          def split_resource_id(resource_id, expected_segments, label, subscription_id):
+              if not isinstance(resource_id, str) or len(resource_id) > 2_048 or any(
+                  marker in resource_id for marker in ("?", "#", "\n", "\r")
+              ):
+                  fail(f"{label} resource ID is malformed")
+              segments = resource_id.strip("/").split("/")
+              if len(segments) != expected_segments or any(not segment for segment in segments):
+                  fail(f"{label} resource ID is malformed")
+              if (
+                  segments[0].lower() != "subscriptions"
+                  or UUID.fullmatch(segments[1]) is None
+                  or segments[1].lower() != subscription_id
+                  or segments[2].lower() != "resourcegroups"
+                  or segments[4].lower() != "providers"
+                  or segments[5].lower() != "microsoft.communication"
+              ):
+                  fail(f"{label} resource ID is malformed or outside the protected subscription")
+              return segments
+
+          def require_identity(value, resource_id, resource_type, label):
+              if not isinstance(value, dict):
+                  fail(f"{label} selected fields are malformed")
+              if str(value.get("id", "")).lower() != resource_id.lower():
+                  fail(f"{label} readback does not match the stored resource ID")
+              if str(value.get("type", "")).lower() != resource_type.lower():
+                  fail(f"{label} readback has an unexpected resource type")
+
+          def require_ready(value, label, *, optional=False):
+              state = value.get("provisioningState") if isinstance(value, dict) else None
+              if optional and state is None:
+                  return
+              if not isinstance(state, str) or state.lower() not in {"running", "succeeded"}:
+                  fail(f"{label} is not in a ready provisioning state")
+
+          if os.environ.get("DEPLOYMENT_PHASE") != "foundation_finalize":
+              fail("finalized ACS readback is restricted to foundation_finalize")
+          subscription_id = os.environ.get("PROTECTED_SUBSCRIPTION_ID", "").lower()
+          tenant_id = os.environ.get("PROTECTED_TENANT_ID", "").lower()
+          if UUID.fullmatch(subscription_id) is None or UUID.fullmatch(tenant_id) is None:
+              fail("protected Azure identity is malformed")
+          account = run_json(
+              [
+                  "az", "account", "show", "--query", "{subscriptionId:id,tenantId:tenantId}",
+                  "--output", "json", "--only-show-errors",
+              ],
+              "authenticated Azure account",
+              max_bytes=4_096,
+          )
+          if not isinstance(account, dict) or str(account.get("subscriptionId", "")).lower() != subscription_id:
+              fail("authenticated Azure subscription does not match the reviewed deployment")
+          if str(account.get("tenantId", "")).lower() != tenant_id:
+              fail("authenticated Azure tenant does not match the reviewed deployment")
+
+          config_path = Path(os.environ["RUNNER_TEMP"]) / "reviewed.auto.tfvars.json"
+          if not config_path.is_file() or config_path.stat().st_size > 32_768:
+              fail("reviewed deployment configuration is missing or exceeds the fixed limit")
+          try:
+              config = json.loads(config_path.read_text(encoding="utf-8"))
+          except (OSError, TypeError, ValueError):
+              fail("reviewed deployment configuration is malformed")
+          if not isinstance(config, dict):
+              fail("reviewed deployment configuration is malformed")
+          resources = run_json(
+              [
+                  "terraform", "-chdir=infrastructure/terraform", "output", "-json",
+                  "acs_control_plane_resources",
+              ],
+              "stored ACS control-plane resources",
+          )
+          if not isinstance(resources, dict) or set(resources) != {
+              "resource_group_name", "communication_service_id", "email_domain_id", "sender_username_id"
+          }:
+              fail("stored ACS control-plane resource identities are malformed")
+          communication_id = resources["communication_service_id"]
+          domain_id = resources["email_domain_id"]
+          sender_id = resources["sender_username_id"]
+          communication_parts = split_resource_id(communication_id, 8, "Communication Service", subscription_id)
+          domain_parts = split_resource_id(domain_id, 10, "email domain", subscription_id)
+          sender_parts = split_resource_id(sender_id, 12, "sender username", subscription_id)
+          if communication_parts[6].lower() != "communicationservices":
+              fail("Communication Service resource ID is malformed")
+          if domain_parts[6].lower() != "emailservices" or domain_parts[8].lower() != "domains":
+              fail("email domain resource ID is malformed")
+          if sender_parts[:10] != domain_parts or sender_parts[10].lower() != "senderusernames":
+              fail("sender username resource ID does not belong to the stored email domain")
+          resource_group = str(resources["resource_group_name"])
+          if any(parts[3].lower() != resource_group.lower() for parts in (communication_parts, domain_parts)):
+              fail("stored ACS resources do not belong to the Terraform resource group")
+          sending_domain = str(config.get("acs_sending_domain", "")).strip().lower()
+          sender_local_part = str(config.get("acs_sender_local_part", "")).strip().lower()
+          if DOMAIN.fullmatch(sending_domain) is None or domain_parts[9].lower() != sending_domain:
+              fail("stored ACS email domain does not match the reviewed sending domain")
+          if SENDER.fullmatch(sender_local_part) is None or sender_parts[11].lower() != sender_local_part:
+              fail("stored sender username does not match the reviewed local part")
+
+          communication = az_get(
+              communication_id,
+              "{id:id,type:type,provisioningState:properties.provisioningState,linkedDomains:properties.linkedDomains,dataLocation:properties.dataLocation}",
+          )
+          domain = az_get(
+              domain_id,
+              "{id:id,type:type,provisioningState:properties.provisioningState,fromSenderDomain:properties.fromSenderDomain,Domain:properties.verificationStates.Domain.status,SPF:properties.verificationStates.SPF.status,DKIM:properties.verificationStates.DKIM.status,DKIM2:properties.verificationStates.DKIM2.status,dataLocation:properties.dataLocation}",
+          )
+          sender = az_get(
+              sender_id,
+              "{id:id,type:type,provisioningState:properties.provisioningState,username:properties.username,displayName:properties.displayName,dataLocation:properties.dataLocation}",
+          )
+          require_identity(
+              communication, communication_id,
+              "Microsoft.Communication/CommunicationServices", "Communication Service",
+          )
+          require_identity(
+              domain, domain_id, "Microsoft.Communication/EmailServices/Domains", "email domain",
+          )
+          require_identity(
+              sender, sender_id,
+              "Microsoft.Communication/EmailServices/Domains/SenderUsernames", "sender username",
+          )
+          require_ready(communication, "Communication Service")
+          require_ready(domain, "email domain")
+          require_ready(sender, "sender username", optional=True)
+          statuses = {key: str(domain.get(key, "")).lower() for key in ("Domain", "SPF", "DKIM", "DKIM2")}
+          if any(status != "verified" for status in statuses.values()):
+              fail("foundation finalize requires all four live ACS verification states to remain Verified")
+          if str(domain.get("fromSenderDomain", "")).lower() != sending_domain:
+              fail("live email domain does not match the reviewed sending domain")
+          linked_domains = communication.get("linkedDomains")
+          if not isinstance(linked_domains, list) or len(linked_domains) > 64 or any(
+              not isinstance(value, str) for value in linked_domains
+          ):
+              fail("Communication Service domain associations are malformed or ambiguous")
+          if sum(value.lower() == domain_id.lower() for value in linked_domains) != 1:
+              fail("foundation finalize requires the exact live ACS email-domain association")
+          if str(sender.get("username", "")).lower() != sender_local_part:
+              fail("live sender username does not match the reviewed local part")
+          if str(sender.get("displayName", "")) != str(config.get("acs_sender_display_name", "")).strip():
+              fail("live sender display name does not match the reviewed deployment")
+          expected_location = str(config.get("communication_data_location", "")).strip().lower()
+          if not expected_location or any(
+              str(value.get("dataLocation", "")).strip().lower() != expected_location
+              for value in (communication, domain)
+          ):
+              fail("live ACS parent data locations differ from the reviewed deployment")
+          if sender.get("dataLocation") is not None and (
+              str(sender["dataLocation"]).strip().lower() != expected_location
+          ):
+              fail("live sender data location differs from the reviewed deployment")
+
+          evidence = {
+              "schema": "kp.acs-finalize-readback.v1",
+              "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+              "result": "foundation_finalized",
+              "phase": "foundation_finalize",
+              "subscription_id": subscription_id,
+              "tenant_id": tenant_id,
+              "resource_ids": {
+                  "communication_service_id": communication_id,
+                  "email_domain_id": domain_id,
+                  "sender_username_id": sender_id,
+              },
+              "verification": {key.lower(): "verified" for key in statuses},
+              "association": "verified_exact_single_match",
+              "sender": "verified_exact_readback",
+              "reviewed_commit_sha": os.environ["REVIEWED_COMMIT_SHA"],
+              "reviewed_deployment_digest": os.environ["KP_REVIEWED_DEPLOYMENT_DIGEST"],
+              "workflow_run": {
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              },
+              "scope_limits": {
+                  "workloads_deployed": False,
+                  "mail_delivery_proven": False,
+                  "inbox_placement_proven": False,
+                  "human_mailbox_validation_proven": False,
+              },
+          }
+          canonical = json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+          if len(canonical.encode("utf-8")) > 16_384:
+              fail("finalized ACS readback evidence exceeds the fixed limit")
+          digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          evidence["evidence_digest"] = digest
+          target = Path(os.environ["RUNNER_TEMP"]) / "deployment-evidence" / "acs-finalize-readback.json"
+          with target.open("x", encoding="utf-8") as output:
+              output.write(json.dumps(evidence, separators=(",", ":"), sort_keys=True) + "\n")
+              output.flush()
+              os.fsync(output.fileno())
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_environment:
+              github_environment.write(f"KP_ACS_FINALIZE_READBACK_DIGEST={digest}\n")
+          PY
+      - name: Checkpoint finalized ACS readback
+        if: inputs.deployment_phase == 'foundation_finalize'
+        env:
+          KP_MIGRATION_RESULT: not_applicable
+          KP_HEALTH_RESULT: not_applicable
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage foundation_finalize_readback --status passed
       - name: Build immutable images in the registry
+        if: inputs.deployment_phase == 'workloads'
         id: images
         shell: bash
         run: |
           set -euo pipefail
           registry="$(terraform -chdir=infrastructure/terraform output -raw container_registry_name)"
           login_server="$(terraform -chdir=infrastructure/terraform output -raw container_registry_login_server)"
-          tag="sha-${GITHUB_SHA}"
+          # A per-attempt tag prevents a parallel environment or manual rerun
+          # from moving the lookup target between the build and digest capture.
+          # Tags are discovery handles only; every later consumer uses @sha256.
+          tag="sha-${GITHUB_SHA}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           # `az acr build` uploads the context and builds inside ACR Tasks, so
           # the runner needs no Docker daemon in either network mode.
+          mkdir -p "$RUNNER_TEMP/supply-chain"
+          : > "$RUNNER_TEMP/supply-chain/images.tsv"
           for image in operator-api tracking-api worker migration; do
             az acr build \
               --registry "$registry" \
               --image "${image}:${tag}" \
               --file "infrastructure/containers/Dockerfile.${image}" \
+              --platform linux/amd64 \
               .
+            digest="$(az acr repository show \
+              --name "$registry" \
+              --image "${image}:${tag}" \
+              --query digest \
+              --output tsv)"
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::ACR returned an invalid digest for ${image}: ${digest}"
+              exit 1
+            fi
+            immutable_digest="$(az acr repository show \
+              --name "$registry" \
+              --image "${image}@${digest}" \
+              --query digest \
+              --output tsv)"
+            if [[ "$immutable_digest" != "$digest" ]]; then
+              echo "::error::ACR did not resolve the immutable digest for ${image}"
+              exit 1
+            fi
+            output_name="${image//-/_}_digest"
+            echo "${output_name}=${digest}" >> "$GITHUB_OUTPUT"
+            printf '%s\t%s\t%s\t%s\n' \
+              "$image" "${login_server}/${image}" "$digest" "${image}.spdx.json" \
+              >> "$RUNNER_TEMP/supply-chain/images.tsv"
           done
           echo "registry=$login_server" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Authenticate supply-chain tools to ACR
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          IMAGE_REGISTRY: ${{ steps.images.outputs.registry }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          registry="$(terraform -chdir=infrastructure/terraform output -raw container_registry_name)"
+          login_server="$IMAGE_REGISTRY"
+          access_token="$(az acr login --name "$registry" --expose-token --query accessToken --output tsv)"
+          echo "::add-mask::$access_token"
+          docker_config="$RUNNER_TEMP/docker-config"
+          mkdir -p "$docker_config"
+          chmod 700 "$docker_config"
+          encoded="$(printf '%s' "00000000-0000-0000-0000-000000000000:${access_token}" | base64 | tr -d '\n')"
+          printf '{"auths":{"%s":{"auth":"%s"}}}\n' "$login_server" "$encoded" > "$docker_config/config.json"
+          chmod 600 "$docker_config/config.json"
+          echo "DOCKER_CONFIG=$docker_config" >> "$GITHUB_ENV"
+      - name: Scan exact immutable registry images
+        if: inputs.deployment_phase == 'workloads'
+        shell: bash
+        run: |
+          set -euo pipefail
+          trivy_version="$(trivy --version | awk '$1 == "Version:" { print $2; exit }')"
+          if [[ "$trivy_version" != "0.74.0" ]]; then
+            echo "::error::immutable registry scan requires Trivy 0.74.0; found ${trivy_version:-unknown}"
+            exit 1
+          fi
+          evidence_dir="$RUNNER_TEMP/deployment-evidence"
+          scan_count=0
+          while IFS=$'\t' read -r image repository digest _sbom_name; do
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::refusing to scan malformed immutable digest for ${image}"
+              exit 1
+            fi
+            scan_output="${evidence_dir}/${image}-trivy.json"
+            if [[ -e "$scan_output" || -L "$scan_output" ]]; then
+              echo "::error::refusing to overwrite immutable-image scan evidence for ${image}"
+              exit 1
+            fi
+            echo "Scanning ${image} at exact immutable digest ${digest}"
+            trivy image \
+              --scanners vuln,secret \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --format json \
+              --output "$scan_output" \
+              "${repository}@${digest}"
+            test -s "$scan_output"
+            chmod 600 "$scan_output"
+            scan_count=$((scan_count + 1))
+          done < "$RUNNER_TEMP/supply-chain/images.tsv"
+          if [[ "$scan_count" -ne 4 ]]; then
+            echo "::error::immutable registry scan did not cover all four release images"
+            exit 1
+          fi
+          checksum_output="$evidence_dir/immutable-image-trivy.sha256"
+          if [[ -e "$checksum_output" || -L "$checksum_output" ]]; then
+            echo "::error::refusing to overwrite immutable-image scan checksums"
+            exit 1
+          fi
+          (
+            cd "$evidence_dir"
+            umask 077
+            sha256sum ./*-trivy.json > "$checksum_output"
+          )
+      - name: Generate deterministic SPDX evidence for every image
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          SYFT_COMMAND: ${{ steps.syft.outputs.cmd }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/supply-chain"
+          source_date_epoch="$(git show --no-patch --format=%ct "$GITHUB_SHA")"
+          while IFS=$'\t' read -r image repository digest sbom_name; do
+            raw_sbom="${evidence_dir}/${image}.raw.spdx.json"
+            "$SYFT_COMMAND" "registry:${repository}@${digest}" \
+              --scope all-layers \
+              --output "spdx-json=${raw_sbom}"
+            python scripts/operator/release/supply_chain_evidence.py canonicalize-sbom \
+              --input "$raw_sbom" \
+              --output "${evidence_dir}/${sbom_name}" \
+              --image-name "$repository" \
+              --image-digest "$digest" \
+              --source-date-epoch "$source_date_epoch"
+          done < "$evidence_dir/images.tsv"
+          python scripts/operator/release/supply_chain_evidence.py build-manifest \
+            --entries "$evidence_dir/images.tsv" \
+            --output "$evidence_dir/release-manifest.json" \
+            --source-revision "$GITHUB_SHA"
+          python scripts/operator/release/supply_chain_evidence.py validate-manifest \
+            --manifest "$evidence_dir/release-manifest.json"
+      - name: Attest operator API provenance
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_operator_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/operator-api
+          subject-digest: ${{ steps.images.outputs.operator_api_digest }}
+          push-to-registry: true
+      - name: Attest operator API SBOM
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_operator_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/operator-api
+          subject-digest: ${{ steps.images.outputs.operator_api_digest }}
+          sbom-path: ${{ runner.temp }}/supply-chain/operator-api.spdx.json
+          push-to-registry: true
+      - name: Attest tracking API provenance
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_tracking_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/tracking-api
+          subject-digest: ${{ steps.images.outputs.tracking_api_digest }}
+          push-to-registry: true
+      - name: Attest tracking API SBOM
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_tracking_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/tracking-api
+          subject-digest: ${{ steps.images.outputs.tracking_api_digest }}
+          sbom-path: ${{ runner.temp }}/supply-chain/tracking-api.spdx.json
+          push-to-registry: true
+      - name: Attest worker provenance
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_worker_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/worker
+          subject-digest: ${{ steps.images.outputs.worker_digest }}
+          push-to-registry: true
+      - name: Attest worker SBOM
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_worker_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/worker
+          subject-digest: ${{ steps.images.outputs.worker_digest }}
+          sbom-path: ${{ runner.temp }}/supply-chain/worker.spdx.json
+          push-to-registry: true
+      - name: Attest migration provenance
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_migration_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/migration
+          subject-digest: ${{ steps.images.outputs.migration_digest }}
+          push-to-registry: true
+      - name: Attest migration SBOM
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_migration_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/migration
+          subject-digest: ${{ steps.images.outputs.migration_digest }}
+          sbom-path: ${{ runner.temp }}/supply-chain/migration.spdx.json
+          push-to-registry: true
+      - name: Verify registry attestations before deployment
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/supply-chain"
+          signer_workflow="$GITHUB_REPOSITORY/.github/workflows/azure-deploy.yml"
+          while IFS=$'\t' read -r image repository digest _sbom_name; do
+            echo "Verifying ${image} provenance and SPDX attestations"
+            subject="oci://${repository}@${digest}"
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --bundle-from-oci \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --signer-workflow "$signer_workflow" \
+              --source-digest "$GITHUB_SHA" \
+              --source-ref "$GITHUB_REF"
+            gh attestation verify "$subject" \
+              --repo "$GITHUB_REPOSITORY" \
+              --bundle-from-oci \
+              --predicate-type https://spdx.dev/Document/v2.3 \
+              --signer-workflow "$signer_workflow" \
+              --source-digest "$GITHUB_SHA" \
+              --source-ref "$GITHUB_REF"
+          done < "$evidence_dir/images.tsv"
+      - name: Checkpoint verified immutable images
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          KP_OPERATOR_API_DIGEST: ${{ steps.images.outputs.operator_api_digest }}
+          KP_TRACKING_API_DIGEST: ${{ steps.images.outputs.tracking_api_digest }}
+          KP_WORKER_DIGEST: ${{ steps.images.outputs.worker_digest }}
+          KP_MIGRATION_DIGEST: ${{ steps.images.outputs.migration_digest }}
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage immutable_images_verified --status passed
       - name: Plan workloads
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          IMAGE_REGISTRY: ${{ steps.images.outputs.registry }}
+          MIGRATION_DIGEST: ${{ steps.images.outputs.migration_digest }}
+          OPERATOR_API_DIGEST: ${{ steps.images.outputs.operator_api_digest }}
+          TRACKING_API_DIGEST: ${{ steps.images.outputs.tracking_api_digest }}
+          WORKER_DIGEST: ${{ steps.images.outputs.worker_digest }}
         working-directory: infrastructure/terraform
         run: >-
           terraform plan -out=release.tfplan
-          -var-file="environments/${{ inputs.environment }}.tfvars"
+          -var-file="environments/$DEPLOYMENT_ENVIRONMENT.tfvars"
+          -var-file="$RUNNER_TEMP/reviewed.auto.tfvars.json"
+          -var="environment=$DEPLOYMENT_ENVIRONMENT"
+          -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
           -var="deploy_workloads=true"
-          -var="operator_image=${{ steps.images.outputs.registry }}/operator-api:${{ steps.images.outputs.tag }}"
-          -var="tracking_image=${{ steps.images.outputs.registry }}/tracking-api:${{ steps.images.outputs.tag }}"
-          -var="worker_image=${{ steps.images.outputs.registry }}/worker:${{ steps.images.outputs.tag }}"
-          -var="migration_image=${{ steps.images.outputs.registry }}/migration:${{ steps.images.outputs.tag }}"
-      - name: Apply workloads
+          -var="acs_deployment_stage=workloads"
+          -var="enable_acs_event_subscription=false"
+          -var="operator_image=$IMAGE_REGISTRY/operator-api@$OPERATOR_API_DIGEST"
+          -var="tracking_image=$IMAGE_REGISTRY/tracking-api@$TRACKING_API_DIGEST"
+          -var="worker_image=$IMAGE_REGISTRY/worker@$WORKER_DIGEST"
+          -var="migration_image=$IMAGE_REGISTRY/migration@$MIGRATION_DIGEST"
+      - name: Refuse destructive workload changes
+        if: inputs.deployment_phase == 'workloads'
         working-directory: infrastructure/terraform
-        run: terraform apply -auto-approve release.tfplan
-      - name: Migrate and qualify
         shell: bash
         run: |
-          export AZURE_RESOURCE_GROUP="$(terraform -chdir=infrastructure/terraform output -raw resource_group_name)"
-          export AZURE_MIGRATION_JOB="$(terraform -chdir=infrastructure/terraform output -raw migration_job_name)"
-          export AZURE_OPERATOR_URL="https://$(terraform -chdir=infrastructure/terraform output -raw operator_default_hostname)"
-          export AZURE_TRACKING_URL="https://$(terraform -chdir=infrastructure/terraform output -raw tracking_default_hostname)"
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          result = subprocess.run(
+              ["terraform", "show", "-json", "release.tfplan"],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          plan = json.loads(result.stdout)
+          destructive = sorted(
+              change["address"]
+              for change in plan.get("resource_changes", [])
+              if "delete" in change.get("change", {}).get("actions", [])
+          )
+          if destructive:
+              raise SystemExit(
+                  "workloads phase is create/update-only and refuses deletes or replacements; "
+                  "reconcile the existing deployment by correlation ID before continuing"
+              )
+          PY
+      - name: Checkpoint non-destructive workload plan
+        if: inputs.deployment_phase == 'workloads'
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage workload_plan_safe --status passed
+      - name: Apply workloads
+        if: inputs.deployment_phase == 'workloads'
+        working-directory: infrastructure/terraform
+        run: terraform apply -auto-approve release.tfplan
+      - name: Checkpoint workload apply
+        if: inputs.deployment_phase == 'workloads'
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage workloads_applied --status passed
+      - name: Migrate and qualify
+        if: inputs.deployment_phase == 'workloads'
+        shell: bash
+        run: |
+          AZURE_RESOURCE_GROUP="$(terraform -chdir=infrastructure/terraform output -raw resource_group_name)"
+          AZURE_MIGRATION_JOB="$(terraform -chdir=infrastructure/terraform output -raw migration_job_name)"
+          AZURE_OPERATOR_URL="https://$(terraform -chdir=infrastructure/terraform output -raw operator_default_hostname)"
+          AZURE_TRACKING_URL="https://$(terraform -chdir=infrastructure/terraform output -raw tracking_default_hostname)"
+          export AZURE_RESOURCE_GROUP AZURE_MIGRATION_JOB AZURE_OPERATOR_URL AZURE_TRACKING_URL
           ./scripts/azure_release.sh
+      - name: Qualify every managed worker role
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          KP_WORKER_HEALTH_TIMEOUT_SECONDS: 600
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import time
+
+          APP_NAME = re.compile(r"[a-z][a-z0-9-]{1,31}\Z")
+          REVISION_NAME = re.compile(r"[a-z0-9][a-z0-9-]{1,63}\Z")
+          ROLE_NAME = re.compile(r"[a-z][a-z-]{0,31}\Z")
+          UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z", re.I)
+          MAX_RESPONSE_BYTES = 65_536
+
+          def fail(message):
+              raise SystemExit(message)
+
+          def run(command, label):
+              try:
+                  result = subprocess.run(command, check=False, capture_output=True, timeout=60)
+              except (OSError, subprocess.TimeoutExpired):
+                  fail(f"{label} was inaccessible")
+              if result.returncode != 0:
+                  fail(f"{label} was missing, ambiguous, or inaccessible")
+              if len(result.stdout) > MAX_RESPONSE_BYTES:
+                  fail(f"{label} exceeded the fixed response limit")
+              return result.stdout.decode("utf-8")
+
+          def run_json(command, label):
+              try:
+                  return json.loads(run(command, label))
+              except (UnicodeDecodeError, ValueError):
+                  fail(f"{label} returned malformed JSON")
+
+          resource_group = run(
+              ["terraform", "-chdir=infrastructure/terraform", "output", "-raw", "resource_group_name"],
+              "resource-group output",
+          ).strip()
+          workspace = run(
+              [
+                  "terraform", "-chdir=infrastructure/terraform", "output", "-raw",
+                  "log_analytics_workspace_customer_id",
+              ],
+              "Log Analytics workspace output",
+          ).strip()
+          targets = run_json(
+              [
+                  "terraform", "-chdir=infrastructure/terraform", "output", "-json",
+                  "managed_worker_health_targets",
+              ],
+              "managed worker target output",
+          )
+          if not re.fullmatch(r"[A-Za-z0-9._()-]{1,90}", resource_group) or UUID.fullmatch(workspace) is None:
+              fail("managed worker health output identities were invalid")
+          if not isinstance(targets, dict) or not targets or len(targets) > 2:
+              fail("managed worker health target inventory was empty or invalid")
+
+          expected = {}
+          revisions = {}
+
+          def healthy_revision(app_name):
+              inventory = run_json(
+                  [
+                      "az", "containerapp", "revision", "list", "--resource-group", resource_group,
+                      "--name", app_name, "--query",
+                      "[?properties.active].{name:name,healthState:properties.healthState,provisioningState:properties.provisioningState}",
+                      "-o", "json",
+                  ],
+                  f"active revision inventory for {app_name}",
+              )
+              if not isinstance(inventory, list) or len(inventory) != 1 or not isinstance(inventory[0], dict):
+                  fail(f"{app_name} did not have exactly one active worker revision")
+              revision = inventory[0]
+              revision_name = revision.get("name")
+              if (
+                  not isinstance(revision_name, str)
+                  or REVISION_NAME.fullmatch(revision_name) is None
+                  or str(revision.get("healthState", "")).lower() != "healthy"
+                  or str(revision.get("provisioningState", "")).lower() != "provisioned"
+              ):
+                  fail(f"{app_name} active worker revision was not healthy and provisioned")
+              return revision_name
+
+          for app_name, target in targets.items():
+              roles = target.get("roles") if isinstance(target, dict) else None
+              if (
+                  not isinstance(app_name, str)
+                  or APP_NAME.fullmatch(app_name) is None
+                  or not isinstance(roles, list)
+                  or not roles
+                  or len(roles) > 9
+                  or any(not isinstance(role, str) or ROLE_NAME.fullmatch(role) is None for role in roles)
+                  or len(set(roles)) != len(roles)
+              ):
+                  fail("managed worker health target inventory was malformed")
+              expected[app_name] = set(roles)
+              revisions[app_name] = healthy_revision(app_name)
+
+          deadline = time.monotonic() + int(os.environ["KP_WORKER_HEALTH_TIMEOUT_SECONDS"])
+          all_targets = {(app_name, role) for app_name, roles in expected.items() for role in roles}
+          pending = set(all_targets)
+          stable_passes = 0
+          while stable_passes < 2 and time.monotonic() < deadline:
+              observed = {}
+              for app_name, roles in expected.items():
+                  revision_name = revisions[app_name]
+                  query = f'''ContainerAppConsoleLogs_CL
+          | where TimeGenerated > ago(1h)
+          | where ContainerAppName_s == "{app_name}" and RevisionName_s == "{revision_name}"
+          | extend payload = parse_json(Log_s)
+          | where tostring(payload.event) == "worker_role_readiness"
+          | extend role = tostring(payload.role), ready = tobool(payload.ready), reason = tostring(payload.reason)
+          | summarize arg_max(TimeGenerated, ready, reason) by role
+          | project role, ready, reason, observed_at=TimeGenerated'''
+                  rows = run_json(
+                      [
+                          "az", "monitor", "log-analytics", "query", "--workspace", workspace,
+                          "--analytics-query", query, "--timespan", "PT1H", "-o", "json",
+                      ],
+                      f"worker readiness telemetry for {app_name}",
+                  )
+                  if not isinstance(rows, list) or len(rows) > 16:
+                      fail(f"worker readiness telemetry for {app_name} was malformed")
+                  for row in rows:
+                      if not isinstance(row, dict):
+                          fail(f"worker readiness telemetry for {app_name} was malformed")
+                      role = row.get("role")
+                      ready = row.get("ready")
+                      if role in roles and isinstance(ready, bool):
+                          observed[(app_name, role)] = ready
+              # Re-evaluate every role on every pass so an earlier success
+              # cannot mask a newer not-ready event while another role waits.
+              pending = {target for target in all_targets if observed.get(target) is not True}
+              stable_passes = 0 if pending else stable_passes + 1
+              if stable_passes < 2:
+                  time.sleep(10)
+
+          if pending or stable_passes < 2:
+              labels = ", ".join(f"{app_name}/{role}" for app_name, role in sorted(pending))
+              labels = labels or "stable simultaneous confirmation"
+              fail(f"managed worker role readiness was not confirmed for: {labels}")
+          for app_name, revision_name in revisions.items():
+              if healthy_revision(app_name) != revision_name:
+                  fail(f"{app_name} active worker revision changed during health qualification")
+          print(f"managed worker readiness confirmed for {sum(len(roles) for roles in expected.values())} roles")
+          PY
+      - name: Checkpoint migration and health qualification
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          KP_MIGRATION_RESULT: passed
+          KP_HEALTH_RESULT: passed
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage migration_health_passed --status passed
+      - name: Plan ACS receipt subscription activation
+        if: inputs.deployment_phase == 'workloads'
+        env:
+          IMAGE_REGISTRY: ${{ steps.images.outputs.registry }}
+          MIGRATION_DIGEST: ${{ steps.images.outputs.migration_digest }}
+          OPERATOR_API_DIGEST: ${{ steps.images.outputs.operator_api_digest }}
+          TRACKING_API_DIGEST: ${{ steps.images.outputs.tracking_api_digest }}
+          WORKER_DIGEST: ${{ steps.images.outputs.worker_digest }}
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform plan -out=acs-receipts.tfplan
+          -var-file="environments/$DEPLOYMENT_ENVIRONMENT.tfvars"
+          -var-file="$RUNNER_TEMP/reviewed.auto.tfvars.json"
+          -var="environment=$DEPLOYMENT_ENVIRONMENT"
+          -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
+          -var="deploy_workloads=true"
+          -var="acs_deployment_stage=workloads"
+          -var="enable_acs_event_subscription=true"
+          -var="operator_image=$IMAGE_REGISTRY/operator-api@$OPERATOR_API_DIGEST"
+          -var="tracking_image=$IMAGE_REGISTRY/tracking-api@$TRACKING_API_DIGEST"
+          -var="worker_image=$IMAGE_REGISTRY/worker@$WORKER_DIGEST"
+          -var="migration_image=$IMAGE_REGISTRY/migration@$MIGRATION_DIGEST"
+      - name: Refuse unrelated changes in receipt activation plan
+        if: inputs.deployment_phase == 'workloads'
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import subprocess
+
+          result = subprocess.run(
+              ["terraform", "show", "-json", "acs-receipts.tfplan"],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          plan = json.loads(result.stdout)
+          destructive = sorted(
+              change["address"]
+              for change in plan.get("resource_changes", [])
+              if "delete" in change.get("change", {}).get("actions", [])
+          )
+          if destructive:
+              raise SystemExit("receipt activation plan refuses deletes or replacements")
+          changed = {
+              change["address"]
+              for change in plan.get("resource_changes", [])
+              if change.get("change", {}).get("actions") != ["no-op"]
+          }
+          allowed = {"azurerm_eventgrid_system_topic_event_subscription.acs_delivery[0]"}
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f"receipt activation plan contains unrelated changes: {sorted(unexpected)}")
+          if changed != allowed:
+              raise SystemExit("receipt activation plan did not contain exactly the Event Grid subscription")
+          PY
+      - name: Checkpoint non-destructive receipt plan
+        if: inputs.deployment_phase == 'workloads'
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage receipt_plan_safe --status passed
+      - name: Activate ACS receipt subscription after readiness
+        if: inputs.deployment_phase == 'workloads'
+        working-directory: infrastructure/terraform
+        run: terraform apply -auto-approve acs-receipts.tfplan
+      - name: Verify ACS Event Grid subscription
+        if: inputs.deployment_phase == 'workloads'
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          resource_group="$(terraform output -raw resource_group_name)"
+          system_topic="$(terraform output -json acs_receipt_ingress | python3 -c 'import json,sys; print(json.load(sys.stdin)["system_topic"])')"
+          subscription_name="$(terraform output -json acs_receipt_ingress | python3 -c 'import json,sys; print(json.load(sys.stdin)["subscription_name"])')"
+          state="$(az eventgrid system-topic event-subscription show \
+            --resource-group "$resource_group" \
+            --system-topic-name "$system_topic" \
+            --name "$subscription_name" \
+            --query provisioningState -o tsv)"
+          test "$state" = "Succeeded"
+      - name: Checkpoint verified receipt activation
+        if: inputs.deployment_phase == 'workloads'
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage receipts_activated --status passed
+      - name: Emit conclusive ACS stage result
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          def fail(message):
+              raise SystemExit(message)
+
+          def read_bound_evidence(filename, expected_digest, expected_schema):
+              path = Path(os.environ["RUNNER_TEMP"]) / "deployment-evidence" / filename
+              if not path.is_file() or path.stat().st_size > 32_768:
+                  fail(f"required {expected_schema} evidence is missing or exceeds the fixed limit")
+              try:
+                  value = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, TypeError, ValueError):
+                  fail(f"required {expected_schema} evidence is malformed")
+              if not isinstance(value, dict) or value.get("schema") != expected_schema:
+                  fail(f"required {expected_schema} evidence is malformed")
+              supplied = value.pop("evidence_digest", None)
+              canonical = json.dumps(value, separators=(",", ":"), sort_keys=True)
+              calculated = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+              if supplied != calculated or supplied != expected_digest:
+                  fail(f"required {expected_schema} evidence integrity validation failed")
+              value["evidence_digest"] = supplied
+              if value.get("reviewed_commit_sha") != os.environ["REVIEWED_COMMIT_SHA"]:
+                  fail(f"required {expected_schema} evidence source binding changed")
+              if value.get("reviewed_deployment_digest") != os.environ["KP_REVIEWED_DEPLOYMENT_DIGEST"]:
+                  fail(f"required {expected_schema} evidence configuration binding changed")
+              return value
+
+          phase = os.environ.get("DEPLOYMENT_PHASE", "")
+          if phase not in {"foundation_bootstrap", "foundation_finalize", "workloads"}:
+              fail("ACS stage result phase is invalid")
+          live_digest = os.environ.get("KP_ACS_LIVE_READINESS_DIGEST", "")
+          if re.fullmatch(r"sha256:[0-9a-f]{64}", live_digest) is None:
+              fail("ACS live-readiness digest is missing or malformed")
+          live = read_bound_evidence("acs-live-readiness.json", live_digest, "kp.acs-live-readiness.v1")
+          if live.get("phase") != phase:
+              fail("ACS live-readiness phase binding changed")
+
+          source_digests = {"acs_live_readiness": live_digest}
+          claims = {
+              "domain_verification_proven": False,
+              "association_proven": False,
+              "sender_proven": False,
+              "workloads_deployed": False,
+              "receipt_subscription_activated": False,
+              "mail_delivery_proven": False,
+              "inbox_placement_proven": False,
+              "human_mailbox_validation_proven": False,
+          }
+          if phase == "foundation_bootstrap":
+              initiation_digest = os.environ.get("KP_ACS_VERIFICATION_INITIATION_DIGEST", "")
+              if re.fullmatch(r"sha256:[0-9a-f]{64}", initiation_digest) is None:
+                  fail("ACS verification-initiation digest is missing or malformed")
+              initiation = read_bound_evidence(
+                  "acs-verification-initiation.json",
+                  initiation_digest,
+                  "kp.acs-verification-initiation.v1",
+              )
+              if initiation.get("phase") != phase:
+                  fail("ACS verification-initiation phase binding changed")
+              initiation_result = initiation.get("result")
+              if initiation_result == "accepted_pending_control_plane_verification":
+                  if initiation.get("verification_types") != ["Domain", "SPF", "DKIM", "DKIM2"]:
+                      fail("foundation bootstrap did not initiate the exact verification allowlist")
+                  result = "foundation_bootstrap_pending_dns"
+              elif initiation_result == "already_verified_by_authenticated_readback_no_mutation":
+                  if initiation.get("verification_types") != []:
+                      fail("already-verified bootstrap evidence unexpectedly records mutations")
+                  result = "foundation_bootstrap_already_verified_no_mutation"
+                  claims["domain_verification_proven"] = True
+              elif initiation_result == "not_applicable_existing_resource_no_mutation":
+                  if initiation.get("verification_types") != []:
+                      fail("existing-resource bootstrap evidence unexpectedly records mutations")
+                  result = "foundation_bootstrap_existing_resource_no_mutation"
+              else:
+                  fail("ACS verification-initiation result is not conclusive")
+              source_digests["acs_verification_initiation"] = initiation_digest
+          elif phase == "foundation_finalize":
+              finalize_digest = os.environ.get("KP_ACS_FINALIZE_READBACK_DIGEST", "")
+              if re.fullmatch(r"sha256:[0-9a-f]{64}", finalize_digest) is None:
+                  fail("ACS finalize-readback digest is missing or malformed")
+              finalized = read_bound_evidence(
+                  "acs-finalize-readback.json",
+                  finalize_digest,
+                  "kp.acs-finalize-readback.v1",
+              )
+              if finalized.get("phase") != phase or finalized.get("result") != "foundation_finalized":
+                  fail("ACS finalize readback is not conclusive")
+              result = "foundation_finalized"
+              claims.update({
+                  "domain_verification_proven": True,
+                  "association_proven": True,
+                  "sender_proven": True,
+              })
+              source_digests["acs_finalize_readback"] = finalize_digest
+          else:
+              if live.get("result") != "workloads_verified":
+                  fail("workloads require conclusive exact ACS live-readiness evidence")
+              result = "workloads_deployed"
+              claims.update({
+                  "domain_verification_proven": True,
+                  "association_proven": True,
+                  "sender_proven": True,
+                  "workloads_deployed": True,
+                  "receipt_subscription_activated": True,
+              })
+
+          evidence = {
+              "schema": "kp.acs-stage-result.v1",
+              "recorded_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+              "result": result,
+              "phase": phase,
+              "reviewed_commit_sha": os.environ["REVIEWED_COMMIT_SHA"],
+              "reviewed_deployment_digest": os.environ["KP_REVIEWED_DEPLOYMENT_DIGEST"],
+              "deployment_request_id": os.environ["DEPLOYMENT_REQUEST_ID"],
+              "source_evidence_digests": source_digests,
+              "workflow_run": {
+                  "run_id": os.environ["GITHUB_RUN_ID"],
+                  "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              },
+              "claims": claims,
+          }
+          canonical = json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+          if len(canonical.encode("utf-8")) > 16_384:
+              fail("ACS stage result evidence exceeds the fixed limit")
+          digest = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          evidence["evidence_digest"] = digest
+          target = Path(os.environ["RUNNER_TEMP"]) / "deployment-evidence" / "acs-stage-result.json"
+          with target.open("x", encoding="utf-8") as output:
+              output.write(json.dumps(evidence, separators=(",", ":"), sort_keys=True) + "\n")
+              output.flush()
+              os.fsync(output.fileno())
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as github_environment:
+              github_environment.write(f"KP_ACS_STAGE_RESULT_DIGEST={digest}\n")
+          PY
+      - name: Checkpoint conclusive ACS stage result
+        if: success()
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage acs_stage_result_recorded --status passed
+      - name: Remove ephemeral registry credentials
+        if: always() && inputs.deployment_phase == 'workloads'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_config="$RUNNER_TEMP/docker-config"
+          rm -f "$expected_config/config.json"
+          rmdir "$expected_config" 2>/dev/null || true
       - name: Summarize
         if: always()
+        env:
+          CURRENT_JOB_STATUS: ${{ job.status }}
+          RELEASE_IMAGE_TAG: ${{ steps.images.outputs.tag }}
         shell: bash
         run: |
           {
@@ -158,10 +2717,40 @@ jobs:
             echo ""
             echo "| Field | Value |"
             echo "| --- | --- |"
-            echo "| Environment | ${{ inputs.environment }} |"
-            echo "| Network mode | ${{ inputs.network_mode }} |"
-            echo "| Image tag | sha-${GITHUB_SHA} |"
+            echo "| Environment | $DEPLOYMENT_ENVIRONMENT |"
+            echo "| Network mode | $DEPLOYMENT_NETWORK_MODE |"
+            echo "| Phase | $DEPLOYMENT_PHASE |"
+            if [ "$CURRENT_JOB_STATUS" != "success" ]; then
+              echo "| Result | Interrupted; reconcile the correlation checkpoint before any retry |"
+            elif [ "$DEPLOYMENT_PHASE" = "foundation_bootstrap" ]; then
+              echo "| Result | ACS bootstrap recorded; DNS verification remains pending until foundation_finalize |"
+            elif [ "$DEPLOYMENT_PHASE" = "foundation_finalize" ]; then
+              echo "| Result | ACS foundation finalized by exact post-apply association and sender readback |"
+            else
+              echo "| ACS authenticated delivery receipts | activated after migration and audit/readiness qualification |"
+              echo "| Image tag | $RELEASE_IMAGE_TAG (deployment digest-pinned after SBOM/provenance verification) |"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ inputs.network_mode }}" = "starter" ]; then
+          if [ "$DEPLOYMENT_NETWORK_MODE" = "starter" ]; then
             echo "> Starter mode: data-plane services are publicly reachable. Re-deploy with network_mode=private before holding real recipient data." >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Record completed cloud operations
+        if: success()
+        run: python3 "$KP_CHECKPOINT_HELPER" --stage cloud_operations_complete --status passed
+      - name: Preserve interrupted cloud operation checkpoint
+        if: always() && job.status != 'success'
+        shell: bash
+        run: |
+          if [[ ! -f "${KP_CHECKPOINT_HELPER:-}" ]]; then
+            echo "::error::checkpoint helper was not initialized; automatic retry is blocked"
+            exit 1
+          fi
+          python3 "$KP_CHECKPOINT_HELPER" --stage workflow_interrupted --status uncertain
+      - name: Upload append-only deployment recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: azure-deployment-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/deployment-evidence/
+          if-no-files-found: error
+          retention-days: 90

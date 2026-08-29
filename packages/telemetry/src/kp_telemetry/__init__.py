@@ -19,6 +19,7 @@ from kp_telemetry.logging import (
     redact_processor,
     redact_value,
 )
+from kp_telemetry.metrics import MetricDefinition, MetricRegistry
 
 __all__ = [
     "AuditFailureError",
@@ -38,4 +39,6 @@ __all__ = [
     "get_logger",
     "redact_processor",
     "redact_value",
+    "MetricDefinition",
+    "MetricRegistry",
 ]

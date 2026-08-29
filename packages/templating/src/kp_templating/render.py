@@ -6,9 +6,9 @@ Ports the message-template-variable concept from the original King Phisher
 Whitelist-only variables, rendered inside a SandboxedEnvironment with no
 unsafe filters/globals. Every variable is scoped under a known namespace
 (`recipient`, `campaign`, `tracking`, `sender`); unknown names and attribute
-access outside the whitelist raise immediately (fail closed). Tracking token
-hashes are injected per recipient so pixel opens and click redirects are
-correlated without ever embedding the raw token in the message.
+access outside the whitelist raise immediately (fail closed). Raw tracking
+bearer URLs are injected only into the recipient's message at render time;
+database verifiers are never rendered.
 """
 
 from __future__ import annotations
@@ -169,14 +169,3 @@ class MessageRenderer:
         context.update(_make_context("sender", _SENDER_FIELDS, {"email": sender_email}))
         template = (self._html_env if html_context else self._text_env).from_string(source)
         return template.render(**context)
-
-
-def build_email_body(subject: str, plain_text: str, html: str | None, *, pixel_tag: str) -> tuple[str, str, str]:
-    """Assemble subject + plain-text + HTML parts; `html` is already rendered,
-    `pixel_tag` is the `<img>` tracking tag injected before </body>."""
-    html = html or ""
-    if html and "</body>" in html:
-        html = html.replace("</body>", f"{pixel_tag}</body>", 1)
-    elif html:
-        html = f"{html}{pixel_tag}"
-    return subject, plain_text, html

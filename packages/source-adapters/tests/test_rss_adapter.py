@@ -53,12 +53,12 @@ ATOM_FEED = """<?xml version="1.0" encoding="utf-8"?>
 
 
 class _Fetcher:
-    def __init__(self, content: bytes) -> None:
+    def __init__(self, content: bytes, content_type: str = "application/rss+xml") -> None:
         self.result = FetchResult(
             url="https://feed.example/feeds/current",
             final_url="https://feed.example/feeds/current",
             content=content,
-            content_type="application/rss+xml",
+            content_type=content_type,
             status_code=200,
         )
 
@@ -78,8 +78,8 @@ def _source() -> dm.Source:
     )
 
 
-def _fetch_items(content: bytes, *, limit: int = 50) -> list[dm.SourceItem]:
-    return RssAdapter(_source(), _Fetcher(content), limit=limit).fetch()  # type: ignore[arg-type]
+def _fetch_items(content: bytes, *, limit: int = 50, content_type: str = "application/rss+xml") -> list[dm.SourceItem]:
+    return RssAdapter(_source(), _Fetcher(content, content_type), limit=limit).fetch()  # type: ignore[arg-type]
 
 
 def test_rss_feed_extracts_title_link_and_timestamp() -> None:
@@ -152,3 +152,27 @@ def test_limit_bounds_item_count() -> None:
     entries = "".join(f"<item><title>item-{i}</title><description>body {i}</description></item>" for i in range(5))
     feed = f'<?xml version="1.0"?><rss version="2.0"><channel>{entries}</channel></rss>'.encode()
     assert len(_fetch_items(feed, limit=3)) == 3
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        b'<!DOCTYPE rss [<!ENTITY secret SYSTEM "file:///etc/passwd">]>',
+        b'<!ENTITY expansion "prohibited">',
+    ],
+)
+def test_xml_entity_and_doctype_declarations_fail_closed(declaration: bytes) -> None:
+    payload = declaration + b'<rss version="2.0"><channel><item><title>&secret;</title></item></channel></rss>'
+    with pytest.raises(AdapterError, match="prohibited XML declaration"):
+        _fetch_items(payload)
+
+
+def test_rss_rejects_content_type_confusion() -> None:
+    with pytest.raises(AdapterError, match="unsupported content type"):
+        _fetch_items(RSS_FEED.encode(), content_type="text/html")
+
+
+@pytest.mark.parametrize("limit", [0, -1, 51])
+def test_rss_limit_must_stay_within_supported_boundary(limit: int) -> None:
+    with pytest.raises(ValueError, match="between 1 and 50"):
+        RssAdapter(_source(), _Fetcher(RSS_FEED.encode()), limit=limit)  # type: ignore[arg-type]
