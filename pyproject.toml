@@ -72,4 +72,5 @@ markers = [
     "redis: integration tests that require a reachable disposable Redis instance",
     "e2e: end-to-end tests against a running local stack",
     "azure_live: opt-in read-only checks against an authenticated Azure subscription",
+    "console_ui: deterministic checks for the operator console SPA (CSP, assets, and the node behavioral harness)",
 ]
