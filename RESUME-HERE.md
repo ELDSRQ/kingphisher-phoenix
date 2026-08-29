@@ -366,18 +366,29 @@ retained as the data fallback; pinned by a 7-test chart/CSP contract in
 /Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-api/tests/test_console_csp_contract.py
 and executed offline by
 /Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-ui/tests/chart-smoke.mjs).
-D1 modularization is **in progress**: the worker monolith
-apps/workers/src/kp_workers/jobs.py has been split into domain modules
-followup_jobs.py (alert/reminder) and retention_jobs.py (retention / campaign
-lifecycle / self-publish) using the repo's established *_jobs.py lazy-facade
-pattern — hermetic 2,694 after D2, mypy clean for the workers package. The
-remaining D1 targets are the operator-api monoliths routers.py / console.py /
-deployment_orchestration.py and the operator-ui console app.js; the browser
-app.js split requires introducing a build/bundle step (three test files read it
-as one string, and it is served as a single <script> with no bundler), so it
+D1 modularization is **partially complete, with an honest stop boundary**:
+the worker monolith apps/workers/src/kp_workers/jobs.py is split into domain
+modules followup_jobs.py (alert/reminder) and retention_jobs.py (retention /
+campaign lifecycle / self-publish), and the operator-api console.py probe
+cluster (connection tests, `_probe_*` / `_Pinned*` / `_ResolvedTarget`) is
+extracted into apps/operator-api/src/kp_operator_api/connection_probes.py
+(console.py 4,154 → 3,630 lines). Both use the repo's established facade
+pattern: the facade re-exports the moved names (console.py declares an
+`__all__` re-export block so ruff's F401 accepts test-referenced names) and
+`connection_probes` resolves the test-monkeypatched call sites
+(`_pinned_http_status`, `_connect_pinned`, `_resolve_pinned_target`) through
+the console module object so `monkeypatch.setattr(console, ...)` still
+intercepts. Verified behavior-preserving: hermetic 2,694, mypy 136 files,
+full operator-api suite green. Remaining D1 targets, deliberately deferred:
+routers.py (untouched), deployment_orchestration.py (assessed and skipped —
+class-structured with 23 shared module-level names between
+GitHubWorkflowGateway and DeploymentOrchestrator, and it governs real Azure
+deployments; a split requires a shared-constants refactor first, riskier than
+its payoff at the tail of a session), and the operator-ui console app.js
+(split requires introducing a build/bundle step — three test files read it as
+one string and it is served as a single <script> with no bundler, so it
 should stay a single file or be split only as part of adding a real build
-step. Next best D1 candidate is deployment_orchestration.py or console.py (a
-single dedicated module each, no source-slice tests pinning them).
+step).
 
 D2 is done: apps/operator-ui/tests/chart-smoke.mjs is now an executable
 behavioral harness (brace-balanced extraction by function name so reorders
