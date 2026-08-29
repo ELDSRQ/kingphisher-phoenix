@@ -4,7 +4,9 @@ from pathlib import Path
 
 from kp_operator_api.routers import router
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(encoding="utf-8")
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
+    encoding="utf-8"
+)
 HELPER = APP[APP.index("const EXCLUSION_TYPE_LABELS") : APP.index("views.recipients = async (root) =>")]
 VIEW = APP[APP.index("views.recipients = async (root) =>") : APP.index("/* ---------- privacy ---------- */")]
 

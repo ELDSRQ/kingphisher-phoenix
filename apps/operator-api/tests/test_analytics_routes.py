@@ -289,7 +289,7 @@ def test_csv_requires_export_capability_and_is_formula_safe(
 
 
 def test_operator_ui_uses_analytics_contract() -> None:
-    app_js = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text()
+    app_js = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text()
     assert "/analytics/campaigns/${campaign.campaign_id}/funnel" in app_js
     assert "/analytics/campaigns/${campaignId}/funnel.csv" in app_js
     assert "destination MTA handoff; not inbox placement, display, or reading" in app_js

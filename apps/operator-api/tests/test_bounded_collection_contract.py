@@ -25,7 +25,7 @@ from kp_operator_api.training_library import list_training_resources
 from kp_operator_api.training_library import router as training_library_router
 from kp_telemetry.errors import ConflictError
 
-APP_JS = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(
+APP_JS = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
     encoding="utf-8"
 )
 

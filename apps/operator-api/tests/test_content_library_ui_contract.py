@@ -5,7 +5,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from kp_operator_api.routers import router
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(encoding="utf-8")
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
+    encoding="utf-8"
+)
 
 
 def test_library_gui_exposes_bounded_server_filters_and_clear_review_state() -> None:

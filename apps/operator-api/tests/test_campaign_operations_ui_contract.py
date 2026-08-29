@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(encoding="utf-8")
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
+    encoding="utf-8"
+)
 DOWNLOAD_HELPER = APP[APP.index("const MAX_CSV_DOWNLOAD_BYTES") : APP.index("/* ---------- state ----------")]
 CAMPAIGN_ANALYTICS = APP[APP.index("async function openCampaignAnalytics") : APP.index("/* Reviewed import outcomes")]
 CAMPAIGN_VIEW = APP[APP.index("views.campaigns = async (root) =>") : APP.index("/* ---------- recipients ----------")]

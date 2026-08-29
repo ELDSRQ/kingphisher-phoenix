@@ -1,6 +1,8 @@
 from pathlib import Path
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(encoding="utf-8")
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
+    encoding="utf-8"
+)
 
 
 def test_welcome_treats_required_reviewers_as_a_verified_apply_precondition() -> None:

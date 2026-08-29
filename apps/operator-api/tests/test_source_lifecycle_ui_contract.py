@@ -5,7 +5,9 @@ from pathlib import Path
 from fastapi.routing import APIRoute
 from kp_operator_api.routers import router
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(encoding="utf-8")
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
+    encoding="utf-8"
+)
 SOURCE_VIEW = APP[APP.index("/* ---------- sources ---------- */") : APP.index("/* ---------- patterns ---------- */")]
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from kp_operator_api.routers import router
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text()
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text()
 
 
 def test_console_exposes_gui_only_audience_workflow() -> None:

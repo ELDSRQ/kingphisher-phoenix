@@ -80,11 +80,16 @@ test-e2e:
 	@[ "$$KP_E2E_LIFECYCLE" = "1" ] || { echo "set KP_E2E_LIFECYCLE=1 to authorize the local campaign lifecycle E2E" >&2; exit 2; }
 	@$(PY) python -m pytest tests/e2e -p tests.no_skips_plugin
 
+## Syntax-check the console bundle and every ES module source. The bundle is
+## committed (deploys serve it without node), so the drift gate in
+## apps/operator-api/tests/test_console_bundle_drift.py also fails CI when a
+## source edit is not rebuilt and committed together.
 lint:
 	@$(PY) ruff check .
 	@$(PY) ruff format --check .
 	@command -v node >/dev/null 2>&1 || { echo "node is required to syntax-check the console" >&2; exit 1; }
 	@node --check apps/operator-ui/src/console/app.js
+	@for src in apps/operator-ui/src/console-js/*.js; do node --check "$$src"; done
 
 typecheck:
 	@$(PY) mypy packages apps

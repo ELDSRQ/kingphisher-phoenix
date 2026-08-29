@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-APP = (Path(__file__).resolve().parents[1] / "apps" / "operator-ui" / "src" / "console" / "app.js").read_text()
+APP = (Path(__file__).resolve().parents[1] / "apps" / "operator-ui" / "src" / "console-js" / "app.js").read_text()
 
 
 def test_campaign_console_builds_one_truthful_readiness_gate() -> None:

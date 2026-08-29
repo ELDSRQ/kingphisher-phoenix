@@ -1,0 +1,13 @@
+{
+  "name": "kp-operator-ui",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Kingphisher-Phoenix operator console (browser GUI). Sources are ES modules bundled to a single committed app.js; deploys serve the committed bundle and need no node.",
+  "scripts": {
+    "build": "node scripts/build-console.mjs",
+    "check": "node --check src/console/app.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  }
+}

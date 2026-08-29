@@ -28,8 +28,10 @@ from kp_operator_api.main import _CONSOLE_CSP, create_app
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 _CONSOLE_DIR = _REPOSITORY_ROOT / "apps" / "operator-ui" / "src" / "console"
+_CONSOLE_SRC_DIR = _REPOSITORY_ROOT / "apps" / "operator-ui" / "src" / "console-js"
 INDEX_HTML = (_CONSOLE_DIR / "index.html").read_text(encoding="utf-8")
 APP_JS = (_CONSOLE_DIR / "app.js").read_text(encoding="utf-8")
+CHART_JS = (_CONSOLE_SRC_DIR / "chart.js").read_text(encoding="utf-8")
 
 # Same fixed values as test_console.py so pydantic-settings cannot leak a
 # developer's local .env into the app under test.
@@ -99,21 +101,24 @@ def test_console_uses_no_inline_style_attributes() -> None:
 def test_ledger_trend_chart_is_csp_safe_and_namespace_correct() -> None:
     # The SVG chart must use createElementNS (SVG namespace), never el() with
     # inline style, and only presentation attributes (fill/x/y/width) that the
-    # console's style-src 'self' policy permits.
+    # console's style-src 'self' policy permits. The chart body is authored in
+    # the chart.js ES module and bundled into app.js; CSP hygiene is checked at
+    # the source, and the bundle must still expose the same functions/strings.
     assert "SVG_NS" in APP_JS
     assert "document.createElementNS(SVG_NS, tag" in APP_JS
     assert "function svg(" in APP_JS
     assert "function ledgerTrendChart(" in APP_JS
-    chart = APP_JS.split("function ledgerTrendChart(", 1)[1].split("\n  // Accessible", 1)[0]
-    # No inline style attribute anywhere in the chart body.
-    assert "style:" not in chart
-    assert 'setAttribute("style"' not in chart
+    # No inline style attribute anywhere in the authored chart body (esbuild
+    # strips comments, so this check reads the module source, not the bundle).
+    assert "style:" not in CHART_JS
+    assert 'setAttribute("style"' not in CHART_JS
     # Series are drawn as bars with per-bar accessible titles.
-    assert 'fill: s.color, role: "img"' in chart
-    assert 'svg("title"' in chart
+    assert "fill: s.color" in CHART_JS
+    assert 'role: "img"' in CHART_JS
+    assert 'svg("title"' in CHART_JS
     # The SVG carries an accessible label and is a visual summary, not the data.
-    assert '"aria-label"' in chart
-    assert "report-chart-svg" in chart
+    assert '"aria-label"' in CHART_JS
+    assert "report-chart-svg" in CHART_JS
 
 
 def test_ledger_trend_chart_is_rendered_before_the_data_table() -> None:

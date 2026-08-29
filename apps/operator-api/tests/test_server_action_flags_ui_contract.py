@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(encoding="utf-8")
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
+    encoding="utf-8"
+)
 CAMPAIGNS = APP[
     APP.index("views.campaigns = async (root) =>") : APP.index("/* ---------- finite campaign programs ---------- */")
 ]

@@ -108,7 +108,7 @@ def test_m365_gui_api_routes_are_wired() -> None:
 
 
 def test_console_exposes_preview_apply_health_and_mailbox_canary() -> None:
-    app = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text()
+    app = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text()
     assert "Preview directory changes" in app
     assert "Apply reviewed directory preview" in app
     assert "Discard directory preview" in app

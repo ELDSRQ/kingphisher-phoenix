@@ -10,7 +10,7 @@ from kp_operator_api.program_routes import router as program_router
 from kp_operator_api.routers import router as api_router
 from kp_operator_api.training_library import router as training_library_router
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text()
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text()
 
 
 def _view(start: str, end: str) -> str:

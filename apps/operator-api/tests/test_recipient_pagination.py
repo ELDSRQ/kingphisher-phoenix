@@ -13,7 +13,9 @@ from kp_domain_models import models as dm
 from kp_operator_api.routers import campaign_recipient_results, list_recipients, router
 from kp_telemetry.errors import PermissionDeniedError
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(encoding="utf-8")
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
+    encoding="utf-8"
+)
 PAGE_HELPER = APP[APP.index("function boundedRecipientPage") : APP.index("async function openCampaignAnalytics")]
 ANALYTICS = APP[APP.index("async function openCampaignAnalytics") : APP.index("/* Reviewed import outcomes")]
 RECIPIENT_VIEW = APP[APP.index("views.recipients = async (root) =>") : APP.index("/* ---------- privacy ---------- */")]

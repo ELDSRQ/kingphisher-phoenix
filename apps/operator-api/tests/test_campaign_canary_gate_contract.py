@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 ROUTERS = (ROOT / "apps/operator-api/src/kp_operator_api/routers.py").read_text(encoding="utf-8")
-UI = (ROOT / "apps/operator-ui/src/console/app.js").read_text(encoding="utf-8")
+UI = (ROOT / "apps/operator-ui/src/console-js/app.js").read_text(encoding="utf-8")
 SCHEDULE = ROUTERS[ROUTERS.index("def schedule_campaign(") : ROUTERS.index("def publish_campaign(")]
 PUBLISH = ROUTERS[ROUTERS.index("def publish_campaign(") : ROUTERS.index("def test_send_campaign(")]
 TEST_SEND = ROUTERS[ROUTERS.index("def test_send_campaign(") : ROUTERS.index("def recall_campaign(")]

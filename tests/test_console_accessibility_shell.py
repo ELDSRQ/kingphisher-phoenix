@@ -5,9 +5,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 CONSOLE_ROOT = Path(__file__).resolve().parents[1] / "apps" / "operator-ui" / "src" / "console"
+CONSOLE_SRC = Path(__file__).resolve().parents[1] / "apps" / "operator-ui" / "src" / "console-js"
 HTML = (CONSOLE_ROOT / "index.html").read_text(encoding="utf-8")
 CSS = (CONSOLE_ROOT / "styles.css").read_text(encoding="utf-8")
-APP = (CONSOLE_ROOT / "app.js").read_text(encoding="utf-8")
+APP = (CONSOLE_SRC / "app.js").read_text(encoding="utf-8")
 
 
 class _ConsoleShellParser(HTMLParser):

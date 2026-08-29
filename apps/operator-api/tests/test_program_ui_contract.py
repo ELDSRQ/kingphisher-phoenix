@@ -5,7 +5,9 @@ from pathlib import Path
 from fastapi.routing import APIRoute
 from kp_operator_api.program_routes import router
 
-APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console" / "app.js").read_text(encoding="utf-8")
+APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
+    encoding="utf-8"
+)
 PROGRAM_VIEW = APP[
     APP.index("/* ---------- finite campaign programs ---------- */") : APP.index(
         "/* ---------- sending domains & rules of engagement ----------"
