@@ -80,7 +80,8 @@ functionality or data.
   Rejection/duplicate decisions, current source terms, approval, and generation
   are rechecked without deleting legacy evidence or human review state.
 - The `OUT-001`/`RET-005`/`INT-001` foundation and retention integration are
-  complete locally at Alembic head `0032_source_explicit_curation`:
+  complete locally (retention bounds at migration `0032`; current head
+  `0033_training_knowledge_check`):
   confirmed interaction is distinct from scanner-observable events; the PII-free
   ledger retains 1,826 days; raw outcomes remain capped at 365 days; outcome
   writers and terminal-only project-before-purge share a lock boundary; the
@@ -103,11 +104,11 @@ functionality or data.
   `1403d94` → `c9ea716` with the ANA-010 ledger-trend (`aa67c17`) and named
   close-disposition (`c9ea716`) increments. Worktree is clean; do not reset or
   clean it.
-- Current-head gates (all 2026-08-29, after the checkpoint): hermetic 2,620/103
-  deselected with 0 failures in 180.45s; external PostgreSQL 92 passed
-  (fresh-install/historical migration to `0032`, retention concurrency,
-  outcome-writer-versus-retention, grants); external Redis 2 passed on DB15;
-  `make lint` and strict mypy (131 files) clean. E2E, exact-image, browser, and
+- Current-head gates (all 2026-08-29): hermetic 2,683/103 deselected with 0
+  failures; external PostgreSQL 92 passed (fresh-install/historical migration
+  to `0033`, retention concurrency, outcome-writer-versus-retention, grants);
+  external Redis 2 passed on DB15; fresh-migration 1 passed; `make lint` and
+  strict mypy (133 files) clean. E2E, exact-image, browser, and
   cloud gates remain open.
 
 ## Current engineering truth
@@ -154,7 +155,7 @@ Completed local/static closures include:
 - one canonical bounded generation contract through queue, provider, storage, review, and delivery, plus durable idempotency that converges retries/races without duplicate provider calls or drafts;
 - current source-terms acknowledgement enforced by API and worker, with audited acknowledge/inspect/revoke GUI lifecycle and a post-fetch terms fence;
 - server-side validation and normalization for campaign, source, privacy, correction, approval, exclusion, and rationale inputs, with capped non-reflective validation output at operator and tracking boundaries;
-- checked-in migration head `0032_source_explicit_curation`: `0031` adds the PII-free confirmed-interaction/1,826-day awareness-ledger foundation; `0032` quarantines legacy automatically active threat evidence for explicit review and enforces migrated retention-policy bounds/default uniqueness. The current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh/historical migration, retention concurrency, outcome-writer-versus-retention, grants); the historical 86-test result at `0029` is superseded;
+- checked-in migration head `0033_training_knowledge_check`: `0031` adds the PII-free confirmed-interaction/1,826-day awareness-ledger foundation; `0032` quarantines legacy automatically active threat evidence for explicit review and enforces migrated retention-policy bounds/default uniqueness; `0033` adds the campaign-bound all-or-nothing knowledge check with digest pinning (TRN-010). The current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh/historical migration, retention concurrency, outcome-writer-versus-retention, grants); the historical 86-test result at `0029` is superseded;
 - server-derived per-resource training `can_submit`/`can_review` flags, independent-review locking, and a GUI that refuses missing or malformed flags instead of reconstructing authority;
 - aggregate and named reporting with separate capability gates, owner-safe alert subscription lifecycle, GUI recipient exclusions, and server-paginated global/campaign recipient results;
 - streamed, bounded, schema-checked OIDC, setup-assistant, AI-generation, and GitHub deployment responses, including duplicate/malformed length rejection and no buffering of GitHub dispatch bodies. The approved non-local HTTPS `/propose` and `/setup-assist` gateway remains a preserved optional adapter; it is not the supported default AI deployment path. Pattern approval records a durable generation request without claiming asynchronous queue/provider completion, and the internal-model worker path plus live AI qualification remain open;
@@ -231,7 +232,7 @@ filesystem-mode and evidence-path/source-context handling violated the verifier
 contract. Those failure artifacts were not clobbered; the defects were repaired
 for `final-v3`, whose retained evidence remains conditional and unvalidated.
 
-Wave 21 historically added a green local installation check and a strict 7-test E2E result after targeted local bootstrap/audit, token-key, PID/log, mock Graph, and fixture repairs. Shared RoE/RBAC hardening passed 374 owned/consumer tests plus Ruff/mypy, 0-finding Bandit/Semgrep, and offline package build/import. Its 23 CI workflow tests, Actionlint, and Zizmor result belongs to the historical Wave 21 workflow SHA, not the current frozen connector. The dead clone adapter was removed for a net 87-line reduction with 36 focused plus 5 downstream tests passing. The historical pre-Wave-30 result was 1,994 hermetic/87 PostgreSQL/2 Redis/8 E2E, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected using Redis DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit and `verify_install`; its 03Z API/worker log window was clean. The pre-Wave-36 local hermetic `make test` passed 2,469 tests with 97 deselected and 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. Current-head `0032` PostgreSQL/Redis/E2E external profiles, exact-image evidence, and all external release gates remain pending.
+Wave 21 historically added a green local installation check and a strict 7-test E2E result after targeted local bootstrap/audit, token-key, PID/log, mock Graph, and fixture repairs. Shared RoE/RBAC hardening passed 374 owned/consumer tests plus Ruff/mypy, 0-finding Bandit/Semgrep, and offline package build/import. Its 23 CI workflow tests, Actionlint, and Zizmor result belongs to the historical Wave 21 workflow SHA, not the current frozen connector. The dead clone adapter was removed for a net 87-line reduction with 36 focused plus 5 downstream tests passing. The historical pre-Wave-30 result was 1,994 hermetic/87 PostgreSQL/2 Redis/8 E2E, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected using Redis DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit and `verify_install`; its 03Z API/worker log window was clean. The pre-Wave-36 local hermetic `make test` passed 2,469 tests with 97 deselected and 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. Current-head `0033` PostgreSQL/Redis/E2E external profiles, exact-image evidence, and all external release gates remain pending.
 
 ## Evidence boundary
 
@@ -322,16 +323,17 @@ The project-only ARM64 engine remains on 192.168.1.140 under
 /Volumes/DockerExternal/KingPhisher-Phoenix (see
 /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
 
-origin/main is 8f02191; the worktree is clean. Alembic head is
-0033_training_knowledge_check. Current-head gates pass: hermetic 2,683,
-external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
-mypy. The retention P1 is closed, the migration revision-id defect is fixed,
-and ANA-010/TRN-010 are complete locally. The offline-buildable backlog is
-complete: every remaining min-product item needs an external environment (a
-live llama.cpp endpoint for model selection/deplyment and a signed-in Azure
-session for discovery and qualification). Do not reopen locally complete
-ORG-001, THR-001A/B, IMP-001, DOCSIM-001, ANA-010, or TRN-010 without a
-regression.
+origin/main is 5ab56e6; the local worktree is ahead by the review/CSP
+commits (506b716, 4ac0e9a) plus the A-drift/list commit, and is clean.
+Alembic head is 0033_training_knowledge_check. Current-head gates pass:
+hermetic 2,683, external PostgreSQL 92, fresh-migration 1, external Redis 2,
+lint, strict mypy. The retention P1 is closed, the migration revision-id
+defect is fixed, and ANA-010/TRN-010 are complete locally. The offline-
+buildable backlog is complete: every remaining min-product item needs an
+external environment (a live llama.cpp endpoint for model selection/deployment
+and a signed-in Azure session for discovery and qualification). Do not reopen
+locally complete ORG-001, THR-001A/B, IMP-001, DOCSIM-001, ANA-010, or
+TRN-010 without a regression.
 
 Continue from the goal-aligned backlog now that the offline build is
 complete. ANA-010 and TRN-010 are complete locally (five-year ledger graph,

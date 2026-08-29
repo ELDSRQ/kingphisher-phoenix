@@ -57,7 +57,7 @@ in 183.40 seconds. Ruff/format covered 336 Python files; mypy covered 124 source
 Bandit, Semgrep (4 rules/125 targets/0), Trivy repository scans (0
 HIGH/CRITICAL vulnerabilities, secrets, or misconfigurations), pip-audit,
 Actionlint, and Zizmor passed in their recorded scopes. PostgreSQL, Redis, and
-Current-head `0032` external PostgreSQL/Redis/E2E and exact-image evidence remain pending. Release remains NO-GO for live
+Current-head `0033` external PostgreSQL/Redis/E2E and exact-image evidence remain pending. Release remains NO-GO for live
 Azure/provider, real-browser/WCAG and human assistive-technology, exact-final
 image/native AMD64/registry attestation, and rollback evidence.
 
@@ -103,7 +103,8 @@ delete potentially valuable behavior simply because it is deferred.
   migration revision-id overflow so fresh databases can reach head `0032`.
 - The checkpoint (`d25313d`) and every increment through the DEP-010
   strong-defaults/Advanced classification are committed and pushed;
-  `origin/main` is `8f02191`. Current-head hermetic 2,683/103, external
+  `origin/main` is `5ab56e6` with the review/CSP/A-drift commits (`506b716`,
+  `4ac0e9a`) awaiting push. Current-head hermetic 2,683/103, external
   PostgreSQL 92, and external Redis 2 pass on 2026-08-29; E2E, image, browser,
   and cloud gates remain open.
 - The offline-buildable backlog is complete. ANA-010 (ledger graph, named close
