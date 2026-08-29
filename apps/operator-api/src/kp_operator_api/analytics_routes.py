@@ -10,12 +10,13 @@ from __future__ import annotations
 import csv
 import io
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 from kp_authorization.rbac import Capability, Principal
 from kp_database.reporting import (
+    MAX_LEDGER_TREND_WINDOW,
     MAX_TREND_CAMPAIGNS,
     SINGLE_TENANT_DATABASE_SCOPE,
     CampaignFunnel,
@@ -24,11 +25,16 @@ from kp_database.reporting import (
     CampaignSelectionWindow,
     CampaignTrendReport,
     EvidenceWindow,
+    LedgerTrendBucket,
+    LedgerTrendPortfolio,
+    LedgerTrendReport,
     Rate,
     campaign_funnel,
     campaign_funnel_csv_rows,
     campaign_trend,
     campaign_trend_csv_rows,
+    ledger_trend,
+    ledger_trend_csv_rows,
 )
 from kp_domain_models import models as dm
 from kp_telemetry.errors import NotFoundError, ValidationError_
@@ -53,6 +59,13 @@ _CAMPAIGN_TREND_VALIDATION_MESSAGES = frozenset(
         "campaign selection start must precede end",
         "campaign selection window cannot exceed 366 days",
         f"trend limit must be between 1 and {MAX_TREND_CAMPAIGNS}",
+    }
+)
+_LEDGER_TREND_VALIDATION_MESSAGES = frozenset(
+    {
+        "ledger trend window bounds must be dates",
+        "ledger trend window start must precede end",
+        "ledger trend window cannot exceed 1826 days",
     }
 )
 
@@ -124,6 +137,29 @@ class CampaignTrendView(BaseModel):
     truncated: bool
     points: tuple[CampaignTrendPointView, ...]
     portfolio: CampaignPortfolioView
+    semantics: dict[str, str]
+    privacy: str
+
+
+class LedgerTrendBucketView(BaseModel):
+    month: date
+    counts: tuple[CountMetric, ...]
+    rates: tuple[RateMetric, ...]
+
+
+class LedgerTrendPortfolioView(BaseModel):
+    unit: Literal["ledger_exposure_months"] = "ledger_exposure_months"
+    counts: tuple[CountMetric, ...]
+    rates: tuple[RateMetric, ...]
+
+
+class LedgerTrendView(BaseModel):
+    schema_version: Literal["1"] = "1"
+    generated_at: datetime
+    window_start_inclusive: date
+    window_end_exclusive: date
+    buckets: tuple[LedgerTrendBucketView, ...]
+    portfolio: LedgerTrendPortfolioView
     semantics: dict[str, str]
     privacy: str
 
@@ -300,6 +336,83 @@ def _load_trend(
         raise ValidationError_(message) from None
 
 
+_LEDGER_COUNT_NAMES = (
+    "targeted",
+    "delivered",
+    "clicked",
+    "no_click",
+    "confirmed_interaction",
+    "reported",
+    "training_assigned",
+    "training_completed",
+    "no_activity_at_close",
+)
+
+
+def _ledger_count_view(projection: LedgerTrendBucket | LedgerTrendPortfolio) -> tuple[CountMetric, ...]:
+    return tuple(CountMetric(name=name, value=int(getattr(projection, name))) for name in _LEDGER_COUNT_NAMES)
+
+
+def _ledger_trend_view(report: LedgerTrendReport) -> LedgerTrendView:
+    return LedgerTrendView(
+        generated_at=report.generated_at,
+        window_start_inclusive=report.window_start_inclusive,
+        window_end_exclusive=report.window_end_exclusive,
+        buckets=tuple(
+            LedgerTrendBucketView(
+                month=point.month,
+                counts=_ledger_count_view(point),
+                rates=_rate_view(point.rates),
+            )
+            for point in report.buckets
+        ),
+        portfolio=LedgerTrendPortfolioView(
+            counts=_ledger_count_view(report.portfolio),
+            rates=_rate_view(report.portfolio.rates),
+        ),
+        semantics={
+            "window": "selects projected campaign_date; capped at the ledger's 1826-day retention",
+            "unit": "assignment-exposure projections from the PII-free awareness ledger; not unique people",
+            "clicked": "ledger exposure with an observed click",
+            "no_click": "ledger exposure delivered but with no observed click",
+            "confirmed_interaction": "deliberate human-interaction-confirmed exposure",
+            "training_completed": "completed campaign training assignment exposures; not causal efficacy",
+            "no_activity_at_close": "terminal campaign exposure with no retained activity",
+            "portfolio": "sums ledger numerators and denominators; never averages rates",
+            "corrections": "scanner or bot corrections are not subtracted without normalized correction evidence",
+        },
+        privacy="aggregate ledger projections only; no recipient identifiers, pseudonyms, or recipient attributes",
+    )
+
+
+def _load_ledger_trend(
+    session: Session,
+    *,
+    window_start: date,
+    window_end: date,
+) -> LedgerTrendReport:
+    try:
+        # Validate at the API boundary as well as the query layer so a
+        # failure is caught even when the query service is substituted.
+        if window_start >= window_end:
+            raise ValueError("ledger trend window start must precede end")
+        if window_end - window_start > MAX_LEDGER_TREND_WINDOW:
+            raise ValueError("ledger trend window cannot exceed 1826 days")
+        return ledger_trend(
+            session,
+            scope=SINGLE_TENANT_DATABASE_SCOPE,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    except ValueError as exc:
+        message = _bounded_validation_message(
+            exc,
+            allowed=_LEDGER_TREND_VALIDATION_MESSAGES,
+            fallback="ledger trend request is invalid",
+        )
+        raise ValidationError_(message) from None
+
+
 EvidenceStart = Annotated[datetime | None, Query(description="Inclusive RFC 3339 timestamp with timezone")]
 EvidenceEnd = Annotated[datetime | None, Query(description="Exclusive RFC 3339 timestamp with timezone")]
 ScheduleStart = Annotated[datetime, Query(description="Inclusive campaign schedule-start timestamp with timezone")]
@@ -350,6 +463,52 @@ def export_campaign_trend(
         content=output.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="campaign-trend-analytics.csv"'},
+    )
+
+
+LedgerWindowStart = Annotated[date, Query(description="Inclusive campaign-date (YYYY-MM-DD)")]
+LedgerWindowEnd = Annotated[date, Query(description="Exclusive campaign-date (YYYY-MM-DD)")]
+
+
+@router.get("/ledger/trend", response_model=LedgerTrendView)
+def get_ledger_trend(
+    window_start: LedgerWindowStart,
+    window_end: LedgerWindowEnd,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(require_capability(Capability.VIEW_AGGREGATE)),
+) -> LedgerTrendView:
+    """Return the bounded five-year click/no-click series from the ledger."""
+
+    return _ledger_trend_view(
+        _load_ledger_trend(
+            session,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    )
+
+
+@router.get("/ledger/trend.csv")
+def export_ledger_trend(
+    window_start: LedgerWindowStart,
+    window_end: LedgerWindowEnd,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(require_capability(Capability.EXPORT_BULK)),
+) -> Response:
+    """Export the same bounded five-year ledger series as formula-safe CSV."""
+
+    report = _load_ledger_trend(
+        session,
+        window_start=window_start,
+        window_end=window_end,
+    )
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows(ledger_trend_csv_rows(report))
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="awareness-ledger-trend.csv"'},
     )
 
 

@@ -3756,6 +3756,123 @@ views.trends = async (root) => {
   try { await loadTrend(); } catch (e) {
     results.replaceChildren(el("div", { role: "alert", class: "modal-error", text: e.message }));
   }
+
+  /* ---------- five-year pseudonymous awareness ledger ---------- */
+  root.appendChild(el("h2", { text: "Five-year awareness ledger trend" }));
+  root.appendChild(el("p", {
+    class: "sub",
+    text: "Monthly click/no-click projections from the pseudonymous awareness ledger, retained 1,826 days after each terminal campaign date. Months with no projected exposures are omitted.",
+  }));
+  const ledgerNow = new Date();
+  const fiveYearsAgo = new Date(ledgerNow.getTime() - (1826 * 24 * 60 * 60 * 1000));
+  const ledgerStart = el("input", {
+    id: "ledger-trend-start", type: "date", value: fiveYearsAgo.toISOString().slice(0, 10),
+  });
+  const ledgerEnd = el("input", {
+    id: "ledger-trend-end", type: "date", value: ledgerNow.toISOString().slice(0, 10),
+  });
+  const ledgerStatus = el("p", { class: "field-help", role: "status", "aria-live": "polite" });
+  const ledgerResults = el("div", { "aria-live": "polite" });
+
+  function ledgerWindow() {
+    const start = new Date(`${ledgerStart.value}T00:00:00Z`);
+    const end = new Date(`${ledgerEnd.value}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      throw new Error("Enter valid ledger trend start and end dates.");
+    }
+    if (start >= end) throw new Error("Ledger trend end must be after start.");
+    if (end.getTime() - start.getTime() > 1826 * 24 * 60 * 60 * 1000) {
+      throw new Error("Ledger trend window cannot exceed 1,826 days.");
+    }
+    return new URLSearchParams({
+      window_start: ledgerStart.value,
+      window_end: ledgerEnd.value,
+    });
+  }
+
+  function ledgerTable(report) {
+    const rows = report.buckets.map((bucket) => {
+      const rates = new Map(bucket.rates.map((rate) => [rate.name, rate]));
+      const clicked = rates.get("clicked");
+      const noClick = rates.get("no_click");
+      const confirmed = rates.get("confirmed_interaction");
+      const trained = rates.get("training_completed");
+      const counts = new Map(bucket.counts.map((metric) => [metric.name, metric.value]));
+      return el("tr", {}, [
+        el("td", { class: "mono", text: bucket.month }),
+        el("td", { class: "num", text: String(counts.get("targeted")) }),
+        el("td", { class: "num", text: String(counts.get("delivered")) }),
+        el("td", { text: rateSummary(clicked) }),
+        el("td", { text: rateSummary(noClick) }),
+        el("td", { text: rateSummary(confirmed) }),
+        el("td", { text: rateSummary(trained) }),
+      ]);
+    });
+    return el("div", {}, [
+      el("p", { text: `Generated ${formatUtcInstant(report.generated_at)} · ${report.buckets.length} month(s) with projected exposures` }),
+      el("table", { class: "report-table", "aria-label": "Five-year pseudonymous awareness ledger trend" }, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", { text: "Month" }), el("th", { text: "Targeted exposures" }),
+          el("th", { text: "Delivered exposures" }), el("th", { text: "Clicked" }),
+          el("th", { text: "No click" }), el("th", { text: "Confirmed interaction" }),
+          el("th", { text: "Training completed" }),
+        ])]),
+        el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", {
+          class: "empty", colspan: 7, text: "No projected exposures fall in this date window.",
+        })])]),
+      ]),
+      el("p", {
+        class: "field-help",
+        text: "Ledger counts are pseudonymous assignment-exposure projections, not unique people, and are not raw inbox or reading evidence. A delivered exposure without a recorded click is an explicit no-click bucket; scanner or bot corrections are never silently subtracted.",
+      }),
+    ]);
+  }
+
+  async function loadLedgerTrend() {
+    ledgerResults.replaceChildren(el("p", { class: "empty", text: "Loading ledger trend…" }));
+    const query = ledgerWindow();
+    const report = await api(`/analytics/ledger/trend?${query.toString()}`);
+    ledgerStatus.textContent = `Ledger window: ${report.window_start_inclusive} through ${report.window_end_exclusive} (exclusive).`;
+    ledgerResults.replaceChildren(ledgerTable(report));
+  }
+
+  async function downloadLedgerTrendCsv() {
+    const query = ledgerWindow();
+    await downloadApiCsv(
+      `/analytics/ledger/trend.csv?${query.toString()}`,
+      "awareness-ledger-trend.csv",
+    );
+  }
+
+  const ledgerRefresh = el("button", { class: "btn primary", type: "button", text: "Refresh ledger trend", onclick: async (event) => {
+    event.target.disabled = true;
+    try { await loadLedgerTrend(); } catch (e) {
+      ledgerResults.replaceChildren(el("div", { role: "alert", class: "modal-error", text: e.message }));
+    } finally { event.target.disabled = false; }
+  } });
+  const ledgerExport = el("button", {
+    class: "btn", type: "button", text: "Download ledger CSV",
+    disabled: canExportTrend ? null : "disabled",
+    title: canExportTrend ? null : "Bulk export capability is required.",
+    onclick: async (event) => {
+      event.target.disabled = true;
+      try { await downloadLedgerTrendCsv(); } catch (e) { toast(e.message, "error"); }
+      finally { event.target.disabled = false; }
+    },
+  });
+  root.appendChild(el("fieldset", {}, [
+    el("legend", { text: "Ledger campaign-date window (UTC)" }),
+    el("div", { class: "form-grid" }, [
+      el("div", {}, [el("label", { for: "ledger-trend-start", text: "Start date (inclusive)" }), ledgerStart]),
+      el("div", {}, [el("label", { for: "ledger-trend-end", text: "End date (exclusive)" }), ledgerEnd]),
+    ]),
+    ledgerStatus,
+    el("div", { class: "btn-row" }, [ledgerRefresh, ledgerExport]),
+  ]));
+  root.appendChild(ledgerResults);
+  try { await loadLedgerTrend(); } catch (e) {
+    ledgerResults.replaceChildren(el("div", { role: "alert", class: "modal-error", text: e.message }));
+  }
 };
 
 /* ---------- template review ----------

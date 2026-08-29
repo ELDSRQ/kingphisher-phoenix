@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Final
 
 from kp_domain_models import models as dm
@@ -23,12 +23,20 @@ from sqlalchemy import case, distinct, exists, func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql import Select
 
-from kp_database.models import Campaign, RecipientAssignment, TrackingEvent, TrackingToken, TrainingAssignment
+from kp_database.models import (
+    AwarenessLedgerEntry,
+    Campaign,
+    RecipientAssignment,
+    TrackingEvent,
+    TrackingToken,
+    TrainingAssignment,
+)
 
 SINGLE_TENANT_DATABASE_SCOPE: Final = "single_tenant_database"
 MAX_EVIDENCE_WINDOW: Final = timedelta(days=366)
 MAX_TREND_CAMPAIGNS: Final = 12
 MAX_TREND_WINDOW: Final = timedelta(days=366)
+MAX_LEDGER_TREND_WINDOW: Final = timedelta(days=1_826)
 type CsvCell = str | int | float
 type CsvRow = tuple[CsvCell, ...]
 
@@ -98,6 +106,82 @@ class Rate:
     @property
     def value(self) -> float | None:
         return self.numerator / self.denominator if self.denominator else None
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerTrendBucket:
+    """One calendar month of the pseudonymous five-year awareness series.
+
+    Counts are assignment-exposure projections from the PII-free ledger
+    (RET-005), not raw evidence and not unique people. ``no_click`` is an
+    explicit delivered-but-not-clicked bucket, never a subtraction that could
+    hide an inconsistency.
+    """
+
+    month: date
+    targeted: int
+    delivered: int
+    clicked: int
+    no_click: int
+    confirmed_interaction: int
+    reported: int
+    training_assigned: int
+    training_completed: int
+    no_activity_at_close: int
+
+    @property
+    def rates(self) -> tuple[tuple[str, Rate], ...]:
+        """Stable monthly rates with explicit delivered denominators."""
+
+        return (
+            ("clicked", Rate(self.clicked, self.delivered, "delivered_exposures")),
+            ("no_click", Rate(self.no_click, self.delivered, "delivered_exposures")),
+            ("confirmed_interaction", Rate(self.confirmed_interaction, self.delivered, "delivered_exposures")),
+            ("reported", Rate(self.reported, self.delivered, "delivered_exposures")),
+            (
+                "training_completed",
+                Rate(self.training_completed, self.training_assigned, "ledger_training_assignments"),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerTrendPortfolio:
+    """Window-total ledger series; rates sum numerators and denominators."""
+
+    targeted: int
+    delivered: int
+    clicked: int
+    no_click: int
+    confirmed_interaction: int
+    reported: int
+    training_assigned: int
+    training_completed: int
+    no_activity_at_close: int
+
+    @property
+    def rates(self) -> tuple[tuple[str, Rate], ...]:
+        return (
+            ("clicked", Rate(self.clicked, self.delivered, "delivered_exposures")),
+            ("no_click", Rate(self.no_click, self.delivered, "delivered_exposures")),
+            ("confirmed_interaction", Rate(self.confirmed_interaction, self.delivered, "delivered_exposures")),
+            ("reported", Rate(self.reported, self.delivered, "delivered_exposures")),
+            (
+                "training_completed",
+                Rate(self.training_completed, self.training_assigned, "ledger_training_assignments"),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerTrendReport:
+    """Bounded monthly click/no-click series over the pseudonymous ledger."""
+
+    generated_at: datetime
+    window_start_inclusive: date
+    window_end_exclusive: date
+    buckets: tuple[LedgerTrendBucket, ...]
+    portfolio: LedgerTrendPortfolio
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +441,168 @@ def campaign_funnel(
         training_assigned=int(training_counts.assigned or 0),
         training_completed=completed,
     )
+
+
+def ledger_trend(
+    session: Session,
+    *,
+    scope: str,
+    window_start: date,
+    window_end: date,
+    generated_at: datetime | None = None,
+) -> LedgerTrendReport:
+    """Return a bounded monthly click/no-click series from the awareness ledger.
+
+    Reads only the PII-free pseudonymous ledger (RET-005), never raw evidence
+    or recipient tables. The window selects ``campaign_date`` (schedule start
+    or targeted date, whichever the projection recorded) and is capped at the
+    ledger's 1,826-day retention so the report cannot outlive its evidence.
+    Months with no projected exposures are omitted, and every bucket carries
+    explicit denominators.
+    """
+
+    _require_scope(scope)
+    if not isinstance(window_start, date) or not isinstance(window_end, date):
+        raise TypeError("ledger trend window bounds must be dates")
+    if window_start >= window_end:
+        raise ValueError("ledger trend window start must precede end")
+    if window_end - window_start > MAX_LEDGER_TREND_WINDOW:
+        raise ValueError("ledger trend window cannot exceed 1826 days")
+    report_time = generated_at or datetime.now(UTC)
+    if report_time.tzinfo is None:
+        raise ValueError("generated_at must include a timezone")
+    report_time = report_time.astimezone(UTC)
+
+    rows = session.execute(
+        select(
+            AwarenessLedgerEntry.campaign_date,
+            AwarenessLedgerEntry.targeted,
+            AwarenessLedgerEntry.delivered,
+            AwarenessLedgerEntry.observed_click,
+            AwarenessLedgerEntry.confirmed_interaction,
+            AwarenessLedgerEntry.reported,
+            AwarenessLedgerEntry.training_assigned,
+            AwarenessLedgerEntry.training_completed,
+            AwarenessLedgerEntry.no_activity_at_close,
+        ).where(
+            AwarenessLedgerEntry.tenant_scope == scope,
+            AwarenessLedgerEntry.campaign_date >= window_start,
+            AwarenessLedgerEntry.campaign_date < window_end,
+        )
+    )
+
+    month_rows: dict[date, list[Any]] = {}
+    for campaign_date, targeted, delivered, clicked, confirmed, reported, assigned, completed, no_activity in rows:
+        bucket = month_rows.setdefault(campaign_date.replace(day=1), [])
+        bucket.append((targeted, delivered, clicked, confirmed, reported, assigned, completed, no_activity))
+
+    buckets: list[LedgerTrendBucket] = []
+    for month in sorted(month_rows):
+        targeted = sum(int(row[0]) for row in month_rows[month])
+        delivered = sum(int(row[1]) for row in month_rows[month])
+        clicked = sum(int(row[2]) for row in month_rows[month])
+        no_click = sum(int(row[1]) and not int(row[2]) for row in month_rows[month])
+        confirmed = sum(int(row[3]) for row in month_rows[month])
+        reported_total = sum(int(row[4]) for row in month_rows[month])
+        assigned = sum(int(row[5]) for row in month_rows[month])
+        completed = sum(int(row[6]) for row in month_rows[month])
+        no_activity = sum(int(row[7]) for row in month_rows[month])
+        buckets.append(
+            LedgerTrendBucket(
+                month=month,
+                targeted=targeted,
+                delivered=delivered,
+                clicked=clicked,
+                no_click=no_click,
+                confirmed_interaction=confirmed,
+                reported=reported_total,
+                training_assigned=assigned,
+                training_completed=completed,
+                no_activity_at_close=no_activity,
+            )
+        )
+
+    totals = {
+        name: sum(int(getattr(bucket, name)) for bucket in buckets)
+        for name in (
+            "targeted",
+            "delivered",
+            "clicked",
+            "no_click",
+            "confirmed_interaction",
+            "reported",
+            "training_assigned",
+            "training_completed",
+            "no_activity_at_close",
+        )
+    }
+    return LedgerTrendReport(
+        generated_at=report_time,
+        window_start_inclusive=window_start,
+        window_end_exclusive=window_end,
+        buckets=tuple(buckets),
+        portfolio=LedgerTrendPortfolio(**totals),
+    )
+
+
+def ledger_trend_csv_rows(report: LedgerTrendReport) -> tuple[CsvRow, ...]:
+    """Return a fixed, formula-safe, PII-free ledger-series CSV projection."""
+
+    header: CsvRow = (
+        "scope",
+        "window_start_inclusive",
+        "window_end_exclusive",
+        "generated_at",
+        "bucket",
+        "kind",
+        "metric",
+        "numerator",
+        "denominator",
+        "denominator_name",
+        "rate",
+    )
+    rows: list[CsvRow] = [header]
+
+    def append_projection(*, bucket: str, projection: LedgerTrendBucket | LedgerTrendPortfolio) -> None:
+        prefix: tuple[CsvCell, ...] = (
+            SINGLE_TENANT_DATABASE_SCOPE,
+            report.window_start_inclusive.isoformat(),
+            report.window_end_exclusive.isoformat(),
+            report.generated_at.isoformat(),
+            bucket,
+        )
+        for name in (
+            "targeted",
+            "delivered",
+            "clicked",
+            "no_click",
+            "confirmed_interaction",
+            "reported",
+            "training_assigned",
+            "training_completed",
+            "no_activity_at_close",
+        ):
+            rows.append((*prefix, "count", name, int(getattr(projection, name)), "", "", ""))
+        for name, rate in projection.rates:
+            value = rate.value
+            if value is not None and not math.isfinite(value):
+                raise ValueError("ledger trend rate is not finite")
+            rows.append(
+                (
+                    *prefix,
+                    "rate",
+                    name,
+                    rate.numerator,
+                    rate.denominator,
+                    rate.denominator_name,
+                    "" if value is None else value,
+                )
+            )
+
+    append_projection(bucket="portfolio", projection=report.portfolio)
+    for point in report.buckets:
+        append_projection(bucket=point.month.isoformat(), projection=point)
+    return tuple(rows)
 
 
 def _utc_database_instant(value: datetime | None) -> datetime | None:

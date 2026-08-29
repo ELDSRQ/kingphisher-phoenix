@@ -48,4 +48,29 @@ def test_executive_trend_renders_only_aggregate_safe_fields() -> None:
     assert "point.group" not in TREND_VIEW
     assert ".innerHTML" not in TREND_VIEW
     assert '"aria-label": "Weighted portfolio rates"' in TREND_VIEW
+
+
+def test_five_year_ledger_trend_is_a_bounded_pseudonym_free_gui_route() -> None:
+    assert "Five-year awareness ledger trend" in TREND_VIEW
+    assert "1,826 days" in TREND_VIEW
+    assert "1826 * 24 * 60 * 60 * 1000" in TREND_VIEW
+    assert "Ledger trend window cannot exceed 1,826 days." in TREND_VIEW
+    assert "api(`/analytics/ledger/trend?${query.toString()}`)" in TREND_VIEW
+    assert "/analytics/ledger/trend.csv?${query.toString()}" in TREND_VIEW
+    assert '"awareness-ledger-trend.csv"' in TREND_VIEW
+
+
+def test_five_year_ledger_trend_exposes_only_projected_buckets() -> None:
+    assert "bucket.month" in TREND_VIEW
+    assert 'counts.get("targeted")' in TREND_VIEW
+    assert 'counts.get("delivered")' in TREND_VIEW
+    assert 'rates.get("clicked")' in TREND_VIEW
+    assert 'rates.get("no_click")' in TREND_VIEW
+    assert "pseudonymous assignment-exposure projections" in TREND_VIEW
+    assert "explicit no-click bucket" in TREND_VIEW
+    assert "bucket.recipient" not in TREND_VIEW
+    assert "bucket.pseudonym" not in TREND_VIEW
+    assert "bucket.campaign_id" not in TREND_VIEW
+    assert "bucket.mailbox" not in TREND_VIEW
+    assert '"aria-label": "Five-year pseudonymous awareness ledger trend"' in TREND_VIEW
     assert '"aria-label": "Campaign exposure trend points"' in TREND_VIEW
