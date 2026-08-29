@@ -92,7 +92,7 @@ delete potentially valuable behavior simply because it is deferred.
   one draft pattern basis, and source/terms/provenance rechecks at activation,
   approval, rejection/duplicate handling, and generation.
 - `OUT-001`/`RET-005`/`INT-001` retention integration is complete locally at
-  Alembic head `0032_source_explicit_curation`: terminal-only locked
+  Alembic head `0033_training_knowledge_check`: terminal-only locked
   project-before-purge, stable pseudonym configuration, retention-only grants,
   current outcome-writer locking, 365-day raw maximum, and 1,826-day PII-free
   ledger are wired. Privacy/RBAC, named-history API, reporting, graph, and export
@@ -101,10 +101,21 @@ delete potentially valuable behavior simply because it is deferred.
   `0032`'s retention-day check and single-default partial unique index, with
   metadata/database tests. The current-head gate additionally fixed the
   migration revision-id overflow so fresh databases can reach head `0032`.
-- The checkpoint is committed (`d25313d`) and pushed; `origin/main` is `c9ea716`
-  (plus ANA-010 increments `aa67c17` and `c9ea716`). Current-head hermetic
-  2,620/103, external PostgreSQL 92, and external Redis 2 pass on 2026-08-29;
-  E2E, image, browser, and cloud gates remain open.
+- The checkpoint (`d25313d`) and every increment through the DEP-010
+  strong-defaults/Advanced classification are committed and pushed;
+  `origin/main` is `8f02191`. Current-head hermetic 2,683/103, external
+  PostgreSQL 92, and external Redis 2 pass on 2026-08-29; E2E, image, browser,
+  and cloud gates remain open.
+- The offline-buildable backlog is complete. ANA-010 (ledger graph, named close
+  disposition, repeat history, per-recipient pseudonymous drill-down), TRN-010
+  (campaign-bound knowledge check with deterministic evidence builder, digest
+  pinning, generic quiz fallback), the AI-010 worker pinned-model enforcement
+  (`KP_WORKER_AI_MODEL_ID` + cost/status metrics), and DEP-010 strong
+  defaults/Advanced classification are all landed and pushed. Every remaining
+  item needs an external environment: the internal-model benchmark/selection
+  and pinned `llama.cpp` deployment (live loopback llama.cpp endpoint), then
+  browser-login discovery with live progress/cost/rollback qualification, then
+  the qualification lanes.
 
 Use the copy-ready continuation prompt in `RESUME-HERE.md` verbatim when
 starting the next build session.
@@ -136,7 +147,7 @@ The codebase has moved from an eight-worker, development-auth, all-active-recipi
 - a locally permission-tested create-only audit witness targeting locked Azure Blob storage;
 - Microsoft Graph directory preview/apply and Microsoft 365 reported-message ingestion;
 - ACS custom-domain readiness, pacing, provider correlation, and an Entra-authenticated, privacy-minimized Event Grid receipt pipeline; live subscription/receipt behavior remains unqualified.
-- checked-in Alembic head `0032_source_explicit_curation`; `0031` adds the confirmed-interaction/PII-free 1,826-day ledger foundation and `0032` requires explicit re-review of legacy automatically active source evidence while enforcing migrated retention bounds/default uniqueness. The current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh/historical migration, retention concurrency, outcome-writer-versus-retention, grants); the historical 86-test result at `0029` is superseded;
+- checked-in Alembic head `0033_training_knowledge_check`; `0031` adds the confirmed-interaction/PII-free 1,826-day ledger foundation, `0032` requires explicit re-review of legacy automatically active source evidence while enforcing migrated retention bounds/default uniqueness, and `0033` adds the optional all-or-nothing campaign-bound knowledge check (question + bounded distinct options + correct-answer index) with digest pinning and CHECK constraints. The current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh/historical migration, retention concurrency, outcome-writer-versus-retention, grants); the historical 86-test result at `0029` is superseded;
 - a finite 2–12 occurrence Program Planner with allowlisted elapsed-day cadence, independent drafts, exact UTC review, duplicate-safe creation, and forward-only pause/resume;
 - denominator-explicit single-campaign analytics plus bounded longitudinal Executive Trends JSON/CSV/GUI;
 - retirement of shared-secret tracking corrections as an HTTP 410/no-write boundary, with the obsolete runtime/Terraform secret removed; normalized dual-reviewed corrections remain deferred;

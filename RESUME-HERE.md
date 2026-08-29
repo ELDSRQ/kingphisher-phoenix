@@ -267,30 +267,34 @@ For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact R
 
 ## Next execution order
 
-1. Deliver the minimum complete product: ANA-010 and TRN-010 are complete
-   locally (five-year ledger graph, named close disposition, repeat history,
-   and named per-recipient pseudonymous drill-down with a shared governed
-   pseudonym key — GUI drill-down wiring and key rotation/recovery remain
-   governed follow-up; and the campaign-bound knowledge check: optional
-   all-or-nothing question/options/answer on training lessons, deterministic
-   evidence builder, digest-pinned, generic quiz fallback, GUI authoring/
-   preview/review). The remaining minimum-product item is: benchmark/select
-   the internal model against the landed AI-010 bake-off foundation
-   (`scripts/ai-bakeoff/`: fixed sanitized evaluation set + deterministic
-   offline scorer + bounded loopback runner) and wire `AI-010` into the
-   existing worker role/job. Deterministic
-   fallback and human approval remain mandatory. Do not reopen locally
-   complete `ORG-001`, `THR-001A/B`, `IMP-001`, `DOCSIM-001`, `ANA-010`, or
-   `TRN-010` without a regression.
-2. Simplify the normal Azure/mail path through the GUI after those interfaces
-   stabilize; keep the existing secure three-stage deployment contract and
-   provider adapters supported while hiding engineering internals.
-3. Qualify the exact resulting product: current-head external E2E,
-   all five exact-final native ARM64 images, native AMD64/registry/attestation,
-   real browser/WCAG, disposable Azure, Entra/Graph/Outlook/ACS/DNS/inbox,
+1. The offline-buildable backlog is complete. ANA-010 and TRN-010 are
+   complete locally (five-year ledger graph, named close disposition, repeat
+   history, named per-recipient pseudonymous drill-down with a shared
+   governed pseudonym key — GUI drill-down wiring and key rotation/recovery
+   remain governed follow-up; and the campaign-bound knowledge check with
+   deterministic evidence builder, digest pinning, and generic quiz
+   fallback). The AI-010 worker enforces a pinned model identity
+   (`KP_WORKER_AI_MODEL_ID`) with cost/status metrics, and DEP-010's
+   strong-defaults + Advanced classification is in. What remains requires an
+   external environment, in order:
+   1a. Benchmark and select the internal model against the AI-010 bake-off
+       set, then deploy the pinned llama.cpp image/endpoint (needs a live
+       loopback llama.cpp chat endpoint; run
+       `scripts/ai-bakeoff/evaluate_model.py` and commit the report JSON as
+       selection evidence).
+   1b. Browser-login discovery and live progress/cost/rollback qualification
+       for DEP-010 (needs a signed-in Azure session).
+2. Qualify the exact resulting product: current-head external E2E, all five
+   exact-final native ARM64 images, native AMD64/registry/attestation, real
+   browser/WCAG, disposable Azure, Entra/Graph/Outlook/ACS/DNS/inbox,
    recovery/rotation, alert/audit witness, and human operator acceptance.
-4. Only after the core is stable, simplify navigation/modules without deleting
-   useful deferred features or weakening stable APIs and safety gates.
+3. Only after the core is stable, simplify navigation/modules without
+   deleting useful deferred features or weakening stable APIs and safety
+   gates.
+
+Deterministic fallback and human approval remain mandatory. Do not reopen
+locally complete `ORG-001`, `THR-001A/B`, `IMP-001`, `DOCSIM-001`, `ANA-010`,
+or `TRN-010` without a regression.
 
 Label evidence as **local/static**, **local live**, or **cloud/provider live**. Only the last category can close the corresponding production/RSA gate.
 
@@ -306,32 +310,44 @@ project/recovery/Docker asset; do not reset, clean, prune, delete, recreate, or
 touch unrelated Docker Desktop workloads. The project-only ARM64 engine remains
 on 192.168.1.140 under /Volumes/DockerExternal/KingPhisher-Phoenix.
 
-origin/main is 6abe1a1 (Wave 38 checkpoint + ANA-010 increments + AI-010
-bake-off foundation + TRN-010 campaign-bound knowledge check); the worktree
-is clean. Alembic head is 0033_training_knowledge_check. Current-head gates
-pass: hermetic 2,681, external PostgreSQL 92, fresh-migration 1, external
-Redis 2, lint, strict mypy. The retention P1 is closed, the migration
-revision-id defect is fixed, and ANA-010/TRN-010 are complete locally. Do
-not reopen locally complete ORG-001, THR-001A/B, IMP-001, DOCSIM-001,
-ANA-010, or TRN-010 without a regression.
+origin/main is 8f02191 (Wave 38 checkpoint + ANA-010 increments + AI-010
+bake-off foundation + TRN-010 campaign-bound knowledge check + AI-010
+worker model pin + DEP-010 strong-defaults/Advanced classification); the
+worktree is clean. Alembic head is 0033_training_knowledge_check. Current-
+head gates pass: hermetic 2,683, external PostgreSQL 92, fresh-migration 1,
+external Redis 2, lint, strict mypy. The retention P1 is closed, the
+migration revision-id defect is fixed, and ANA-010/TRN-010 are complete
+locally. The offline-buildable backlog is complete: every remaining min-
+product item needs an external environment (a live llama.cpp endpoint for
+model selection/deplyment and a signed-in Azure session for discovery and
+qualification). Do not reopen locally complete ORG-001, THR-001A/B, IMP-001,
+DOCSIM-001, ANA-010, or TRN-010 without a regression.
 
-Continue the goal-aligned backlog without removing useful deferred features:
-ANA-010 and TRN-010 are complete locally (ledger graph, named disposition,
-repeat history, named per-recipient pseudonymous drill-down; campaign-bound
-knowledge check with deterministic evidence builder, digest pinning, and
-generic quiz fallback), and the AI-010 path is nearly complete: the bake-off
-foundation has landed (`scripts/ai-bakeoff/`), the generation worker
-enforces a pinned model identity (`KP_WORKER_AI_MODEL_ID`, constant-time
-compare, fail-closed in managed mode) with cost/status metrics, and DEP-010's
-strong-defaults + Advanced-field classification has landed (azure-deployment
-wizard collapses resource-ID/GitHub/Terraform internals and seeds suggested
-defaults). The remaining items that need an external environment (no offline
-build remains): benchmark/select the actual model against the bake-off set and
-deploy the pinned llama.cpp image/endpoint, then browser-login discovery with
-live progress/cost/rollback qualification for DEP-010. AI may draft/advise but
-never approve, target, apply infrastructure, handle consent, or launch.
-Prefer simplicity and the existing three-deployable modular-monolith
-architecture.
+Continue from the goal-aligned backlog now that the offline build is
+complete. ANA-010 and TRN-010 are complete locally (five-year ledger graph,
+named close disposition, repeat history, named per-recipient pseudonymous
+drill-down; campaign-bound knowledge check with deterministic evidence
+builder, digest pinning, and generic quiz fallback). The AI-010 path has its
+foundation (`scripts/ai-bakeoff/`: fixed eval set + deterministic scorer +
+bounded loopback runner) and its worker enforcement (`KP_WORKER_AI_MODEL_ID`
+constant-time pin, fail-closed in managed mode, with response-byte/pin/mis-
+match metrics). DEP-010's strong-defaults + Advanced field classification is
+in (azure-deployment wizard collapses resource-ID/GitHub/Terraform internals
+behind an explicit disclosure and seeds suggested defaults). The remaining
+items all need an external environment, in order: (1) benchmark and select
+the internal model against the bake-off set and deploy the pinned llama.cpp
+image/endpoint (needs a live loopback llama.cpp endpoint exposing
+/chat/completions with a usage block; run scripts/ai-bakeoff/evaluate_model.py
+and record the report JSON as selection evidence), then (2) browser-login
+discovery and live progress/cost/rollback qualification for DEP-010, then the
+full qualification lanes (external E2E, exact-final ARM64 images,
+AMD64/registry/attestation, browser/WCAG, disposable Azure +
+Entra/Graph/Outlook/ACS/DNS/inbox, recovery/rotation, alert/audit witness,
+human acceptance). Label evidence local/static, local live, or cloud/provider
+live; only the last closes a corresponding production gate. AI may
+draft/advise but never approve, target, apply infrastructure, handle
+consent, or launch. Prefer simplicity and the existing three-deployable
+modular-monolith architecture.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
 ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/
