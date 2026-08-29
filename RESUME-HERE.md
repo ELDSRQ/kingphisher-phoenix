@@ -104,7 +104,7 @@ functionality or data.
   `1403d94` → `c9ea716` with the ANA-010 ledger-trend (`aa67c17`) and named
   close-disposition (`c9ea716`) increments. Worktree is clean; do not reset or
   clean it.
-- Current-head gates (all 2026-08-29, as of `95cbc81`): hermetic 2,692/103
+- Current-head gates (all 2026-08-29, as of `95cbc81`): hermetic 2,694/103
   deselected with 0 failures (includes the chart/CSP contract tests from the
   D3 wave); external PostgreSQL 92 passed (fresh-install/historical migration
   to `0033`, retention concurrency, outcome-writer-versus-retention, grants);
@@ -325,7 +325,7 @@ The project-only ARM64 engine remains on 192.168.1.140 under
 /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
 
 origin/main is 95cbc81; the local worktree is clean. Alembic head is
-0033_training_knowledge_check. Current-head gates pass: hermetic 2,692,
+0033_training_knowledge_check. Current-head gates pass: hermetic 2,694,
 external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
 mypy. The retention P1 is closed, the migration revision-id
 defect is fixed, and ANA-010/TRN-010 are complete locally. The offline-
@@ -370,16 +370,24 @@ D1 modularization is **in progress**: the worker monolith
 apps/workers/src/kp_workers/jobs.py has been split into domain modules
 followup_jobs.py (alert/reminder) and retention_jobs.py (retention / campaign
 lifecycle / self-publish) using the repo's established *_jobs.py lazy-facade
-pattern — hermetic 2,692 unchanged, mypy clean for the workers package. The
+pattern — hermetic 2,694 after D2, mypy clean for the workers package. The
 remaining D1 targets are the operator-api monoliths routers.py / console.py /
 deployment_orchestration.py and the operator-ui console app.js; the browser
 app.js split requires introducing a build/bundle step (three test files read it
 as one string, and it is served as a single <script> with no bundler), so it
 should stay a single file or be split only as part of adding a real build
 step. Next best D1 candidate is deployment_orchestration.py or console.py (a
-single dedicated module each, no source-slice tests pinning them). D2 (a real
-behavioral UI test; extend chart-smoke.mjs toward a DOM/Playwright harness) and
-the other opportunistic items remain.
+single dedicated module each, no source-slice tests pinning them).
+
+D2 is done: apps/operator-ui/tests/chart-smoke.mjs is now an executable
+behavioral harness (brace-balanced extraction by function name so reorders
+cannot silently untest it; el()/svg() behavior + chart structure/CSP
+assertions), gated in the hermetic suite by
+apps/operator-api/tests/test_console_behavior_smoke.py (shells out to node,
+skips only if node is absent, requires exit 0 "chart-smoke OK"). Proven to
+fail on an injected inline style:. Hermetic is now 2,694. The live
+browser/WCAG lane remains a separate external gate. The other opportunistic
+items (B5/B6) remain.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
 ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/
