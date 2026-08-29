@@ -385,9 +385,14 @@ cannot silently untest it; el()/svg() behavior + chart structure/CSP
 assertions), gated in the hermetic suite by
 apps/operator-api/tests/test_console_behavior_smoke.py (shells out to node,
 skips only if node is absent, requires exit 0 "chart-smoke OK"). Proven to
-fail on an injected inline style:. Hermetic is now 2,694. The live
-browser/WCAG lane remains a separate external gate. The other opportunistic
-items (B5/B6) remain.
+fail on an injected inline style:. Hermetic is now 2,694. B6 (withholder
+cleanup) is done: 156 dead `# noqa` directives removed via RUF100 under the
+real ruff config (they suppressed rules outside the configured select set),
+and all remaining 65 `noqa` plus all 298 `type: ignore` were verified genuine
+via `mypy --warn-unused-ignores packages apps` (zero unused under strict; the
+arg-type/attr-defined ignores are SQLAlchemy/provider boundaries). The live
+browser/WCAG lane remains a separate external gate. B5 remains only if a nav
+lint for the hyphenated azure-deployment key is pursued.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
 ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/

@@ -32,7 +32,7 @@ SHA, head, and counts; re-run the handoff contract (`tests/test_external_worker_
 | B3 | `email_provider == "azure_communication_services"` string fork appears **9×** across `config.py` + `jobs.py`; provider selection is string-typed at call sites, not a resolved strategy | `apps/workers/src/kp_workers/jobs.py:623,977,1465,1479,2274,2741`; `config.py:273,366,448` | **Done:** `EmailProviderKind` StrEnum (wire-compatible `.value`) + `email_provider_kind` property; all 9 forks now branch on `is_acs`/`metrics_name`. Field is `EmailProviderKind`; gate/provider comparisons stay string-compatible |
 | B4 | `ACS delivery pacing is not configured` raises bare `RuntimeError` | `apps/workers/src/kp_workers/jobs.py` | **Done:** `DeliveryConfigurationError(RuntimeError)` raised for both pacing failures, matching the existing exception convention |
 | B5 | `views["azure-deployment"]` uses bracket notation while all other views use dot notation | `apps/operator-ui/src/console/app.js:1327` | Open (cosmetic; bracket is required by the hyphenated key — leave unless a nav lint arrives) |
-| B6 | 284 `type: ignore` + 159 `noqa` across apps/packages (128+78 in operator-api alone) | grep audit | Open; periodic audit to confirm none mask a real defect |
+| B6 | 284 `type: ignore` + 159 `noqa` across apps/packages (128+78 in operator-api alone) | **Audited and reduced** (`a294cc1`) | Removed **156 dead `noqa`** with RUF100 under the real config (they suppressed rules not in the ruff `select` — ANN/BLE001/SLF001 + stray S607). Remaining 65 `noqa` and all 298 `type: ignore` are genuine: `mypy --warn-unused-ignores packages apps` under the project strict config reports zero unused (strict mode already fails on dead ignores), and the `arg-type`/`attr-defined` ignores are SQLAlchemy/provider boundaries. Re-audit only if a linter change enables the newly-uncovered rules |
 
 ## C. Dead / unwired / unused (verified clear — no action required, listed for the record)
 
@@ -88,5 +88,5 @@ Remaining:
 1. **D1 modularization** (file-level splits, no behavior change; do with the
    next feature touch to avoid churn).
 2. **D3 chart** done (SVG + table fallback, contract-tested). **D2 first behavioral UI test** remains — a `node` smoke harness (`apps/operator-ui/tests/chart-smoke.mjs`) now validates the chart executes offline; extend it into a real DOM/Playwright test next.
-3. **B5/B6** only if a nav lint or type-ignore audit is pursued.
+3. **B6 done** (dead-noqa removal + full type-ignore verification). **B5** only if a nav lint for the hyphenated `azure-deployment` key is pursued.
 4. E1/E2 opportunistically; D4 only when external environments are available.
