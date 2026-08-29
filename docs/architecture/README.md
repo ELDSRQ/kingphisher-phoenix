@@ -26,11 +26,15 @@ three material changes that are not yet implemented:
   the preferred AI path, with Foundry serverless optional and no Foundry
   managed-compute or always-on-GPU requirement.
 
-The source curation workbench, named disposition/five-year graph,
-campaign-specific micro-training, and simplified Azure discovery wizard are
-also target behavior rather than current capability. Do not infer them from the
-implemented source administration, generation contract, generic training, or
-three-stage deployment connector.
+The source curation workbench, named per-recipient disposition, the
+pseudonymous five-year ledger graph, campaign-specific micro-training, and
+simplified Azure discovery wizard are target behavior; the first three are now
+implemented (bounded Threat Campaigns GUI, `close_disposition`/
+`confirmed_interaction` on the named results surface, `ledger_trend` graph
+consumer) while campaign-specific micro-training and the discovery wizard
+remain open. Do not infer the open items from the implemented source
+administration, generation contract, generic training, or three-stage
+deployment connector.
 
 ## Deployable topology
 
@@ -131,8 +135,9 @@ then may external-engine-scoped `restore-state.sh` consume it. These paths have
 produced snapshot `20260829T013332Z-tsX1WQ`, archive SHA-256
 `e4fb16a735d0c9d3b6aa04381c4c9d7e24269006203c551f50abf671cc3637ff`,
 which passed staging and external restore. External installation and
-`verify_install.sh` passed. Final local hermetic now passes; external
-PostgreSQL/Redis/E2E, image, browser, and cloud gates remain NO-GO.
+`verify_install.sh` passed. Current-head hermetic (2,620) and external
+PostgreSQL (92) / Redis (2) profiles pass; E2E, image, browser, and cloud
+gates remain NO-GO.
 
 ## Implementation map
 
@@ -166,7 +171,7 @@ expired, missing, or drifting canary permanently blocks that review.
 
 The content-library routes are the first bounded extraction from the oversized operator router. Four uncalled/unexported helpers were removed in Wave 13 (net 35 production lines), and Wave 21 removed the unused source-adapter clone implementation/exports (net 87 lines; 36 focused plus 5 downstream tests). These cleanups do not close the broader modularization debt in `routers.py`, `console.py`, `app.js`, and `jobs.py`.
 
-The exact Alembic code head is `0032_source_explicit_curation`. Revision `0030` persists a safe default privacy notice while enforcing one current row; `0031` adds the confirmed-interaction/PII-free 1,826-day awareness ledger; and `0032` quarantines legacy automatically active source evidence for explicit operator review while adding migrated retention-policy bounds/default uniqueness. The latest complete external warning-strict, skip-rejecting PostgreSQL profile remains the historical 86-test result at exact head `0029`; no external `0032` qualification is claimed. ORM metadata still needs to mirror `0032`'s retention constraints before the paused checkpoint can be committed.
+The exact Alembic code head is `0032_source_explicit_curation`. Revision `0030` persists a safe default privacy notice while enforcing one current row; `0031` adds the confirmed-interaction/PII-free 1,826-day awareness ledger; and `0032` quarantines legacy automatically active source evidence for explicit operator review while adding migrated retention-policy bounds/default uniqueness. The ORM metadata mirrors `0032`'s retention constraints (`RetentionPolicy.__table_args__`), and the current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh-install/historical migration, retention concurrency, outcome-writer-versus-retention, grants), with the external Redis contract passing 2 tests on DB15.
 
 ## Trust zones and authorities
 
@@ -287,7 +292,7 @@ Structured logging applies centralized redaction and size bounds. Local supervis
 
 `/livez` answers only whether the API process is alive. `/readyz` tests the dependencies and security state needed to receive traffic; database, Redis where required, or audit-integrity failures return an unhealthy result. The legacy `/healthz` compatibility response must not be used as the managed or local qualification readiness probe.
 
-The test topology mirrors these boundaries. `make test` is hermetic. PostgreSQL, Redis, local E2E, and Azure-live profiles are explicit opt-ins and every profile rejects skips. PostgreSQL integration jobs use Redis DB14 and flush only DB14 before and after their profile; the Redis queue contract uses DB15; neither may touch application DB0. The historical pre-Wave-30 result was 1,994/87/2/8, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected at head `0029` using DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit/install and clean 03Z logs. The pre-Wave-36 local hermetic `make test` passed 2,469 tests/97 deselected with 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at checked-in head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. PostgreSQL, Redis, and E2E external reruns at `0030`, exact-final images, browser/WCAG, Azure/provider, recovery, and witness gates remain open.
+The test topology mirrors these boundaries. `make test` is hermetic. PostgreSQL, Redis, local E2E, and Azure-live profiles are explicit opt-ins and every profile rejects skips. PostgreSQL integration jobs use Redis DB14 and flush only DB14 before and after their profile; the Redis queue contract uses DB15; neither may touch application DB0. The historical pre-Wave-30 result was 1,994/87/2/8, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected at head `0029` using DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit/install and clean 03Z logs. The pre-Wave-36 local hermetic `make test` passed 2,469 tests/97 deselected with 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at checked-in head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Current-head `0032` hermetic passes 2,620/103 deselected with 0 failures in 180.45 seconds; the external PostgreSQL profile passes 92 and Redis passes 2 (both 2026-08-29). Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. E2E, exact-final images, browser/WCAG, Azure/provider, recovery, and witness gates remain open.
 
 The test environment uses the official Starlette `TestClient` through a test-only `httpx2` compatibility dependency; production HTTP clients continue to use the normal runtime `httpx` dependency. Owned API/tracking pools and SQLite test engines close deterministically, outbox timestamps use explicit SQLAlchemy datetime typing, and PostgreSQL fixture cleanup covers schemas, tables, roles, and engines. The canonical plan records exact hermetic/PostgreSQL/Redis/E2E counts and the targeted local bootstrap/audit repairs. A backup snapshot alone is not full restore evidence.
 
@@ -338,7 +343,7 @@ The Azure workflow, Terraform, API, and GUI use three exact stages. `foundation_
 
 Azure `private` mode also has a topology prerequisite: its Terraform runner must already have routed VNet access. The same hosted job cannot create the VNet and then become private to it. A separately provisioned private runner is the preferred first-deployment path. `starter` is only a bounded empty non-production foundation option; it exposes the data planes, is refused for production, and must be replaced by `private` before recipient data or campaign workloads are introduced.
 
-The workflow/ref/environment content is digest-bound and rechecked before dispatch. The exact connector digest is refreshed only after a workflow/security review closes; a mismatch fails closed. The workflow explicitly targets `linux/amd64`, captures/re-resolves immutable ACR digests, binds SBOM/provenance subjects, rejects credentials/tokens in reviewed configuration, disables persisted checkout credentials, and removes ephemeral registry credentials. Connector validation covers protected-environment metadata/reviewers, exact workflow/ref/content, new run identity/status, and owner-bound Redis environment/operation leases. Each reviewed operation retains bounded append-only hash-chained checkpoints and a recovery contract requiring evidence and in-place reconciliation. An interrupted or indeterminate dispatch is refreshed against its opaque request, reviewed revision, correlation ID, and linked GitHub run; it is never blindly reissued or treated as cleanup authorization. Provider-backed local validation passes. The 2026-08-29 live GitHub re-audit proves valid `ELDSRQ` authentication with `repo`/`workflow` scopes; a public, enabled repository with default `main`; Actions enabled; the Azure workflow active; and no billing-disabled run signal. It also proves zero environments, variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled secret scanning and push protection, and remote `main` still at old-tree SHA `1403d944a40214714b6cbfcf5cbabc4fa7225eb9`. The sandbox could not resolve `management.azure.com`, so current Azure management-plane state remains unverified. No workflow dispatch/run, remote-backend, or Azure operation occurred.
+The workflow/ref/environment content is digest-bound and rechecked before dispatch. The exact connector digest is refreshed only after a workflow/security review closes; a mismatch fails closed. The workflow explicitly targets `linux/amd64`, captures/re-resolves immutable ACR digests, binds SBOM/provenance subjects, rejects credentials/tokens in reviewed configuration, disables persisted checkout credentials, and removes ephemeral registry credentials. Connector validation covers protected-environment metadata/reviewers, exact workflow/ref/content, new run identity/status, and owner-bound Redis environment/operation leases. Each reviewed operation retains bounded append-only hash-chained checkpoints and a recovery contract requiring evidence and in-place reconciliation. An interrupted or indeterminate dispatch is refreshed against its opaque request, reviewed revision, correlation ID, and linked GitHub run; it is never blindly reissued or treated as cleanup authorization. Provider-backed local validation passes. The 2026-08-29 live GitHub re-audit proves valid `ELDSRQ` authentication with `repo`/`workflow` scopes; a public, enabled repository with default `main`; Actions enabled; the Azure workflow active; and no billing-disabled run signal. It also proves zero environments, variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled secret scanning and push protection, and the re-audit predates the checkpoint push, so remote `main` now carries the current tree at `c9ea716`. The sandbox could not resolve `management.azure.com`, so current Azure management-plane state remains unverified. No workflow dispatch/run, remote-backend, or Azure operation occurred.
 
 The operator application emits an HSTS header and exposes fail-closed readiness contracts locally. That is not evidence of what a browser receives through an Azure custom host or edge. WAF/edge policy, custom-domain and certificate completion, live HSTS observation, rollback, and restore remain unqualified.
 

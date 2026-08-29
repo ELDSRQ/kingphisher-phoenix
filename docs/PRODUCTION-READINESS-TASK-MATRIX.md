@@ -231,8 +231,9 @@ are not release claims.
   default `main`; Actions enabled; and the Azure workflow active, with no
   billing-disabled run signal. It also proves zero environments, variables,
   secrets, rulesets, and workflow runs, unprotected `main`, disabled secret
-  scanning and push protection, and remote `main` still at old-tree SHA
-  `1403d944a40214714b6cbfcf5cbabc4fa7225eb9`. No workflow dispatch/run occurred.
+  scanning and push protection, and remote `main` at old-tree SHA
+  `1403d944a40214714b6cbfcf5cbabc4fa7225eb9` at re-audit time (the checkpoint
+  push has since advanced it to `c9ea716`). No workflow dispatch/run occurred.
   The 2026-08-29 sandbox could not resolve `management.azure.com`, so the
   historical Azure inventory does not establish current management-plane state.
   Protected configuration, repository hardening, current Azure inspection, and

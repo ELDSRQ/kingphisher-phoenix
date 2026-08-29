@@ -49,15 +49,18 @@ The release decision is **NO-GO for production and RSA Conference use** until th
   1,826-day ledger, stable pseudonym configuration, grants, and a 365-day raw
   maximum are wired. Privacy/RBAC, named-history API, reporting/graph, and export
   consumers remain open.
-- Static independent review found no P0. The one open P1 is to mirror migration
-  `0032`'s retention constraints in ORM `RetentionPolicy.__table_args__` and
-  test metadata/direct-database enforcement.
-- Final pause evidence is targeted only: Node, Ruff/format, `git diff --check`,
-  and the focused API/tracking/worker/database suite passed with eight
-  PostgreSQL-profile skips. Full hermetic, mypy, and live profiles remain open.
-- The preserved build remains uncommitted/unpushed on local `main`; local
-  `HEAD` and `origin/main` are still `1403d94`. Never reset or clean the tree.
-  Use the copy-ready next-session prompt in `RESUME-HERE.md`.
+- The retained P1 is closed: `RetentionPolicy.__table_args__` mirrors migration
+  `0032`'s retention constraints with metadata/direct-database tests. The
+  current-head gate also fixed the migration revision-id overflow
+  (`0032_source_item_explicit_curation` → `0032_source_explicit_curation`) so
+  fresh databases can reach head.
+- The checkpoint is committed (`d25313d`) and pushed; `origin/main` is `c9ea716`
+  (plus ANA-010 increments `aa67c17` and `c9ea716`). Current-head hermetic
+  2,620/103, external PostgreSQL 92, and external Redis 2 pass; E2E, image,
+  browser, and cloud gates remain open.
+- Privacy/RBAC, named-history API, and remaining ANA-010 consumers (basic
+  repeat history) are the next build work; use the copy-ready prompt in
+  `RESUME-HERE.md`.
 
 ## Architecture at a glance
 
@@ -294,7 +297,7 @@ generation request and returns only that fact—it does not claim queue or
 provider completion. The pinned internal-model worker path and live inference
 qualification remain open.
 
-The historical 2026-08-28 read-only Azure audit confirmed the selected subscription/tenant, Owner authority, `eastus2`, and required provider readiness including `Microsoft.Communication`; it also found no Terraform backend, foundation group, platform Entra applications, or application resources. The 2026-08-29 sandboxed re-audit could prove only an enabled cached account because DNS could not resolve `management.azure.com`, so current Azure management-plane state remains unverified. The live GitHub re-audit proves valid `ELDSRQ` authentication with `repo`/`workflow` scopes; a public, enabled repository with default `main`; Actions enabled; and the Azure workflow active, with no billing-disabled run signal. It also proves zero environments, variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled secret scanning and push protection, and remote `main` still at old-tree SHA `1403d944a40214714b6cbfcf5cbabc4fa7225eb9`. No workflow dispatch/run or Azure apply occurred. Azure script/preflight repairs passed 56 tests with 1 pre-existing live skip; this is prerequisite/static evidence only.
+The historical 2026-08-28 read-only Azure audit confirmed the selected subscription/tenant, Owner authority, `eastus2`, and required provider readiness including `Microsoft.Communication`; it also found no Terraform backend, foundation group, platform Entra applications, or application resources. The 2026-08-29 sandboxed re-audit could prove only an enabled cached account because DNS could not resolve `management.azure.com`, so current Azure management-plane state remains unverified. The live GitHub re-audit proves valid `ELDSRQ` authentication with `repo`/`workflow` scopes; a public, enabled repository with default `main`; Actions enabled; and the Azure workflow active, with no billing-disabled run signal. It also proves zero environments, variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled secret scanning and push protection, and the re-audit predates the checkpoint push, so remote `main` now carries the current tree at `c9ea716`. No workflow dispatch/run or Azure apply occurred. Azure script/preflight repairs passed 56 tests with 1 pre-existing live skip; this is prerequisite/static evidence only.
 
 ## Working method
 

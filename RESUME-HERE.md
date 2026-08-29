@@ -59,7 +59,7 @@ merely because the new priority policy defers it; remove product claims for
 rejected behavior and require a separate reviewed decision before retiring
 functionality or data.
 
-### Wave 38 paused checkpoint
+### Wave 38 checkpoint — landed and pushed
 
 - `ORG-001` is complete locally: a campaign creator cannot self-approve, while
   one independent operator who holds both approval capabilities may complete
@@ -87,15 +87,28 @@ functionality or data.
   pseudonym key, grants, policy bounds, and legacy threat re-review migration are
   wired. Privacy/RBAC, named-history API, reporting, graph, and export consumers
   remain open.
-- Independent static review found no P0 defect. One P1 remains: mirror migration
-  `0032`'s `RetentionPolicy` 1–365-day check and single-default partial unique
-  index in ORM `__table_args__`, then add metadata/direct-database tests.
-- The final pause gate passed Node syntax, targeted Ruff/format, `git diff
-  --check`, and the focused API/tracking/worker/database suite with eight
-  PostgreSQL-profile skips. Full hermetic, mypy, PostgreSQL/Redis/E2E, image,
-  browser, and cloud gates were not rerun after the final edits.
-- The worktree is intentionally preserved and not committed or pushed. Local
-  `main`, `HEAD`, and `origin/main` remain `1403d94`; do not reset or clean it.
+- The retained P1 was closed: `RetentionPolicy.__table_args__` now mirrors
+  migration `0032`'s 1–365-day check and PostgreSQL partial unique single-default
+  index, with ORM-metadata assertions and direct-database rejection tests.
+- The current-head gate then exposed and fixed a pre-existing defect: revision
+  id `0032_source_item_explicit_curation` (34 chars) overflowed Alembic's fixed
+  `VARCHAR(32)` version column, so **no fresh database could upgrade to head**.
+  It was renamed to `0032_source_explicit_curation` (29 chars), the constraint
+  name was aligned to the codebase's short-name convention, and the
+  upgrade/downgrade round-trip was proven on live PostgreSQL. Two UI-contract
+  tests referencing a renamed `app.js` marker, a `RESUME-HERE.md` GitHub
+  read-only-boundary gap, and a shared-DB collision in the new retention tests
+  were also repaired.
+- The checkpoint was committed as `d25313d` and pushed; `origin/main` advanced
+  `1403d94` → `c9ea716` with the ANA-010 ledger-trend (`aa67c17`) and named
+  close-disposition (`c9ea716`) increments. Worktree is clean; do not reset or
+  clean it.
+- Current-head gates (all 2026-08-29, after the checkpoint): hermetic 2,620/103
+  deselected with 0 failures in 180.45s; external PostgreSQL 92 passed
+  (fresh-install/historical migration to `0032`, retention concurrency,
+  outcome-writer-versus-retention, grants); external Redis 2 passed on DB15;
+  `make lint` and strict mypy (131 files) clean. E2E, exact-image, browser, and
+  cloud gates remain open.
 
 ## Current engineering truth
 
@@ -141,7 +154,7 @@ Completed local/static closures include:
 - one canonical bounded generation contract through queue, provider, storage, review, and delivery, plus durable idempotency that converges retries/races without duplicate provider calls or drafts;
 - current source-terms acknowledgement enforced by API and worker, with audited acknowledge/inspect/revoke GUI lifecycle and a post-fetch terms fence;
 - server-side validation and normalization for campaign, source, privacy, correction, approval, exclusion, and rationale inputs, with capped non-reflective validation output at operator and tracking boundaries;
-- checked-in migration head `0032_source_explicit_curation`: `0031` adds the PII-free confirmed-interaction/1,826-day awareness-ledger foundation; `0032` quarantines legacy automatically active threat evidence for explicit review and enforces migrated retention-policy bounds/default uniqueness. The latest complete external warning-strict PostgreSQL profile remains the historical 86-test result at exact head `0029`; no current-head `0032` external qualification is claimed;
+- checked-in migration head `0032_source_explicit_curation`: `0031` adds the PII-free confirmed-interaction/1,826-day awareness-ledger foundation; `0032` quarantines legacy automatically active threat evidence for explicit review and enforces migrated retention-policy bounds/default uniqueness. The current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh/historical migration, retention concurrency, outcome-writer-versus-retention, grants); the historical 86-test result at `0029` is superseded;
 - server-derived per-resource training `can_submit`/`can_review` flags, independent-review locking, and a GUI that refuses missing or malformed flags instead of reconstructing authority;
 - aggregate and named reporting with separate capability gates, owner-safe alert subscription lifecycle, GUI recipient exclusions, and server-paginated global/campaign recipient results;
 - streamed, bounded, schema-checked OIDC, setup-assistant, AI-generation, and GitHub deployment responses, including duplicate/malformed length rejection and no buffering of GitHub dispatch bodies. The approved non-local HTTPS `/propose` and `/setup-assist` gateway remains a preserved optional adapter; it is not the supported default AI deployment path. Pattern approval records a durable generation request without claiming asynchronous queue/provider completion, and the internal-model worker path plus live AI qualification remain open;
@@ -177,7 +190,7 @@ repository with default `main`; Actions enabled; and the Azure workflow active,
 with no billing-disabled run signal. It also proves zero environments,
 variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled
 secret scanning and push protection, and remote `main` still at old-tree SHA
-`1403d944a40214714b6cbfcf5cbabc4fa7225eb9`. No workflow dispatch/run or Azure
+`1403d944a40214714b6cbfcf5cbabc4fa7225eb9` at re-audit time; the checkpoint push has since advanced remote `main` to `c9ea716`. No workflow dispatch/run or Azure
 plan/apply occurred; current Azure management-plane state remains unverified.
 
 Wave 29 makes recovery preservation-first rather than cleanup-driven. Local
@@ -254,23 +267,21 @@ For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact R
 
 ## Next execution order
 
-1. Close the single known P1 by mirroring migration `0032`'s retention-policy
-   constraints in ORM metadata and testing them. Then run the full local gates,
-   current-head PostgreSQL concurrency/migration profile, reconcile evidence,
-   commit the preserved worktree, and push `main`. Do not reopen locally complete
-   `ORG-001`, `THR-001A/B`, `IMP-001`, or `DOCSIM-001` without a regression.
-2. Deliver the minimum complete product: benchmark/select the internal model,
-   wire `AI-010` into the existing worker role/job, then complete
-   campaign-specific micro-training and the named five-year trend/disposition
-   experience. Deterministic fallback and human approval remain mandatory.
-3. Simplify the normal Azure/mail path through the GUI after those interfaces
+1. Deliver the minimum complete product: finish the ANA-010 named five-year
+   experience (basic repeat history, then the ledger's named-history
+   privacy/RBAC consumers), then benchmark/select the internal model and wire
+   `AI-010` into the existing worker role/job, then complete campaign-specific
+   micro-training (`TRN-010`). Deterministic fallback and human approval remain
+   mandatory. Do not reopen locally complete `ORG-001`, `THR-001A/B`, `IMP-001`,
+   or `DOCSIM-001` without a regression.
+2. Simplify the normal Azure/mail path through the GUI after those interfaces
    stabilize; keep the existing secure three-stage deployment contract and
    provider adapters supported while hiding engineering internals.
-4. Qualify the exact resulting product: current-head external PostgreSQL/Redis/E2E,
+3. Qualify the exact resulting product: current-head external E2E,
    all five exact-final native ARM64 images, native AMD64/registry/attestation,
    real browser/WCAG, disposable Azure, Entra/Graph/Outlook/ACS/DNS/inbox,
    recovery/rotation, alert/audit witness, and human operator acceptance.
-5. Only after the core is stable, simplify navigation/modules without deleting
+4. Only after the core is stable, simplify navigation/modules without deleting
    useful deferred features or weakening stable APIs and safety gates.
 
 Label evidence as **local/static**, **local live**, or **cloud/provider live**. Only the last category can close the corresponding production/RSA gate.
@@ -278,42 +289,34 @@ Label evidence as **local/static**, **local live**, or **cloud/provider live**. 
 ## Copy-ready continuation prompt
 
 ```text
-Resume the phishing-awareness-platform build from the preserved Wave 38 paused
-checkpoint in /Users/edierks/projects/codex-test/phishing-awareness-platform.
+Resume the phishing-awareness-platform build in
+/Users/edierks/projects/codex-test/phishing-awareness-platform.
 Read AGENTS.md, RESUME-HERE.md, docs/WAVE-BUILD-PLAN.md,
 docs/PRODUCTION-READINESS-TASK-MATRIX.md, docs/NEXT_SESSION_HANDOFF.md, and
-docs/AI_HANDOFF.md before editing. Preserve the entire dirty worktree and every
+docs/AI_HANDOFF.md before editing. Preserve the worktree and every
 project/recovery/Docker asset; do not reset, clean, prune, delete, recreate, or
 touch unrelated Docker Desktop workloads. The project-only ARM64 engine remains
-on 192.168.1.140 under /Volumes/DockerExternal/KingPhisher-Phoenix, and no Docker
-or cloud mutation is needed for the first task.
+on 192.168.1.140 under /Volumes/DockerExternal/KingPhisher-Phoenix.
 
-Local main, HEAD, and origin/main are still 1403d94; the large accumulated build
-is intentionally uncommitted/unpushed. Alembic head is
-0032_source_explicit_curation. Independent static review found no P0 and one
-open P1: packages/database/src/kp_database/models.py RetentionPolicy.__table_args__
-must mirror migration 0032's retention_days BETWEEN 1 AND 365 check and its
-PostgreSQL partial unique single-default index. Add metadata assertions and
-direct database rejection coverage. Do not change migration 0032 after treating
-it as landed; add a forward migration only if the database contract itself must
-change.
+origin/main is c9ea716 (checkpoint d25313d + ANA-010 increments aa67c17 and
+c9ea716); the worktree is clean. Alembic head is 0032_source_explicit_curation.
+Current-head gates pass: hermetic 2,620, external PostgreSQL 92, external Redis
+2, lint, strict mypy. The retention P1 is closed and the migration revision-id
+defect is fixed. Do not reopen locally complete ORG-001, THR-001A/B, IMP-001,
+or DOCSIM-001 without a regression.
 
-After that minimal fix, run targeted Ruff/format/tests, make lint, make typecheck,
-and make test. Then run the explicit current-head PostgreSQL profile, including
-the new recipient-import concurrency, outcome-writer-versus-retention, threat
-approval-versus-curation, migration, and grants tests. PostgreSQL/Redis/E2E skips
-are not passes. Reconcile all handoff/build-plan evidence with exact results,
-inspect git diff/status for secrets or unintended files, commit the entire
-preserved project checkpoint, and push origin/main as previously authorized.
-Do not claim production/RSA readiness: exact images, AMD64/registry, browser/WCAG,
-Azure/Entra/Graph/ACS/Outlook/DNS/inbox, recovery, audit witness, and human
-acceptance remain NO-GO.
+Continue the goal-aligned backlog without removing useful deferred features:
+finish ANA-010 (basic repeat history, then the ledger's named-history
+privacy/RBAC consumers with pseudonym-key governance); then benchmark and
+select the internal-model-first AI-010 path (pinned llama.cpp role/job in the
+existing worker image, no tools/network, schema-constrained output, cost/status
+exposure, deterministic fallback) and add campaign-specific micro-training
+(TRN-010); then simplify GUI Azure/mail deployment (DEP-010). AI may
+draft/advise but never approve, target, apply infrastructure, handle consent,
+or launch. Prefer simplicity and the existing three-deployable modular-monolith
+architecture.
 
-Once the checkpoint is safely pushed, continue the goal-aligned backlog without
-removing useful deferred features: finish privacy/RBAC and ANA-010 named
-five-year ledger/reporting/graph consumers; then benchmark the internal-model-
-first AI-010 path in the existing worker, add campaign-specific micro-training,
-and simplify GUI Azure/mail deployment. AI may draft/advise but never approve,
-target, apply infrastructure, handle consent, or launch. Prefer simplicity and
-the existing three-deployable modular-monolith architecture.
+Do not claim production/RSA readiness: current-head external E2E, exact-final
+ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/
+inbox, recovery, audit witness, and human acceptance remain NO-GO.
 ```

@@ -97,14 +97,14 @@ delete potentially valuable behavior simply because it is deferred.
   current outcome-writer locking, 365-day raw maximum, and 1,826-day PII-free
   ledger are wired. Privacy/RBAC, named-history API, reporting, graph, and export
   consumers remain open.
-- Independent static review found no P0 and one remaining P1: mirror migration
-  `0032`'s retention-day check and single-default partial unique index in
-  `RetentionPolicy.__table_args__`, with metadata/database tests.
-- Pause gate: Node syntax, targeted Ruff/format, `git diff --check`, and the
-  focused API/tracking/worker/database suite passed with eight PostgreSQL-profile
-  skips. Full hermetic/mypy/live profiles were not rerun after final edits.
-- The preserved worktree is not committed or pushed. Local `main`, `HEAD`, and
-  `origin/main` remain `1403d94`; never reset or clean it.
+- The retained P1 is closed: `RetentionPolicy.__table_args__` mirrors migration
+  `0032`'s retention-day check and single-default partial unique index, with
+  metadata/database tests. The current-head gate additionally fixed the
+  migration revision-id overflow so fresh databases can reach head `0032`.
+- The checkpoint is committed (`d25313d`) and pushed; `origin/main` is `c9ea716`
+  (plus ANA-010 increments `aa67c17` and `c9ea716`). Current-head hermetic
+  2,620/103, external PostgreSQL 92, and external Redis 2 pass on 2026-08-29;
+  E2E, image, browser, and cloud gates remain open.
 
 Use the copy-ready continuation prompt in `RESUME-HERE.md` verbatim when
 starting the next build session.
@@ -136,7 +136,7 @@ The codebase has moved from an eight-worker, development-auth, all-active-recipi
 - a locally permission-tested create-only audit witness targeting locked Azure Blob storage;
 - Microsoft Graph directory preview/apply and Microsoft 365 reported-message ingestion;
 - ACS custom-domain readiness, pacing, provider correlation, and an Entra-authenticated, privacy-minimized Event Grid receipt pipeline; live subscription/receipt behavior remains unqualified.
-- checked-in Alembic head `0032_source_explicit_curation`; `0031` adds the confirmed-interaction/PII-free 1,826-day ledger foundation and `0032` requires explicit re-review of legacy automatically active source evidence while enforcing migrated retention bounds/default uniqueness. The latest complete external warning-strict PostgreSQL profile remains the historical 86-test result at exact head `0029`; no current-head `0032` external qualification is claimed;
+- checked-in Alembic head `0032_source_explicit_curation`; `0031` adds the confirmed-interaction/PII-free 1,826-day ledger foundation and `0032` requires explicit re-review of legacy automatically active source evidence while enforcing migrated retention bounds/default uniqueness. The current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh/historical migration, retention concurrency, outcome-writer-versus-retention, grants); the historical 86-test result at `0029` is superseded;
 - a finite 2–12 occurrence Program Planner with allowlisted elapsed-day cadence, independent drafts, exact UTC review, duplicate-safe creation, and forward-only pause/resume;
 - denominator-explicit single-campaign analytics plus bounded longitudinal Executive Trends JSON/CSV/GUI;
 - retirement of shared-secret tracking corrections as an HTTP 410/no-write boundary, with the obsolete runtime/Terraform secret removed; normalized dual-reviewed corrections remain deferred;
@@ -215,7 +215,7 @@ Historical and overlapping focused evidence remains labeled in the canonical pla
 
 The earlier operational-readiness interruption remains historical. Its pre-Wave-30 result was 1,994 hermetic, 87 PostgreSQL, 2 Redis, and 8 E2E tests; the intermediate external 2,230/86/2/8 result is also superseded. The 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected at exact head `0029` using Redis DB14, 2 Redis/2,424 deselected on DB15, and 8 E2Es plus audit/install result is now a pre-remediation snapshot. The pre-Wave-36 local hermetic result is 2,469 passed/97 deselected, 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501/97 deselected with 0 failures in 183.40 seconds; current-head `0032` PostgreSQL/Redis/E2E external profiles remain pending. Earlier controller observations at about 5.9 and 5.6 GiB remain dated proof that the 8 and 10 GiB gates stopped safely. External capacity and restore are proven; browser, exact-final image, provider-live, recovery, and witness qualification remain open.
 
-The historical 2026-08-28 Azure inspection confirmed the selected subscription/tenant, subscription Owner authority, `eastus2`, required provider readiness including `Microsoft.Communication`, and absence of a Terraform backend, foundation resource group, platform Entra applications, and application resources. The 2026-08-29 sandboxed re-audit could prove only an enabled cached account because DNS could not resolve `management.azure.com`; current management-plane state is therefore unverified. The live GitHub re-audit proves valid `ELDSRQ` authentication with `repo`/`workflow` scopes; a public, enabled repository with default `main`; Actions enabled; and the Azure workflow active, with no billing-disabled run signal. It also proves zero environments, variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled secret scanning and push protection, and remote `main` still at old-tree SHA `1403d944a40214714b6cbfcf5cbabc4fa7225eb9`. The connector's protected-environment/workflow/run validation and Redis lease behavior pass locally, but no workflow dispatch/run or Azure apply occurred. The next cloud step requires reviewed final-source sync plus protected environment/reviewers, variables, secrets, branch protection/rulesets, repository secret protections, revalidated Azure state, and backend/bootstrap inputs before any of the three deployment stages can run.
+The historical 2026-08-28 Azure inspection confirmed the selected subscription/tenant, subscription Owner authority, `eastus2`, required provider readiness including `Microsoft.Communication`, and absence of a Terraform backend, foundation resource group, platform Entra applications, and application resources. The 2026-08-29 sandboxed re-audit could prove only an enabled cached account because DNS could not resolve `management.azure.com`; current management-plane state is therefore unverified. The live GitHub re-audit proves valid `ELDSRQ` authentication with `repo`/`workflow` scopes; a public, enabled repository with default `main`; Actions enabled; and the Azure workflow active, with no billing-disabled run signal. It also proves zero environments, variables, secrets, rulesets, and workflow runs, unprotected `main`, disabled secret scanning and push protection, and the re-audit predates the checkpoint push, so remote `main` now carries the current tree at `c9ea716`. The connector's protected-environment/workflow/run validation and Redis lease behavior pass locally, but no workflow dispatch/run or Azure apply occurred. The next cloud step requires reviewed final-source sync plus protected environment/reviewers, variables, secrets, branch protection/rulesets, repository secret protections, revalidated Azure state, and backend/bootstrap inputs before any of the three deployment stages can run.
 
 ## Do not regress
 

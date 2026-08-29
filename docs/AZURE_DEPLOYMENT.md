@@ -21,11 +21,12 @@ and the bounded explicit-curation Threat Campaigns workflow.
 `0032_source_explicit_curation` with confirmed interaction, current
 outcome-writer locks, terminal-only project-before-purge, stable pseudonym
 configuration/grants, a 365-day raw maximum, and a PII-free 1,826-day ledger.
-Privacy/RBAC, named-history API, reporting/graph, and export consumers remain
-open. Independent static review found no P0 and one P1: mirror migration
-`0032`'s retention check and single-default index in ORM metadata and test it.
-The build is preserved but uncommitted/unpushed at baseline `1403d94`; use the
-continuation prompt in `RESUME-HERE.md`.
+Privacy/RBAC, named-history API, and remaining ANA-010 consumers remain open.
+The retained P1 (ORM mirroring of migration `0032`'s retention check and
+single-default index) is closed, and the migration revision-id overflow was
+fixed. The build is committed and pushed through `c9ea716` (checkpoint
+`d25313d` + ANA-010 increments); use the continuation prompt in
+`RESUME-HERE.md`.
 
 The target local build/qualification worker is the project-isolated native
 ARM64 host at `192.168.1.140`, with canonical source
@@ -219,7 +220,7 @@ application resources. Current read-only GitHub inspection proves valid
 `ELDSRQ/kingphisher-phoenix` with default `main`; Actions enabled; and the Azure
 workflow active. It also proves zero environments, variables, and secrets,
 unprotected `main`, and remote `main` still at old-tree SHA
-`1403d944a40214714b6cbfcf5cbabc4fa7225eb9`. No workflow dispatch/run,
+`1403d944a40214714b6cbfcf5cbabc4fa7225eb9` at re-audit time; the checkpoint push has since advanced remote `main` to `c9ea716` (this re-audit is not a branch-protection or secret-protection pass). No workflow dispatch/run,
 deployment, or other workload mutation occurred. This is the starting inventory, not a
 `foundation_bootstrap`, `foundation_finalize`, or `workloads` pass. The associated script/preflight repair suite passed
 56 tests with 1 pre-existing live test skipped.
@@ -468,10 +469,10 @@ training-resource library, `0027` recipient-exclusion lifecycle, `0028` exact
 campaign-training binding, `0029` durable reviewed-canary launch gate, and
 `0030` persisted default/single-current privacy notice, `0031`
 confirmed-interaction/PII-free 1,826-day ledger foundation, and `0032` explicit
-legacy threat curation plus retention-policy invariants). The latest complete
-external warning-strict PostgreSQL profile remains the historical 86-test result
-with fresh/historical migration coverage at exact head `0029`; no current-head
-`0032` external qualification is claimed. Qualification
+legacy threat curation plus retention-policy invariants). The current-head
+external PostgreSQL profile passed 92 tests on 2026-08-29, including
+fresh/historical migration coverage to exact head `0032`; the historical 86-test
+result at `0029` is superseded. Qualification
 repaired leaked schema/table/role/engine cleanup paths; the earlier targeted
 `0025`→`0026` preservation/write-bound/least-privilege evidence remains valid.
 The native ARM64 migration image passed at the latest completed snapshot, but
