@@ -406,6 +406,27 @@ def _training_page(
     feedback = (
         '<p role="alert"><strong>Not quite.</strong> Review the warning signs and try again.</p>' if retry else ""
     )
+    # A lesson with a knowledge check renders its own bounded question and
+    # options (never the correct-answer index — the tracking service compares
+    # the submitted option server-side). A lesson without one keeps the
+    # generic quiz, so existing bindings are unaffected by the new feature.
+    if resource.knowledge_question is not None and resource.knowledge_options:
+        quiz_question = html.escape(resource.knowledge_question)
+        quiz_radios = "\n".join(
+            f'<label><input required type="radio" name="answer" value="{html.escape(str(option), quote=True)}">'
+            f"{html.escape(str(option))}</label>"
+            for option in resource.knowledge_options
+        )
+    else:
+        quiz_question = "What is the safest response to an unexpected urgent message?"
+        quiz_radios = (
+            '<label><input required type="radio" name="answer" value="act_immediately">'
+            "Act immediately so the request does not expire</label>\n"
+            '<label><input required type="radio" name="answer" value="verify_independently">'
+            "Verify the request through a trusted, independent channel</label>\n"
+            '<label><input required type="radio" name="answer" value="reply_with_credentials">'
+            "Reply with credentials to prove your identity</label>"
+        )
     return HTMLResponse(
         f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -418,13 +439,8 @@ button{{font:inherit;padding:.7rem 1rem;background:#174a7e;color:white;border:0;
 <p>{content}</p><ul><li>Pause before acting on urgency.</li><li>Inspect the sender and destination.</li>
 <li>Report suspicious messages through your approved channel.</li></ul>
 {feedback}<form method="post" action="{action}"><fieldset><legend><strong>Knowledge check</strong></legend>
-<p>What is the safest response to an unexpected urgent message?</p>
-<label><input required type="radio" name="answer" value="act_immediately">
-Act immediately so the request does not expire</label>
-<label><input required type="radio" name="answer" value="verify_independently">
-Verify the request through a trusted, independent channel</label>
-<label><input required type="radio" name="answer" value="reply_with_credentials">
-Reply with credentials to prove your identity</label>
+<p>{quiz_question}</p>
+{quiz_radios}
 </fieldset><button type="submit">Submit answer</button></form>
 </main></body></html>""",
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT if retry else status.HTTP_200_OK,
@@ -635,8 +651,20 @@ async def complete_training(
         return _completion_page()
     resource = _assigned_training_resource(session, training)
     answer = await _submitted_quiz_answer(request)
-    if answer not in _QUIZ_OPTIONS:
+    if resource.knowledge_question is not None and resource.knowledge_options:
+        valid_options: frozenset[str] | set[str] = set(resource.knowledge_options)
+        correct_answer: str | None = (
+            resource.knowledge_options[resource.knowledge_answer_index]
+            if resource.knowledge_answer_index is not None
+            and 0 <= resource.knowledge_answer_index < len(resource.knowledge_options)
+            else None
+        )
+    else:
+        valid_options = _QUIZ_OPTIONS
+        correct_answer = _QUIZ_ANSWER
+    if answer not in valid_options:
         return _training_page(resource, training_bearer, retry=True)
+    assert answer is not None  # membership above implies a non-None string
     now = datetime.now(UTC)
     # A purpose-bound quiz answer is a deliberate training-page action. Keep
     # that high-confidence fact separate from scanner-triggerable CLICKED and
@@ -657,7 +685,10 @@ async def complete_training(
         )
         .on_conflict_do_nothing()
     )
-    if not secrets.compare_digest(answer, _QUIZ_ANSWER):
+    if correct_answer is None:
+        session.commit()
+        return _training_page(resource, training_bearer, retry=True)
+    if not secrets.compare_digest(answer, correct_answer):
         session.commit()
         return _training_page(resource, training_bearer, retry=True)
     if training.opened_at is None:

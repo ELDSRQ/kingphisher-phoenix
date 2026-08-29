@@ -879,6 +879,15 @@ def _training_binding_view(
         view["content"] = resource.content if resource is not None else None
         view["content_type"] = "text/plain"
         view["html_execution"] = False
+    if resource is not None and resource.knowledge_question is not None:
+        # Operator-facing review view only. The public tracking page receives
+        # the question and options without the answer index; the tracking
+        # service compares the submitted option server-side.
+        view["knowledge_check"] = {
+            "question": resource.knowledge_question,
+            "options": resource.knowledge_options or [],
+            "answer_index": resource.knowledge_answer_index,
+        }
     return view
 
 

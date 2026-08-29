@@ -1164,6 +1164,19 @@ class TrainingResource(Base):
         CheckConstraint("char_length(btrim(content)) BETWEEN 1 AND 20000", name="content_bounded"),
         CheckConstraint("source_ref IS NULL OR char_length(source_ref) <= 500", name="source_ref_bounded"),
         CheckConstraint("version > 0", name="version_positive"),
+        # The knowledge check is all-or-nothing: a question, its bounded
+        # options, and the correct-answer index travel together. A partial
+        # state would render an unverifiable quiz or silently leak the answer
+        # choice, so the database refuses it.
+        CheckConstraint(
+            "(knowledge_question IS NULL AND knowledge_options IS NULL AND knowledge_answer_index IS NULL) OR "
+            "(knowledge_question IS NOT NULL AND knowledge_options IS NOT NULL AND knowledge_answer_index IS NOT NULL)",
+            name="knowledge_check_all_or_nothing",
+        ),
+        CheckConstraint(
+            "knowledge_answer_index IS NULL OR knowledge_answer_index >= 0",
+            name="knowledge_answer_index_non_negative",
+        ),
     )
 
     training_resource_id = _pk()
@@ -1173,6 +1186,14 @@ class TrainingResource(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     requires_completion: Mapped[bool] = mapped_column(Boolean, default=True)
     source_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: Optional campaign-bound knowledge check. All three fields are set or
+    #: unset together (see the table CHECK constraint). The correct answer is
+    #: stored only as an index into ``knowledge_options`` and is never rendered
+    #: to recipients; the tracking service compares the submitted option
+    #: server-side. A lesson without a knowledge check keeps the generic quiz.
+    knowledge_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    knowledge_options: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    knowledge_answer_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     approval_state: Mapped[dm.TemplateApprovalState] = mapped_column(
         Enum(dm.TemplateApprovalState, name="template_approval_state"), default=dm.TemplateApprovalState.DRAFT
     )

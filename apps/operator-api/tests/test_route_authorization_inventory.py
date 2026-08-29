@@ -63,6 +63,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "POST /api/v1/programs",
             "POST /api/v1/training-resources",
             "POST /api/v1/training-resources/{training_resource_id}/submit",
+            "POST /api/v1/campaigns/{campaign_id}/training-draft",
         ),
     ),
     (

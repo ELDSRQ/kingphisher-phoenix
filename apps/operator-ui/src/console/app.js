@@ -2755,6 +2755,21 @@ views.campaigns = async (root) => {
       class: "mono", tabindex: "0", "aria-label": "Exact recipient training lesson content",
       text: lesson.content || "No lesson content is available.",
     }));
+    if (lesson.knowledge_check && typeof lesson.knowledge_check === "object") {
+      reviewForm.appendChild(el("h4", { class: "modal-section", text: "Campaign-bound knowledge check" }));
+      reviewForm.appendChild(el("p", { text: String(lesson.knowledge_check.question || "") }));
+      const checkList = el("ol", {});
+      (Array.isArray(lesson.knowledge_check.options) ? lesson.knowledge_check.options : [])
+        .forEach((option, index) => {
+          checkList.appendChild(el("li", {
+            text: `${option}${Number.isInteger(lesson.knowledge_check.answer_index)
+              && index === lesson.knowledge_check.answer_index ? " — correct answer" : ""}`,
+          }));
+        });
+      reviewForm.appendChild(checkList);
+    } else {
+      reviewForm.appendChild(el("p", { class: "field-help", text: "This lesson has no campaign-bound knowledge check; recipients see the generic knowledge check." }));
+    }
     reviewForm.appendChild(el("div", { class: "modal-actions" }, [
       el("button", { class: "btn primary", type: "button", text: "Close", onclick: () => dlg.close() }),
     ]));
@@ -4333,6 +4348,24 @@ async function showTrainingResourcePreview(resource, trigger) {
       class: "modal-help",
       text: "Lesson text is rendered as text only. Markup-like characters are never executed by this console.",
     }));
+    if (preview.knowledge_check && typeof preview.knowledge_check === "object") {
+      const check = preview.knowledge_check;
+      form.appendChild(el("h4", { class: "modal-section", text: "Campaign-bound knowledge check" }));
+      form.appendChild(el("p", { text: String(check.question || "") }));
+      const list = el("ol", {});
+      (Array.isArray(check.options) ? check.options : []).forEach((option, index) => {
+        const correct = Number.isInteger(check.answer_index) && index === check.answer_index;
+        list.appendChild(el("li", {
+          class: correct ? "knowledge-option-correct" : "",
+          text: `${option}${correct ? " — correct answer" : ""}`,
+        }));
+      });
+      form.appendChild(list);
+      form.appendChild(el("p", {
+        class: "modal-help",
+        text: "The correct answer is shown only to operators. Recipients see the question and options without any marker; the tracking service compares the submitted option server-side.",
+      }));
+    }
     form.appendChild(el("div", { class: "modal-actions" }, [
       el("button", { class: "btn primary", type: "button", text: "Close preview", onclick: () => dlg.close() }),
     ]));
@@ -4518,6 +4551,12 @@ views.training = async (root) => {
             help: "Plain text only. Markup-like text is displayed literally and never executed." },
           { name: "source_ref", label: "Non-secret source reference (optional)", maxLength: 500,
             help: "Use a short policy or evidence reference; never enter credentials or recipient data." },
+          { name: "knowledge_question", label: "Knowledge-check question (optional)", maxLength: 500,
+            help: "Leave empty to keep the generic quiz. Provide it with 2–5 options and mark the correct one." },
+          { name: "knowledge_options", label: "Knowledge-check options (comma-separated, 2–5)", maxLength: 1000,
+            help: "Each option is bounded to 200 characters and must be distinct." },
+          { name: "knowledge_answer_index", label: "Correct option number (1-based, matching the list order)",
+            help: "Recipients never see which option is correct; the tracking service compares it server-side." },
         ],
         submitLabel: "Create draft",
       });
@@ -4525,6 +4564,13 @@ views.training = async (root) => {
       const button = event.currentTarget;
       button.disabled = true;
       try {
+        const knowledgeQuestion = values.knowledge_question ? values.knowledge_question.trim() : null;
+        const knowledgeOptions = values.knowledge_options
+          ? values.knowledge_options.split(",").map((option) => option.trim()).filter(Boolean)
+          : null;
+        const knowledgeAnswerIndex = knowledgeQuestion && knowledgeOptions && values.knowledge_answer_index
+          ? Number(values.knowledge_answer_index) - 1
+          : null;
         trainingResourceWithServerActions(
           await api("/training-resources", {
             method: "POST",
@@ -4532,6 +4578,9 @@ views.training = async (root) => {
               title: values.title,
               content: values.content,
               source_ref: values.source_ref || null,
+              knowledge_question: knowledgeQuestion,
+              knowledge_options: knowledgeOptions,
+              knowledge_answer_index: knowledgeAnswerIndex,
             }),
           }),
         );

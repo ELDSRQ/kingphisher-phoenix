@@ -94,6 +94,106 @@ def test_authority_flags_cannot_be_supplied_in_mutation_requests() -> None:
         TrainingResourceDecision.model_validate({"decision": "approved", "rationale": "Reviewed", "can_review": True})
 
 
+_KNOWLEDGE_CHECK = {
+    "knowledge_question": "An unexpected message asks you to reset your password. What is the safest response?",
+    "knowledge_options": [
+        "Verify the request through a trusted, independent channel",
+        "Act immediately so the request does not expire",
+        "Reply with credentials to prove your identity",
+    ],
+    "knowledge_answer_index": 0,
+}
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        # Partial knowledge check is refused: all-or-nothing.
+        {**_KNOWLEDGE_CHECK, "knowledge_question": None},
+        {**_KNOWLEDGE_CHECK, "knowledge_options": None},
+        {**_KNOWLEDGE_CHECK, "knowledge_answer_index": None},
+        # Answer index must point at a real option.
+        {**_KNOWLEDGE_CHECK, "knowledge_answer_index": 3},
+        # Options must be distinct and bounded.
+        {**_KNOWLEDGE_CHECK, "knowledge_options": ["same", "same"]},
+        {**_KNOWLEDGE_CHECK, "knowledge_options": ["only one"]},
+        {**_KNOWLEDGE_CHECK, "knowledge_options": ["x" * 201, "y"]},
+        # Question must contain bounded text.
+        {**_KNOWLEDGE_CHECK, "knowledge_question": "   "},
+        {**_KNOWLEDGE_CHECK, "knowledge_question": "x" * 501},
+        # Options must not contain control characters.
+        {**_KNOWLEDGE_CHECK, "knowledge_options": ["ok", "bad\x00option"]},
+    ],
+)
+def test_knowledge_check_authoring_is_strictly_validated(values: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        TrainingResourceCreate.model_validate({"title": "Lesson", "content": "Safe text", **values})
+
+
+def test_knowledge_check_is_stored_and_previewed_for_reviewers_only() -> None:
+    session = _Session()
+    audit = _Audit()
+    author = _principal(Role.CAMPAIGN_AUTHOR)
+    resource_view = create_training_resource(
+        TrainingResourceCreate(title="Verify urgent requests", content="Safe lesson", **_KNOWLEDGE_CHECK),
+        session=session,  # type: ignore[arg-type]
+        audit=audit,  # type: ignore[arg-type]
+        principal=author,
+    )
+    resource_id = uuid.UUID(str(resource_view["training_resource_id"]))
+    resource = session.rows[resource_id]
+    assert resource.knowledge_question == _KNOWLEDGE_CHECK["knowledge_question"]
+    assert resource.knowledge_options == _KNOWLEDGE_CHECK["knowledge_options"]
+    assert resource.knowledge_answer_index == 0
+    assert resource_view["has_knowledge_check"] is True
+
+    reviewer = _principal(Role.SECURITY_APPROVER)
+    preview = preview_training_resource(
+        resource_id,
+        session=session,  # type: ignore[arg-type]
+        principal=reviewer,
+    )
+    check = preview["knowledge_check"]
+    assert check == {
+        "question": _KNOWLEDGE_CHECK["knowledge_question"],
+        "options": _KNOWLEDGE_CHECK["knowledge_options"],
+        "answer_index": 0,
+    }
+    assert "created_by" not in preview
+
+
+def test_summary_without_knowledge_check_keeps_legacy_shape() -> None:
+    session = _Session()
+    audit = _Audit()
+    author = _principal(Role.CAMPAIGN_AUTHOR)
+    resource_view = create_training_resource(
+        TrainingResourceCreate(title="Generic lesson", content="Safe text"),
+        session=session,  # type: ignore[arg-type]
+        audit=audit,  # type: ignore[arg-type]
+        principal=author,
+    )
+    assert resource_view["has_knowledge_check"] is False
+    session = _Session()
+    resource = TrainingResource(
+        training_resource_id=uuid.UUID(str(resource_view["training_resource_id"])),
+        title="Generic lesson",
+        kind="article",
+        content="Safe text",
+        version=1,
+        requires_completion=True,
+        approval_state=dm.TemplateApprovalState.DRAFT,
+        created_by=uuid.uuid4(),
+    )
+    session.add(resource)
+    preview = preview_training_resource(
+        resource.training_resource_id,
+        session=session,  # type: ignore[arg-type]
+        principal=_principal(Role.SECURITY_APPROVER),
+    )
+    assert "knowledge_check" not in preview
+    assert preview["has_knowledge_check"] is False
+
+
 def test_resource_lifecycle_is_audited_and_separates_author_from_reviewer() -> None:
     session = _Session()
     audit = _Audit()

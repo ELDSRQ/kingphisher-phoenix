@@ -9,10 +9,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, status
 from kp_authorization.rbac import Capability, Principal
 from kp_database.audit_store import AuditStore
-from kp_database.models import TrainingResource
+from kp_database.models import Campaign, CampaignPattern, TemplateVersion, TrainingResource
+from kp_database.training_builder import build_knowledge_check_draft
 from kp_domain_models import models as dm
 from kp_telemetry.errors import ConflictError, NotFoundError, PermissionDeniedError, ValidationError_
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,10 @@ from kp_operator_api.deps import get_audit_store, get_session
 
 router = APIRouter(prefix="/api/v1", tags=["training-library"])
 _COLLECTION_MAX_OFFSET = 10_000
+_KNOWLEDGE_QUESTION_MAX = 500
+_KNOWLEDGE_OPTION_MAX = 200
+_KNOWLEDGE_OPTIONS_MIN = 2
+_KNOWLEDGE_OPTIONS_MAX = 5
 
 
 class TrainingResourceCreate(BaseModel):
@@ -29,6 +34,13 @@ class TrainingResourceCreate(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     content: str = Field(min_length=1, max_length=20_000)
     source_ref: str | None = Field(default=None, max_length=500)
+    knowledge_question: str | None = Field(default=None, min_length=1, max_length=_KNOWLEDGE_QUESTION_MAX)
+    knowledge_options: list[str] | None = Field(
+        default=None,
+        min_length=_KNOWLEDGE_OPTIONS_MIN,
+        max_length=_KNOWLEDGE_OPTIONS_MAX,
+    )
+    knowledge_answer_index: int | None = Field(default=None, ge=0)
 
     @field_validator("title", "content")
     @classmethod
@@ -47,6 +59,60 @@ class TrainingResourceCreate(BaseModel):
         if "\x00" in normalized or "\r" in normalized or "\n" in normalized:
             raise ValueError("value must be a single line")
         return normalized or None
+
+    @field_validator("knowledge_question")
+    @classmethod
+    def _knowledge_question_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or "\x00" in normalized:
+            raise ValueError("knowledge question must contain bounded text")
+        return normalized
+
+    @field_validator("knowledge_options")
+    @classmethod
+    def _knowledge_options_text(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for option in value:
+            cleaned = option.strip()
+            if not cleaned or "\x00" in cleaned:
+                raise ValueError("knowledge options must contain bounded text")
+            if len(cleaned) > _KNOWLEDGE_OPTION_MAX:
+                raise ValueError("knowledge option exceeds the length bound")
+            folded = cleaned.casefold()
+            if folded in seen:
+                raise ValueError("knowledge options must be distinct")
+            seen.add(folded)
+            normalized.append(cleaned)
+        return normalized
+
+    @field_validator("knowledge_options")
+    @classmethod
+    def _knowledge_options_minimum(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and len(value) < _KNOWLEDGE_OPTIONS_MIN:
+            raise ValueError("at least two knowledge options are required")
+        return value
+
+    @model_validator(mode="after")
+    def _knowledge_check_all_or_nothing(self) -> TrainingResourceCreate:
+        present = [
+            self.knowledge_question is not None,
+            self.knowledge_options is not None,
+            self.knowledge_answer_index is not None,
+        ]
+        if any(present) and not all(present):
+            raise ValueError("knowledge question, options, and answer index must be provided together")
+        if (
+            self.knowledge_answer_index is not None
+            and self.knowledge_options is not None
+            and self.knowledge_answer_index >= len(self.knowledge_options)
+        ):
+            raise ValueError("knowledge answer index is out of range")
+        return self
 
 
 class TrainingResourceDecision(BaseModel):
@@ -91,6 +157,7 @@ def _summary(resource: TrainingResource, principal: Principal) -> dict[str, obje
         "source_ref": resource.source_ref,
         "approval_state": resource.approval_state.value,
         "requires_completion": resource.requires_completion,
+        "has_knowledge_check": resource.knowledge_question is not None,
         "can_submit": can_submit,
         "can_review": can_review,
     }
@@ -124,12 +191,22 @@ def preview_training_resource(
     resource = session.get(TrainingResource, training_resource_id)
     if resource is None:
         raise NotFoundError("training resource not found")
-    return {
+    view: dict[str, object] = {
         **_summary(resource, principal),
         "content": resource.content,
         "content_type": "text/plain",
         "html_execution": False,
     }
+    if resource.knowledge_question is not None:
+        # The operator preview is capability-gated and reviewer-facing; it may
+        # show the correct-answer index so the independent reviewer can verify
+        # the check. The public tracking page never receives it.
+        view["knowledge_check"] = {
+            "question": resource.knowledge_question,
+            "options": resource.knowledge_options or [],
+            "answer_index": resource.knowledge_answer_index,
+        }
+    return view
 
 
 @router.post("/training-resources", status_code=status.HTTP_201_CREATED)
@@ -147,6 +224,9 @@ def create_training_resource(
         version=1,
         requires_completion=True,
         source_ref=body.source_ref,
+        knowledge_question=body.knowledge_question,
+        knowledge_options=body.knowledge_options,
+        knowledge_answer_index=body.knowledge_answer_index,
         approval_state=dm.TemplateApprovalState.DRAFT,
         created_by=_principal_uuid(principal),
         created_at=datetime.now(UTC),
@@ -158,7 +238,11 @@ def create_training_resource(
         action="training_resource.create",
         object_type="training_resource",
         object_id=str(resource.training_resource_id),
-        detail={"source_ref": resource.source_ref, "content_type": "text/plain"},
+        detail={
+            "source_ref": resource.source_ref,
+            "content_type": "text/plain",
+            "has_knowledge_check": resource.knowledge_question is not None,
+        },
     )
     session.commit()
     return _summary(resource, principal)
@@ -230,3 +314,94 @@ def decide_training_resource(
     )
     session.commit()
     return _summary(resource, principal)
+
+
+class TrainingDraftFromCampaign(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: uuid.UUID
+
+
+def _campaign_evidence(
+    session: Session,
+    campaign_id: uuid.UUID,
+) -> tuple[Campaign, TemplateVersion, CampaignPattern]:
+    """Load a campaign and its reviewed template/pattern, or fail closed.
+
+    A knowledge check may only be drafted from evidence that already passed
+    the content review gate. A campaign without an approved template is not
+    evidence of anything, so the draft is refused rather than guessed.
+    """
+
+    campaign = session.get(Campaign, campaign_id)
+    if campaign is None:
+        raise NotFoundError("campaign not found")
+    template = (
+        session.get(TemplateVersion, campaign.current_template_id) if campaign.current_template_id is not None else None
+    )
+    pattern = session.get(CampaignPattern, campaign.pattern_id)
+    if template is None or template.approval_state is not dm.TemplateApprovalState.APPROVED:
+        raise ConflictError("campaign has no approved template to draft from")
+    if pattern is None:
+        raise ConflictError("campaign pattern is unavailable")
+    return campaign, template, pattern
+
+
+def _draft_lesson_payload(
+    template: TemplateVersion,
+    pattern: CampaignPattern,
+) -> dict[str, object]:
+    """Deterministically derive one bounded lesson + knowledge check draft.
+
+    The lesson title and content are composed from the approved template's
+    bounded training evidence; the knowledge check is built by the shared
+    deterministic builder. Everything is bounded and sanitized before it is
+    offered to the operator for review.
+    """
+
+    check = build_knowledge_check_draft(
+        requested_action=pattern.requested_action,
+        lure_category=pattern.lure_category.value if pattern.lure_category is not None else None,
+        emotional_triggers=pattern.emotional_triggers or [],
+        training_explanation=template.training_explanation,
+    )
+    title = f"Responding to {check.question}"[:160]
+    explanation = (template.training_explanation or "").strip()[:8000]
+    cues = "; ".join(
+        str(cue).strip()[:200] for cue in (template.warning_cues or [])[:5] if isinstance(cue, str) and cue.strip()
+    )[:4000]
+    content_parts = [part for part in (explanation, cues) if part]
+    fallback = (
+        "Pause before acting on an unexpected request. Verify it through a trusted, independent channel, "
+        "and report suspicious messages to your security team."
+    )
+    content = ("\n\n".join(content_parts) if content_parts else fallback)[:20_000]
+    return {
+        "title": title,
+        "content": content,
+        "content_type": "text/plain",
+        "knowledge_check": check.as_dict(),
+        "basis": {
+            "template_version_id": str(template.template_version_id),
+            "pattern_id": str(pattern.campaign_pattern_id),
+            "builder": "deterministic-training-builder-v1",
+        },
+    }
+
+
+@router.post("/campaigns/{campaign_id}/training-draft", status_code=status.HTTP_200_OK)
+def draft_campaign_training(
+    campaign_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, object]:
+    """Return a deterministic lesson + knowledge-check draft from evidence.
+
+    Read-only and advisory: the draft is offered to the operator for review
+    and must be saved through the normal create/submit/approve flow. Nothing
+    is created, bound, or approved here, and the answer index is only ever
+    returned to this capability-gated operator endpoint.
+    """
+    del principal
+    _, template, pattern = _campaign_evidence(session, campaign_id)
+    return _draft_lesson_payload(template, pattern)

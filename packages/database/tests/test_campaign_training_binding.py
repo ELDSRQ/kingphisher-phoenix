@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from datetime import UTC, datetime, timedelta
 from io import StringIO
@@ -138,6 +139,73 @@ def test_migration_is_linear_additive_and_does_not_guess_legacy_review_evidence(
 def test_model_keeps_legacy_binding_evidence_nullable_for_fail_closed_reconfiguration() -> None:
     assert Campaign.__table__.c.training_resource_version.nullable
     assert Campaign.__table__.c.training_resource_digest.nullable
+
+
+def test_digest_is_backward_compatible_without_knowledge_check() -> None:
+    """A lesson without a knowledge check keeps the legacy content digest.
+
+    TRN-010 must not strand already-bound campaigns: the digest computation
+    changes only for lessons that actually carry a knowledge check.
+    """
+
+    import hashlib
+
+    resource = _resource()
+    assert training_resource_content_digest(resource) == hashlib.sha256(resource.content.encode("utf-8")).hexdigest()
+
+
+def test_digest_pins_knowledge_check_when_present() -> None:
+    resource = _resource()
+    resource.knowledge_question = "An unexpected message asks you to reset your password. What is the safest response?"
+    resource.knowledge_options = [
+        "Verify the request through a trusted, independent channel",
+        "Act immediately so the request does not expire",
+        "Reply with credentials to prove your identity",
+    ]
+    resource.knowledge_answer_index = 0
+    content_only = hashlib.sha256(resource.content.encode("utf-8")).hexdigest()
+    with_check = training_resource_content_digest(resource)
+    assert with_check != content_only
+    assert len(with_check) == 64
+
+    # Any post-review change to the question, options, or answer index
+    # invalidates the digest, so a campaign binding fails closed.
+    bound = _campaign()
+    bind_campaign_training_resource(bound, resource)
+    assert training_binding_error(bound, resource) is None
+
+    resource.knowledge_answer_index = 1
+    assert training_binding_error(bound, resource) is not None
+    assert "content changed after review" in training_binding_error(bound, resource)  # type: ignore[operator]
+
+
+def test_knowledge_check_columns_are_all_or_nothing_in_the_model() -> None:
+    assert TrainingResource.__table__.c.knowledge_question.nullable
+    assert TrainingResource.__table__.c.knowledge_options.nullable
+    assert TrainingResource.__table__.c.knowledge_answer_index.nullable
+
+
+def test_migration_0033_adds_knowledge_check_with_all_or_nothing_constraint() -> None:
+    migration_path = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0033_training_knowledge_check.py"
+    spec = importlib.util.spec_from_file_location("migration_0033", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    assert migration.revision == "0033_training_knowledge_check"
+    assert migration.down_revision == "0032_source_explicit_curation"
+
+    output = StringIO()
+    context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    migration.op = Operations(context)
+    migration.upgrade()
+    sql = output.getvalue()
+    assert "knowledge_question" in sql
+    assert "knowledge_options" in sql
+    assert "knowledge_answer_index" in sql
+    assert "knowledge_check_all_or_nothing" in sql
     assert {
         "ck_campaigns_training_resource_version_positive",
         "ck_campaigns_training_resource_digest_hex",

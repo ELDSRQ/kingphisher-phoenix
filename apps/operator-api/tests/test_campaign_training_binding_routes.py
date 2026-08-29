@@ -119,6 +119,35 @@ def test_rebinding_reviewed_campaign_resets_approvals_and_exposes_exact_lesson()
     assert audit.events[0]["action"] == "campaign.training_resource.bind"
 
 
+def test_binding_view_exposes_knowledge_check_only_for_reviewed_lessons() -> None:
+    campaign = _campaign(state=dm.CampaignState.APPROVED)
+    resource = _resource()
+    resource.knowledge_question = "An unexpected message asks you to reset your password. What is the safest response?"
+    resource.knowledge_options = [
+        "Verify the request through a trusted, independent channel",
+        "Act immediately so the request does not expire",
+        "Reply with credentials to prove your identity",
+    ]
+    resource.knowledge_answer_index = 0
+    bind_campaign_training_resource(campaign, resource)
+
+    view = _training_binding_view(campaign, resource, include_content=True)
+    assert view["ready"] is True
+    assert view["knowledge_check"] == {
+        "question": resource.knowledge_question,
+        "options": resource.knowledge_options,
+        "answer_index": 0,
+    }
+
+    # A legacy lesson without a knowledge check keeps the review shape
+    # unchanged, so existing review contracts are unaffected.
+    legacy = _resource()
+    legacy_campaign = _campaign()
+    bind_campaign_training_resource(legacy_campaign, legacy)
+    legacy_view = _training_binding_view(legacy_campaign, legacy, include_content=True)
+    assert "knowledge_check" not in legacy_view
+
+
 def test_scheduled_or_superseded_rebinding_is_rejected_without_mutation() -> None:
     scheduled = _campaign(state=dm.CampaignState.SCHEDULED)
     approved = _resource()

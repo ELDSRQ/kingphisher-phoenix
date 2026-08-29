@@ -73,6 +73,7 @@ def test_training_api_paths_and_methods_exactly_match_the_backend() -> None:
         ("POST", "/api/v1/training-resources"),
         ("POST", "/api/v1/training-resources/{training_resource_id}/submit"),
         ("POST", "/api/v1/training-resources/{training_resource_id}/decision"),
+        ("POST", "/api/v1/campaigns/{campaign_id}/training-draft"),
     }
     assert "boundedCollection(`/training-resources?${params.toString()}`)" in TRAINING
     assert "api(`/training-resources/${encodeURIComponent(resource.training_resource_id)}/preview`)" in TRAINING
@@ -114,3 +115,34 @@ def test_training_authoring_fields_match_server_boundaries() -> None:
     assert 'name: "source_ref", label: "Non-secret source reference (optional)", maxLength: 500' in TRAINING
     assert "source_ref: values.source_ref || null" in TRAINING
     assert 'const params = new URLSearchParams({ limit: "100" });' in TRAINING
+
+
+def test_training_knowledge_check_surface_matches_server_boundaries() -> None:
+    # Authoring fields carry the same bounds as the server contract.
+    assert 'name: "knowledge_question", label: "Knowledge-check question (optional)", maxLength: 500' in TRAINING
+    assert (
+        'name: "knowledge_options", label: "Knowledge-check options (comma-separated, 2–5)", maxLength: 1000'
+        in TRAINING
+    )
+    assert "const knowledgeQuestion = values.knowledge_question ? values.knowledge_question.trim() : null;" in TRAINING
+    assert "const knowledgeOptions = values.knowledge_options" in TRAINING
+    assert (
+        "const knowledgeAnswerIndex = knowledgeQuestion && knowledgeOptions && values.knowledge_answer_index"
+        in TRAINING
+    )
+    assert "Number(values.knowledge_answer_index) - 1" in TRAINING
+    # The preview shows the correct answer only to operators, with an explicit
+    # recipient-facing disclaimer; it never leaks through the tracking page.
+    assert 'text: "Campaign-bound knowledge check"' in TRAINING
+    assert '" — correct answer"' in TRAINING
+    assert "shown only to operators" in TRAINING
+    assert "compares the submitted option server-side" in TRAINING
+    assert "Leave empty to keep the generic quiz" in TRAINING
+
+
+def test_training_knowledge_check_never_marks_the_answer_for_recipients() -> None:
+    # The tracking-facing review surface explains that recipients see no
+    # marker; the operator review is the only place the answer is shown.
+    assert "Recipients see the question and options without any marker" in TRAINING
+    assert "Correct option number (1-based, matching the list order)" in TRAINING
+    assert "Recipients never see which option is correct" in TRAINING

@@ -519,6 +519,9 @@ def test_click_opens_and_completes_training_end_to_end(monkeypatch: pytest.Monke
             "version": 3,
             "requires_completion": True,
             "approval_state": dm.TemplateApprovalState.APPROVED,
+            "knowledge_question": None,
+            "knowledge_options": None,
+            "knowledge_answer_index": None,
         },
     )()
     campaign = type(
@@ -634,6 +637,106 @@ def test_click_opens_and_completes_training_end_to_end(monkeypatch: pytest.Monke
     )
 
 
+def test_campaign_specific_knowledge_check_renders_and_validates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lesson with a knowledge check binds its own question and answer.
+
+    TRN-010: the tracking page renders the campaign-bound question and
+    options (never the correct-answer index), completes only on the correct
+    option, and leaves the generic quiz untouched for legacy lessons.
+    """
+
+    fake = _FakeSession()
+    recipient_assignment = type(
+        "RecipientAssignment",
+        (),
+        {
+            "recipient_assignment_id": _Token.recipient_assignment_id,
+            "recipient_id": uuid.uuid4(),
+            "campaign_id": _Token.campaign_id,
+            "token_id": _Token.token_id,
+        },
+    )()
+    fake.get_results[_Token.recipient_assignment_id] = recipient_assignment
+    fake.get_results[_Token.token_id] = _Token()
+    resource_id = uuid.uuid4()
+    question = "An unexpected message asks you to reset your password. What is the safest response?"
+    options = [
+        "Verify the request through a trusted, independent channel",
+        "Act immediately so the request does not expire",
+        "Reply with credentials to prove your identity",
+    ]
+    resource = type(
+        "TrainingResource",
+        (),
+        {
+            "training_resource_id": resource_id,
+            "title": "Password reset warning signs",
+            "content": "Never reply with credentials.",
+            "version": 3,
+            "requires_completion": True,
+            "approval_state": dm.TemplateApprovalState.APPROVED,
+            "knowledge_question": question,
+            "knowledge_options": options,
+            "knowledge_answer_index": 0,
+        },
+    )()
+    campaign = type(
+        "Campaign",
+        (),
+        {
+            "campaign_id": _Token.campaign_id,
+            "pattern_id": uuid.uuid4(),
+            "current_template_id": uuid.uuid4(),
+            "training_resource_id": resource_id,
+            "training_resource_version": resource.version,
+            "training_resource_digest": training_resource_content_digest(resource),
+        },
+    )()
+    campaign.manifest_hash = campaign_content_manifest_hash(campaign)
+    fake.get_results[_Token.campaign_id] = campaign
+    fake.get_results[resource_id] = resource
+    fake.scalar_results = [None]
+    client = _client(monkeypatch, _settings(), fake, real_training=True)
+    with client:
+        click = client.get("/v1/track/click/" + "ab" * 32, follow_redirects=False)
+        assert click.status_code == 302
+        training_path = click.headers["location"]
+
+        training = next(item for item in fake.added if hasattr(item, "training_assignment_id"))
+        fake.scalar_results = [training]
+        opened = client.get(training_path)
+        assert opened.status_code == 200
+        assert question in opened.text
+        for option in options:
+            assert option in opened.text
+        # The correct-answer index must never appear in recipient-facing HTML.
+        assert 'name="answer" value="0"' not in opened.text
+        assert "answer_index" not in opened.text
+        assert "correct answer" not in opened.text
+        # The generic quiz text is replaced, not merged.
+        assert "Act immediately so the request does not expire" in opened.text
+        action_match = re.search(r'action="(/v1/training/([^/]+)/complete)"', opened.text)
+        assert action_match is not None
+        completion_path = action_match.group(1)
+
+        fake.scalar_results = [training]
+        wrong = client.post(completion_path, data={"answer": options[2]})
+        assert wrong.status_code == 422
+        assert "Not quite" in wrong.text
+        assert training.completed_at is None
+
+        fake.scalar_results = [training]
+        unknown = client.post(completion_path, data={"answer": "not_an_option"})
+        assert unknown.status_code == 422
+        assert training.completed_at is None
+
+        fake.scalar_results = [training]
+        completed = client.post(completion_path, data={"answer": options[0]})
+        assert completed.status_code == 200
+        assert "Training complete" in completed.text
+        assert training.completed_at is not None
+
+
 def test_click_fails_closed_without_approved_training_resource(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeSession()
     fake.get_results[_Token.recipient_assignment_id] = type(
@@ -682,6 +785,9 @@ def test_campaign_training_binding_is_explicit_and_superseded_resource_fails_clo
             "requires_completion": True,
             "version": 2,
             "content": "Review the sender and verify through a trusted channel.",
+            "knowledge_question": None,
+            "knowledge_options": None,
+            "knowledge_answer_index": None,
         },
     )()
     campaign = type(
@@ -728,6 +834,9 @@ def test_existing_assignment_revalidates_exact_lesson_content_without_stranding_
             "content": "Pause and verify through a trusted channel.",
             "version": 3,
             "approval_state": dm.TemplateApprovalState.SUPERSEDED,
+            "knowledge_question": None,
+            "knowledge_options": None,
+            "knowledge_answer_index": None,
         },
     )()
     campaign = type(

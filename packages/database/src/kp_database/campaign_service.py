@@ -126,9 +126,24 @@ class AudiencePreview:
 
 
 def training_resource_content_digest(resource: TrainingResource) -> str:
-    """Fingerprint the exact lesson text presented to campaign recipients."""
+    """Fingerprint the exact lesson text presented to campaign recipients.
 
-    return hashlib.sha256(resource.content.encode("utf-8")).hexdigest()
+    Resources without a knowledge check keep the legacy content-only digest so
+    already-bound campaigns remain valid. When a knowledge check is present,
+    the digest additionally pins the question, the option set, and the correct
+    answer index: a post-review edit to any of them invalidates the binding.
+    """
+
+    if getattr(resource, "knowledge_question", None) is None:
+        return hashlib.sha256(resource.content.encode("utf-8")).hexdigest()
+    return _canonical_hash(
+        {
+            "content": resource.content,
+            "knowledge_question": resource.knowledge_question,
+            "knowledge_options": resource.knowledge_options,
+            "knowledge_answer_index": resource.knowledge_answer_index,
+        }
+    )
 
 
 def training_binding_error(campaign: Campaign, resource: TrainingResource | None) -> str | None:

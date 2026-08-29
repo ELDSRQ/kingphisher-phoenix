@@ -267,19 +267,21 @@ For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact R
 
 ## Next execution order
 
-1. Deliver the minimum complete product: ANA-010 is complete locally
-   (five-year ledger graph, named close disposition, repeat history, and
-   named per-recipient pseudonymous drill-down with a shared governed
-   pseudonym key; GUI drill-down wiring and key rotation/recovery remain
-   governed follow-up), so the remaining items are: benchmark/select the
-   internal model against the landed AI-010 bake-off foundation
+1. Deliver the minimum complete product: ANA-010 and TRN-010 are complete
+   locally (five-year ledger graph, named close disposition, repeat history,
+   and named per-recipient pseudonymous drill-down with a shared governed
+   pseudonym key — GUI drill-down wiring and key rotation/recovery remain
+   governed follow-up; and the campaign-bound knowledge check: optional
+   all-or-nothing question/options/answer on training lessons, deterministic
+   evidence builder, digest-pinned, generic quiz fallback, GUI authoring/
+   preview/review). The remaining minimum-product item is: benchmark/select
+   the internal model against the landed AI-010 bake-off foundation
    (`scripts/ai-bakeoff/`: fixed sanitized evaluation set + deterministic
    offline scorer + bounded loopback runner) and wire `AI-010` into the
-   existing worker role/job, then complete campaign-specific micro-training
-   (`TRN-010`). Deterministic
+   existing worker role/job. Deterministic
    fallback and human approval remain mandatory. Do not reopen locally
-   complete `ORG-001`, `THR-001A/B`, `IMP-001`, `DOCSIM-001`, or `ANA-010`
-   without a regression.
+   complete `ORG-001`, `THR-001A/B`, `IMP-001`, `DOCSIM-001`, `ANA-010`, or
+   `TRN-010` without a regression.
 2. Simplify the normal Azure/mail path through the GUI after those interfaces
    stabilize; keep the existing secure three-stage deployment contract and
    provider adapters supported while hiding engineering internals.
@@ -304,21 +306,24 @@ project/recovery/Docker asset; do not reset, clean, prune, delete, recreate, or
 touch unrelated Docker Desktop workloads. The project-only ARM64 engine remains
 on 192.168.1.140 under /Volumes/DockerExternal/KingPhisher-Phoenix.
 
-origin/main is c9ea716 (checkpoint d25313d + ANA-010 increments aa67c17 and
-c9ea716); the worktree is clean. Alembic head is 0032_source_explicit_curation.
-Current-head gates pass: hermetic 2,620, external PostgreSQL 92, external Redis
-2, lint, strict mypy. The retention P1 is closed and the migration revision-id
-defect is fixed. Do not reopen locally complete ORG-001, THR-001A/B, IMP-001,
-or DOCSIM-001 without a regression.
+origin/main is 627c695 (Wave 38 checkpoint + ANA-010 increments + AI-010
+bake-off foundation); the worktree is clean. Alembic head is
+0033_training_knowledge_check. Current-head gates pass: hermetic 2,675,
+external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
+mypy. The retention P1 is closed, the migration revision-id defect is fixed,
+and ANA-010/TRN-010 are complete locally. Do not reopen locally complete
+ORG-001, THR-001A/B, IMP-001, DOCSIM-001, ANA-010, or TRN-010 without a
+regression.
 
 Continue the goal-aligned backlog without removing useful deferred features:
-ANA-010 is complete locally (ledger graph, named disposition, repeat history,
-named per-recipient pseudonymous drill-down), and the AI-010 bake-off
-foundation has landed (`scripts/ai-bakeoff/`); the remaining minimum-product
-items are: benchmark and select the internal model, then wire the pinned
-llama.cpp role/job in the existing worker image (no tools/network,
-schema-constrained output, cost/status exposure, deterministic fallback) and
-add campaign-specific micro-training (TRN-010); then simplify GUI Azure/mail
+ANA-010 and TRN-010 are complete locally (ledger graph, named disposition,
+repeat history, named per-recipient pseudonymous drill-down; campaign-bound
+knowledge check with deterministic evidence builder, digest pinning, and
+generic quiz fallback), and the AI-010 bake-off foundation has landed
+(`scripts/ai-bakeoff/`); the remaining minimum-product item is: benchmark and
+select the internal model, then wire the pinned llama.cpp role/job in the
+existing worker image (no tools/network, schema-constrained output, cost/
+status exposure, deterministic fallback); then simplify GUI Azure/mail
 deployment (DEP-010). AI may draft/advise but never approve, target, apply
 infrastructure, handle consent, or launch. Prefer simplicity and the existing
 three-deployable modular-monolith architecture.
