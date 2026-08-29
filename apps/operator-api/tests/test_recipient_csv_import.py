@@ -49,7 +49,7 @@ def _db_available() -> bool:
                 pass
             engine.dispose()
             _postgres_available = True
-        except Exception:  # noqa: BLE001 - environment capability gate
+        except Exception:
             _postgres_available = False
     return _postgres_available
 
@@ -69,7 +69,7 @@ class _Rows:
     def __init__(self, rows: list[Recipient]) -> None:
         self._rows = rows
 
-    def __iter__(self):  # noqa: ANN204
+    def __iter__(self):
         return iter(self._rows)
 
 
@@ -157,7 +157,7 @@ def _principal() -> Principal:
     return Principal(str(uuid4()), {Role.ADMINISTRATOR})
 
 
-def _postgres_test_sessions():  # noqa: ANN202
+def _postgres_test_sessions():
     engine = create_db_engine(TEST_URL)
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)

@@ -56,7 +56,7 @@ def _eligible_database() -> bool:
                 connection.scalar(text("SELECT rolsuper OR rolcreatedb FROM pg_roles WHERE rolname = current_user"))
             )
         return can_create_role and can_create_database
-    except Exception:  # noqa: BLE001 - optional local PostgreSQL acceptance
+    except Exception:
         return False
     finally:
         engine.dispose()

@@ -313,7 +313,7 @@ def test_managed_oidc_configuration_requires_receipt_boundary() -> None:
 def test_token_verifier_checks_event_grid_application_and_role(monkeypatch: pytest.MonkeyPatch) -> None:
     verifier = EventGridTokenVerifier(_settings())
     monkeypatch.setattr(
-        verifier._jwk_client,  # noqa: SLF001 - isolated verifier boundary test
+        verifier._jwk_client,
         "get_signing_key_from_jwt",
         lambda _token: SimpleNamespace(key=object()),
     )

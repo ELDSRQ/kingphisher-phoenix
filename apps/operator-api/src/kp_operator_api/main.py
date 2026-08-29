@@ -336,7 +336,7 @@ def _queue_is_ready(queue: JobQueue) -> bool:
         # JobQueue owns the Redis client but has no public health operation.
         # Keeping the probe here avoids changing the queue contract solely for
         # deployment health checks.
-        return bool(queue._client.ping())  # noqa: SLF001
+        return bool(queue._client.ping())
     except Exception:
         return False
 
@@ -625,7 +625,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
         if _requires_healthy_audit(request.method, request.url.path):
             try:
                 audit_healthy = bool(app.state.audit_health_check())
-            except Exception:  # noqa: BLE001 - unknown integrity state fails closed
+            except Exception:
                 audit_healthy = False
             if not audit_healthy:
                 return JSONResponse(

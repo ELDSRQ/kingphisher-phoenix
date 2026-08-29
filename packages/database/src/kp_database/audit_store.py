@@ -102,7 +102,7 @@ class AuditStore:
                 owned.commit()
             self.dispatch_pending_audit()
             return self._record_for_outbox(outbox_id) or receipt
-        except Exception as exc:  # noqa: BLE001 - stable domain boundary
+        except Exception as exc:
             raise AuditFailureError("audit intent write failed") from exc
 
     def dispatch_pending_audit(self) -> int:
@@ -325,7 +325,7 @@ class AuditStore:
                     problems.append("audit head signature verification failed")
         try:
             health = self.outbox_health()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             problems.append(f"outbox reconciliation unavailable: {type(exc).__name__}")
         else:
             if health["overdue_pending"]:

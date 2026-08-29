@@ -19,7 +19,7 @@ TRUSTED_ORIGIN = "https://operator.example"
 
 
 @pytest.fixture()
-def csrf_client(tmp_path) -> tuple[TestClient, str]:  # noqa: ANN001
+def csrf_client(tmp_path) -> tuple[TestClient, str]:
     settings = OperatorApiSettings(
         audit_hmac_key=HMAC,
         ciphertext_kek=KEK,

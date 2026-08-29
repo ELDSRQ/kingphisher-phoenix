@@ -26,7 +26,7 @@ def test_migration_chains_after_transactional_audit_outbox() -> None:
 
 def test_upgrade_backfills_legacy_campaigns_fail_closed_and_protects_manifest(
     monkeypatch,
-) -> None:  # noqa: ANN001
+) -> None:
     migration = _load_migration()
     tables: list[str] = []
     statements: list[str] = []
@@ -53,7 +53,7 @@ def test_upgrade_backfills_legacy_campaigns_fail_closed_and_protects_manifest(
     assert "ix_campaign_audience_manifest_recipient" in indexes
 
 
-def test_downgrade_removes_manifest_before_audience_definition(monkeypatch) -> None:  # noqa: ANN001
+def test_downgrade_removes_manifest_before_audience_definition(monkeypatch) -> None:
     migration = _load_migration()
     dropped: list[str] = []
     monkeypatch.setattr(migration.op, "execute", lambda _statement: None)

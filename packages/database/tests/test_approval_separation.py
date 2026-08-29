@@ -42,7 +42,7 @@ def _db_available() -> bool:
                 pass
             engine.dispose()
             _available = True
-        except Exception:  # noqa: BLE001 - DB simply not up
+        except Exception:
             _available = False
     return _available
 
@@ -68,7 +68,7 @@ def _session():
     return make_session_factory(engine)()
 
 
-def _campaign(session, author) -> Campaign:  # noqa: ANN001
+def _campaign(session, author) -> Campaign:
     pattern = CampaignPattern(
         campaign_pattern_id=uuid4(),
         pattern_version=1,
@@ -112,7 +112,7 @@ def _campaign(session, author) -> Campaign:  # noqa: ANN001
     return campaign
 
 
-def _approve(session, campaign, approver, approval_type) -> None:  # noqa: ANN001
+def _approve(session, campaign, approver, approval_type) -> None:
     session.add(
         CampaignApproval(
             campaign_approval_id=uuid4(),
@@ -129,7 +129,7 @@ def _approve(session, campaign, approver, approval_type) -> None:  # noqa: ANN00
     session.commit()
 
 
-def _approvals_for(session, campaign):  # noqa: ANN001
+def _approvals_for(session, campaign):
     return list(
         session.scalars(
             select(CampaignApproval).where(

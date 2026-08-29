@@ -52,7 +52,7 @@ def _db_available() -> bool:
                 pass
             engine.dispose()
             _available = True
-        except Exception:  # noqa: BLE001 - DB simply not up
+        except Exception:
             _available = False
     return _available
 

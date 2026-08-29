@@ -163,7 +163,7 @@ def _render_template_preview(body: TemplatePreview, request: Request) -> dict[st
             tracking=tracking,
             sender_email="sender@example.com",
         )
-    except Exception as exc:  # noqa: BLE001 - stable 422 authoring boundary
+    except Exception as exc:
         raise HTTPException(
             status_code=422,
             detail="template contains unsupported or malformed rendering syntax",

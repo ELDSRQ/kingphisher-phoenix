@@ -214,7 +214,7 @@ class WorkerContext:
             callback = self._close_callbacks.pop()
             try:
                 callback()
-            except Exception as exc:  # noqa: BLE001 - finish all owned cleanup before surfacing one failure
+            except Exception as exc:
                 if first_error is None:
                     first_error = exc
         if first_error is not None:
@@ -1575,7 +1575,7 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                         assignment,
                         message_id_domain=sender_address.rsplit("@", 1)[-1],
                     )
-                except Exception as exc:  # noqa: BLE001 - no provider call occurred
+                except Exception as exc:
                     session.rollback()
                     assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
                     if assignment is not None and assignment.delivery_attempt_id == attempt_id:
@@ -1679,7 +1679,7 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                     assignment.send_state = dm.SendState.FAILED
                     assignment.failure_reason = "rendered_message_rejected"
                     failed += 1
-                except Exception as exc:  # noqa: BLE001 - per-recipient isolation: one bad
+                except Exception as exc:
                     # A timeout/disconnect may occur after provider acceptance.
                     # Retrying would risk a duplicate, so surface the unknown
                     # result for operator reconciliation instead.
@@ -1766,6 +1766,8 @@ def maybe_publish_retention(ctx: WorkerContext, now: datetime) -> None:
     from kp_workers.retention_jobs import maybe_publish_retention as maybe_publish_durable_retention
 
     maybe_publish_durable_retention(ctx, now)
+
+
 def maybe_publish_source_ingestion(ctx: WorkerContext, now: datetime) -> dict[str, int | bool]:
     """Durably queue one bounded daily ingestion request per eligible source.
 
@@ -2297,7 +2299,7 @@ def _render_or_plain(
             sender_email=sender_email,
             html_context=html_context,
         )
-    except Exception as exc:  # noqa: BLE001 - surfaced to the delivery loop, which
+    except Exception as exc:
         # marks the recipient FAILED and continues; never silently dropped
         logger.error("template_rendering_failed exception_type=%s", type(exc).__name__[:128])
         raise

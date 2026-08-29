@@ -107,7 +107,7 @@ class WorkerSupervisor:
                 visibility_seconds=settings.visibility_seconds,
                 max_retries=settings.max_retries,
             )
-        except Exception as exc:  # noqa: BLE001 - one role must not stop its siblings
+        except Exception as exc:
             self._record_failure(spec.name, "lease_recovery_failed")
             self._logger.error(
                 "worker_role_lease_recovery_failed",
@@ -134,7 +134,7 @@ class WorkerSupervisor:
                 from kp_workers.audit_anchor_jobs import ensure_audit_anchor_configured
 
                 ensure_audit_anchor_configured(spec.context)
-        except Exception as exc:  # noqa: BLE001 - readiness must fail closed without exposing config
+        except Exception as exc:
             self._record_failure(spec.name, "integration_state_unavailable")
             self._logger.error(
                 "worker_role_integration_state_unavailable",
@@ -162,7 +162,7 @@ class WorkerSupervisor:
     def _record_failure(self, role: str, reason: str) -> None:
         state = self._states[role]
         state.consecutive_errors += 1
-        state.next_attempt_at = self._clock() + jobs._retry_delay(state.consecutive_errors)  # noqa: SLF001
+        state.next_attempt_at = self._clock() + jobs._retry_delay(state.consecutive_errors)
         self._set_readiness(role, ready=False, reason=reason)
 
     def _reconcile_outbox(self, spec: RoleSpec) -> bool:
@@ -174,7 +174,7 @@ class WorkerSupervisor:
                 dispatch_audit()
             if dispatch_queue is not None:
                 dispatch_queue(spec.context.queue)
-        except Exception as exc:  # noqa: BLE001 - isolate infrastructure faults by role
+        except Exception as exc:
             self._record_failure(spec.name, "outbox_unavailable")
             self._logger.error(
                 "worker_role_outbox_unavailable",
@@ -191,7 +191,7 @@ class WorkerSupervisor:
                 message,
                 max_retries=spec.context.settings.max_retries,
             )
-        except Exception as exc:  # noqa: BLE001 - the lease remains recoverable after visibility expiry
+        except Exception as exc:
             self._record_failure(spec.name, "queue_reject_failed")
             self._logger.error(
                 "worker_role_reject_failed",
@@ -275,7 +275,7 @@ class WorkerSupervisor:
                     state.next_attempt_at = 0.0
                     self._set_readiness(spec.name, ready=True, reason="polling")
                     return True
-                except Exception as exc:  # noqa: BLE001 - reject this claim and continue other roles
+                except Exception as exc:
                     metrics.increment("kp_worker_jobs_total", role=metric_role(spec.name), outcome="error")
                     rejected = self._reject(spec, message)
                     if rejected:
@@ -296,7 +296,7 @@ class WorkerSupervisor:
                 reason = "live" if spec.topic == "audit-anchor" else "polling"
                 self._set_readiness(spec.name, ready=True, reason=reason)
                 return True
-        except Exception as exc:  # noqa: BLE001 - queue/provider failure belongs to this role
+        except Exception as exc:
             self._record_failure(spec.name, "queue_unavailable")
             self._logger.error(
                 "worker_role_queue_unavailable",

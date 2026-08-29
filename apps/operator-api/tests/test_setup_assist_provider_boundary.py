@@ -19,7 +19,7 @@ class AsyncChunks(httpx.AsyncByteStream):
     def __init__(self, *chunks: bytes) -> None:
         self.chunks = chunks
 
-    async def __aiter__(self):  # noqa: ANN201
+    async def __aiter__(self):
         for chunk in self.chunks:
             yield chunk
 
@@ -28,7 +28,7 @@ def _response(*chunks: bytes, headers: list[tuple[bytes, bytes]] | None = None) 
     return httpx.Response(200, headers=headers, stream=AsyncChunks(*chunks))
 
 
-def _read(response: httpx.Response):  # noqa: ANN202
+def _read(response: httpx.Response):
     return asyncio.run(console_module._bounded_setup_assist_json(response))
 
 

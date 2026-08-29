@@ -33,7 +33,7 @@ class _SharedRedis:
         return True
 
 
-def _settings(tmp_path, **overrides: object) -> OperatorApiSettings:  # noqa: ANN001
+def _settings(tmp_path, **overrides: object) -> OperatorApiSettings:
     values: dict[str, object] = {
         "audit_hmac_key": HMAC,
         "ciphertext_kek": KEK,
@@ -46,7 +46,7 @@ def _settings(tmp_path, **overrides: object) -> OperatorApiSettings:  # noqa: AN
     return OperatorApiSettings(**values)  # type: ignore[arg-type]
 
 
-def test_managed_operator_instances_share_limits_across_restart(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+def test_managed_operator_instances_share_limits_across_restart(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     shared = _SharedRedis()
     monkeypatch.setenv("OPERATOR_API_RATE_LIMIT_BACKEND", "redis")
     monkeypatch.setattr("kp_telemetry.ratelimit._redis_client", lambda _url: shared)
@@ -64,7 +64,7 @@ def test_managed_operator_instances_share_limits_across_restart(tmp_path, monkey
     assert restarted.state.login_throttle.distributed is True
 
 
-def test_local_operator_keeps_in_memory_limiter(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+def test_local_operator_keeps_in_memory_limiter(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPERATOR_API_RATE_LIMIT_BACKEND", raising=False)
     app = create_app(_settings(tmp_path, config_store="env_file"))
 
@@ -75,7 +75,7 @@ def test_local_operator_keeps_in_memory_limiter(tmp_path, monkeypatch: pytest.Mo
 
 def test_managed_operator_readiness_fails_when_shared_limiter_is_unavailable(
     tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:  # noqa: ANN001
+) -> None:
     shared = _SharedRedis(available=False)
     monkeypatch.setenv("OPERATOR_API_RATE_LIMIT_BACKEND", "redis")
     monkeypatch.setattr("kp_telemetry.ratelimit._redis_client", lambda _url: shared)
@@ -90,7 +90,7 @@ def test_managed_operator_readiness_fails_when_shared_limiter_is_unavailable(
     assert response.json() == {"status": "not_ready"}
 
 
-def test_operator_ip_limit_ignores_untrusted_forwarding_headers(tmp_path) -> None:  # noqa: ANN001
+def test_operator_ip_limit_ignores_untrusted_forwarding_headers(tmp_path) -> None:
     app = create_app(_settings(tmp_path, rate_limit_ip_per_min=1))
 
     @app.get("/rate-limit-probe")

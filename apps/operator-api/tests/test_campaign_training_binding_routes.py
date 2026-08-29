@@ -25,10 +25,10 @@ class _Session:
         self.executed: list[object] = []
         self.committed = False
 
-    def scalar(self, statement: object) -> Campaign:  # noqa: ARG002
+    def scalar(self, statement: object) -> Campaign:
         return self.campaign
 
-    def get(self, model: object, identifier: object, **kwargs: object) -> TrainingResource | None:  # noqa: ARG002
+    def get(self, model: object, identifier: object, **kwargs: object) -> TrainingResource | None:
         return self.resource if identifier == self.resource.training_resource_id else None
 
     def execute(self, statement: object) -> None:

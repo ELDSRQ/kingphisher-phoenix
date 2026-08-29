@@ -218,7 +218,7 @@ class _ChunkStream(httpx.SyncByteStream):
         self.chunks = chunks
         self.iterated = False
 
-    def __iter__(self):  # noqa: ANN204
+    def __iter__(self):
         self.iterated = True
         yield from self.chunks
 

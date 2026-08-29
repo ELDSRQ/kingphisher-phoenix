@@ -24,7 +24,7 @@ class _Result:
     def __init__(self, rows: Iterable[tuple[object, ...]]) -> None:
         self.rows = list(rows)
 
-    def __iter__(self):  # noqa: ANN204
+    def __iter__(self):
         return iter(self.rows)
 
 

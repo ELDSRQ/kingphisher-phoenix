@@ -65,7 +65,7 @@ def _db_available() -> bool:
             with engine.connect():
                 pass
             _available = True
-        except Exception:  # noqa: BLE001 - DB simply not up
+        except Exception:
             _available = False
         finally:
             if engine is not None:
@@ -239,7 +239,7 @@ def test_retention_projects_exact_batch_before_deleting_old_assignments(
     projected_batches: list[tuple[str, ...]] = []
     real_project = worker_jobs.project_awareness_ledger_batch
 
-    def observing_project(session: Session, **arguments: Any) -> Any:  # noqa: ANN401
+    def observing_project(session: Session, **arguments: Any) -> Any:
         assignment_ids = arguments["assignment_ids"]
         assert isinstance(assignment_ids, list)
         assert all(session.get(RecipientAssignment, assignment_id) is not None for assignment_id in assignment_ids)

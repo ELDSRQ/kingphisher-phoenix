@@ -1849,7 +1849,7 @@ class DeploymentOrchestrator:
                 continue
             try:
                 close()
-            except Exception as exc:  # noqa: BLE001 - close every owned resource before reporting
+            except Exception as exc:
                 errors.append(exc)
         if errors:
             raise RuntimeError("deployment connector resource shutdown failed") from errors[0]

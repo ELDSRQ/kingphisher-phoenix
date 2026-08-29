@@ -57,7 +57,7 @@ def _db_available() -> bool:
                 pass
             engine.dispose()
             _available = True
-        except Exception:  # noqa: BLE001 - DB simply not up
+        except Exception:
             _available = False
     return _available
 
@@ -84,7 +84,7 @@ def _session():
     return make_session_factory(engine)()
 
 
-def _pattern(session) -> CampaignPattern:  # noqa: ANN001
+def _pattern(session) -> CampaignPattern:
     pattern = CampaignPattern(
         campaign_pattern_id=uuid4(),
         pattern_version=1,
@@ -97,7 +97,7 @@ def _pattern(session) -> CampaignPattern:  # noqa: ANN001
     return pattern
 
 
-def _campaign(session, *, state: dm.CampaignState, max_recipients: int = 10) -> Campaign:  # noqa: ANN001
+def _campaign(session, *, state: dm.CampaignState, max_recipients: int = 10) -> Campaign:
     pattern = _pattern(session)
     now = datetime.now(UTC)
     resource = TrainingResource(
@@ -133,7 +133,7 @@ def _campaign(session, *, state: dm.CampaignState, max_recipients: int = 10) -> 
     return campaign
 
 
-def _recipient(session, mailbox: str, *, is_test: bool = False) -> Recipient:  # noqa: ANN001
+def _recipient(session, mailbox: str, *, is_test: bool = False) -> Recipient:
     recipient = Recipient(
         recipient_id=uuid4(),
         employee_key=mailbox.lower(),

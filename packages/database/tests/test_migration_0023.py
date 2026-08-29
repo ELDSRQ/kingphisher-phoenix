@@ -17,7 +17,7 @@ def _load() -> ModuleType:
     return module
 
 
-def test_migration_adds_receipt_suppression_and_pacing_state(monkeypatch) -> None:  # noqa: ANN001
+def test_migration_adds_receipt_suppression_and_pacing_state(monkeypatch) -> None:
     migration = _load()
     tables: list[str] = []
     indexes: list[tuple[str, bool]] = []

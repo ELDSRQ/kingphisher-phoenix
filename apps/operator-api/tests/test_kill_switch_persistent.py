@@ -36,7 +36,7 @@ def _db_available() -> bool:
             pass
         engine.dispose()
         return True
-    except Exception:  # noqa: BLE001 - optional disposable development database
+    except Exception:
         return False
 
 

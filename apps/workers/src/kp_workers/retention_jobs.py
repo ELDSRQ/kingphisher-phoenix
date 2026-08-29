@@ -121,7 +121,7 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
                 assignment_ids=assignment_ids,
                 projected_at=now,
             )
-        except Exception:  # noqa: BLE001 - projection internals must not escape secrets or permit purge
+        except Exception:
             session.rollback()
             raise AwarenessLedgerRetentionError(
                 "awareness ledger projection failed; raw retention was not applied"
@@ -367,7 +367,7 @@ def maybe_publish_retention(ctx: WorkerContext, now: datetime) -> None:
     # module object so the operator tests' monkeypatch on kp_workers.jobs.* keeps
     # intercepting exactly as it did when this code lived in jobs.py. Cast to Any
     # because mypy's implicit_reexport=False treats those names as non-public.
-    from kp_workers import jobs as _jobs_module  # noqa: PLC0415 - deferred to avoid an eager import cycle
+    from kp_workers import jobs as _jobs_module
 
     _jobs: Any = _jobs_module
     with ctx.session_factory() as session:

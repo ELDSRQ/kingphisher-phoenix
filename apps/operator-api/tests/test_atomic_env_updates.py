@@ -43,13 +43,13 @@ def test_atomic_update_preserves_safe_mode_and_retains_private_recovery(tmp_path
     prior_recovery.write_bytes(b"older recovery evidence")
     prior_recovery.chmod(0o600)
 
-    changed = console._atomic_update_env(  # noqa: SLF001
+    changed = console._atomic_update_env(
         path,
         {
             "OPERATOR_API_LOG_LEVEL": "WARNING",
             "OPERATOR_API_TRAINING_DOMAINS": "training.example",
         },
-        validate_candidate=console._validate_config_candidate,  # noqa: SLF001
+        validate_candidate=console._validate_config_candidate,
     )
 
     assert changed == ["OPERATOR_API_LOG_LEVEL", "OPERATOR_API_TRAINING_DOMAINS"]
@@ -74,7 +74,7 @@ def test_invalid_field_is_rejected_before_any_staging_write(tmp_path: Path, monk
 
     monkeypatch.setattr("kp_operator_api.console.tempfile.mkstemp", unexpected_stage)
     with pytest.raises(HTTPException, match="single-line"):
-        console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "INFO\nSECRET=value"})  # noqa: SLF001
+        console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "INFO\nSECRET=value"})
 
     assert path.read_bytes() == original
     assert _recovery_copies(path) == []
@@ -97,8 +97,8 @@ def test_set_failure_never_partially_replaces_or_discloses_secret(
         return dotenv_set_key(dotenv_path, key, value)
 
     monkeypatch.setattr("kp_operator_api.console.set_key", fail_second_set)
-    with pytest.raises(console._AtomicEnvUpdateError) as raised:  # noqa: SLF001
-        console._atomic_update_env(  # noqa: SLF001
+    with pytest.raises(console._AtomicEnvUpdateError) as raised:
+        console._atomic_update_env(
             path,
             {
                 "OPERATOR_API_LOG_LEVEL": "ERROR",
@@ -122,8 +122,8 @@ def test_replace_failure_leaves_original_and_retains_recovery(tmp_path: Path, mo
         raise OSError(secret)
 
     monkeypatch.setattr("kp_operator_api.console._replace_env_file", fail_replace)
-    with pytest.raises(console._AtomicEnvUpdateError) as raised:  # noqa: SLF001
-        console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})  # noqa: SLF001
+    with pytest.raises(console._AtomicEnvUpdateError) as raised:
+        console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})
 
     assert path.read_bytes() == original
     assert secret not in str(raised.value)
@@ -183,8 +183,8 @@ def test_post_replace_sync_failure_rolls_back_without_removing_recovery(
         real_fsync(descriptor)
 
     monkeypatch.setattr("kp_operator_api.console.os.fsync", fail_post_replace_once)
-    with pytest.raises(console._AtomicEnvUpdateError, match="original configuration is unchanged"):  # noqa: SLF001
-        console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})  # noqa: SLF001
+    with pytest.raises(console._AtomicEnvUpdateError, match="original configuration is unchanged"):
+        console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})
 
     assert path.read_bytes() == original
     copies = _recovery_copies(path)
@@ -209,8 +209,8 @@ def test_repeated_post_replace_sync_failures_still_restore_logical_contents(
         real_fsync(descriptor)
 
     monkeypatch.setattr("kp_operator_api.console.os.fsync", fail_from_post_replace)
-    with pytest.raises(console._AtomicEnvUpdateError, match="original configuration is unchanged"):  # noqa: SLF001
-        console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})  # noqa: SLF001
+    with pytest.raises(console._AtomicEnvUpdateError, match="original configuration is unchanged"):
+        console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})
 
     assert path.read_bytes() == original
     assert len(_recovery_copies(path)) == 1
@@ -239,7 +239,7 @@ def test_concurrent_updates_serialize_without_lost_fields(tmp_path: Path, monkey
     with ThreadPoolExecutor(max_workers=len(updates)) as executor:
         results = list(
             executor.map(
-                lambda item: console._atomic_update_env(path, {item[0]: item[1]}),  # noqa: SLF001
+                lambda item: console._atomic_update_env(path, {item[0]: item[1]}),
                 updates.items(),
             )
         )
@@ -261,7 +261,7 @@ def test_blank_secret_keeps_current_value_in_complete_candidate(tmp_path: Path) 
     def validate(candidate: dict[str, str]) -> None:
         observed.update(candidate)
 
-    changed = console._atomic_update_env(  # noqa: SLF001
+    changed = console._atomic_update_env(
         path,
         {"KP_WORKER_SMTP_PASSWORD": "", "OPERATOR_API_LOG_LEVEL": "DEBUG"},
         validate_candidate=validate,

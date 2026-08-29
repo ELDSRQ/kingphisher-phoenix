@@ -48,7 +48,7 @@ def _db_available() -> bool:
             pass
         engine.dispose()
         return True
-    except Exception:  # noqa: BLE001 - environment capability gate
+    except Exception:
         return False
 
 

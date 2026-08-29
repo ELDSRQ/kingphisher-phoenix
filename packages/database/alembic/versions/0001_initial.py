@@ -387,7 +387,7 @@ sa.Table(
 def upgrade() -> None:
     _METADATA.create_all(bind=op.get_bind())
     bind = op.get_bind()
-    with contextlib.suppress(Exception):  # noqa: BLE001 - role may not exist
+    with contextlib.suppress(Exception):
         bind.exec_driver_sql("REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM PUBLIC")
         bind.exec_driver_sql("GRANT SELECT, INSERT ON audit_events TO audit_writer")
 

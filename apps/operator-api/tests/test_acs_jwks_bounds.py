@@ -136,14 +136,14 @@ def _json_response(payload: object) -> httpx.Response:
 )
 def test_jwks_url_allowlist_blocks_private_and_metadata_egress(url: str) -> None:
     with pytest.raises(jwt.PyJWKClientError, match="JWKS URL is invalid"):
-        receipt_module._BoundedEventGridJWKClient(url, tenant_id=TENANT_ID)  # noqa: SLF001
+        receipt_module._BoundedEventGridJWKClient(url, tenant_id=TENANT_ID)
 
 
 def test_jwks_url_is_revalidated_immediately_before_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_client(monkeypatch)
-    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)  # noqa: SLF001
+    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)
     client.uri = "http://169.254.169.254/metadata/instance"
 
     with pytest.raises(jwt.PyJWKClientError, match="JWKS URL is invalid"):
@@ -162,7 +162,7 @@ def test_redirect_and_error_statuses_are_not_followed_or_read(
         monkeypatch,
         _response(stream, status_code=status_code, headers={"location": "http://169.254.169.254/metadata"}),
     )
-    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)  # noqa: SLF001
+    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)
 
     with pytest.raises(jwt.PyJWKClientConnectionError, match="JWKS fetch failed") as caught:
         client.fetch_data()
@@ -176,7 +176,7 @@ def test_excessive_headers_are_rejected_before_body_read(monkeypatch: pytest.Mon
     stream = _Chunks(b'{"keys": []}')
     headers = [(f"x-field-{index}".encode(), b"value") for index in range(65)]
     _install_client(monkeypatch, _response(stream, headers=headers))
-    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)  # noqa: SLF001
+    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)
 
     with pytest.raises(jwt.PyJWKClientConnectionError, match="JWKS fetch failed"):
         client.fetch_data()
@@ -190,7 +190,7 @@ def test_declared_body_limit_is_enforced_before_body_read(monkeypatch: pytest.Mo
         monkeypatch,
         _response(stream, headers={"content-length": str(MAX_OIDC_JWKS_BYTES + 1)}),
     )
-    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)  # noqa: SLF001
+    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)
 
     with pytest.raises(jwt.PyJWKClientConnectionError, match="JWKS fetch failed"):
         client.fetch_data()
@@ -208,7 +208,7 @@ def test_compressed_body_is_bounded_after_decoding(monkeypatch: pytest.MonkeyPat
             headers={"content-encoding": "gzip", "content-length": str(len(compressed))},
         ),
     )
-    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)  # noqa: SLF001
+    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)
 
     with pytest.raises(jwt.PyJWKClientConnectionError, match="JWKS fetch failed"):
         client.fetch_data()
@@ -217,7 +217,7 @@ def test_compressed_body_is_bounded_after_decoding(monkeypatch: pytest.MonkeyPat
 @pytest.mark.parametrize("body", [b"\xff", b'{"keys":'])
 def test_jwks_requires_utf8_json(monkeypatch: pytest.MonkeyPatch, body: bytes) -> None:
     _install_client(monkeypatch, _response(_Chunks(body)))
-    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)  # noqa: SLF001
+    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)
 
     with pytest.raises(jwt.PyJWKClientConnectionError, match="JWKS fetch failed"):
         client.fetch_data()
@@ -236,7 +236,7 @@ def test_jwks_requires_utf8_json(monkeypatch: pytest.MonkeyPatch, body: bytes) -
 )
 def test_jwks_schema_and_key_counts_are_bounded(monkeypatch: pytest.MonkeyPatch, payload: object) -> None:
     _install_client(monkeypatch, _json_response(payload))
-    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)  # noqa: SLF001
+    client = receipt_module._BoundedEventGridJWKClient(JWKS_URL, tenant_id=TENANT_ID)
 
     with pytest.raises(jwt.PyJWKClientError, match="JWKS response is invalid"):
         client.fetch_data()

@@ -115,7 +115,7 @@ class SyncChunks(httpx.SyncByteStream):
         self.fail_on_read = fail_on_read
         self.iterated = False
 
-    def __iter__(self):  # noqa: ANN204
+    def __iter__(self):
         self.iterated = True
         if self.fail_on_read:
             raise AssertionError("response body must not be read")
@@ -164,7 +164,7 @@ def _preflight(
 
 def _successful_jobs(phase: str = "foundation_bootstrap") -> list[dict[str, Any]]:
     steps_by_job: dict[str, list[dict[str, str]]] = {}
-    for job, step in DeploymentOrchestrator._required_recovery_steps(phase):  # noqa: SLF001 - contract fixture
+    for job, step in DeploymentOrchestrator._required_recovery_steps(phase):
         steps_by_job.setdefault(job, []).append({"name": step, "status": "completed", "conclusion": "success"})
     return [
         {
@@ -424,7 +424,7 @@ def _service(
     )
 
 
-def _app(tmp_path, service: DeploymentOrchestrator, audit: FakeAudit | None = None):  # noqa: ANN001
+def _app(tmp_path, service: DeploymentOrchestrator, audit: FakeAudit | None = None):
     env_file = tmp_path / ".env"
     env_file.write_text(f"KP_CONSOLE_PASSWORD={PASSWORD}{os.linesep}", encoding="utf-8")
     settings = OperatorApiSettings(
@@ -451,7 +451,7 @@ def _headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {_token(client)}"}
 
 
-def test_plan_apply_status_is_allowlisted_audited_and_redacted(tmp_path) -> None:  # noqa: ANN001
+def test_plan_apply_status_is_allowlisted_audited_and_redacted(tmp_path) -> None:
     order: list[str] = []
     audit = FakeAudit(order)
     service = DeploymentOrchestrator(
@@ -515,7 +515,7 @@ def test_plan_apply_status_is_allowlisted_audited_and_redacted(tmp_path) -> None
         assert review_event["detail"]["workflow_content_sha256"] == EXPECTED_WORKFLOW_SHA256
 
 
-def test_production_plan_is_blocked_before_preflight_while_staging_remains_available(tmp_path) -> None:  # noqa: ANN001
+def test_production_plan_is_blocked_before_preflight_while_staging_remains_available(tmp_path) -> None:
     preflight_calls: list[str] = []
 
     def unexpected_production_preflight(environment: str) -> WorkflowPreflight:
@@ -553,7 +553,7 @@ def test_production_plan_is_blocked_before_preflight_while_staging_remains_avail
     assert all(event.get("detail", {}).get("environment") != "production" for event in audit.events)
 
 
-def test_latest_and_advance_routes_restore_owner_plan_and_create_only_next_stage(tmp_path) -> None:  # noqa: ANN001
+def test_latest_and_advance_routes_restore_owner_plan_and_create_only_next_stage(tmp_path) -> None:
     store = MemoryPlanStore()
     service = DeploymentOrchestrator(
         store,
@@ -597,7 +597,7 @@ def test_latest_and_advance_routes_restore_owner_plan_and_create_only_next_stage
     assert any(event["action"] == "deployment.stage.advance" for event in audit.events)
 
 
-def test_staging_foundation_plan_accepts_unverified_acs_without_weakening_workloads(tmp_path) -> None:  # noqa: ANN001
+def test_staging_foundation_plan_accepts_unverified_acs_without_weakening_workloads(tmp_path) -> None:
     foundation = {
         **_values(),
         "deployment_stage": "foundation_bootstrap",
@@ -622,7 +622,7 @@ def test_staging_foundation_plan_accepts_unverified_acs_without_weakening_worklo
     assert workloads.status_code == 409
 
 
-def test_managed_plan_rejects_missing_ai_before_creating_work(tmp_path) -> None:  # noqa: ANN001
+def test_managed_plan_rejects_missing_ai_before_creating_work(tmp_path) -> None:
     with TestClient(_app(tmp_path, _service())) as client:
         response = client.post(
             "/api/v1/console/azure-deployment/orchestration/plan",
@@ -637,7 +637,7 @@ def test_managed_plan_rejects_missing_ai_before_creating_work(tmp_path) -> None:
     assert "plan_id" not in body
 
 
-def test_network_mode_is_reviewed_and_private_runner_is_enforced(tmp_path) -> None:  # noqa: ANN001
+def test_network_mode_is_reviewed_and_private_runner_is_enforced(tmp_path) -> None:
     starter = {
         **_values(),
         "environment": "staging",
@@ -687,7 +687,7 @@ def test_plan_binds_reviewed_terraform_state_identity() -> None:
         service.create_plan({**_values(), "tf_state_container": "wrong-state"}, actor="operator")
 
 
-def test_routes_require_auth_healthy_audit_and_reject_unknown_keys(tmp_path) -> None:  # noqa: ANN001
+def test_routes_require_auth_healthy_audit_and_reject_unknown_keys(tmp_path) -> None:
     app = _app(tmp_path, _service())
     with TestClient(app) as client:
         path = "/api/v1/console/azure-deployment/orchestration/plan"
@@ -701,7 +701,7 @@ def test_routes_require_auth_healthy_audit_and_reject_unknown_keys(tmp_path) -> 
         assert unhealthy.json()["code"] == "audit_integrity_unhealthy"
 
 
-def test_cookie_apply_rejects_cross_origin(tmp_path) -> None:  # noqa: ANN001
+def test_cookie_apply_rejects_cross_origin(tmp_path) -> None:
     app = _app(tmp_path, _service())
     with TestClient(app) as client:
         token = _token(client)
@@ -1416,7 +1416,7 @@ def test_apply_rejects_exhausted_capacity_before_acquiring_leases(capacity: str)
         while len(stored["checkpoints"]) <= (
             deployment_orchestration.MAX_CHECKPOINTS - deployment_orchestration.CHECKPOINT_RESERVE_PER_ATTEMPT
         ):
-            service._append_checkpoint(  # noqa: SLF001 - construct valid bounded stored evidence
+            service._append_checkpoint(
                 stored,
                 "workflow_status_observed",
                 evidence={"run_id": len(stored["checkpoints"]) + 1, "status": "running"},
@@ -1852,7 +1852,7 @@ def test_correlated_run_must_match_reviewed_workflow_and_commit(identity_drift: 
 
 def test_run_url_and_activity_fields_are_strictly_allowlisted() -> None:
     gateway = _gateway(lambda _request: httpx.Response(500))
-    safe = gateway._safe_run(  # noqa: SLF001 - security boundary unit test
+    safe = gateway._safe_run(
         {
             "id": 501,
             "workflow_id": WORKFLOW_ID,
@@ -1863,7 +1863,7 @@ def test_run_url_and_activity_fields_are_strictly_allowlisted() -> None:
             "html_url": "https://github.com/example/security-platform/actions/runs/501/../../settings",
         }
     )
-    activity = gateway._safe_activity(  # noqa: SLF001 - security boundary unit test
+    activity = gateway._safe_activity(
         "job",
         {"name": "Build", "status": "token=provider-secret", "conclusion": {"secret": "value"}},
     )
@@ -1940,7 +1940,7 @@ def test_failed_required_workflow_step_is_named_and_never_connector_verified() -
     )
     failed_step["conclusion"] = "failure"
 
-    recovery = DeploymentOrchestrator._recovery_contract(  # noqa: SLF001 - exact evidence contract
+    recovery = DeploymentOrchestrator._recovery_contract(
         "workloads",
         activity=activity,
         activity_available=True,
@@ -2311,7 +2311,7 @@ def test_public_configuration_redacts_arbitrary_connector_exception(monkeypatch:
     ],
 )
 def test_gui_deployment_routes_redact_arbitrary_exception_messages(
-    tmp_path,  # noqa: ANN001
+    tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     operation: str,
@@ -2344,7 +2344,7 @@ def test_gui_deployment_routes_redact_arbitrary_exception_messages(
     )
 
 
-def test_known_deployment_guidance_remains_exact_at_gui_boundary(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:  # noqa: ANN001
+def test_known_deployment_guidance_remains_exact_at_gui_boundary(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _service()
     message = "GitHub workflow status is unavailable"
 
@@ -2539,14 +2539,14 @@ def test_interrupted_dispatch_reentry_uses_checkpoint_to_choose_safe_recovery(
             "correlation_id": f"kp-{public['plan_id']}-1",
         }
     )
-    service._append_checkpoint(  # noqa: SLF001 - exercise durable crash recovery seam
+    service._append_checkpoint(
         stored,
         "dispatch_intent_saved",
         evidence={"baseline_run_count": 0, "retry": False},
     )
-    service._append_checkpoint(stored, "audit_evidence_committed")  # noqa: SLF001
+    service._append_checkpoint(stored, "audit_evidence_committed")
     if last_phase == "source_revalidated":
-        service._append_checkpoint(  # noqa: SLF001
+        service._append_checkpoint(
             stored,
             "source_revalidated",
             evidence={"source_revision_digest": "d" * 64},

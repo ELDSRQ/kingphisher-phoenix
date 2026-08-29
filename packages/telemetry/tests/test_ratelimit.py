@@ -253,8 +253,8 @@ def test_live_redis_shares_rate_and_login_state_across_replicas_and_restarts() -
         redis_url=redis_url,
         namespace=f"{namespace}-login",
     )
-    rate_key = first_rate._redis_key(rate_identity)  # noqa: SLF001 - exact isolated live cleanup
-    login_keys = first_login._redis_keys(login_identity)  # noqa: SLF001 - exact isolated live cleanup
+    rate_key = first_rate._redis_key(rate_identity)
+    login_keys = first_login._redis_keys(login_identity)
 
     try:
         try:
@@ -297,7 +297,7 @@ def test_live_redis_shares_rate_and_login_state_across_replicas_and_restarts() -
             restarted_login.close()
         assert first_login.locked(login_identity) is False
     finally:
-        client = first_rate._redis  # noqa: SLF001 - exact isolated live cleanup
+        client = first_rate._redis
         if client is not None:
             with contextlib.suppress(redis.RedisError):
                 client.delete(rate_key, *login_keys)

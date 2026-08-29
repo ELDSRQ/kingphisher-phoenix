@@ -33,7 +33,7 @@ def upgrade() -> None:
         )
         """
     )
-    with contextlib.suppress(Exception):  # noqa: BLE001 - dev DB may not permit REVOKE
+    with contextlib.suppress(Exception):
         op.execute("REVOKE UPDATE, DELETE, TRUNCATE ON audit_chain_head FROM PUBLIC")
         op.execute("GRANT SELECT, INSERT, UPDATE ON audit_chain_head TO audit_writer")
 

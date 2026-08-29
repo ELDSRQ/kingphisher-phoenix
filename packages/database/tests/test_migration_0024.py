@@ -33,7 +33,7 @@ class _CleanConnection:
         self.violation_at = violation_at
         self.count = count
 
-    def scalar(self, statement) -> int:  # noqa: ANN001
+    def scalar(self, statement) -> int:
         self.queries.append(str(statement))
         if self.violation_at == len(self.queries):
             return self.count
@@ -138,7 +138,7 @@ def test_preflight_fails_without_mutating_contradictory_history(monkeypatch: pyt
     assert "UPDATE " not in source
 
 
-def _constraint_names(model) -> set[str]:  # noqa: ANN001
+def _constraint_names(model) -> set[str]:
     return {str(constraint.name) for constraint in model.__table__.constraints}
 
 

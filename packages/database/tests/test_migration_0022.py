@@ -21,7 +21,7 @@ def _load() -> ModuleType:
     return module
 
 
-def test_migration_chains_after_frozen_audiences_and_adds_fk_integrity(monkeypatch) -> None:  # noqa: ANN001
+def test_migration_chains_after_frozen_audiences_and_adds_fk_integrity(monkeypatch) -> None:
     migration = _load()
     tables: list[str] = []
     foreign_keys: list[str] = []

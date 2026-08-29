@@ -50,7 +50,7 @@ def _db_available() -> bool:
             pass
         engine.dispose()
         return True
-    except Exception:  # noqa: BLE001 - local integration dependency gate
+    except Exception:
         return False
 
 
@@ -91,7 +91,7 @@ def _cleanup_isolated_schema():
     engine.dispose()
 
 
-def _source_campaign(session, *, starts_in_days: int = 2) -> Campaign:  # noqa: ANN001
+def _source_campaign(session, *, starts_in_days: int = 2) -> Campaign:
     now = datetime.now(UTC)
     pattern = CampaignPattern(
         campaign_pattern_id=uuid4(),

@@ -100,10 +100,10 @@ def test_launch_preparation_rechecks_resource_approval_before_creating_assignmen
     resource.approval_state = dm.TemplateApprovalState.SUPERSEDED
 
     class _Session:
-        def scalar(self, statement: object) -> Campaign:  # noqa: ARG002
+        def scalar(self, statement: object) -> Campaign:
             return campaign
 
-        def get(self, model: object, identifier: object, **kwargs: object) -> TrainingResource | None:  # noqa: ARG002
+        def get(self, model: object, identifier: object, **kwargs: object) -> TrainingResource | None:
             return resource if identifier == resource.training_resource_id else None
 
     with pytest.raises(ConflictError, match="superseded"):

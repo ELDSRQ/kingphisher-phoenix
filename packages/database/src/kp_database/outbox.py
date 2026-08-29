@@ -211,7 +211,7 @@ class OutboxDispatcher:
                     idempotency_key=row["idempotency_key"],
                     available_at=row["available_at"].timestamp(),
                 )
-            except Exception as exc:  # noqa: BLE001 - durable failure is retained for reconciliation
+            except Exception as exc:
                 try:
                     with self._engine.begin() as connection:
                         if self._allow_owner_fallback:
@@ -296,7 +296,7 @@ def dispatch_after_commit(session: Session, callback: Any) -> None:
     def _dispatch(_session: Session) -> None:
         try:
             callback()
-        except Exception as exc:  # noqa: BLE001 - committed intent remains retryable
+        except Exception as exc:
             logger.error(
                 "post_commit_outbox_dispatch_failed reason_code=callback_failed sqlstate_class=%s exception_type=%s",
                 _sqlstate_class(exc),

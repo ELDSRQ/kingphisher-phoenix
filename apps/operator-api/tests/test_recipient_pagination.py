@@ -31,8 +31,8 @@ class _Rows:
 
 
 def _page_bounds(statement: Any) -> tuple[int, int]:
-    limit_clause = statement._limit_clause  # noqa: SLF001 - SQL construction contract
-    offset_clause = statement._offset_clause  # noqa: SLF001 - SQL construction contract
+    limit_clause = statement._limit_clause
+    offset_clause = statement._offset_clause
     return int(limit_clause.value), int(offset_clause.value)
 
 

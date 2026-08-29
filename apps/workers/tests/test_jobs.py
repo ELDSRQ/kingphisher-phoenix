@@ -41,7 +41,7 @@ def _db_available() -> bool:
             pass
         engine.dispose()
         return True
-    except Exception:  # noqa: BLE001 - optional local dependency
+    except Exception:
         return False
 
 

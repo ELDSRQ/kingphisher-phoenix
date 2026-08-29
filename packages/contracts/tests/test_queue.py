@@ -178,13 +178,13 @@ class _MemoryClient:
 @pytest.fixture
 def queue() -> JobQueue:
     q = JobQueue("redis://localhost:6379/0")
-    q._client = _MemoryClient()  # noqa: SLF001 - test seam
+    q._client = _MemoryClient()
     yield q
     q.close()
 
 
 def test_pop_treats_redis_blocking_timeout_as_idle(queue: JobQueue) -> None:
-    queue._client.timeout_error = True  # type: ignore[attr-defined]  # noqa: SLF001
+    queue._client.timeout_error = True  # type: ignore[attr-defined]
     assert queue.pop("deliver", timeout=3) is None
 
 
@@ -267,7 +267,7 @@ def test_dead_letter_can_be_listed_inspected_and_atomically_replayed(queue: JobQ
 
 
 def test_malformed_dead_letter_is_quarantined_and_not_replayable(queue: JobQueue) -> None:
-    client = queue._client  # type: ignore[attr-defined]  # noqa: SLF001
+    client = queue._client  # type: ignore[attr-defined]
     client.rpush(_key("deliver", ":dlq"), "not-json")
     item = queue.list_dead_letters("deliver")[0]
     assert item["malformed"] is True
@@ -297,7 +297,7 @@ def test_reject_is_idempotent_for_the_same_claim(queue: JobQueue) -> None:
     queue.reject("deliver", message)
     queue.reject("deliver", message)
 
-    client = queue._client  # type: ignore[attr-defined]  # noqa: SLF001
+    client = queue._client  # type: ignore[attr-defined]
     assert len(client.lists.get(_key("deliver"), [])) == 1
     assert client.lists.get(_key("deliver", ":processing"), []) == []
 
@@ -348,7 +348,7 @@ def test_recover_stale_does_not_duplicate_a_concurrently_acked_claim(queue: JobQ
     queue.publish("generation", {"pattern_id": "p1"})
     message = queue.pop("generation", timeout=0)
     assert message is not None
-    client = queue._client  # type: ignore[attr-defined]  # noqa: SLF001
+    client = queue._client  # type: ignore[attr-defined]
 
     def ack_immediately_before_recovery(source: str, destination: str, raw: str) -> None:
         del destination
@@ -361,7 +361,7 @@ def test_recover_stale_does_not_duplicate_a_concurrently_acked_claim(queue: JobQ
 
 
 def test_malformed_ready_message_is_preserved_in_dlq(queue: JobQueue) -> None:
-    client = queue._client  # type: ignore[attr-defined]  # noqa: SLF001
+    client = queue._client  # type: ignore[attr-defined]
     queue.publish("deliver", {"valid": True})
     client.rpush(_key("deliver"), "not-json")
 
@@ -374,7 +374,7 @@ def test_malformed_ready_message_is_preserved_in_dlq(queue: JobQueue) -> None:
 
 
 def test_non_object_ready_message_is_preserved_in_dlq(queue: JobQueue) -> None:
-    client = queue._client  # type: ignore[attr-defined]  # noqa: SLF001
+    client = queue._client  # type: ignore[attr-defined]
     queue.publish("deliver", {"valid": True})
     client.rpush(_key("deliver"), "[]")
 
@@ -387,7 +387,7 @@ def test_non_object_ready_message_is_preserved_in_dlq(queue: JobQueue) -> None:
 
 
 def test_malformed_processing_message_is_preserved_in_dlq(queue: JobQueue) -> None:
-    client = queue._client  # type: ignore[attr-defined]  # noqa: SLF001
+    client = queue._client  # type: ignore[attr-defined]
     client.rpush(_key("generation", ":processing"), "not-json")
 
     assert queue.recover_stale("generation") == 0
@@ -397,7 +397,7 @@ def test_malformed_processing_message_is_preserved_in_dlq(queue: JobQueue) -> No
 
 def test_publish_rejects_oversized_message() -> None:
     queue = JobQueue("redis://localhost:6379/0", max_message_bytes=100)
-    queue._client = _MemoryClient()  # noqa: SLF001 - test seam
+    queue._client = _MemoryClient()
     with pytest.raises(ValueError, match="maximum size"):
         queue.publish("deliver", {"value": "x" * 500})
 
@@ -427,21 +427,21 @@ def test_live_redis_atomic_queue_lifecycle() -> None:
         key
         for topic in topics
         for key in (
-            queue._topic(topic),  # noqa: SLF001 - focused contract cleanup
-            queue._processing(topic),  # noqa: SLF001 - focused contract cleanup
-            queue._dlq(topic),  # noqa: SLF001 - focused contract cleanup
-            queue._delayed(topic),  # noqa: SLF001 - focused contract cleanup
+            queue._topic(topic),
+            queue._processing(topic),
+            queue._dlq(topic),
+            queue._delayed(topic),
         )
     ]
     published_keys: list[str] = []
     try:
         try:
-            queue._client.ping()  # noqa: SLF001 - live contract preflight
+            queue._client.ping()
         except redis.RedisError as exc:
             pytest.skip(f"Redis is unreachable: {type(exc).__name__}")
 
         queue.publish("deliver", {"n": 1}, idempotency_key="live-deliver")
-        published_keys.append(queue._published("deliver", "live-deliver"))  # noqa: SLF001
+        published_keys.append(queue._published("deliver", "live-deliver"))
         claimed = queue.pop("deliver", timeout=1)
         assert claimed is not None
         queue.reject("deliver", claimed)
@@ -451,13 +451,13 @@ def test_live_redis_atomic_queue_lifecycle() -> None:
         queue.ack("deliver", retried)
 
         delayed_id = queue.publish("delayed", {"n": 2}, available_at=time.time() + 0.05)
-        published_keys.append(queue._published("delayed", f"delayed-{delayed_id}"))  # noqa: SLF001
+        published_keys.append(queue._published("delayed", f"delayed-{delayed_id}"))
         delayed = queue.pop("delayed", timeout=1)
         assert delayed is not None
         queue.ack("delayed", delayed)
 
         recovery_id = queue.publish("recovery", {"n": 3})
-        published_keys.append(queue._published("recovery", f"recovery-{recovery_id}"))  # noqa: SLF001
+        published_keys.append(queue._published("recovery", f"recovery-{recovery_id}"))
         crashed = queue.pop("recovery", timeout=1)
         assert crashed is not None
         assert queue.recover_stale("recovery", visibility_seconds=-1) == 1
@@ -467,7 +467,7 @@ def test_live_redis_atomic_queue_lifecycle() -> None:
         queue.ack("recovery", recovered)
 
         dlq_id = queue.publish("dlq", {"n": 4})
-        published_keys.append(queue._published("dlq", f"dlq-{dlq_id}"))  # noqa: SLF001
+        published_keys.append(queue._published("dlq", f"dlq-{dlq_id}"))
         for _ in range(3):
             failed = queue.pop("dlq", timeout=1)
             assert failed is not None
@@ -483,5 +483,5 @@ def test_live_redis_atomic_queue_lifecycle() -> None:
             queue._client.delete(
                 *keys,
                 *published_keys,
-            )  # noqa: SLF001 - focused contract cleanup
+            )
         queue.close()

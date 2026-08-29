@@ -81,7 +81,7 @@ class _FakeSession:
         self.executed: list[object] = []
         self.commits = 0
 
-    def scalar(self, stmt: object) -> object | None:  # noqa: ANN001
+    def scalar(self, stmt: object) -> object | None:
         self.scalar_statements.append(stmt)
         if self.scalar_results:
             return self.scalar_results.pop(0)
@@ -143,7 +143,7 @@ def _client(
     app.dependency_overrides[_session] = _override
     fake.get_results.setdefault(_Token.recipient_assignment_id, _RecipientAssignment())
 
-    def _resolve(token_hash: str, session: object, verifier_key: bytes) -> _Token | None:  # noqa: ANN001
+    def _resolve(token_hash: str, session: object, verifier_key: bytes) -> _Token | None:
         if token_hash == "deadbeef" * 8:
             return None
         return _Token()
@@ -983,7 +983,7 @@ def _drive_body_limit(
     """Run BodyLimitMiddleware against a stub app that drains the request body."""
     sent: list[Message] = []
 
-    async def stub_app(scope: object, receive: object, send: object) -> None:  # noqa: ANN001
+    async def stub_app(scope: object, receive: object, send: object) -> None:
         while True:
             message = await receive()
             if not message.get("more_body", False):

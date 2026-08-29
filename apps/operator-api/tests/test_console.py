@@ -78,7 +78,7 @@ class FakeAuditStore:
     def __init__(self) -> None:
         self.events: list[dict[str, object]] = []
 
-    def record(self, actor, action, object_type, object_id, detail=None) -> None:  # noqa: ANN001
+    def record(self, actor, action, object_type, object_id, detail=None) -> None:
         self.events.append(
             {
                 "actor": actor,
@@ -89,12 +89,12 @@ class FakeAuditStore:
             }
         )
 
-    def list_events(self, limit: int = 500) -> list[dict[str, object]]:  # noqa: ANN001
+    def list_events(self, limit: int = 500) -> list[dict[str, object]]:
         return list(reversed(self.events))[-limit:]
 
 
 @pytest.fixture()
-def env_file(tmp_path) -> str:  # noqa: ANN001
+def env_file(tmp_path) -> str:
     path = tmp_path / ".env"
     path.write_text(f"{os.linesep.join(['KP_CONSOLE_PASSWORD=' + CONSOLE_PASSWORD, ''])}", encoding="utf-8")
     return str(path)
@@ -497,7 +497,7 @@ def test_oidc_callback_rejects_state_mismatch(env_file: str, monkeypatch: pytest
         assert response.status_code == 401
 
 
-def test_console_session_requires_configured_password(tmp_path) -> None:  # noqa: ANN001
+def test_console_session_requires_configured_password(tmp_path) -> None:
     env_file = str(tmp_path / ".env")
     with TestClient(_app(env_file)) as client:
         resp = client.post("/api/v1/console/session", json={"password": CONSOLE_PASSWORD})
@@ -1269,7 +1269,7 @@ def test_setup_assist_redacts_secrets_and_filters_ai_suggestions(
         def raise_for_status(self) -> None:
             return None
 
-        async def aiter_bytes(self):  # noqa: ANN201
+        async def aiter_bytes(self):
             yield httpx.Response(
                 200,
                 json={
@@ -1364,7 +1364,7 @@ def test_setup_assist_provider_failures_return_only_stable_curated_guidance(
         def raise_for_status(self) -> None:
             return None
 
-        async def aiter_bytes(self):  # noqa: ANN201
+        async def aiter_bytes(self):
             yield httpx.Response(
                 200,
                 json={"answer": provider_secret, "extra": "not in the response contract"},

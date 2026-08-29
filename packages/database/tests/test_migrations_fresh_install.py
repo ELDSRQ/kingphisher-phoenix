@@ -89,7 +89,7 @@ def _isolated_database(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Config
                 raw = connection.connection.driver_connection
                 raw.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name)))
             created = True
-        except Exception as exc:  # noqa: BLE001 - environment capability gate
+        except Exception as exc:
             pytest.skip(f"Postgres test role cannot create an isolated migration database: {exc}")
 
         monkeypatch.setenv("DATABASE_URL", database_url.render_as_string(hide_password=False))
@@ -360,7 +360,7 @@ def test_directory_apply_rename_removal_and_collision_are_atomic(monkeypatch: py
 
         class _Audit:
             @staticmethod
-            def record(**kwargs) -> None:  # noqa: ANN003
+            def record(**kwargs) -> None:
                 session = kwargs.pop("session")
                 enqueue_audit(session, **kwargs)
 
@@ -632,7 +632,7 @@ def test_mailbox_job_replay_and_stale_poll_cannot_regress_cursor(monkeypatch: py
 
         class _Audit:
             @staticmethod
-            def record(**kwargs) -> None:  # noqa: ANN003
+            def record(**kwargs) -> None:
                 session = kwargs.pop("session")
                 enqueue_audit(session, **kwargs)
 

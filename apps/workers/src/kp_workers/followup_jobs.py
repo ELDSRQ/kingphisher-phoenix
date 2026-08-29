@@ -140,7 +140,7 @@ def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
                 # before submission, so release the claim for a safe retry.
                 from kp_workers import jobs as _jobs  # resolve the patched facade
 
-                sender = _jobs._reminder_sender(ctx)  # noqa: SLF001
+                sender = _jobs._reminder_sender(ctx)
             except Exception:
                 assignment.followup_sent_at = None
                 ctx.audit_store.record(

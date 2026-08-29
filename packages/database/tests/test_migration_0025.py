@@ -18,7 +18,7 @@ def _load() -> ModuleType:
     return module
 
 
-def _constraint_names(model) -> set[str]:  # noqa: ANN001
+def _constraint_names(model) -> set[str]:
     return {str(constraint.name) for constraint in model.__table__.constraints}
 
 

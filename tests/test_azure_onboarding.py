@@ -906,7 +906,7 @@ def test_live_azure_cli_can_read_selected_subscription() -> None:
     subscription = os.getenv("AZURE_SUBSCRIPTION_ID", "").strip()
     assert subscription, "AZURE_SUBSCRIPTION_ID is required when KP_RUN_AZURE_LIVE=1"
     try:
-        result = subprocess.run(  # noqa: S603, S607
+        result = subprocess.run(  # noqa: S603
             ["az", "account", "show", "--subscription", subscription, "--output", "json"],  # noqa: S607
             capture_output=True,
             text=True,

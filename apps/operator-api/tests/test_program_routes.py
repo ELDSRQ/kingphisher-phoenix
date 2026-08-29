@@ -56,7 +56,7 @@ def _db_available() -> bool:
     try:
         with engine.connect():
             return True
-    except Exception:  # noqa: BLE001 - environment capability gate
+    except Exception:
         return False
     finally:
         engine.dispose()

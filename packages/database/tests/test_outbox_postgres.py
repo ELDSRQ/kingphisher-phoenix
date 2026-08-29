@@ -49,7 +49,7 @@ def _eligible_database() -> bool:
                     )
                 )
             )
-    except Exception:  # noqa: BLE001 - explicit live-Postgres capability gate
+    except Exception:
         return False
     finally:
         engine.dispose()

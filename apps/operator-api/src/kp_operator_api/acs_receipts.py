@@ -356,6 +356,6 @@ async def receive_acs_event_grid(request: Request) -> JSONResponse:
                 {"job_type": "acs_delivery_receipt", "event": minimized_event, "signature": signature},
                 idempotency_key=f"acs-receipt:{event_id_hash}",
             )
-    except Exception:  # noqa: BLE001 - queue failures must be retried by Event Grid
+    except Exception:
         return JSONResponse(status_code=503, content={"detail": "receipt queue is unavailable"})
     return JSONResponse(status_code=200, content={"accepted": len(events)})

@@ -57,7 +57,7 @@ def _db_available() -> bool:
                 pass
             engine.dispose()
             _available = True
-        except Exception:  # noqa: BLE001
+        except Exception:
             _available = False
     return _available
 
@@ -101,7 +101,7 @@ def _session():
     return make_session_factory(engine)()
 
 
-def _campaign(session, *, max_recipients: int = 10) -> Campaign:  # noqa: ANN001
+def _campaign(session, *, max_recipients: int = 10) -> Campaign:
     pattern = CampaignPattern(
         campaign_pattern_id=uuid.uuid4(),
         lure_category=dm.LureCategory.CONFERENCE,
@@ -150,7 +150,7 @@ def _recipient(
     *,
     department: str = "Security",
     status: dm.RecipientStatus = dm.RecipientStatus.ACTIVE,
-) -> Recipient:  # noqa: ANN001
+) -> Recipient:
     recipient = Recipient(
         recipient_id=uuid.uuid4(),
         employee_key=mailbox,

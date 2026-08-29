@@ -83,10 +83,10 @@ class _EvidenceSession:
         self.gate = gate
         self.results = [recipient_ids, assignments]
 
-    def get(self, model: object, identifier: object, **kwargs: object) -> object:  # noqa: ARG002
+    def get(self, model: object, identifier: object, **kwargs: object) -> object:
         return self.gate
 
-    def scalars(self, statement: object) -> list[object]:  # noqa: ARG002
+    def scalars(self, statement: object) -> list[object]:
         return self.results.pop(0)
 
 
