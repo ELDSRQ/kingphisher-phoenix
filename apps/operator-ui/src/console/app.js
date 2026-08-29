@@ -1832,18 +1832,31 @@ views["azure-deployment"] = async (root) => {
     const inputs = {};
     const form = el("form", { class: "wizard-form" });
     guardUnsavedForm(form, `Azure deployment step: ${step.title}`);
-    (step.fields || []).forEach((field, index) => {
+    const renderField = (field, index) => {
       const id = `azure-${current}-${index}`;
       const attrs = { id, name: field.key, required: field.required ? "" : null, disabled: field.server_controlled === true ? "" : null, placeholder: field.placeholder || "", autocomplete: "off", "aria-describedby": `${id}-help` };
       const input = field.choices?.length
         ? el("select", attrs, field.choices.map((choice) => el("option", { value: choice.value, text: choice.label })))
         : el("input", { ...attrs, type: field.type === "url" ? "url" : "text" });
-      input.value = collected[field.key] ?? (field.choices?.[0]?.value || ""); inputs[field.key] = input;
-      form.appendChild(el("div", { class: "wizard-field" }, [
+      const rest = collected[field.key] !== undefined ? collected[field.key]
+        : field.suggested_default ?? field.choices?.[0]?.value ?? "";
+      input.value = rest; inputs[field.key] = input;
+      return el("div", { class: "wizard-field" }, [
         el("label", { for: id }, [el("span", { text: field.label }), el("span", { class: `requirement ${field.required ? "required" : "optional"}`, text: field.required ? "Required" : "Optional" })]), input,
         el("details", { id: `${id}-help`, class: "field-location" }, [el("summary", { text: "Where do I find this?" }), el("p", { text: field.where_to_find })]),
+      ]);
+    };
+    const normalFields = (step.fields || []).filter((field) => field.advanced !== true);
+    const advancedFields = (step.fields || []).filter((field) => field.advanced === true);
+    normalFields.forEach((field, index) => form.appendChild(renderField(field, index)));
+    if (advancedFields.length) {
+      const startIndex = normalFields.length;
+      form.appendChild(el("details", { class: "azure-advanced" }, [
+        el("summary", { text: `Advanced options (${advancedFields.length})` }),
+        el("p", { class: "field-help", text: "These resource IDs, quotas, and GitHub/Terraform hooks use reviewed defaults for a standard deployment. Most operators never change them." }),
+        ...advancedFields.map((field, offset) => renderField(field, startIndex + offset)),
       ]));
-    });
+    }
     form.addEventListener("submit", (event) => {
       event.preventDefault(); if (!form.reportValidity()) return;
       Object.entries(inputs).forEach(([key, input]) => { collected[key] = input.value.trim(); });

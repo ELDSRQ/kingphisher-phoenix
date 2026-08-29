@@ -790,6 +790,7 @@ def test_azure_deployment_wizard_is_nonsecret_and_guided(env_file: str) -> None:
     assert body["orchestration"]["acs_evidence_schema"] == "kp.acs-stage-result.v1"
     fields_by_key = {field["key"]: field for field in fields}
     assert fields_by_key["ai_endpoint"]["required"] is True
+    assert fields_by_key["ai_endpoint"]["advanced"] is False
     assert "first approved pattern" in fields_by_key["ai_endpoint"]["where_to_find"]
     assert [choice["value"] for choice in fields_by_key["deployment_stage"]["choices"]] == [
         "foundation_bootstrap",
@@ -797,7 +798,12 @@ def test_azure_deployment_wizard_is_nonsecret_and_guided(env_file: str) -> None:
         "workloads",
     ]
     assert fields_by_key["deployment_stage"]["server_controlled"] is True
+    assert fields_by_key["deployment_stage"]["suggested_default"] == "foundation_bootstrap"
     assert [choice["value"] for choice in fields_by_key["network_mode"]["choices"]] == ["private"]
+    assert fields_by_key["network_mode"]["suggested_default"] == "private"
+    assert fields_by_key["environment"]["suggested_default"] == "staging"
+    assert fields_by_key["name_prefix"]["suggested_default"] == "kp"
+    assert fields_by_key["location"]["suggested_default"] == "eastus2"
     assert "fixed after foundation" in fields_by_key["ciphertext_active_key_id"]["where_to_find"]
     assert "rotation is not yet supported" in fields_by_key["ciphertext_active_key_id"]["where_to_find"]
     assert "legacy recovery" in fields_by_key["ciphertext_prior_key_ids"]["where_to_find"]
@@ -818,6 +824,67 @@ def test_azure_deployment_wizard_is_nonsecret_and_guided(env_file: str) -> None:
         "rollback": "unsupported",
     }
     assert "token" not in " ".join(field["label"].lower() for field in fields)
+
+
+def test_azure_deployment_advanced_fields_are_classified_and_defaulted(env_file: str) -> None:
+    with TestClient(_app(env_file)) as client:
+        body = client.get("/api/v1/console/azure-deployment", headers=_auth(_login(client))).json()
+    fields = [field for step in body["steps"] for field in step["fields"]]
+    by_key = {field["key"]: field for field in fields}
+    advanced_expected = {
+        "acs_resource_mode",
+        "acs_existing_communication_service_id",
+        "acs_existing_email_endpoint",
+        "acs_existing_email_domain_id",
+        "acs_dns_zone_id",
+        "acs_daily_message_limit",
+        "acs_messages_per_minute",
+        "acs_ramp_batch_size",
+        "acs_ramp_interval_seconds",
+        "runner_label",
+        "tf_state_resource_group",
+        "tf_state_storage_account",
+        "tf_state_container",
+        "network_mode",
+        "azure_deployment_client_id",
+        "ciphertext_active_key_id",
+        "ciphertext_prior_key_ids",
+        "ciphertext_prior_keys_secret_id",
+        "directory_group_ids",
+        "reported_mailbox_address",
+        "alert_webhook_domains",
+    }
+    normal_expected = {
+        "subscription_id",
+        "environment",
+        "location",
+        "name_prefix",
+        "entra_tenant_id",
+        "operator_fqdn",
+        "tracking_fqdn",
+        "acs_sending_domain",
+        "acs_sender_local_part",
+        "acs_sender_display_name",
+        "communication_data_location",
+        "ai_endpoint",
+        "enable_directory_sync",
+        "enable_reported_mailbox",
+        "allowed_recipient_domains",
+    }
+    assert set(by_key) >= (advanced_expected | normal_expected)
+    assert all(by_key[key]["advanced"] is True for key in advanced_expected)
+    assert all(by_key[key]["advanced"] is False for key in normal_expected)
+    assert by_key["deployment_stage"]["advanced"] is False  # server-controlled, shown on the common path
+    assert by_key["deployment_stage"]["server_controlled"] is True
+    assert by_key["deployment_stage"]["suggested_default"] == "foundation_bootstrap"
+    assert by_key["acs_sender_display_name"]["suggested_default"] == "Security Awareness"
+    assert by_key["acs_sending_domain"]["suggested_default"] == "mail.example.com"
+    assert by_key["acs_messages_per_minute"]["suggested_default"] == "20"
+    assert by_key["location"]["suggested_default"] == "eastus2"
+    assert by_key["environment"]["suggested_default"] == "staging"
+    # Advanced internals that stay hidden may carry a suggested default or not,
+    # but every field must report a boolean so the GUI cannot misread it.
+    assert all(field["advanced"] is True or field["advanced"] is False for field in fields)
 
 
 def test_azure_deployment_validation_accepts_safe_values_and_rejects_bad_hosts(env_file: str) -> None:

@@ -320,15 +320,18 @@ ANA-010 and TRN-010 are complete locally (ledger graph, named disposition,
 repeat history, named per-recipient pseudonymous drill-down; campaign-bound
 knowledge check with deterministic evidence builder, digest pinning, and
 generic quiz fallback), and the AI-010 path is nearly complete: the bake-off
-foundation has landed (`scripts/ai-bakeoff/`) and the generation worker now
+foundation has landed (`scripts/ai-bakeoff/`), the generation worker
 enforces a pinned model identity (`KP_WORKER_AI_MODEL_ID`, constant-time
-compare, fail-closed in managed mode) with cost/status metrics; the remaining
-AI-010 item is to benchmark and select the actual model against the bake-off
-set and deploy the pinned llama.cpp image/endpoint (external, needs a live
-endpoint). Then simplify GUI Azure/mail deployment (DEP-010). AI may
-draft/advise but never approve, target, apply infrastructure, handle
-consent, or launch. Prefer simplicity and the existing three-deployable
-modular-monolith architecture.
+compare, fail-closed in managed mode) with cost/status metrics, and DEP-010's
+strong-defaults + Advanced-field classification has landed (azure-deployment
+wizard collapses resource-ID/GitHub/Terraform internals and seeds suggested
+defaults). The remaining items that need an external environment (no offline
+build remains): benchmark/select the actual model against the bake-off set and
+deploy the pinned llama.cpp image/endpoint, then browser-login discovery with
+live progress/cost/rollback qualification for DEP-010. AI may draft/advise but
+never approve, target, apply infrastructure, handle consent, or launch.
+Prefer simplicity and the existing three-deployable modular-monolith
+architecture.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
 ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/

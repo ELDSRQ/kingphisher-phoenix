@@ -1736,6 +1736,10 @@ def _azure_deployment_schema() -> dict[str, Any]:
                         "server_controlled": key == "deployment_stage",
                         "placeholder": placeholder,
                         "where_to_find": location,
+                        # DEP-010: advanced internals collapse behind a disclosure;
+                        # suggested_default seeds the common path from strong defaults.
+                        "advanced": key in _AZURE_ADVANCED_KEYS,
+                        "suggested_default": _AZURE_SUGGESTED_DEFAULTS.get(key),
                         "choices": select_choices.get(key, []),
                     }
                     for key, label, input_type, required, placeholder, location in step["fields"]
@@ -2656,6 +2660,66 @@ _AZURE_ASSIST_PROTECTED_KEYS = frozenset(
         "acs_dns_zone_id",
     }
 )
+
+# DEP-010: fields a normal operator does not see on the first pass. These are
+# Azure resource IDs, GitHub/Terraform internals, key-vault references, exact
+# quota numbers, or identity hooks that the wizard only needs when the default
+# path is not used. The GUI collapses them under an explicit Advanced disclosure
+# so the common path shows strong defaults rather than infrastructure noise.
+_AZURE_ADVANCED_KEYS = frozenset(
+    {
+        # Existing-resource references (only needed when not provisioning).
+        "acs_resource_mode",
+        "acs_existing_communication_service_id",
+        "acs_existing_email_endpoint",
+        "acs_existing_email_domain_id",
+        "acs_dns_zone_id",
+        # Exact quota/ramp tuning; the reviewed defaults already apply.
+        "acs_daily_message_limit",
+        "acs_messages_per_minute",
+        "acs_ramp_batch_size",
+        "acs_ramp_interval_seconds",
+        # GitHub Actions / Terraform / repository internals.
+        "runner_label",
+        "tf_state_resource_group",
+        "tf_state_storage_account",
+        "tf_state_container",
+        "network_mode",
+        "azure_deployment_client_id",
+        # Key-vault and prior-key references (rotation/recovery only).
+        "ciphertext_active_key_id",
+        "ciphertext_prior_key_ids",
+        "ciphertext_prior_keys_secret_id",
+        # Optional identity selectors disclosed only when their feature is on.
+        "directory_group_ids",
+        "reported_mailbox_address",
+        "reported_mailbox_folder",
+        "alert_webhook_domains",
+    }
+)
+
+# DEP-010 strong defaults: values a first-time operator rarely needs to change.
+# They seed the form so "normal inputs" shrink to the genuinely organization-
+# specific choices. Keys here are the field keys from _AZURE_DEPLOYMENT_STEPS.
+_AZURE_SUGGESTED_DEFAULTS: dict[str, str] = {
+    "deployment_stage": "foundation_bootstrap",
+    "network_mode": "private",
+    "acs_resource_mode": "provision",
+    "acs_sending_domain": "mail.example.com",
+    "acs_sender_local_part": "awareness",
+    "acs_sender_display_name": "Security Awareness",
+    "acs_daily_message_limit": "1000",
+    "acs_messages_per_minute": "20",
+    "acs_ramp_batch_size": "10",
+    "acs_ramp_interval_seconds": "60",
+    "communication_data_location": "United States",
+    "enable_directory_sync": "false",
+    "enable_reported_mailbox": "false",
+    "reported_mailbox_folder": "inbox",
+    "name_prefix": "kp",
+    "location": "eastus2",
+    "environment": "staging",
+}
 _AZURE_EMAIL_PROTECTED_AI_OUTPUT = re.compile(
     r"(?:foundation_bootstrap|foundation_finalize|\bworkloads\b|\bverified\b|verification[_ ]status|"
     r"readiness[_ ]checked|subscription[_ ]id|tenant[_ ]id|resource[_ ]id|dns[_ ]zone[_ ]id|\bauthority\b)",

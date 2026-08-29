@@ -102,6 +102,16 @@ def test_gui_has_no_operator_entered_or_exported_acs_readiness_attestations() ->
     assert "az containerapp" not in APP.split("/* ---------- Azure deployment wizard ---------- */", maxsplit=1)[1]
 
 
+def test_advanced_fields_collapse_behind_disclosure_with_strong_defaults() -> None:
+    assert "const normalFields = (step.fields || []).filter((field) => field.advanced !== true);" in APP
+    assert "const advancedFields = (step.fields || []).filter((field) => field.advanced === true);" in APP
+    assert "text: `Advanced options (${advancedFields.length})`" in APP
+    assert "These resource IDs, quotas, and GitHub/Terraform hooks use reviewed defaults" in APP
+    assert "Most operators never change them." in APP
+    assert "field.suggested_default" in APP
+    assert "normalFields.forEach((field, index) => form.appendChild(renderField(field, index)));" in APP
+
+
 def test_managed_ai_is_required_and_pattern_approval_uses_durable_request_truth() -> None:
     azure_export = APP.split("const terraformValues = {", maxsplit=1)[1].split("const workflowValues = {", maxsplit=1)[
         0
