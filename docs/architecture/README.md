@@ -15,26 +15,30 @@ This document describes the implemented architecture and its trust boundaries. I
 
 The implemented architecture remains as described below, but new work follows
 the [goal-aligned priority policy](../WAVE-BUILD-PLAN.md#goal-aligned-priority-policy-2026-08-29).
-That policy targets one 125-person tenant operated by two IT staff and proposes
-three material changes that are not yet implemented:
+That policy targets one 125-person tenant operated by two IT staff. Of its
+three material changes, the first two are implemented and the third is
+partially landed:
 
 - creator plus one independent operator using a combined safety/privacy review,
-  instead of requiring three distinct people;
+  instead of requiring three distinct people — **implemented** (ORG-001);
 - a separate pseudonymous 1,826-day awareness ledger while raw interaction data
-  remains bounded to 365 days; and
+  remains bounded to 365 days — **implemented** (RET-005 / ANA-010), including
+  the five-year trend and repeat consumers; and
 - a digest-pinned internal model executed by the existing worker image/role as
   the preferred AI path, with Foundry serverless optional and no Foundry
-  managed-compute or always-on-GPU requirement.
+  managed-compute or always-on-GPU requirement — **worker-side pin and
+  cost/status metrics landed** (AI-010); actual model benchmark/selection and
+  the pinned llama.cpp deployment still require a live endpoint.
 
 The source curation workbench, named per-recipient disposition, the
 pseudonymous five-year ledger graph, campaign-specific micro-training, and
-simplified Azure discovery wizard are target behavior; the first three are now
-implemented (bounded Threat Campaigns GUI, `close_disposition`/
-`confirmed_interaction` on the named results surface, `ledger_trend` graph
-consumer) while campaign-specific micro-training and the discovery wizard
-remain open. Do not infer the open items from the implemented source
-administration, generation contract, generic training, or three-stage
-deployment connector.
+simplified Azure deployment are implemented (bounded Threat Campaigns GUI,
+`close_disposition`/`confirmed_interaction` on the named results surface,
+`ledger_trend` graph consumer, TRN-010 knowledge check, and DEP-010 strong
+defaults + Advanced classification). Browser-login discovery, live
+progress/cost/rollback qualification, and the AI model selection remain open.
+Do not infer the open items from the implemented source administration,
+generation contract, generic training, or three-stage deployment connector.
 
 ## Deployable topology
 
@@ -171,7 +175,7 @@ expired, missing, or drifting canary permanently blocks that review.
 
 The content-library routes are the first bounded extraction from the oversized operator router. Four uncalled/unexported helpers were removed in Wave 13 (net 35 production lines), and Wave 21 removed the unused source-adapter clone implementation/exports (net 87 lines; 36 focused plus 5 downstream tests). These cleanups do not close the broader modularization debt in `routers.py`, `console.py`, `app.js`, and `jobs.py`.
 
-The exact Alembic code head is `0032_source_explicit_curation`. Revision `0030` persists a safe default privacy notice while enforcing one current row; `0031` adds the confirmed-interaction/PII-free 1,826-day awareness ledger; and `0032` quarantines legacy automatically active source evidence for explicit operator review while adding migrated retention-policy bounds/default uniqueness. The ORM metadata mirrors `0032`'s retention constraints (`RetentionPolicy.__table_args__`), and the current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh-install/historical migration, retention concurrency, outcome-writer-versus-retention, grants), with the external Redis contract passing 2 tests on DB15.
+The exact Alembic code head is `0033_training_knowledge_check`. Revision `0030` persists a safe default privacy notice while enforcing one current row; `0031` adds the confirmed-interaction/PII-free 1,826-day awareness ledger; `0032` quarantines legacy automatically active source evidence for explicit operator review while adding migrated retention-policy bounds/default uniqueness; and `0033` adds the campaign-bound all-or-nothing knowledge check (DB-level CHECK constraints plus digest pinning, TRN-010). The ORM metadata mirrors `0032`'s retention constraints (`RetentionPolicy.__table_args__`), and the current-head external PostgreSQL profile passed 92 tests on 2026-08-29 (fresh-install/historical migration, retention concurrency, outcome-writer-versus-retention, grants), with the external Redis contract passing 2 tests on DB15.
 
 ## Trust zones and authorities
 
@@ -292,7 +296,7 @@ Structured logging applies centralized redaction and size bounds. Local supervis
 
 `/livez` answers only whether the API process is alive. `/readyz` tests the dependencies and security state needed to receive traffic; database, Redis where required, or audit-integrity failures return an unhealthy result. The legacy `/healthz` compatibility response must not be used as the managed or local qualification readiness probe.
 
-The test topology mirrors these boundaries. `make test` is hermetic. PostgreSQL, Redis, local E2E, and Azure-live profiles are explicit opt-ins and every profile rejects skips. PostgreSQL integration jobs use Redis DB14 and flush only DB14 before and after their profile; the Redis queue contract uses DB15; neither may touch application DB0. The historical pre-Wave-30 result was 1,994/87/2/8, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected at head `0029` using DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit/install and clean 03Z logs. The pre-Wave-36 local hermetic `make test` passed 2,469 tests/97 deselected with 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at checked-in head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Current-head `0032` hermetic passes 2,620/103 deselected with 0 failures in 180.45 seconds; the external PostgreSQL profile passes 92 and Redis passes 2 (both 2026-08-29). Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. E2E, exact-final images, browser/WCAG, Azure/provider, recovery, and witness gates remain open.
+The test topology mirrors these boundaries. `make test` is hermetic. PostgreSQL, Redis, local E2E, and Azure-live profiles are explicit opt-ins and every profile rejects skips. PostgreSQL integration jobs use Redis DB14 and flush only DB14 before and after their profile; the Redis queue contract uses DB15; neither may touch application DB0. The historical pre-Wave-30 result was 1,994/87/2/8, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected at head `0029` using DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit/install and clean 03Z logs. The pre-Wave-36 local hermetic `make test` passed 2,469 tests/97 deselected with 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at checked-in head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Current-head `0033` hermetic passes 2,683/103 deselected with 0 failures; the external PostgreSQL profile passes 92 (including fresh-install/historical migration to `0033`), Redis passes 2, and the fresh-migration gate passes 1 (all 2026-08-29). Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. E2E, exact-final images, browser/WCAG, Azure/provider, recovery, and witness gates remain open.
 
 The test environment uses the official Starlette `TestClient` through a test-only `httpx2` compatibility dependency; production HTTP clients continue to use the normal runtime `httpx` dependency. Owned API/tracking pools and SQLite test engines close deterministically, outbox timestamps use explicit SQLAlchemy datetime typing, and PostgreSQL fixture cleanup covers schemas, tables, roles, and engines. The canonical plan records exact hermetic/PostgreSQL/Redis/E2E counts and the targeted local bootstrap/audit repairs. A backup snapshot alone is not full restore evidence.
 
