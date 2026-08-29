@@ -61,7 +61,7 @@ SHA, head, and counts; re-run the handoff contract (`tests/test_external_worker_
 |---|---|---|
 | D1 | Monolith modules: `routers.py` 5,418 / `console.py` 4,154 / `deployment_orchestration.py` 3,112 / `jobs.py` 2,809 / `app.js` 6,792 | Open — split at file level into domain packages |
 | D2 | No behavioral UI test harness (only string-contract tests) | Open — minimal DOM/Playwright smoke first |
-| D3 | Ledger/trend data rendered as tables, no chart | Open — accessible SVG + table fallback |
+| D3 | Ledger/trend data rendered as tables, no chart | **Done** — accessible SVG grouped-bar chart (`ledgerTrendChart` + `svg()` in `app.js`, classes in `styles.css`), CSP-clean, table retained as data fallback |
 | D4 | 8 qualification lanes (images → registry → E2E → browser/WCAG → Azure → recovery → witness → acceptance) all NO-GO | Open — external, recorded order |
 | D5 | CSP question: **resolved** (five inline styles fixed + `test_console_csp_contract.py`) | Closed — browser lane remains a confirmation |
 
@@ -87,6 +87,6 @@ Remaining:
 
 1. **D1 modularization** (file-level splits, no behavior change; do with the
    next feature touch to avoid churn).
-2. **D2 first behavioral UI test**, then **D3 chart**.
+2. **D3 chart** done (SVG + table fallback, contract-tested). **D2 first behavioral UI test** remains — a `node` smoke harness (`apps/operator-ui/tests/chart-smoke.mjs`) now validates the chart executes offline; extend it into a real DOM/Playwright test next.
 3. **B5/B6** only if a nav lint or type-ignore audit is pursued.
 4. E1/E2 opportunistically; D4 only when external environments are available.

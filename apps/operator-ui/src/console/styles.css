@@ -373,6 +373,19 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
 
 /* ---------- report tables ---------- */
 .report-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+/* Accessible SVG trend chart (visual summary; table below is the data).
+   The chart uses SVG presentation attributes only, so it stays compatible
+   with the console's strict CSP (style-src 'self' without 'unsafe-inline'). */
+.report-chart { margin: 0 0 12px; }
+.report-chart-svg { width: 100%; max-width: 720px; height: auto; display: block; }
+.chart-axis { fill: var(--muted, #6b7280); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 6px; font-size: 12px; }
+.chart-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.swatch-0 { background: #174a7e; }
+.swatch-1 { background: #2e7d32; }
+.swatch-2 { background: #9aa4b2; }
 .report-table th,
 .report-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .report-table th { color: var(--muted); font-weight: 500; font-size: 12px; }

@@ -96,6 +96,36 @@ def test_console_uses_no_inline_style_attributes() -> None:
     assert 'setAttribute("style"' not in APP_JS
 
 
+def test_ledger_trend_chart_is_csp_safe_and_namespace_correct() -> None:
+    # The SVG chart must use createElementNS (SVG namespace), never el() with
+    # inline style, and only presentation attributes (fill/x/y/width) that the
+    # console's style-src 'self' policy permits.
+    assert "SVG_NS" in APP_JS
+    assert "document.createElementNS(SVG_NS, tag" in APP_JS
+    assert "function svg(" in APP_JS
+    assert "function ledgerTrendChart(" in APP_JS
+    chart = APP_JS.split("function ledgerTrendChart(", 1)[1].split("\n  // Accessible", 1)[0]
+    # No inline style attribute anywhere in the chart body.
+    assert "style:" not in chart
+    assert 'setAttribute("style"' not in chart
+    # Series are drawn as bars with per-bar accessible titles.
+    assert 'fill: s.color, role: "img"' in chart
+    assert 'svg("title"' in chart
+    # The SVG carries an accessible label and is a visual summary, not the data.
+    assert '"aria-label"' in chart
+    assert "report-chart-svg" in chart
+
+
+def test_ledger_trend_chart_is_rendered_before_the_data_table() -> None:
+    # The chart is a visual summary; the exact table must remain present as
+    # the authoritative data surface (chronicled accessibility fallback).
+    table_fn = APP_JS.split("function ledgerTable(", 1)[1]
+    chart_index = table_fn.find("ledgerTrendChart(report)")
+    table_index = table_fn.find('class: "report-table", "aria-label": "Five-year')
+    assert chart_index != -1 and table_index != -1
+    assert chart_index < table_index
+
+
 def test_preview_height_and_frame_classes_exist_in_stylesheet() -> None:
     css = (_CONSOLE_DIR / "styles.css").read_text(encoding="utf-8")
     for selector in (".template-body.tall", ".template-body.medium", ".preview-frame.desktop", ".preview-frame.mobile"):
