@@ -55,11 +55,11 @@ SHA, head, and counts; re-run the handoff contract (`tests/test_external_worker_
 - `sanitize_html` consumed via `source-adapters/common.py`; `strip_tracking`
   used internally + tested — not orphaned.
 
-## D. Known debt carried from `docs/REVIEW-2026-08-29.md` (unchanged, still open)
+## D. Known debt carried from `docs/REVIEW-2026-08-29.md`
 
 | # | Item | Status |
 |---|---|---|
-| D1 | Monolith modules: `routers.py` 5,418 / `console.py` 4,154 / `deployment_orchestration.py` 3,112 / `jobs.py` 2,809 / `app.js` 6,792 | Open — split at file level into domain packages |
+| D1 | Monolith modules: `routers.py` 5,418 / `console.py` 4,154 / `deployment_orchestration.py` 3,112 / `jobs.py` 2,809 / `app.js` 6,792 | **In progress** — `jobs.py` split into domain modules `followup_jobs.py` (alert/reminder) + `retention_jobs.py` (retention/reconcile/self-publish) using the repo's existing `*_jobs.py` facade pattern; hermetic 2,692 unchanged, mypy 21 worker files clean. Remaining: `routers.py`, `console.py`, `deployment_orchestration.py`, and the operator-ui `app.js`. The `app.js` split cannot be done as a pure file change — it's served as a single `<script>` with no build/bundle step and three test files read it as one string, so splitting it requires introducing a build step (a deployment-visible change) or keeping it one file |
 | D2 | No behavioral UI test harness (only string-contract tests) | Open — minimal DOM/Playwright smoke first |
 | D3 | Ledger/trend data rendered as tables, no chart | **Done** — accessible SVG grouped-bar chart (`ledgerTrendChart` + `svg()` in `app.js`, classes in `styles.css`), CSP-clean, table retained as data fallback |
 | D4 | 8 qualification lanes (images → registry → E2E → browser/WCAG → Azure → recovery → witness → acceptance) all NO-GO | Open — external, recorded order |

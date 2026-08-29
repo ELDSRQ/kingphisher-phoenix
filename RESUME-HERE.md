@@ -366,10 +366,20 @@ retained as the data fallback; pinned by a 7-test chart/CSP contract in
 /Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-api/tests/test_console_csp_contract.py
 and executed offline by
 /Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-ui/tests/chart-smoke.mjs).
-The open remainder is modularization (D1, file-level splits of the monolith
-modules to avoid churn, do with the next feature touch), a real behavioral UI
-test (D2; extend chart-smoke.mjs toward a DOM/Playwright harness), the other
-opportunistic items, and the external qualification lanes.
+D1 modularization is **in progress**: the worker monolith
+apps/workers/src/kp_workers/jobs.py has been split into domain modules
+followup_jobs.py (alert/reminder) and retention_jobs.py (retention / campaign
+lifecycle / self-publish) using the repo's established *_jobs.py lazy-facade
+pattern — hermetic 2,692 unchanged, mypy clean for the workers package. The
+remaining D1 targets are the operator-api monoliths routers.py / console.py /
+deployment_orchestration.py and the operator-ui console app.js; the browser
+app.js split requires introducing a build/bundle step (three test files read it
+as one string, and it is served as a single <script> with no bundler), so it
+should stay a single file or be split only as part of adding a real build
+step. Next best D1 candidate is deployment_orchestration.py or console.py (a
+single dedicated module each, no source-slice tests pinning them). D2 (a real
+behavioral UI test; extend chart-smoke.mjs toward a DOM/Playwright harness) and
+the other opportunistic items remain.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
 ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/
