@@ -301,43 +301,54 @@ Label evidence as **local/static**, **local live**, or **cloud/provider live**. 
 ## Copy-ready continuation prompt
 
 ```text
-Resume the phishing-awareness-platform build in
-/Users/edierks/projects/codex-test/phishing-awareness-platform.
-Read AGENTS.md, RESUME-HERE.md, docs/WAVE-BUILD-PLAN.md,
-docs/PRODUCTION-READINESS-TASK-MATRIX.md, docs/NEXT_SESSION_HANDOFF.md, and
-docs/AI_HANDOFF.md before editing. Preserve the worktree and every
-project/recovery/Docker asset; do not reset, clean, prune, delete, recreate, or
-touch unrelated Docker Desktop workloads. The project-only ARM64 engine remains
-on 192.168.1.140 under /Volumes/DockerExternal/KingPhisher-Phoenix.
+Resume the phishing-awareness-platform build at
+/Users/edierks/projects/codex-test/phishing-awareness-platform (repo root).
+Read these full paths in this order before editing anything:
 
-origin/main is 8f02191 (Wave 38 checkpoint + ANA-010 increments + AI-010
-bake-off foundation + TRN-010 campaign-bound knowledge check + AI-010
-worker model pin + DEP-010 strong-defaults/Advanced classification); the
-worktree is clean. Alembic head is 0033_training_knowledge_check. Current-
-head gates pass: hermetic 2,683, external PostgreSQL 92, fresh-migration 1,
-external Redis 2, lint, strict mypy. The retention P1 is closed, the
-migration revision-id defect is fixed, and ANA-010/TRN-010 are complete
-locally. The offline-buildable backlog is complete: every remaining min-
-product item needs an external environment (a live llama.cpp endpoint for
-model selection/deplyment and a signed-in Azure session for discovery and
-qualification). Do not reopen locally complete ORG-001, THR-001A/B, IMP-001,
-DOCSIM-001, ANA-010, or TRN-010 without a regression.
+1. /Users/edierks/projects/codex-test/phishing-awareness-platform/AGENTS.md
+2. /Users/edierks/projects/codex-test/phishing-awareness-platform/RESUME-HERE.md
+3. /Users/edierks/projects/codex-test/phishing-awareness-platform/docs/WAVE-BUILD-PLAN.md
+4. /Users/edierks/projects/codex-test/phishing-awareness-platform/docs/PRODUCTION-READINESS-TASK-MATRIX.md
+5. /Users/edierks/projects/codex-test/phishing-awareness-platform/docs/NEXT_SESSION_HANDOFF.md
+6. /Users/edierks/projects/codex-test/phishing-awareness-platform/docs/AI_HANDOFF.md
+
+Also review the architecture at
+/Users/edierks/projects/codex-test/phishing-awareness-platform/docs/architecture/README.md
+and the QA matrix at
+/Users/edierks/projects/codex-test/phishing-awareness-platform/docs/REMEDIATION_PLAN.md.
+Preserve the worktree and every project/recovery/Docker asset; do not reset,
+clean, prune, delete, recreate, or touch unrelated Docker Desktop workloads.
+The project-only ARM64 engine remains on 192.168.1.140 under
+/Volumes/DockerExternal/KingPhisher-Phoenix (see
+/Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
+
+origin/main is 8f02191; the worktree is clean. Alembic head is
+0033_training_knowledge_check. Current-head gates pass: hermetic 2,683,
+external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
+mypy. The retention P1 is closed, the migration revision-id defect is fixed,
+and ANA-010/TRN-010 are complete locally. The offline-buildable backlog is
+complete: every remaining min-product item needs an external environment (a
+live llama.cpp endpoint for model selection/deplyment and a signed-in Azure
+session for discovery and qualification). Do not reopen locally complete
+ORG-001, THR-001A/B, IMP-001, DOCSIM-001, ANA-010, or TRN-010 without a
+regression.
 
 Continue from the goal-aligned backlog now that the offline build is
 complete. ANA-010 and TRN-010 are complete locally (five-year ledger graph,
 named close disposition, repeat history, named per-recipient pseudonymous
 drill-down; campaign-bound knowledge check with deterministic evidence
 builder, digest pinning, and generic quiz fallback). The AI-010 path has its
-foundation (`scripts/ai-bakeoff/`: fixed eval set + deterministic scorer +
-bounded loopback runner) and its worker enforcement (`KP_WORKER_AI_MODEL_ID`
-constant-time pin, fail-closed in managed mode, with response-byte/pin/mis-
-match metrics). DEP-010's strong-defaults + Advanced field classification is
-in (azure-deployment wizard collapses resource-ID/GitHub/Terraform internals
-behind an explicit disclosure and seeds suggested defaults). The remaining
-items all need an external environment, in order: (1) benchmark and select
-the internal model against the bake-off set and deploy the pinned llama.cpp
-image/endpoint (needs a live loopback llama.cpp endpoint exposing
-/chat/completions with a usage block; run scripts/ai-bakeoff/evaluate_model.py
+foundation at /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/ai-bakeoff/
+(fixed eval set + deterministic scorer + bounded loopback runner) and its
+worker enforcement (`KP_WORKER_AI_MODEL_ID` constant-time pin, fail-closed in
+managed mode, with response-byte/pin/mismatch metrics). DEP-010's
+strong-defaults + Advanced field classification is in (azure-deployment
+wizard collapses resource-ID/GitHub/Terraform internals behind an explicit
+disclosure and seeds suggested defaults). The remaining items all need an
+external environment, in order: (1) benchmark and select the internal model
+against the bake-off set and deploy the pinned llama.cpp image/endpoint
+(needs a live loopback llama.cpp endpoint exposing /chat/completions with a
+usage block; run /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/ai-bakeoff/evaluate_model.py
 and record the report JSON as selection evidence), then (2) browser-login
 discovery and live progress/cost/rollback qualification for DEP-010, then the
 full qualification lanes (external E2E, exact-final ARM64 images,
