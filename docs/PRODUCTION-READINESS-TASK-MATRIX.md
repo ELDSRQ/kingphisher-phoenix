@@ -234,6 +234,9 @@ are not release claims.
   scanning and push protection, and remote `main` at old-tree SHA
   `1403d944a40214714b6cbfcf5cbabc4fa7225eb9` at re-audit time (the checkpoint
   push has since advanced it to `c9ea716`). No workflow dispatch/run occurred.
+  The 2026-08-29 read-only GitHub boundary facts remain recorded in the
+  handoff documents so the re-audit observation is not lost when the tree
+  advances.
   The 2026-08-29 sandbox could not resolve `management.azure.com`, so the
   historical Azure inventory does not establish current management-plane state.
   Protected configuration, repository hardening, current Azure inspection, and

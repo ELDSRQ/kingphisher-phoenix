@@ -25,6 +25,8 @@ from kp_database.reporting import (
     CampaignSelectionWindow,
     CampaignTrendReport,
     EvidenceWindow,
+    LedgerRepeatBucket,
+    LedgerRepeatDistribution,
     LedgerTrendBucket,
     LedgerTrendPortfolio,
     LedgerTrendReport,
@@ -33,6 +35,8 @@ from kp_database.reporting import (
     campaign_funnel_csv_rows,
     campaign_trend,
     campaign_trend_csv_rows,
+    ledger_repeat_csv_rows,
+    ledger_repeat_distribution,
     ledger_trend,
     ledger_trend_csv_rows,
 )
@@ -66,6 +70,13 @@ _LEDGER_TREND_VALIDATION_MESSAGES = frozenset(
         "ledger trend window bounds must be dates",
         "ledger trend window start must precede end",
         "ledger trend window cannot exceed 1826 days",
+    }
+)
+_LEDGER_REPEAT_VALIDATION_MESSAGES = frozenset(
+    {
+        "ledger repeat window bounds must be dates",
+        "ledger repeat window start must precede end",
+        "ledger repeat window cannot exceed 1826 days",
     }
 )
 
@@ -160,6 +171,26 @@ class LedgerTrendView(BaseModel):
     window_end_exclusive: date
     buckets: tuple[LedgerTrendBucketView, ...]
     portfolio: LedgerTrendPortfolioView
+    semantics: dict[str, str]
+    privacy: str
+
+
+class LedgerRepeatBucketView(BaseModel):
+    """One exposure-count bucket; the top bucket means "at least that many"."""
+
+    exposures: int
+    participants: int
+
+
+class LedgerRepeatDistributionView(BaseModel):
+    schema_version: Literal["1"] = "1"
+    generated_at: datetime
+    window_start_inclusive: date
+    window_end_exclusive: date
+    exposure_buckets: tuple[LedgerRepeatBucketView, ...]
+    engaged_buckets: tuple[LedgerRepeatBucketView, ...]
+    summary: tuple[CountMetric, ...]
+    rates: tuple[RateMetric, ...]
     semantics: dict[str, str]
     privacy: str
 
@@ -413,6 +444,72 @@ def _load_ledger_trend(
         raise ValidationError_(message) from None
 
 
+def _ledger_repeat_bucket_view(bucket: LedgerRepeatBucket) -> LedgerRepeatBucketView:
+    return LedgerRepeatBucketView(exposures=bucket.exposures, participants=bucket.participants)
+
+
+def _ledger_repeats_view(report: LedgerRepeatDistribution) -> LedgerRepeatDistributionView:
+    return LedgerRepeatDistributionView(
+        generated_at=report.generated_at,
+        window_start_inclusive=report.window_start_inclusive,
+        window_end_exclusive=report.window_end_exclusive,
+        exposure_buckets=tuple(_ledger_repeat_bucket_view(bucket) for bucket in report.exposure_buckets),
+        engaged_buckets=tuple(_ledger_repeat_bucket_view(bucket) for bucket in report.engaged_buckets),
+        summary=(
+            CountMetric(name="unique_exposed", value=report.unique_exposed),
+            CountMetric(name="exposures_total", value=report.exposures_total),
+            CountMetric(name="unique_engaged", value=report.unique_engaged),
+            CountMetric(name="engaged_exposures_total", value=report.engaged_exposures_total),
+            CountMetric(name="no_activity_at_close", value=report.no_activity_at_close),
+        ),
+        rates=_rate_view(report.rates),
+        semantics={
+            "window": "selects projected campaign_date; capped at the ledger's 1826-day retention",
+            "unit": "distinct tenant-keyed recipient pseudonyms from the PII-free awareness ledger; "
+            "never person counts",
+            "exposure_buckets": "distinct pseudonyms by exposures in the window; the top bucket means at "
+            "least that many",
+            "engaged_buckets": "distinct pseudonyms by exposures with retained human activity (open, "
+            "click, report, confirmed interaction, training started or completed)",
+            "repeat_exposure": "share of distinct exposed pseudonyms with two or more exposures",
+            "repeat_engagement": "share of distinct engaged pseudonyms engaged in two or more campaigns",
+            "corrections": "scanner or bot corrections are not subtracted without normalized correction evidence",
+        },
+        privacy=(
+            "aggregate ledger projections only; no recipient identifiers, pseudonyms, or recipient attributes "
+            "are returned"
+        ),
+    )
+
+
+def _load_ledger_repeats(
+    session: Session,
+    *,
+    window_start: date,
+    window_end: date,
+) -> LedgerRepeatDistribution:
+    try:
+        # Validate at the API boundary as well as the query layer so a
+        # failure is caught even when the query service is substituted.
+        if window_start >= window_end:
+            raise ValueError("ledger repeat window start must precede end")
+        if window_end - window_start > MAX_LEDGER_TREND_WINDOW:
+            raise ValueError("ledger repeat window cannot exceed 1826 days")
+        return ledger_repeat_distribution(
+            session,
+            scope=SINGLE_TENANT_DATABASE_SCOPE,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    except ValueError as exc:
+        message = _bounded_validation_message(
+            exc,
+            allowed=_LEDGER_REPEAT_VALIDATION_MESSAGES,
+            fallback="ledger repeat request is invalid",
+        )
+        raise ValidationError_(message) from None
+
+
 EvidenceStart = Annotated[datetime | None, Query(description="Inclusive RFC 3339 timestamp with timezone")]
 EvidenceEnd = Annotated[datetime | None, Query(description="Exclusive RFC 3339 timestamp with timezone")]
 ScheduleStart = Annotated[datetime, Query(description="Inclusive campaign schedule-start timestamp with timezone")]
@@ -509,6 +606,48 @@ def export_ledger_trend(
         content=output.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="awareness-ledger-trend.csv"'},
+    )
+
+
+@router.get("/ledger/repeats", response_model=LedgerRepeatDistributionView)
+def get_ledger_repeats(
+    window_start: LedgerWindowStart,
+    window_end: LedgerWindowEnd,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(require_capability(Capability.VIEW_AGGREGATE)),
+) -> LedgerRepeatDistributionView:
+    """Return the bounded repeat-exposure distribution from the ledger."""
+
+    return _ledger_repeats_view(
+        _load_ledger_repeats(
+            session,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    )
+
+
+@router.get("/ledger/repeats.csv")
+def export_ledger_repeats(
+    window_start: LedgerWindowStart,
+    window_end: LedgerWindowEnd,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(require_capability(Capability.EXPORT_BULK)),
+) -> Response:
+    """Export the same bounded repeat-exposure distribution as formula-safe CSV."""
+
+    report = _load_ledger_repeats(
+        session,
+        window_start=window_start,
+        window_end=window_end,
+    )
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows(ledger_repeat_csv_rows(report))
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="awareness-ledger-repeats.csv"'},
     )
 
 

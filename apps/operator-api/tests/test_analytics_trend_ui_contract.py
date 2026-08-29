@@ -74,3 +74,27 @@ def test_five_year_ledger_trend_exposes_only_projected_buckets() -> None:
     assert "bucket.mailbox" not in TREND_VIEW
     assert '"aria-label": "Five-year pseudonymous awareness ledger trend"' in TREND_VIEW
     assert '"aria-label": "Campaign exposure trend points"' in TREND_VIEW
+
+
+def test_repeat_exposure_history_is_a_bounded_pseudonym_free_gui_route() -> None:
+    assert "Repeat exposure history" in TREND_VIEW
+    assert "Repeat history window cannot exceed 1,826 days." in TREND_VIEW
+    assert "api(`/analytics/ledger/repeats?${query.toString()}`)" in TREND_VIEW
+    assert "/analytics/ledger/repeats.csv?${query.toString()}" in TREND_VIEW
+    assert '"awareness-ledger-repeats.csv"' in TREND_VIEW
+    assert "Download repeat CSV" in TREND_VIEW
+
+
+def test_repeat_exposure_history_renders_only_aggregate_bucket_fields() -> None:
+    assert "report.exposure_buckets" in TREND_VIEW
+    assert "report.engaged_buckets" in TREND_VIEW
+    assert "bucket.exposures === 5" in TREND_VIEW
+    assert "bucket.participants" in TREND_VIEW
+    assert 'summary.get("unique_exposed")' in TREND_VIEW
+    assert 'rates.get("repeat_exposure")' in TREND_VIEW
+    assert "never resolved to identities" in TREND_VIEW
+    assert "bucket.pseudonym" not in TREND_VIEW
+    assert "bucket.recipient" not in TREND_VIEW
+    assert "bucket.campaign_id" not in TREND_VIEW
+    assert "bucket.mailbox" not in TREND_VIEW
+    assert '"aria-label": "Repeat exposure history"' in TREND_VIEW

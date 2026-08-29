@@ -37,6 +37,10 @@ MAX_EVIDENCE_WINDOW: Final = timedelta(days=366)
 MAX_TREND_CAMPAIGNS: Final = 12
 MAX_TREND_WINDOW: Final = timedelta(days=366)
 MAX_LEDGER_TREND_WINDOW: Final = timedelta(days=1_826)
+# The repeat-history distribution caps its top bucket at this exposure count;
+# the tail bucket means "at least this many exposures". The output is therefore
+# bounded by construction regardless of ledger size.
+MAX_LEDGER_REPEAT_BUCKET: Final = 5
 type CsvCell = str | int | float
 type CsvRow = tuple[CsvCell, ...]
 
@@ -182,6 +186,69 @@ class LedgerTrendReport:
     window_end_exclusive: date
     buckets: tuple[LedgerTrendBucket, ...]
     portfolio: LedgerTrendPortfolio
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerRepeatBucket:
+    """One exposure-count bucket of the repeat-history distribution.
+
+    ``exposures`` is ``1..MAX_LEDGER_REPEAT_BUCKET``, where the top bucket
+    means "at least that many". ``participants`` counts distinct tenant-keyed
+    recipient pseudonyms in that bucket; it is never a person count.
+    """
+
+    exposures: int
+    participants: int
+
+    def __post_init__(self) -> None:
+        if type(self.exposures) is not int or not 1 <= self.exposures <= MAX_LEDGER_REPEAT_BUCKET:
+            raise ValueError(f"repeat bucket exposures must be between 1 and {MAX_LEDGER_REPEAT_BUCKET}")
+        if type(self.participants) is not int or self.participants < 0:
+            raise ValueError("repeat bucket participants cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerRepeatDistribution:
+    """Bounded repeat-exposure distribution over the pseudonymous ledger.
+
+    ``exposure_buckets`` counts distinct pseudonyms by total exposures in the
+    window; ``engaged_buckets`` counts distinct pseudonyms by the number of
+    exposures with retained human activity (the same activity set as the
+    ledger's no-activity-at-close rule). All counts derive from the PII-free
+    ledger and are never resolved to identities.
+    """
+
+    generated_at: datetime
+    window_start_inclusive: date
+    window_end_exclusive: date
+    exposure_buckets: tuple[LedgerRepeatBucket, ...]
+    engaged_buckets: tuple[LedgerRepeatBucket, ...]
+    unique_exposed: int
+    exposures_total: int
+    unique_engaged: int
+    engaged_exposures_total: int
+    no_activity_at_close: int
+
+    @property
+    def rates(self) -> tuple[tuple[str, Rate], ...]:
+        """Repeat rates with explicit distinct-pseudonym denominators."""
+
+        repeated = sum(bucket.participants for bucket in self.exposure_buckets if bucket.exposures >= 2)
+        repeatedly_engaged = sum(bucket.participants for bucket in self.engaged_buckets if bucket.exposures >= 2)
+        return (
+            (
+                "repeat_exposure",
+                Rate(repeated, self.unique_exposed, "distinct_exposed_pseudonyms"),
+            ),
+            (
+                "repeat_engagement",
+                Rate(
+                    repeatedly_engaged,
+                    self.unique_engaged,
+                    "distinct_engaged_pseudonyms",
+                ),
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -602,6 +669,165 @@ def ledger_trend_csv_rows(report: LedgerTrendReport) -> tuple[CsvRow, ...]:
     append_projection(bucket="portfolio", projection=report.portfolio)
     for point in report.buckets:
         append_projection(bucket=point.month.isoformat(), projection=point)
+    return tuple(rows)
+
+
+def ledger_repeat_distribution(
+    session: Session,
+    *,
+    scope: str,
+    window_start: date,
+    window_end: date,
+    generated_at: datetime | None = None,
+) -> LedgerRepeatDistribution:
+    """Return a bounded repeat-exposure distribution from the awareness ledger.
+
+    Reads only the PII-free pseudonymous ledger (RET-005), never raw evidence
+    or recipient tables. Each row is one distinct tenant-keyed recipient
+    pseudonym; ``participants`` therefore never names or counts people. The
+    window selects ``campaign_date`` and is capped at the ledger's 1,826-day
+    retention, matching :func:`ledger_trend`. The top exposure bucket is
+    ``MAX_LEDGER_REPEAT_BUCKET`` and means "at least that many", so the output
+    is bounded by construction.
+
+    Engagement uses the same activity set as the ledger's no-activity-at-close
+    rule (observed open, observed click, reported, confirmed interaction,
+    training started, training completed), keeping repeat history consistent
+    with the close-disposition definition.
+    """
+
+    _require_scope(scope)
+    if not isinstance(window_start, date) or not isinstance(window_end, date):
+        raise TypeError("ledger repeat window bounds must be dates")
+    if window_start >= window_end:
+        raise ValueError("ledger repeat window start must precede end")
+    if window_end - window_start > MAX_LEDGER_TREND_WINDOW:
+        raise ValueError("ledger repeat window cannot exceed 1826 days")
+    report_time = generated_at or datetime.now(UTC)
+    if report_time.tzinfo is None:
+        raise ValueError("generated_at must include a timezone")
+    report_time = report_time.astimezone(UTC)
+
+    activity = case(
+        (
+            (
+                AwarenessLedgerEntry.observed_open.is_(True)
+                | AwarenessLedgerEntry.observed_click.is_(True)
+                | AwarenessLedgerEntry.reported.is_(True)
+                | AwarenessLedgerEntry.confirmed_interaction.is_(True)
+                | AwarenessLedgerEntry.training_started.is_(True)
+                | AwarenessLedgerEntry.training_completed.is_(True)
+            ),
+            1,
+        ),
+        else_=0,
+    )
+    rows = session.execute(
+        select(
+            AwarenessLedgerEntry.recipient_pseudonym,
+            func.count().label("exposures"),
+            func.sum(activity).label("engaged"),
+            func.sum(case((AwarenessLedgerEntry.no_activity_at_close.is_(True), 1), else_=0)).label("no_activity"),
+        )
+        .where(
+            AwarenessLedgerEntry.tenant_scope == scope,
+            AwarenessLedgerEntry.campaign_date >= window_start,
+            AwarenessLedgerEntry.campaign_date < window_end,
+        )
+        .group_by(AwarenessLedgerEntry.recipient_pseudonym)
+    )
+
+    exposure_counts: dict[int, int] = {}
+    engaged_counts: dict[int, int] = {}
+    unique_exposed = 0
+    exposures_total = 0
+    unique_engaged = 0
+    engaged_exposures_total = 0
+    no_activity_at_close = 0
+    for _pseudonym, exposures, engaged, no_activity in rows:
+        exposures = int(exposures)
+        engaged = int(engaged)
+        unique_exposed += 1
+        exposures_total += exposures
+        if engaged:
+            unique_engaged += 1
+            engaged_exposures_total += engaged
+        no_activity_at_close += int(no_activity)
+        exposure_bucket = min(exposures, MAX_LEDGER_REPEAT_BUCKET)
+        exposure_counts[exposure_bucket] = exposure_counts.get(exposure_bucket, 0) + 1
+        if engaged:
+            engaged_bucket = min(engaged, MAX_LEDGER_REPEAT_BUCKET)
+            engaged_counts[engaged_bucket] = engaged_counts.get(engaged_bucket, 0) + 1
+
+    def _buckets(counts: dict[int, int]) -> tuple[LedgerRepeatBucket, ...]:
+        return tuple(
+            LedgerRepeatBucket(exposures=bucket, participants=counts.get(bucket, 0))
+            for bucket in range(1, MAX_LEDGER_REPEAT_BUCKET + 1)
+        )
+
+    return LedgerRepeatDistribution(
+        generated_at=report_time,
+        window_start_inclusive=window_start,
+        window_end_exclusive=window_end,
+        exposure_buckets=_buckets(exposure_counts),
+        engaged_buckets=_buckets(engaged_counts),
+        unique_exposed=unique_exposed,
+        exposures_total=exposures_total,
+        unique_engaged=unique_engaged,
+        engaged_exposures_total=engaged_exposures_total,
+        no_activity_at_close=no_activity_at_close,
+    )
+
+
+def ledger_repeat_csv_rows(report: LedgerRepeatDistribution) -> tuple[CsvRow, ...]:
+    """Return a fixed, formula-safe, PII-free repeat-history CSV projection."""
+
+    header: CsvRow = (
+        "scope",
+        "window_start_inclusive",
+        "window_end_exclusive",
+        "generated_at",
+        "kind",
+        "metric",
+        "numerator",
+        "denominator",
+        "denominator_name",
+        "value",
+    )
+    rows: list[CsvRow] = [header]
+    prefix: tuple[CsvCell, ...] = (
+        SINGLE_TENANT_DATABASE_SCOPE,
+        report.window_start_inclusive.isoformat(),
+        report.window_end_exclusive.isoformat(),
+        report.generated_at.isoformat(),
+    )
+    for bucket in report.exposure_buckets:
+        rows.append((*prefix, "bucket", f"exposures_{bucket.exposures}", bucket.participants, "", "", ""))
+    for bucket in report.engaged_buckets:
+        rows.append((*prefix, "bucket", f"engaged_{bucket.exposures}", bucket.participants, "", "", ""))
+    for name, value in (
+        ("unique_exposed", report.unique_exposed),
+        ("exposures_total", report.exposures_total),
+        ("unique_engaged", report.unique_engaged),
+        ("engaged_exposures_total", report.engaged_exposures_total),
+        ("no_activity_at_close", report.no_activity_at_close),
+    ):
+        rows.append((*prefix, "summary", name, int(value), "", "", ""))
+    for name, rate in report.rates:
+        rate_value = rate.value
+        if rate_value is not None and not math.isfinite(rate_value):
+            raise ValueError("ledger repeat rate is not finite")
+        rows.append(
+            (
+                *prefix,
+                "summary",
+                name,
+                rate.numerator,
+                rate.denominator,
+                rate.denominator_name,
+                "" if rate_value is None else rate_value,
+            )
+        )
     return tuple(rows)
 
 

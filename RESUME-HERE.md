@@ -267,13 +267,15 @@ For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact R
 
 ## Next execution order
 
-1. Deliver the minimum complete product: finish the ANA-010 named five-year
-   experience (basic repeat history, then the ledger's named-history
-   privacy/RBAC consumers), then benchmark/select the internal model and wire
-   `AI-010` into the existing worker role/job, then complete campaign-specific
-   micro-training (`TRN-010`). Deterministic fallback and human approval remain
-   mandatory. Do not reopen locally complete `ORG-001`, `THR-001A/B`, `IMP-001`,
-   or `DOCSIM-001` without a regression.
+1. Deliver the minimum complete product: finish ANA-010 with the ledger's
+   named-history privacy/RBAC consumers (capability-protected per-recipient
+   pseudonymous drill-down with pseudonym-key governance — basic repeat
+   history, close disposition, and the five-year ledger graph are already
+   landed), then benchmark/select the internal model and wire `AI-010` into the
+   existing worker role/job, then complete campaign-specific micro-training
+   (`TRN-010`). Deterministic fallback and human approval remain mandatory. Do
+   not reopen locally complete `ORG-001`, `THR-001A/B`, `IMP-001`, or
+   `DOCSIM-001` without a regression.
 2. Simplify the normal Azure/mail path through the GUI after those interfaces
    stabilize; keep the existing secure three-stage deployment contract and
    provider adapters supported while hiding engineering internals.
@@ -306,8 +308,8 @@ defect is fixed. Do not reopen locally complete ORG-001, THR-001A/B, IMP-001,
 or DOCSIM-001 without a regression.
 
 Continue the goal-aligned backlog without removing useful deferred features:
-finish ANA-010 (basic repeat history, then the ledger's named-history
-privacy/RBAC consumers with pseudonym-key governance); then benchmark and
+finish ANA-010 (the ledger's named-history privacy/RBAC consumers with
+pseudonym-key governance; basic repeat history is landed); then benchmark and
 select the internal-model-first AI-010 path (pinned llama.cpp role/job in the
 existing worker image, no tools/network, schema-constrained output, cost/status
 exposure, deterministic fallback) and add campaign-specific micro-training

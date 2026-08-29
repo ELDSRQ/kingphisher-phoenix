@@ -3881,6 +3881,115 @@ views.trends = async (root) => {
   try { await loadLedgerTrend(); } catch (e) {
     ledgerResults.replaceChildren(el("div", { role: "alert", class: "modal-error", text: e.message }));
   }
+
+  /* ---------- repeat exposure history ---------- */
+  root.appendChild(el("h2", { text: "Repeat exposure history" }));
+  root.appendChild(el("p", {
+    class: "sub",
+    text: "Distinct pseudonymous participants by number of exposures (and by exposures with retained human activity) in the selected campaign-date window. The final bucket means at least that many exposures.",
+  }));
+  const repeatsStart = el("input", {
+    id: "ledger-repeats-start", type: "date", value: fiveYearsAgo.toISOString().slice(0, 10),
+  });
+  const repeatsEnd = el("input", {
+    id: "ledger-repeats-end", type: "date", value: ledgerNow.toISOString().slice(0, 10),
+  });
+  const repeatsStatus = el("p", { class: "field-help", role: "status", "aria-live": "polite" });
+  const repeatsResults = el("div", { "aria-live": "polite" });
+
+  function repeatsWindow() {
+    const start = new Date(`${repeatsStart.value}T00:00:00Z`);
+    const end = new Date(`${repeatsEnd.value}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      throw new Error("Enter valid repeat history start and end dates.");
+    }
+    if (start >= end) throw new Error("Repeat history end must be after start.");
+    if (end.getTime() - start.getTime() > 1826 * 24 * 60 * 60 * 1000) {
+      throw new Error("Repeat history window cannot exceed 1,826 days.");
+    }
+    return new URLSearchParams({
+      window_start: repeatsStart.value,
+      window_end: repeatsEnd.value,
+    });
+  }
+
+  function repeatsTable(report) {
+    const summary = new Map(report.summary.map((metric) => [metric.name, metric.value]));
+    const rates = new Map(report.rates.map((rate) => [rate.name, rate]));
+    const rows = report.exposure_buckets.map((bucket) => {
+      const label = bucket.exposures === 5 ? "5 or more" : String(bucket.exposures);
+      const engaged = report.engaged_buckets.find((candidate) => candidate.exposures === bucket.exposures);
+      return el("tr", {}, [
+        el("td", { text: label }),
+        el("td", { class: "num", text: String(bucket.participants) }),
+        el("td", { class: "num", text: String(engaged ? engaged.participants : 0) }),
+      ]);
+    });
+    return el("div", {}, [
+      el("p", {
+        text: `Generated ${formatUtcInstant(report.generated_at)} · ${summary.get("unique_exposed")} distinct exposed participants, ${summary.get("exposures_total")} total exposures.`,
+      }),
+      el("table", { class: "report-table", "aria-label": "Repeat exposure history" }, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", { text: "Exposures" }), el("th", { text: "Participants" }),
+          el("th", { text: "With activity" }),
+        ])]),
+        el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", {
+          class: "empty", colspan: 3, text: "No projected exposures fall in this date window.",
+        })])]),
+      ]),
+      el("p", {
+        class: "field-help",
+        text: `Repeat exposure: ${rateSummary(rates.get("repeat_exposure"))} of distinct exposed participants. Pseudonymous ledger participants are never resolved to identities.`,
+      }),
+    ]);
+  }
+
+  async function loadLedgerRepeats() {
+    repeatsResults.replaceChildren(el("p", { class: "empty", text: "Loading repeat history…" }));
+    const query = repeatsWindow();
+    const report = await api(`/analytics/ledger/repeats?${query.toString()}`);
+    repeatsStatus.textContent = `Repeat window: ${report.window_start_inclusive} through ${report.window_end_exclusive} (exclusive).`;
+    repeatsResults.replaceChildren(repeatsTable(report));
+  }
+
+  async function downloadLedgerRepeatsCsv() {
+    const query = repeatsWindow();
+    await downloadApiCsv(
+      `/analytics/ledger/repeats.csv?${query.toString()}`,
+      "awareness-ledger-repeats.csv",
+    );
+  }
+
+  const repeatsRefresh = el("button", { class: "btn primary", type: "button", text: "Refresh repeat history", onclick: async (event) => {
+    event.target.disabled = true;
+    try { await loadLedgerRepeats(); } catch (e) {
+      repeatsResults.replaceChildren(el("div", { role: "alert", class: "modal-error", text: e.message }));
+    } finally { event.target.disabled = false; }
+  } });
+  const repeatsExport = el("button", {
+    class: "btn", type: "button", text: "Download repeat CSV",
+    disabled: canExportTrend ? null : "disabled",
+    title: canExportTrend ? null : "Bulk export capability is required.",
+    onclick: async (event) => {
+      event.target.disabled = true;
+      try { await downloadLedgerRepeatsCsv(); } catch (e) { toast(e.message, "error"); }
+      finally { event.target.disabled = false; }
+    },
+  });
+  root.appendChild(el("fieldset", {}, [
+    el("legend", { text: "Repeat campaign-date window (UTC)" }),
+    el("div", { class: "form-grid" }, [
+      el("div", {}, [el("label", { for: "ledger-repeats-start", text: "Start date (inclusive)" }), repeatsStart]),
+      el("div", {}, [el("label", { for: "ledger-repeats-end", text: "End date (exclusive)" }), repeatsEnd]),
+    ]),
+    repeatsStatus,
+    el("div", { class: "btn-row" }, [repeatsRefresh, repeatsExport]),
+  ]));
+  root.appendChild(repeatsResults);
+  try { await loadLedgerRepeats(); } catch (e) {
+    repeatsResults.replaceChildren(el("div", { role: "alert", class: "modal-error", text: e.message }));
+  }
 };
 
 /* ---------- template review ----------
