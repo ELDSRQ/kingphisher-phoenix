@@ -56,6 +56,11 @@ class TrackingApiSettings(BaseSettings):
     rate_limit_token_per_min: int = 5
     rate_limit_global_per_min: int = 3000
     rate_limit_max_keys: int = 10_000
+    # Memory is the local-dev default. A memory-backed global limiter is
+    # per-replica: the 3,000/min global cap weakens linearly with replica
+    # count, so the managed topology pins this to ``redis`` (see
+    # infrastructure/terraform/main.tf). Do not carry the memory default into
+    # a multi-replica deployment.
     rate_limit_backend: Literal["memory", "redis"] = "memory"
     redis_url: str = ""
     # HIGH-09 residual: request-body cap for this API (64 KiB default).

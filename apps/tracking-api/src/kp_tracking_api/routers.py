@@ -174,8 +174,16 @@ def _training_rate_limited(request: Request, training_bearer: str) -> None:
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate limit exceeded")
 
 
+# A peer with no resolvable IP shares one bucket. That is deliberate: it
+# prevents an attacker from forging high-cardinality keys, and the global
+# limiter still bounds the aggregate. A misconfigured ingress (all clients
+# arriving without a client address) would collapse everyone into this bucket
+# at 60/min, which fails safe by over-limiting rather than under-limiting.
+_UNRESOLVED_CLIENT_IP_BUCKET = "unresolved-client-ip"
+
+
 def _ip_rate_limited(request: Request) -> None:
-    if not request.app.state.ip_limiter.allow(_client_ip(request) or "unknown"):
+    if not request.app.state.ip_limiter.allow(_client_ip(request) or _UNRESOLVED_CLIENT_IP_BUCKET):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate limit exceeded")
 
 

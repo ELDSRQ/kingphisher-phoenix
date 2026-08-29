@@ -153,6 +153,10 @@ class RetentionPolicyConfigurationError(RuntimeError):
     """Stable public failure raised for ambiguous or out-of-bounds policy."""
 
 
+class DeliveryConfigurationError(RuntimeError):
+    """Stable public failure raised when delivery pacing is unconfigured."""
+
+
 _TERMINAL_CAMPAIGN_STATES = frozenset(
     {
         dm.CampaignState.STOPPED,
@@ -620,7 +624,7 @@ def effective_sender_address(ctx: WorkerContext, campaign: Campaign) -> tuple[st
     expectations — has to use this rather than sender_mailbox, or it is
     describing a domain that never appears in the envelope.
     """
-    if ctx.settings.email_provider == "azure_communication_services":
+    if ctx.settings.email_provider_kind.is_acs:
         return ctx.settings.effective_smtp_sender, False
     return resolve_sender(
         campaign.sender_mailbox,
@@ -895,7 +899,7 @@ def _reserve_acs_delivery_capacity(
     ramp_batch = settings.acs_ramp_batch_size
     ramp_interval = settings.acs_ramp_interval_seconds
     if per_minute is None or per_day is None or ramp_batch is None or ramp_interval is None:
-        raise RuntimeError("ACS delivery pacing is not configured")
+        raise DeliveryConfigurationError("ACS delivery pacing is not configured")
     minute = _utc_minute(now)
     day = _utc_day(now)
     session.execute(
@@ -912,7 +916,7 @@ def _reserve_acs_delivery_capacity(
     )
     state = session.get(DeliveryPacingState, "acs", with_for_update=True, populate_existing=True)
     if state is None:
-        raise RuntimeError("ACS pacing state could not be initialized")
+        raise DeliveryConfigurationError("ACS pacing state could not be initialized")
     if state.minute_window_started_at < minute:
         state.minute_window_started_at = minute
         state.minute_count = 0
@@ -974,7 +978,7 @@ def _delivery_provider_binding(settings: WorkerSettings) -> tuple[str, str]:
     """Return a secret-free fingerprint of configuration that affects sends."""
 
     transport: dict[str, Any]
-    if settings.email_provider == "azure_communication_services":
+    if settings.email_provider_kind.is_acs:
         endpoint = settings.acs_email_endpoint
         transport = {
             "endpoint": endpoint,
@@ -1462,7 +1466,7 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         if not spf.has_spf:
             logger.warning("SPF pre-flight: %s publishes no SPF record; delivery may be flagged", spf.domain)
         if sender_address != campaign.sender_mailbox:
-            if ctx.settings.email_provider == "azure_communication_services":
+            if ctx.settings.email_provider_kind.is_acs:
                 logger.info(
                     "sender override: campaign requests %s but the %s provider sends as %s",
                     campaign.sender_mailbox,
@@ -1476,7 +1480,7 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                     sender_address,
                 )
         deferred = 0
-        if ctx.settings.email_provider == "azure_communication_services":
+        if ctx.settings.email_provider_kind.is_acs:
             requested_ids = assignment_ids
             reserved, next_available = _reserve_acs_delivery_capacity(
                 session,
@@ -2271,7 +2275,7 @@ def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
                 session.commit()
                 raise
             try:
-                provider_name = "acs" if ctx.settings.email_provider == "azure_communication_services" else "smtp"
+                provider_name = ctx.settings.email_provider_kind.metrics_name
                 with provider_call(provider_name, "send"):
                     sender.send(
                         Reminder(
@@ -2738,7 +2742,7 @@ def _send_email(
     # Reuse the batch connection when one was supplied; single-message callers
     # (reminders, ad-hoc sends) still get a self-contained transport.
     transport = sender if sender is not None else _make_batch_sender(ctx)
-    provider_name = "acs" if ctx.settings.email_provider == "azure_communication_services" else "smtp"
+    provider_name = ctx.settings.email_provider_kind.metrics_name
     with provider_call(provider_name, "send"):
         if correlation is None:
             return transport.send(msg)

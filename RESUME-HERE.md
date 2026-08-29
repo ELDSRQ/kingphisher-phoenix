@@ -356,9 +356,13 @@ discovery and live progress/cost/rollback qualification for DEP-010, then the
 full qualification lanes (external E2E, exact-final ARM64 images,
 AMD64/registry/attestation, browser/WCAG, disposable Azure +
 Entra/Graph/Outlook/ACS/DNS/inbox, recovery/rotation, alert/audit witness,
-human acceptance). Label evidence local/static, local live, or cloud/provider
-live; only the last closes a corresponding production gate. AI may
-draft/advise but never approve, target, apply infrastructure, handle
+human acceptance). The 2026-08-29 remediation wave (A-drift docs, provider
+strategy refactor, rate-limit posture, DeliveryConfigurationError) is done;
+see /Users/edierks/projects/codex-test/phishing-awareness-platform/docs/REMEDIATION-LIST-2026-08-29.md
+for the open remainder (modularization, behavioral UI tests, trend charts,
+qualification lanes). Label evidence local/static, local live, or
+cloud/provider live; only the last closes a corresponding production gate. AI
+may draft/advise but never approve, target, apply infrastructure, handle
 consent, or launch. Prefer simplicity and the existing three-deployable
 modular-monolith architecture.
 

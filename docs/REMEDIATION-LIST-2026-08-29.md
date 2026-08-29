@@ -25,14 +25,14 @@ SHA, head, and counts; re-run the handoff contract (`tests/test_external_worker_
 
 ## B. Bugs / behavioral issues (verified, low severity)
 
-| # | Finding | Evidence | Suggested fix |
+| # | Finding | Evidence | Status |
 |---|---|---|---|
-| B1 | Tracking rate-limit backend defaults to `memory`; the **global 3,000/min limit is per-replica** in a multi-replica managed deployment, weakening linearly with replica count | `apps/tracking-api/src/kp_tracking_api/config.py:59` | Default `redis` in managed runtime modes, or document the per-replica consequence |
-| B2 | `_ip_rate_limited` uses `_client_ip(request) or "unknown"` as a limiter key — all IP-unresolvable requests share one 60/min bucket | `apps/tracking-api/src/kp_tracking_api/routers.py:177` | Acceptable today (can't spoof trusted-proxy chain); document the collapse or reject unresolvable IPs |
-| B3 | `email_provider == "azure_communication_services"` string fork appears **9×** across `config.py` + `jobs.py`; provider selection is string-typed at call sites, not a resolved strategy | `apps/workers/src/kp_workers/jobs.py:623,977,1465,1479,2274,2741`; `config.py:273,366,448` | Introduce a resolved `EmailProvider` strategy object; kills the F-1-class drift risk |
-| B4 | `ACS delivery pacing is not configured` raises bare `RuntimeError` | `apps/workers/src/kp_workers/jobs.py:898` | Dedicated `DeliveryConfigurationError` for greppable logs |
-| B5 | `views["azure-deployment"]` uses bracket notation while all other views use dot notation | `apps/operator-ui/src/console/app.js:1327` | Cosmetic; normalize for a future nav lint |
-| B6 | 284 `type: ignore` + 159 `noqa` across apps/packages (128+78 in operator-api alone) | grep audit | Mostly legitimate (ssl/bleach arg-type pins, documented fail-closed BLE001); periodic audit to confirm none mask a real defect |
+| B1 | Tracking rate-limit backend defaults to `memory`; the **global 3,000/min limit is per-replica** in a multi-replica managed deployment, weakening linearly with replica count | `apps/tracking-api/src/kp_tracking_api/config.py`; Terraform already pins `TRACKING_API_RATE_LIMIT_BACKEND=redis` at `infrastructure/terraform/main.tf:1151-1152` | **Done (documented):** field comment now states the per-replica consequence and that the managed topology must keep `redis`; Terraform already sets it |
+| B2 | `_ip_rate_limited` uses `_client_ip(request) or "unknown"` as a limiter key — all IP-unresolvable requests share one 60/min bucket | `apps/tracking-api/src/kp_tracking_api/routers.py:177` | **Done (documented):** named `_UNRESOLVED_CLIENT_IP_BUCKET` constant with explicit comment that the collapse fails safe (over-limits) and the global limiter still bounds aggregate |
+| B3 | `email_provider == "azure_communication_services"` string fork appears **9×** across `config.py` + `jobs.py`; provider selection is string-typed at call sites, not a resolved strategy | `apps/workers/src/kp_workers/jobs.py:623,977,1465,1479,2274,2741`; `config.py:273,366,448` | **Done:** `EmailProviderKind` StrEnum (wire-compatible `.value`) + `email_provider_kind` property; all 9 forks now branch on `is_acs`/`metrics_name`. Field is `EmailProviderKind`; gate/provider comparisons stay string-compatible |
+| B4 | `ACS delivery pacing is not configured` raises bare `RuntimeError` | `apps/workers/src/kp_workers/jobs.py` | **Done:** `DeliveryConfigurationError(RuntimeError)` raised for both pacing failures, matching the existing exception convention |
+| B5 | `views["azure-deployment"]` uses bracket notation while all other views use dot notation | `apps/operator-ui/src/console/app.js:1327` | Open (cosmetic; bracket is required by the hyphenated key — leave unless a nav lint arrives) |
+| B6 | 284 `type: ignore` + 159 `noqa` across apps/packages (128+78 in operator-api alone) | grep audit | Open; periodic audit to confirm none mask a real defect |
 
 ## C. Dead / unwired / unused (verified clear — no action required, listed for the record)
 
@@ -75,16 +75,18 @@ SHA, head, and counts; re-run the handoff contract (`tests/test_external_worker_
 | E4 | `_CountingResponse` (AI-010) — acceptable; fold byte-counting into the base reader next time | Design note, not an action |
 | E5 | Re-verify `rate_limit_backend` default once managed topology is qualified (ties to B1) | Ties to B1 |
 
-## Suggested execution order
+## Execution status
 
-1. **A1–A7 doc drift** (fast, low-risk, high value — READ ORDER correctness).
-2. **B3 provider strategy refactor** (largest risk-reduction code change).
-3. **B1/B2 rate-limit posture** decision (one line + doc).
-4. **D1 modularization** (file-level splits, no behavior change; do with the
+Done in the first wave (2026-08-29): **A1–A7** doc drift; **B3** provider
+strategy refactor; **B1** rate-limit posture documentation; **B2**
+unresolved-IP bucket documentation; **B4** `DeliveryConfigurationError`.
+Gates after that wave: ruff ✓, format ✓, mypy ✓ (133), hermetic **2,690**
+(+7 CSP contract tests); PostgreSQL/Redis gates unrun (no local stack).
+
+Remaining:
+
+1. **D1 modularization** (file-level splits, no behavior change; do with the
    next feature touch to avoid churn).
-5. **D2 first behavioral UI test**, then **D3 chart**.
-6. E1/E2 opportunistically; D4 only when external environments are available.
-
-Gates after this list: lint ✓, format ✓, mypy ✓ (133), hermetic 2,683,
-PostgreSQL 92, Redis 2, fresh-migration 1 — re-run any touched suite with the
-fix.
+2. **D2 first behavioral UI test**, then **D3 chart**.
+3. **B5/B6** only if a nav lint or type-ignore audit is pursued.
+4. E1/E2 opportunistically; D4 only when external environments are available.

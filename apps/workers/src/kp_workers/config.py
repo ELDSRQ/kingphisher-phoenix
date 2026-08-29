@@ -1,5 +1,6 @@
 import re
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -26,6 +27,30 @@ _ACS_DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63
 _CIPHERTEXT_KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
 _AWARENESS_PSEUDONYM_KEY_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 _MAX_CIPHERTEXT_PRIOR_KEYS = 4
+
+
+class EmailProviderKind(StrEnum):
+    """Resolved email transport kind.
+
+    Values are the canonical provider strings persisted on the delivery gate
+    and carried in the config, so ``.value`` stays wire-compatible with
+    ``email_provider``. Code must branch on this enum, not on string
+    literals, so a new provider or a typo cannot silently fork a consumer
+    (the F-1 lesson).
+    """
+
+    SMTP = "smtp"
+    AZURE_COMMUNICATION_SERVICES = "azure_communication_services"
+
+    @property
+    def is_acs(self) -> bool:
+        return self is EmailProviderKind.AZURE_COMMUNICATION_SERVICES
+
+    @property
+    def metrics_name(self) -> str:
+        """Short provider label used in metric labels and operator logs."""
+
+        return "acs" if self.is_acs else "smtp"
 
 
 def _is_local_provider_host(hostname: str | None) -> bool:
@@ -178,7 +203,7 @@ class WorkerSettings(BaseSettings):
     smtp_starttls: bool | None = None
     smtp_ssl: bool = False
     smtp_sender: str | None = None
-    email_provider: Literal["smtp", "azure_communication_services"] = "smtp"
+    email_provider: EmailProviderKind = EmailProviderKind.SMTP
     acs_email_endpoint: str | None = None
     acs_email_connection_string: str | None = None
     acs_client_id: str | None = Field(
@@ -270,7 +295,7 @@ class WorkerSettings(BaseSettings):
             raise ValueError("SMTP username and password must be configured together")
         if (
             self.worker_name in {"delivery", "reminder"}
-            and self.email_provider == "azure_communication_services"
+            and self.email_provider_kind.is_acs
             and not self.acs_email_endpoint
         ):
             raise ValueError("ACS email endpoint is required for the Azure Communication Services provider")
@@ -363,7 +388,7 @@ class WorkerSettings(BaseSettings):
                     raise ValueError("KP_WORKER_TRAINING_TOKEN_HMAC_KEY must be a 256-bit hex key") from None
             if not self.smtp_sender:
                 raise ValueError("SMTP sender is required for email workers in managed and production runtime modes")
-            if self.email_provider == "azure_communication_services":
+            if self.email_provider_kind.is_acs:
                 _require_acs_production_endpoint(self.acs_email_endpoint)
                 _require_uuid("ACS sending managed identity client ID", self.acs_client_id)
                 self.require_acs_delivery_ready()
@@ -440,12 +465,18 @@ class WorkerSettings(BaseSettings):
         return {d.strip().lower() for d in self.brand_allowlist.split(",") if d.strip()}
 
     @property
+    def email_provider_kind(self) -> EmailProviderKind:
+        """Resolved transport kind; never branch on the raw string."""
+
+        return EmailProviderKind(self.email_provider)
+
+    @property
     def effective_smtp_address(self) -> str:
         return self.smtp_address or self.mailpit_smtp
 
     @property
     def effective_smtp_sender(self) -> str:
-        if self.runtime_mode in _MANAGED_RUNTIME_MODES and self.email_provider == "azure_communication_services":
+        if self.runtime_mode in _MANAGED_RUNTIME_MODES and self.email_provider_kind.is_acs:
             # Re-check time-bounded evidence whenever a delivery/reminder asks
             # for its sender, not only when the long-running worker starts.
             self.require_acs_delivery_ready()
