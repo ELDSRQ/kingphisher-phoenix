@@ -104,9 +104,9 @@ functionality or data.
   `1403d94` → `c9ea716` with the ANA-010 ledger-trend (`aa67c17`) and named
   close-disposition (`c9ea716`) increments. Worktree is clean; do not reset or
   clean it.
-- Current-head gates (all 2026-08-29, as of `95cbc81`): hermetic 2,694/103
+- Current-head gates (all 2026-08-29, as of `a6f7d21`): hermetic 2,695/103
   deselected with 0 failures (includes the chart/CSP contract tests from the
-  D3 wave); external PostgreSQL 92 passed (fresh-install/historical migration
+  D3 wave and the console bundle drift gate); external PostgreSQL 92 passed (fresh-install/historical migration
   to `0033`, retention concurrency, outcome-writer-versus-retention, grants);
   external Redis 2 passed on DB15; fresh-migration 1 passed; `make lint` and
   strict mypy (133 files) clean. E2E, exact-image, browser, and
@@ -324,8 +324,8 @@ The project-only ARM64 engine remains on 192.168.1.140 under
 /Volumes/DockerExternal/KingPhisher-Phoenix (see
 /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
 
-origin/main is 95cbc81; the local worktree is clean. Alembic head is
-0033_training_knowledge_check. Current-head gates pass: hermetic 2,694,
+origin/main is a6f7d21; the local worktree is clean. Alembic head is
+0033_training_knowledge_check. Current-head gates pass: hermetic 2,695,
 external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
 mypy. The retention P1 is closed, the migration revision-id
 defect is fixed, and ANA-010/TRN-010 are complete locally. The offline-
@@ -366,29 +366,29 @@ retained as the data fallback; pinned by a 7-test chart/CSP contract in
 /Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-api/tests/test_console_csp_contract.py
 and executed offline by
 /Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-ui/tests/chart-smoke.mjs).
-D1 modularization is **partially complete, with an honest stop boundary**:
-the worker monolith apps/workers/src/kp_workers/jobs.py is split into domain
-modules followup_jobs.py (alert/reminder) and retention_jobs.py (retention /
-campaign lifecycle / self-publish), and the operator-api console.py probe
-cluster (connection tests, `_probe_*` / `_Pinned*` / `_ResolvedTarget`) is
-extracted into apps/operator-api/src/kp_operator_api/connection_probes.py
-(console.py 4,154 → 3,630 lines). Both use the repo's established facade
-pattern: the facade re-exports the moved names (console.py declares an
-`__all__` re-export block so ruff's F401 accepts test-referenced names) and
-`connection_probes` resolves the test-monkeypatched call sites
-(`_pinned_http_status`, `_connect_pinned`, `_resolve_pinned_target`) through
-the console module object so `monkeypatch.setattr(console, ...)` still
-intercepts. Verified behavior-preserving: hermetic 2,694, mypy 136 files,
-full operator-api suite green. Remaining D1 targets, deliberately deferred:
-routers.py (untouched), deployment_orchestration.py (assessed and skipped —
-class-structured with 23 shared module-level names between
-GitHubWorkflowGateway and DeploymentOrchestrator, and it governs real Azure
-deployments; a split requires a shared-constants refactor first, riskier than
-its payoff at the tail of a session), and the operator-ui console app.js
-(split requires introducing a build/bundle step — three test files read it as
-one string and it is served as a single <script> with no bundler, so it
-should stay a single file or be split only as part of adding a real build
-step).
+D1 modularization is **complete for all five monoliths**, each split with
+the repo's established facade pattern (facade re-exports moved names,
+`__all__` for ruff F401, and any test-monkeypatched call site resolves
+through the facade module object so `monkeypatch.setattr` keeps
+intercepting): (1) apps/workers/src/kp_workers/jobs.py → followup_jobs.py
+(alert/reminder) + retention_jobs.py; (2) operator-api console.py (4,154 →
+3,630) → connection_probes.py; (3) routers.py (5,418 → 5,081) →
+recipient_import_planning.py; (4) deployment_orchestration.py (3,112) →
+deployment_common.py + github_workflow_gateway.py (the gateway resolves
+EXPECTED_WORKFLOW_SHA256 through a deferred `_facade()` so the operator
+test's monkeypatch still intercepts); (5) operator-ui console app.js (6,884)
+→ ES modules in apps/operator-ui/src/console-js/ (dom.js: el/svg/SVG_NS;
+chart.js: ledgerTrendChart; app.js entry), bundled by pinned esbuild 0.25.0
+into the committed apps/operator-ui/src/console/app.js that the API server
+mounts at /console — deploys serve the same path with no node runtime
+(rebuild sources with `cd apps/operator-ui && npm run build`; the
+commit-time drift gate apps/operator-api/tests/test_console_bundle_drift.py
+rebuilds and fails if the committed bundle is stale). Source-wiring
+UI-contract tests read the authored modules; the CSP contract and D2
+behavioral harness read the served bundle. Verified behavior-preserving:
+hermetic 2,695, mypy 137 files, operator-api + UI suites green, ruff/format
+clean. Remaining D1: none structural — routers.py and the console entry stay
+single files by design.
 
 D2 is done: apps/operator-ui/tests/chart-smoke.mjs is now an executable
 behavioral harness (brace-balanced extraction by function name so reorders
@@ -396,7 +396,8 @@ cannot silently untest it; el()/svg() behavior + chart structure/CSP
 assertions), gated in the hermetic suite by
 apps/operator-api/tests/test_console_behavior_smoke.py (shells out to node,
 skips only if node is absent, requires exit 0 "chart-smoke OK"). Proven to
-fail on an injected inline style:. Hermetic is now 2,694. B6 (withholder
+fail on an injected inline style:. Hermetic is now 2,695 (the +1 is the
+console bundle drift gate). B6 (withholder
 cleanup) is done: 156 dead `# noqa` directives removed via RUF100 under the
 real ruff config (they suppressed rules outside the configured select set),
 and all remaining 65 `noqa` plus all 298 `type: ignore` were verified genuine
