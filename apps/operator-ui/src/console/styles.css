@@ -337,6 +337,7 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   width: calc(100% - 32px);
 }
 .modal::backdrop { background: rgba(0, 0, 0, .55); }
+.modal-wide { max-width: 900px; }
 .modal-form { padding: 20px 22px; display: flex; flex-direction: column; gap: 8px; }
 .modal-title { margin: 0; font-size: 16px; }
 .modal-desc { margin: 0 0 6px; color: var(--muted); font-size: 13px; line-height: 1.5; }
@@ -406,6 +407,24 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   overflow-y: auto;
   margin: 8px 0;
 }
+
+/* Preview-frame height variants. These are classes, not inline style
+   attributes, so the console stays compatible with its own strict CSP
+   (`style-src 'self'` without 'unsafe-inline'). */
+.template-body.tall { max-height: 55vh; }
+.template-body.medium { max-height: 45vh; }
+
+/* Desktop/mobile reading frame for the template preview. */
+.preview-frame {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 8px auto;
+  padding: 16px;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+}
+.preview-frame.mobile { max-width: 360px; }
+.preview-frame.desktop { max-width: 720px; }
 
 /* Sending-domain wizard + RoE: ready-to-paste DNS record blocks. */
 .card-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }

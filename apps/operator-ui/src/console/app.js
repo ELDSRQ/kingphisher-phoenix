@@ -4051,7 +4051,7 @@ function showRenderedTemplatePreview(rendered) {
     `Preview: ${rendered.subject || "(no subject)"}`,
     "Rendered with the server's non-delivery sample recipient. Previewing does not approve, schedule, or send this message.",
   );
-  dlg.setAttribute("style", "max-width: 900px");
+  dlg.classList.add("modal-wide");
   const status = el("p", { class: "modal-help", role: "status", "aria-live": "polite" });
   const stage = el("div", { "aria-label": "Rendered message preview" });
   const controls = el("div", { class: "btn-row", role: "group", "aria-label": "Preview format" });
@@ -4062,8 +4062,7 @@ function showRenderedTemplatePreview(rendered) {
     if (mode === "plain") {
       status.textContent = "Plain-text alternative as delivered to clients that do not render HTML.";
       stage.replaceChildren(el("pre", {
-        class: "template-body", tabindex: "0", text: rendered.plain_text || "(empty plain-text body)",
-        style: "max-height: 55vh",
+        class: "template-body tall", tabindex: "0", text: rendered.plain_text || "(empty plain-text body)",
       }));
       return;
     }
@@ -4073,8 +4072,8 @@ function showRenderedTemplatePreview(rendered) {
       : "Desktop reading frame using the approved plain-text fallback.";
     const message = el("article", {
       tabindex: "0",
+      class: `preview-frame ${mobile ? "mobile" : "desktop"}`,
       "aria-label": `${mobile ? "Mobile" : "Desktop"} message preview`,
-      style: `box-sizing:border-box;width:100%;max-width:${mobile ? "360px" : "720px"};margin:8px auto;padding:16px;border:1px solid currentColor;border-radius:8px`,
     }, [
       el("dl", { class: "modal-detail" }, [
         el("dt", { text: "From" }), el("dd", { text: "IT Security <sender@example.com>" }),
@@ -4082,8 +4081,7 @@ function showRenderedTemplatePreview(rendered) {
         el("dt", { text: "Subject" }), el("dd", { text: rendered.subject || "(no subject)" }),
       ]),
       el("pre", {
-        class: "template-body", text: rendered.plain_text || "(empty plain-text body)",
-        style: "max-height:45vh",
+        class: "template-body medium", text: rendered.plain_text || "(empty plain-text body)",
       }),
     ]);
     stage.replaceChildren(message);
@@ -4352,10 +4350,9 @@ async function showTrainingResourcePreview(resource, trigger) {
       el("dt", { text: "Format" }), el("dd", { text: "Plain text" }),
     ]));
     form.appendChild(el("pre", {
-      class: "template-body",
+      class: "template-body tall",
       tabindex: "0",
       text: preview.content || "(empty lesson)",
-      style: "max-height:55vh",
     }));
     form.appendChild(el("p", {
       class: "modal-help",
