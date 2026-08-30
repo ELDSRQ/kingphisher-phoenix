@@ -172,3 +172,18 @@ def test_onboarding_distinguishes_verified_from_reachability_only_before_save() 
     assert "testResult.save_allowed !== true" in ONBOARDING
     assert 'testResult?.outcome === "reachable_unverified" ? "validated and saved" : "tested and saved"' in ONBOARDING
     assert 'outcome === "verified" ? "success"' in ONBOARDING
+
+
+def test_view_registration_uses_dot_notation_except_the_hyphenated_azure_key() -> None:
+    # B5: `views["azure-deployment"]` must use bracket notation (the key is
+    # hyphenated, so dot notation is impossible), but every other view must
+    # register with dot notation so the registry stays greppable and uniform.
+    assignments = re.findall(r"^views\[\"([a-z-]+)\"\] = async", APP, re.MULTILINE)
+    assert assignments == ["azure-deployment"], f"unexpected bracket-notation view keys: {assignments}"
+    dot_views = re.findall(r"^views\.([a-z_]+) = async", APP, re.MULTILINE)
+    assert len(dot_views) == len(set(dot_views)), "duplicate dot-notation view registration"
+    assert "azure-deployment" not in dot_views
+    # The hyphenated key must also be reachable through the nav registry, not
+    # just assigned — a stray assignment without nav wiring is dead code.
+    assert '"azure-deployment", "Azure deployment"' in APP
+    assert 'navigateTo("azure-deployment")' in APP
