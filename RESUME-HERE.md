@@ -1,6 +1,6 @@
 # RESUME HERE — current engineering handoff
 
-**Reconciled:** 2026-08-29
+**Reconciled:** 2026-08-30 (head `00235fc`; hermetic 2707; ANA-010 drill-down + two operator runbooks landed; full AZ-030 live promotion operator-required)
 
 **Repository:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 
@@ -479,6 +479,72 @@ Redis from `.env`): **console smoke 7/7 + canary 1/1; combined 8/8**.
 Previous runs with the passwordless Redis override measured **6/7 + 1/1
 isolated** with the 503 above; that override was the single root cause.
 
+## Session changes to recheck (2026-08-30, commits `db5cca0`..`00235fc`)
+
+Every change made this session is listed here so a reviewer can recheck it.
+All are committed and pushed; the tree is clean. The two code-bearing changes
+are the GUI drill-down (fae8929) and the two operator runbooks (6507a54,
+78fb3a1); the rest are documentation only.
+
+1. `db5cca0` — docs: flagged the full AZ-030 live promotion as operator-only
+   in RESUME-HERE.md, docs/AI_HANDOFF.md, docs/NEXT_SESSION_HANDOFF.md.
+   Recheck: the three edited blocks quote `scripts/azure_bootstrap.sh`
+   accurately and do not overstate what an agent can do.
+2. `fae8929` — **CODE**: wired the ANA-010 per-recipient drill-down into the
+   operator GUI. Files: apps/operator-ui/src/console-js/app.js (source;
+   ~118 lines added), apps/operator-ui/src/console/app.js (esbuild bundle,
+   rebuilt via `cd apps/operator-ui && npm run build`), new test
+   apps/operator-api/tests/test_analytics_ledger_drilldown_ui_contract.py
+   (4 tests), RESUME-HERE.md, docs/WAVE-BUILD-PLAN.md. Recheck points:
+   - The capability gate: the whole drill-down section is inside
+     `if (hasCapability(CAPABILITY.VIEW_NAMED_RESULTS))` inside
+     `views.trends` — verify it cannot render without the endpoint's
+     `view_named` capability.
+   - The CSV guard fix: `downloadApiCsv` now accepts any `/analytics/` path
+     (was `/analytics/campaigns/` only). Recheck it did not weaken the
+     deny-safety checks (`://`, CR/LF, `.csv` requirement still present).
+   - Pseudonym safety: the table renders only ledger outcome booleans/dates;
+     verify no recipient attribute or pseudonym is rendered (pinned by the
+     test's `entry.mailbox not in TREND_VIEW` style assertions).
+   - The summary metric reference uses `exposures_total` (verified against
+     analytics_routes.py); the selector uses `boundedRecipientPage(payload,
+     500)` and `/recipients?limit=500&offset=0`.
+   - Bundle drift: the committed app.js bundle matches a fresh `npm run
+     build` (drift gate test_console_bundle_drift.py passed).
+   - CSP: no inline `style:`/`onclick=` attributes introduced (CSP contract
+     test passed).
+3. `7f76032` — docs: reconciled AI_HANDOFF.md, NEXT_SESSION_HANDOFF.md,
+   PRODUCTION-READINESS-TASK-MATRIX.md to the drill-down completion.
+4. `cf76367` — docs: RET-005 matrix row no longer lists drill-down as
+   pending.
+5. `fc90a6e` — docs: recorded the clean security scan (bandit 0 / semgrep 0 /
+   gitleaks none on changed files) and key-rotation human-gating.
+6. `4fea8f7` — docs: OUT-001/RET-005/INT-001 matrix status cells no longer
+   claim "consumers remain"; header date refreshed. Recheck: the three rows'
+   pipes/columns are intact (verified after edit).
+7. `6507a54` — **CODE**: new operator script
+   scripts/operator/deployment-preflight/az030-operator-runbook.sh
+   (175 lines, executable, bash -n + shellcheck clean). Read-only readiness
+   + reviewed GUI-field checklist. Recheck: it never mutates Azure/GitHub;
+   the `--repo`/`--subscription`/`--environment` defaults are safe; the gh
+   repo/workflow check uses a working `gh repo view --json defaultBranchRef`
+   + `gh workflow list` query.
+8. `78fb3a1` — **CODE**: new operator script
+   scripts/operator/deployment-preflight/ai010-bakeoff-runbook.sh
+   (127 lines, executable, bash -n + shellcheck clean). Recheck: refuses
+   non-loopback endpoints, validates weights/license exist, never downloads
+   weights, writes the digest-pinned report. Validated end-to-end against a
+   loopback mock (4/4 cases, exit 0) — see NEXT_SESSION_HANDOFF addendum.
+9. `00235fc` — docs: recorded the runbook E2E validation wave and the
+   SSH-tunnel port caveat (8080/18080 are tunnel-owned on this host).
+
+Recheck commands: `bash -n` + `shellcheck -S warning` on both runbooks;
+`cd apps/operator-ui && npm run build && cd .. && .venv/bin/python -m pytest
+apps/operator-api/tests/test_console_bundle_drift.py -q`; `make test`
+(expect 2707 passed); `make lint`; `make typecheck`; the security scans
+(`bandit -r packages apps -q -x "*/tests/*" -ll`, repo semgrep config,
+gitleaks on changed files only).
+
 ## Copy-ready continuation prompt
 
 ```text
@@ -503,107 +569,65 @@ The project-only ARM64 engine remains on 192.168.1.140 under
 /Volumes/DockerExternal/KingPhisher-Phoenix (see
 /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
 
-origin/main is b0751cd (after the live E2E connection-probe fix + init
-exec + isolated E2E postgres lane). Alembic head is
-0033_training_knowledge_check. Current-head gates pass: hermetic 2,696,
-external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
-mypy (140 files). The retention P1 is closed, the migration revision-id
-defect is fixed, and ANA-010/TRN-010 are complete locally. The offline-
-buildable backlog is complete: every remaining min-product item needs an
-external environment (a live llama.cpp endpoint for model selection/deployment
-and a signed-in Azure session for discovery and qualification). Do not reopen
-locally complete ORG-001, THR-001A/B, IMP-001, DOCSIM-001, ANA-010, or
-TRN-010 without a regression.
+CURRENT STATE (2026-08-30, reconciled in this file):
+- origin/main = 00235fc, working tree clean, no stash, single branch `main`.
+- Alembic head 0033_training_knowledge_check. Hermetic suite 2707 passed /
+  103 deselected; lint clean; strict mypy 140 files clean. Run `make test`,
+  `make lint`, `make typecheck` to re-verify before any gate claim.
+- External gates already PASSED: exact-final native ARM64 images (final-v3),
+  PostgreSQL profile (92), Redis profile (2), fresh-migration (1), current-head
+  external E2E (8/8), live Azure read-only smoke, capacity/restore, Wave-36
+  hermetic. Static AZ-030 orchestration suite 114 passed; AI-010 bake-off
+  offline harness 7 passed. Security scans clean (bandit 0, semgrep 0,
+  gitleaks none on session-changed files).
+- ANA-010 is COMPLETE through the per-recipient GUI drill-down (fae8929):
+  capability-gated (view_named) masked-recipient selector or recipient-id
+  entry, pseudonym-free bounded table, capability-gated CSV export; pinned by
+  /Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-api/tests/test_analytics_ledger_drilldown_ui_contract.py
+  (4 tests). It also fixed a latent bundle bug: downloadApiCsv only allowed
+  /analytics/campaigns/ paths, so all /analytics/ledger/ CSV downloads
+  (trend/repeats/recipient-history) silently threw "Export path is not
+  allowed"; the guard now allows the exact /analytics/ prefix. Only ANA-010
+  key rotation/recovery remains governed follow-up (operator-gated).
+- Two OPERATOR runbooks added (bash -n + shellcheck clean, committed):
+  /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/deployment-preflight/az030-operator-runbook.sh
+  (read-only readiness + exact foundation_bootstrap staging GUI-field
+  checklist, live-prefilled from az; validated read-only against the live
+  subscription/tenant) and
+  /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/deployment-preflight/ai010-bakeoff-runbook.sh
+  (offline-harness check, weights/license/runtime contract, loopback-only
+  endpoint enforcement, fixed-eval run, digest-pinned evidence report;
+  validated end-to-end against a loopback mock: 4/4 cases, exit 0).
+- ENVIRONMENT CAVEAT: loopback ports 8080 and 18080 on this host are owned by
+  SSH tunnels. Any llama.cpp/mock server must use a verified-free loopback
+  port (runbooks accept --endpoint with any port).
 
-Continue from the goal-aligned backlog now that the offline build is
-complete. ANA-010 and TRN-010 are complete locally (five-year ledger graph,
-named close disposition, repeat history, named per-recipient pseudonymous
-drill-down wired into the GUI on 2026-08-30; campaign-bound knowledge check
-with deterministic evidence builder, digest pinning, and generic quiz
-fallback). The AI-010 path has its
-foundation at /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/ai-bakeoff/
-(fixed eval set + deterministic scorer + bounded loopback runner) and its
-worker enforcement (`KP_WORKER_AI_MODEL_ID` constant-time pin, fail-closed in
-managed mode, with response-byte/pin/mismatch metrics). DEP-010's
-strong-defaults + Advanced field classification is in (azure-deployment
-wizard collapses resource-ID/GitHub/Terraform internals behind an explicit
-disclosure and seeds suggested defaults). The remaining items all need an
-external environment, in order: (1) benchmark and select the internal model
-against the bake-off set and deploy the pinned llama.cpp image/endpoint
-(needs a live loopback llama.cpp endpoint exposing /chat/completions with a
-usage block; run /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/ai-bakeoff/evaluate_model.py
-and record the report JSON as selection evidence), then (2) browser-login
-discovery and live progress/cost/rollback qualification for DEP-010, then the
-full qualification lanes (current-head external E2E PASSED above; native AMD64/registry,
-AMD64/registry/attestation, browser/WCAG, disposable Azure +
-Entra/Graph/Outlook/ACS/DNS/inbox, recovery/rotation, alert/audit witness,
-human acceptance). The 2026-08-29 remediation waves are done: (a) A-drift
-docs, (b) the provider strategy refactor (EmailProviderKind enum, 9 forks no
-longer string-forkable), rate-limit posture documentation, and
-DeliveryConfigurationError (see /Users/edierks/projects/codex-test/phishing-awareness-platform/docs/REMEDIATION-LIST-2026-08-29.md
-for status), and (c) the D3 accessible SVG ledger-trend chart
-(ledgerTrendChart + svg() in the console app.js, strict-CSP-clean, table
-retained as the data fallback; pinned by a 7-test chart/CSP contract in
-/Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-api/tests/test_console_csp_contract.py
-and executed offline by
-/Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-ui/tests/chart-smoke.mjs).
-D1 modularization is **complete for all five monoliths**, each split with
-the repo's established facade pattern (facade re-exports moved names,
-`__all__` for ruff F401, and any test-monkeypatched call site resolves
-through the facade module object so `monkeypatch.setattr` keeps
-intercepting): (1) apps/workers/src/kp_workers/jobs.py → followup_jobs.py
-(alert/reminder) + retention_jobs.py; (2) operator-api console.py (4,154 →
-3,630) → connection_probes.py; (3) routers.py (5,418 → 5,081) →
-recipient_import_planning.py, then sending-domains/RoE cluster (8 routes +
-verification helpers + `_domain_verification_failure` + `_GUI_COLLECTION_MAX_*"`)
-→ sending_domains_roe.py — because FastAPI ≥0.141 wraps `include_router` in a
-lazy `_IncludedRouter` that hides routes from the one-level `router.routes`
-walkers the route-inventory contracts use, the facade copies the sub-router's
-route objects (same `/api/v1` prefix) into routers.router at the cluster's old
-position, preserving flat shape/order/paths (79==79 runtime route parity vs
-HEAD); (4) deployment_orchestration.py (3,112) →
-deployment_common.py + github_workflow_gateway.py (the gateway resolves
-EXPECTED_WORKFLOW_SHA256 through a deferred `_facade()` so the operator
-test's monkeypatch still intercepts); (5) operator-ui console app.js (6,884)
-→ ES modules in apps/operator-ui/src/console-js/ (dom.js: el/svg/SVG_NS;
-chart.js: ledgerTrendChart; app.js entry), bundled by pinned esbuild 0.25.0
-into the committed apps/operator-ui/src/console/app.js that the API server
-mounts at /console — deploys serve the same path with no node runtime
-(rebuild sources with `cd apps/operator-ui && npm run build`; the
-commit-time drift gate apps/operator-api/tests/test_console_bundle_drift.py
-rebuilds and fails if the committed bundle is stale). Source-wiring
-UI-contract tests read the authored modules; the CSP contract and D2
-behavioral harness read the served bundle. Verified behavior-preserving:
-hermetic 2,696, mypy 140 files, operator-api suite 985 passed / 53 skipped,
-ruff/format clean. Remaining D1: none structural — the console entry stays
-single-file by design. B5 (nav lint) also landed: a contract test pins the
-hyphenated `azure-deployment` view key to bracket notation.
+WHAT REMAINS — ALL OPERATOR/HUMAN-GATED (do not attempt autonomously):
+1. AZ-030 live promotion (P0): the reviewed deployment plan MUST be created in
+   the console Deployment GUI (fabrication is never production/RSA evidence;
+   see scripts/azure_bootstrap.sh). Operator runs az030-operator-runbook.sh,
+   fills the GUI plan (subscription 169644fd-…, tenant 808f2f63-…, two
+   hostnames, ACS sender/quota, recipient allowlist, network_mode=private,
+   stage foundation_bootstrap/staging), then the read-only post-plan
+   preflight: scripts/azure_preflight.sh --subscription <id> --repo
+   ELDSRQ/kingphisher-phoenix --environment staging --values-file <gui-export>.
+   Only after that can the live (mutating) bootstrap run with a further
+   operator confirmation. Unblocks OBS-036.
+2. DEP-010 browser discovery (operator signed-in browser on the disposable
+   subscription).
+3. WCAG/A11Y-030 (human walkthrough with real browser + assistive tech;
+   static contracts only by design).
+4. Native AMD64/registry lane (operator allocates a native AMD64 engine;
+   .140 is ARM64, emulated AMD64 is rejected).
+5. AI-010 model bake-off run (operator loads digest-pinned GGUF weights +
+   llama.cpp, then runs ai010-bakeoff-runbook.sh; commit the report as
+   selection evidence only after independent review).
+6. ANA-010 key rotation/recovery (auth/crypto/secrets — human-gated).
+7. PROD-030 human GO decision + external witness.
 
-D2 is done: apps/operator-ui/tests/chart-smoke.mjs is now an executable
-behavioral harness (brace-balanced extraction by function name so reorders
-cannot silently untest it; el()/svg() behavior + chart structure/CSP
-assertions), gated in the hermetic suite by
-apps/operator-api/tests/test_console_behavior_smoke.py (shells out to node,
-skips only if node is absent, requires exit 0 "chart-smoke OK"). Proven to
-fail on an injected inline style:. Hermetic is now 2,696 (the +1 is the
-console bundle drift gate; the further +1 is the B5 nav-lint test). B6 (withholder
-cleanup) is done: 156 dead `# noqa` directives removed via RUF100 under the
-real ruff config (they suppressed rules outside the configured select set),
-and all remaining 65 `noqa` plus all 298 `type: ignore` were verified genuine
-via `mypy --warn-unused-ignores packages apps` (zero unused under strict; the
-arg-type/attr-defined ignores are SQLAlchemy/provider boundaries). The live
-browser/WCAG lane remains a separate external gate. B5 remains only if a nav
-lint for the hyphenated azure-deployment key is pursued.
-
-Do not claim production/RSA readiness: browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/inbox,
-recovery, audit witness, and human acceptance remain NO-GO. The 2026-08-30
-session pushed the first immutable release images into the production ACR
-(operator-api/tracking-api/worker/migration, digest-pinned @sha256, see the
-ACR section above) and then fully reverted the registry hardening; live E2E
-(loopback Mailpit + full supervisor) passes **8/8 on the combined run** (7
-smoke + 1 canary) on a fresh seed (the previously
-documented 503/order findings were traced to a passwordless Redis URL in the
-session lane script — see the Live E2E section above; no repo code change was
-required). Converts registry publication from never-done to done-and-reverted,
-but deploy/attestation against those images is still not live-qualified.
+Do not reopen locally complete ORG-001, THR-001A/B, IMP-001, DOCSIM-001,
+ANA-010, TRN-010 without a regression. Do not claim production/RSA readiness:
+browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/inbox, recovery, audit
+witness, and human acceptance remain NO-GO. ACR publication was done and
+fully reverted (see ACR section); deploy/attestation is not live-qualified.
 ```

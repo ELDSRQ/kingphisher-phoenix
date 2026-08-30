@@ -70,7 +70,13 @@ The release decision is **NO-GO for production and RSA Conference use** until th
   read-only live-Azure smoke passed, AI-010 bake-off offline harness **7**
   passed. The full AZ-030 live promotion is **operator-required** (see the
   Operator-required blocker section below) — a fabricated values file is never
-  production/RSA evidence.
+  production/RSA evidence. Two operator runbooks were added and validated
+  (scripts/operator/deployment-preflight/az030-operator-runbook.sh and
+  ai010-bakeoff-runbook.sh, bash -n + shellcheck clean; the ai010 runbook was
+  proven end-to-end 4/4 against a loopback mock). Session end head:
+  `00235fc`; working tree clean; every session change is listed in
+  `RESUME-HERE.md` under "Session changes to recheck"; the authoritative
+  continuation prompt is the copy-ready prompt in `RESUME-HERE.md`.
 
 ## Architecture at a glance
 

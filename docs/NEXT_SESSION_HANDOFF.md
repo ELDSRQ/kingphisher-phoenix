@@ -2,6 +2,12 @@
 
 ## Addendum 2026-08-30 (post-Wave-38)
 
+- **Session end state: `origin/main = 00235fc`, working tree clean, no stash,
+  single `main` branch.** Hermetic 2707 / lint / strict mypy clean. The
+  authoritative continuation prompt is the copy-ready prompt in
+  `RESUME-HERE.md`; every session change is listed there under "Session
+  changes to recheck" (code: drill-down `fae8929` + runbooks `6507a54`/
+  `78fb3a1`; rest docs). All remaining work is operator-gated.
 - First immutable release-image publication into the production ACR
   `atprodcuprodacr.azurecr.io` was performed and the registry hardening was
   fully reverted. Commit `b0751cd`; the four digest-pinned references and the
