@@ -42,6 +42,14 @@
   boundary (active-KEK rotation on Terraform state with `prevent_destroy`,
   database decrypt proof, bulk re-encryption, prior-key retirement) and needs
   live Azure/operator decision, matching the standing human-gated posture.
+- **Two operator runbooks added (`scripts/operator/deployment-preflight/`):**
+  `az030-operator-runbook.sh` (read-only readiness + the exact
+  `foundation_bootstrap` staging GUI-field checklist, live-prefilled from `az`)
+  and `ai010-bakeoff-runbook.sh` (verifies the offline scoring harness, checks
+  the operator-held weights/license/runtime contract, runs the fixed eval on a
+  loopback llama.cpp endpoint, and writes the digest-pinned selection report).
+  Both are `bash -n` + shellcheck clean. They are operator prep only; the AZ-030
+  reviewed values file and the AI-010 weights still must come from you/GUI.
 - **Operator-required blocker (2026-08-30): the full AZ-030 promotion is
   operator-only.** `scripts/azure_bootstrap.sh` refuses invented values: *"Do not
   invent those reviewed values by hand. A direct command is not equivalent to the
