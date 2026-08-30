@@ -33,6 +33,15 @@
   `apps/operator-api/tests/test_analytics_ledger_drilldown_ui_contract.py`
   (4 tests); hermetic **2707** passed, lint clean. Only ANA-010 key
   rotation/recovery remains governed follow-up.
+- **Security scan on the new drill-down code is clean (2026-08-30):** bandit
+  (`-ll`, packages/apps) 0 findings, repo custom semgrep rules 0 findings,
+  and gitleaks flags **none** of the files changed this session — the raw
+  `--no-git` tree findings are all pre-existing (`.env` by design + test
+  fixtures with fictional credentials). ANA-010 **key rotation/recovery** is
+  intentionally **not** agent-actionable: it crosses the auth/crypto/secrets
+  boundary (active-KEK rotation on Terraform state with `prevent_destroy`,
+  database decrypt proof, bulk re-encryption, prior-key retirement) and needs
+  live Azure/operator decision, matching the standing human-gated posture.
 - **Operator-required blocker (2026-08-30): the full AZ-030 promotion is
   operator-only.** `scripts/azure_bootstrap.sh` refuses invented values: *"Do not
   invent those reviewed values by hand. A direct command is not equivalent to the
