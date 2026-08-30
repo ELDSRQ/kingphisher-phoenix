@@ -274,7 +274,16 @@ Wave 21 historically added a green local installation check and a strict 7-test 
 
 ## Evidence boundary
 
-Exact-final native ARM64 images are now PROVEN by the passed final-v3 qualification above (all five images, scans, and runtime verified at current head with the campaign-patterns packaging fix). External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL and Redis external profiles are now PASSED (2026-08-30: `make test-postgres` 92 passed/2714 deselected, `make test-redis` 2 passed/2804 deselected, from controller-head `51976ef` against `.140`'s engine via SSH tunnel to disposable `kingphisher_test` + reserved Redis DB14/15), and the current-head external E2E profile remains pending. The internal seven Docker Desktop project containers are stopped/preserved; unrelated containers remain running. Validated snapshot `20260829T013332Z-tsX1WQ` completes `EXT-002`; older invalid/unrecoverable snapshots remain preserved. Browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, and human-witness evidence remain open. No KnowBe4 parity or production readiness is claimed.
+Exact-final native ARM64 images are now PROVEN by the passed final-v3 qualification above (all five images, scans, and runtime verified at current head with the campaign-patterns packaging fix). External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL and Redis external profiles are now PASSED (2026-08-30: `make test-postgres` 92 passed/2714 deselected, `make test-redis` 2 passed/2804 deselected, from controller-head `51976ef` against `.140`'s engine via SSH tunnel to disposable `kingphisher_test` + reserved Redis DB14/15), and the current-head external E2E profile remains pending. The internal seven Docker Desktop project containers are stopped/preserved; unrelated containers remain running. Validated snapshot `20260829T013332Z-tsX1WQ` completes `EXT-002`; older invalid/unrecoverable snapshots remain preserved. Cloud/provider-live smoke (2026-08-30): the read-only Azure gate
+`test_live_azure_cli_can_read_selected_subscription` PASSED (1 passed, 60
+deselected) against the renewed, enabled subscription `169644fd-…af55` via a
+signed-in `az` session. This is the first **cloud-live** evidence point but is a
+narrow read-only smoke; it does not by itself promote `AZ-030`
+(resource-bound ACS/provider evidence after login) or `DEP-010` (browser
+discovery), which still need the sign-in-backed workflow on the disposable
+subscription. Browser/WCAG, AMD64/registry, rotation, production recovery, and
+human-witness evidence remain open. No KnowBe4 parity or production readiness
+is claimed.
 
 The exact five verified image IDs, per-image Trivy scan digests, and sizes are
 recorded in the final-v3 `qualification.json` and its bound scan artifacts
