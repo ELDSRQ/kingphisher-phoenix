@@ -1,0 +1,31 @@
+# Isolated E2E-lane Postgres. The reviewed docker-compose.yml binds 5432, which
+# an unrelated container owns on this host; this lane-specific stack maps the
+# same reviewed image to host port 5433 so kingphisher's database can be
+# provisioned without disturbing the unrelated workload or the shared network.
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    container_name: kp-e2e-postgres
+    environment:
+      POSTGRES_USER: kingphisher
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: kingphisher
+      AUDIT_WRITER_PASSWORD: ${AUDIT_WRITER_PASSWORD:?set AUDIT_WRITER_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - kp_e2e_postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/containers/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kingphisher -d kingphisher"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    init: true
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+
+volumes:
+  kp_e2e_postgres_data:
