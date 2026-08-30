@@ -17,6 +17,7 @@ dependencies = [
     "kp-telemetry",
     "kp-auditing",
     "kp-contracts",
+    "kp-campaign-patterns",
     "kp-templating",
     "kp-safety-validation",
     "kp-domain-verification",
