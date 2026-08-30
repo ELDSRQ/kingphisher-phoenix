@@ -234,15 +234,37 @@ the path's existence, determine the ARM64 result.
 The preserved `final-v2` attempt failed closed before image build because BSD
 filesystem-mode and evidence-path/source-context handling violated the verifier
 contract. Those failure artifacts were not clobbered; the defects were repaired
-for `final-v3`, whose retained evidence remains conditional and unvalidated.
+for `final-v3`.
 
-Wave 21 historically added a green local installation check and a strict 7-test E2E result after targeted local bootstrap/audit, token-key, PID/log, mock Graph, and fixture repairs. Shared RoE/RBAC hardening passed 374 owned/consumer tests plus Ruff/mypy, 0-finding Bandit/Semgrep, and offline package build/import. Its 23 CI workflow tests, Actionlint, and Zizmor result belongs to the historical Wave 21 workflow SHA, not the current frozen connector. The dead clone adapter was removed for a net 87-line reduction with 36 focused plus 5 downstream tests passing. The historical pre-Wave-30 result was 1,994 hermetic/87 PostgreSQL/2 Redis/8 E2E, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected using Redis DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit and `verify_install`; its 03Z API/worker log window was clean. The pre-Wave-36 local hermetic `make test` passed 2,469 tests with 97 deselected and 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. Current-head `0033` PostgreSQL/Redis/E2E external profiles, exact-image evidence, and all external release gates remain pending.
+**final-v3 is PASSED (2026-08-30).** `qualification.json` at
+`.../arm64-release-20260829-wave35-final-v3/verifier/` records status `passed`,
+exit 0, all 25 phases green (source manifest before/after identical and
+matching the expected digest `sha256:3dfa1dc9...c3f4`; native `linux/arm64`;
+Trivy 0.74.0 with immutable cache; all five image builds, scans, effective-user,
+hardening, api_runtime, worker/migration entrypoints, and mock runtime passed;
+labeled-disposable cleanup with preserved verified images and unchanged volume
+inventory). Two verifier defects were fixed to reach this: the CheckBundle
+metadata requirement (impossible for the pinned trivy 0.74.0) was relaxed to
+optional in both the scanner-version gate and the final evidence serializer,
+and the `policy/` cache requirement was made optional the same way. The gate
+also caught a real packaging defect: `kp-campaign-patterns` was imported by
+`apps/operator-api/src/kp_operator_api/threat_routes.py` but missing from
+`apps/operator-api/pyproject.toml`, so the operator-api image failed at
+startup; the dependency was added and `uv.lock` regenerated. Failed-attempt
+evidence is preserved under `verifier-attempt-2-*`, `verifier-attempt-3-*`, and
+`verifier-attempt-4-runtime-passed-evidence-write-failed/`.
+
+Wave 21 historically added a green local installation check and a strict 7-test E2E result after targeted local bootstrap/audit, token-key, PID/log, mock Graph, and fixture repairs. Shared RoE/RBAC hardening passed 374 owned/consumer tests plus Ruff/mypy, 0-finding Bandit/Semgrep, and offline package build/import. Its 23 CI workflow tests, Actionlint, and Zizmor result belongs to the historical Wave 21 workflow SHA, not the current frozen connector. The dead clone adapter was removed for a net 87-line reduction with 36 focused plus 5 downstream tests passing. The historical pre-Wave-30 result was 1,994 hermetic/87 PostgreSQL/2 Redis/8 E2E, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected using Redis DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit and `verify_install`; its 03Z API/worker log window was clean. The pre-Wave-36 local hermetic `make test` passed 2,469 tests with 97 deselected and 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. Current-head `0033` PostgreSQL/Redis/E2E external profiles and the remaining external release gates (browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, human witness) remain pending.
 
 ## Evidence boundary
 
-All five native ARM64 images passed the latest completed startup/hardening snapshot, but later source edits make those interim images stale. External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head `0032` PostgreSQL/Redis/E2E external profiles remain pending. The internal seven Docker Desktop project containers are stopped/preserved; unrelated containers remain running. Validated snapshot `20260829T013332Z-tsX1WQ` completes `EXT-002`; older invalid/unrecoverable snapshots remain preserved. Exact-final images, browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, and human-witness evidence remain open. No KnowBe4 parity or production readiness is claimed.
+Exact-final native ARM64 images are now PROVEN by the passed final-v3 qualification above (all five images, scans, and runtime verified at current head with the campaign-patterns packaging fix). External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL/Redis/E2E external profiles remain pending. The internal seven Docker Desktop project containers are stopped/preserved; unrelated containers remain running. Validated snapshot `20260829T013332Z-tsX1WQ` completes `EXT-002`; older invalid/unrecoverable snapshots remain preserved. Browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, and human-witness evidence remain open. No KnowBe4 parity or production readiness is claimed.
 
-The exact five image IDs and sizes are recorded in the canonical build plan. They are point-in-time evidence because later source edits changed image inputs.
+The exact five verified image IDs, per-image Trivy scan digests, and sizes are
+recorded in the final-v3 `qualification.json` and its bound scan artifacts
+(evidence root above). The verified images are preserved in the project-only
+Docker engine on `.140` (the qualification run also asserts the scanned image
+IDs match the inspected image IDs).
 
 For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact RSA-controlled population and domains. Conference attendance, exhibitor status, or public contact information is not authorization.
 
@@ -290,7 +312,7 @@ For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact R
    1b. Browser-login discovery and live progress/cost/rollback qualification
        for DEP-010 (needs a signed-in Azure session).
 2. Qualify the exact resulting product: current-head external E2E, all five
-   exact-final native ARM64 images, native AMD64/registry/attestation, real
+   native AMD64/registry/attestation, real
    browser/WCAG, disposable Azure, Entra/Graph/Outlook/ACS/DNS/inbox,
    recovery/rotation, alert/audit witness, and human operator acceptance.
 3. Only after the core is stable, simplify navigation/modules without
@@ -441,7 +463,7 @@ against the bake-off set and deploy the pinned llama.cpp image/endpoint
 usage block; run /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/ai-bakeoff/evaluate_model.py
 and record the report JSON as selection evidence), then (2) browser-login
 discovery and live progress/cost/rollback qualification for DEP-010, then the
-full qualification lanes (external E2E, exact-final ARM64 images,
+full qualification lanes (external E2E, native AMD64/registry,
 AMD64/registry/attestation, browser/WCAG, disposable Azure +
 Entra/Graph/Outlook/ACS/DNS/inbox, recovery/rotation, alert/audit witness,
 human acceptance). The 2026-08-29 remediation waves are done: (a) A-drift
@@ -502,8 +524,8 @@ arg-type/attr-defined ignores are SQLAlchemy/provider boundaries). The live
 browser/WCAG lane remains a separate external gate. B5 remains only if a nav
 lint for the hyphenated azure-deployment key is pursued.
 
-Do not claim production/RSA readiness: current-head external E2E, exact-final
-ARM64 images, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/inbox,
+Do not claim production/RSA readiness: current-head external E2E,
+browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/inbox,
 recovery, audit witness, and human acceptance remain NO-GO. The 2026-08-30
 session pushed the first immutable release images into the production ACR
 (operator-api/tracking-api/worker/migration, digest-pinned @sha256, see the
