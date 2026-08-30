@@ -50,6 +50,15 @@
   loopback llama.cpp endpoint, and writes the digest-pinned selection report).
   Both are `bash -n` + shellcheck clean. They are operator prep only; the AZ-030
   reviewed values file and the AI-010 weights still must come from you/GUI.
+- **Runbook E2E validation (2026-08-30):** `ai010-bakeoff-runbook.sh` was proven
+  end-to-end against a loopback mock OpenAI-compatible server on a free port:
+  harness check → weights/license contract → endpoint probe → evaluation →
+  evidence report, **4/4 cases passed**, exit 0 (report to `/tmp`; the mock was
+  never committed and is not selection evidence). `az030-operator-runbook.sh`
+  validated read-only against the live subscription/tenant (all checks pass;
+  only the two operator-chosen hostnames remain warnings). Note: ports 8080 and
+  18080 on this host are owned by SSH tunnels — use a verified-free loopback
+  port (the runbook's `--endpoint` takes any) for any future llama.cpp run.
 - **Operator-required blocker (2026-08-30): the full AZ-030 promotion is
   operator-only.** `scripts/azure_bootstrap.sh` refuses invented values: *"Do not
   invent those reviewed values by hand. A direct command is not equivalent to the
