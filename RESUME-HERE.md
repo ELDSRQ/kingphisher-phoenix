@@ -337,8 +337,32 @@ build + push path was used.
 
 ## Live E2E lane (loopback Mailpit + live supervisor stack, 2026-08-30)
 
-Result: **the full supervisor stack stands up; 6/7 console smoke tests +
-1/1 mailpit canary pass on a clean seeded DB. Two genuine findings remain.**
+Result: **RESOLVED — 8/8 E2E tests pass on the combined run (7 console smoke
++ 1 mailpit canary), fresh seed, full supervisor stack.** The two previously
+documented "findings" were one defect: the session lane script
+(`/tmp/run_full_e2e.sh`) overrode the Redis URLs with a **passwordless**
+`redis://localhost:6379/0`, but the reviewed base Compose Redis runs
+`--requirepass ${REDIS_PASSWORD}` (set in `.env`). Every API/worker queue
+publish therefore failed with `redis.AuthenticationError`, leaving a `failed`
+row in `transactional_outbox`; the operator audit-integrity gate
+(`_audit_mutation_state_is_healthy`, enforced in `security_middleware` for
+every non-exempt unsafe POST) sees any nonzero `failed`/`overdue_pending`/
+`dispatching_stale` as unhealthy and returns **503 `audit_integrity_unhealthy`**
+for subsequent unsafe POSTs (including `sync-directory`). The workers also
+could not claim the queued `deliver` jobs, which is why the canary's delivery
+assertions failed in combined runs (order-dependence) — not per-file seed
+isolation. Fix: derive the authenticated Redis URL from `.env`
+(`redis://:<REDIS_PASSWORD>@localhost:6379/0`, exactly as `.env` and
+`make dev` do) instead of overriding with the passwordless default. Evidence:
+passwordless connect raises `AuthenticationError: HELLO must be called with
+the client already authenticated`; with the password, outbox drains to 17/17
+`dispatched`, 0 failed, and both E2E files pass together (`8 passed in 3.91s`).
+The committed `make test-e2e` path reads `.env` (correct URLs) and was never
+broken; the fail-closed 503 gate behavior is covered by
+`apps/operator-api/tests/test_acs_receipt_ingress.py`. No repo code change was
+required — this was a lane-script configuration defect. (The
+`sqlstate_class=42 outbox_audit_dispatch_failed` lines in old worker logs are
+stale midnight-run noise from a pre-migration DB, absent from today's runs.)
 
 Run environment used a new isolated compose lane mapping the reviewed postgres
 image to `127.0.0.1:5433` to avoid an unrelated container owning 5432:
@@ -358,26 +382,10 @@ with a focused test
 ruff/format clean). All four onboarding probes (identity/graph/ai/smtp) now
 pass live.
 
-**Findings for remediation (both relate to the audit outbox under the live
-stack):**
-
-1. `tests/e2e/test_live_console_smoke.py::test_onboarding_contract_and_local_connectors`
-fails on `sync-directory` returning **503** (expected 202) when run *after* the
-other smoke tests in the same pytest process/DB, yet returns 202 in a direct
-probe on a clean stack. 503 maps from `AuditFailureError`, and
-`post_commit_outbox_dispatch_failed reason_code=callback_failed ... OperationalError`
-is logged during seed — an audit-outbox dispatch defect that is order/sizing
-sensitive. Needs root-causing in the audit dispatcher provisioning
-(`scripts/bootstrap_local_audit.py` + the database-owned dispatcher) before the
-smoke lane is green green.
-2. Running `tests/e2e` (both files) together on one shared seeded DB is
-**order-dependent**: `test_single_administrator_campaign_lifecycle_and_alert_health`
-mutates shared seed state, so the canary fails when both files run in sequence.
-Each file passes in isolation on a fresh seed. The E2E profile needs per-file DB
-isolation or explicit independent seeds.
-
-Clean isolated results (each on a fresh migrate+seed+bootstrap, full
-supervisor): **canary 1/1 pass; console smoke 6/7 pass** (only the 503 above).
+Clean results (fresh migrate+seed+bootstrap, full supervisor, authenticated
+Redis from `.env`): **console smoke 7/7 + canary 1/1; combined 8/8**.
+Previous runs with the passwordless Redis override measured **6/7 + 1/1
+isolated** with the 503 above; that override was the single root cause.
 
 ## Copy-ready continuation prompt
 
@@ -500,8 +508,10 @@ recovery, audit witness, and human acceptance remain NO-GO. The 2026-08-30
 session pushed the first immutable release images into the production ACR
 (operator-api/tracking-api/worker/migration, digest-pinned @sha256, see the
 ACR section above) and then fully reverted the registry hardening; live E2E
-(loopback Mailpit + full supervisor) passes 6/7 smoke + 1/1 canary on a fresh
-seed, with two genuine audit-outbox/order findings documented above in this
-file. Converts registry publication from never-done to done-and-reverted, but
-deploy/attestation against those images is still not live-qualified.
+(loopback Mailpit + full supervisor) passes **8/8 on the combined run** (7
+smoke + 1 canary) on a fresh seed (the previously
+documented 503/order findings were traced to a passwordless Redis URL in the
+session lane script — see the Live E2E section above; no repo code change was
+required). Converts registry publication from never-done to done-and-reverted,
+but deploy/attestation against those images is still not live-qualified.
 ```
