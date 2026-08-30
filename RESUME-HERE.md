@@ -326,10 +326,13 @@ For an RSA-controlled pilot, require a written RSA-controlled RoE and an exact R
 1. The offline-buildable backlog is complete. ANA-010 and TRN-010 are
    complete locally (five-year ledger graph, named close disposition, repeat
    history, named per-recipient pseudonymous drill-down with a shared
-   governed pseudonym key — GUI drill-down wiring and key rotation/recovery
-   remain governed follow-up; and the campaign-bound knowledge check with
-   deterministic evidence builder, digest pinning, and generic quiz
-   fallback). The AI-010 worker enforces a pinned model identity
+   governed pseudonym key — the per-recipient GUI drill-down wiring landed
+   2026-08-30 (capability-gated on `view_named`, pseudonym-free, bounded to
+   500 entries, with capability-gated CSV; it also fixed a latent
+   `downloadApiCsv` guard bug that silently rejected all `/analytics/ledger/`
+   CSV downloads); key rotation/recovery remain governed follow-up; and the
+   campaign-bound knowledge check with deterministic evidence builder,
+   digest pinning, and generic quiz fallback). The AI-010 worker enforces a pinned model identity
    (`KP_WORKER_AI_MODEL_ID`) with cost/status metrics, and DEP-010's
    strong-defaults + Advanced classification is in. What remains requires an
    external environment, in order:
@@ -515,8 +518,9 @@ TRN-010 without a regression.
 Continue from the goal-aligned backlog now that the offline build is
 complete. ANA-010 and TRN-010 are complete locally (five-year ledger graph,
 named close disposition, repeat history, named per-recipient pseudonymous
-drill-down; campaign-bound knowledge check with deterministic evidence
-builder, digest pinning, and generic quiz fallback). The AI-010 path has its
+drill-down wired into the GUI on 2026-08-30; campaign-bound knowledge check
+with deterministic evidence builder, digest pinning, and generic quiz
+fallback). The AI-010 path has its
 foundation at /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/ai-bakeoff/
 (fixed eval set + deterministic scorer + bounded loopback runner) and its
 worker enforcement (`KP_WORKER_AI_MODEL_ID` constant-time pin, fail-closed in

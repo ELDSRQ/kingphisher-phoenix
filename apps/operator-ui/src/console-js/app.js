@@ -142,7 +142,7 @@ async function boundedCsvBlob(response) {
 }
 
 async function downloadApiCsv(path, filename) {
-  if (!path.startsWith("/analytics/campaigns/") || !path.includes(".csv") || path.includes("://") || /[\r\n]/.test(path)) {
+  if (!path.startsWith("/analytics/") || !path.includes(".csv") || path.includes("://") || /[\r\n]/.test(path)) {
     throw new Error("Export path is not allowed");
   }
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,126}\.csv$/.test(filename)) {
@@ -4007,6 +4007,122 @@ views.trends = async (root) => {
   root.appendChild(repeatsResults);
   try { await loadLedgerRepeats(); } catch (e) {
     repeatsResults.replaceChildren(el("div", { role: "alert", class: "modal-error", text: e.message }));
+  }
+
+  /* ---------- per-recipient named ledger drill-down (ANA-010) ---------- */
+  if (hasCapability(CAPABILITY.VIEW_NAMED_RESULTS)) {
+    function drillDownStatusLine(text) {
+      return el("p", { class: "field-help", role: "status", "aria-live": "polite", text });
+    }
+    const drillDownResults = el("div", { "aria-live": "polite" });
+    let drillDownRecipientId = "";
+
+    function renderDrillDownTable(history) {
+      const rows = [...history.entries].map((entry) => el("tr", {}, [
+        el("td", { class: "mono", text: String(entry.campaign_date) }),
+        el("td", { class: "num", text: entry.delivered ? "yes" : "no" }),
+        el("td", { class: "num", text: entry.observed_open ? "yes" : "no" }),
+        el("td", { class: "num", text: entry.observed_click ? "yes" : "no" }),
+        el("td", { class: "num", text: entry.confirmed_interaction ? "yes" : "no" }),
+        el("td", { class: "num", text: entry.reported ? "yes" : "no" }),
+        el("td", { class: "num", text: entry.training_started ? "yes" : "no" }),
+        el("td", { class: "num", text: entry.training_completed ? "yes" : "no" }),
+      ]));
+      const summary = new Map((history.summary || []).map((metric) => [metric.name, metric.value]));
+      const shown = summary.get("exposures_total") ?? history.entries.length;
+      return el("div", {}, [
+        el("p", { text: `Generated ${formatUtcInstant(history.generated_at)} · ${history.truncated ? "first 500 entries shown; " : ""}${shown} exposure(s).` }),
+        el("table", { class: "report-table", "aria-label": "Per-recipient pseudonymous ledger history" }, [
+          el("thead", {}, [el("tr", {}, [
+            el("th", { text: "Campaign date" }), el("th", { text: "Delivered" }),
+            el("th", { text: "Open" }), el("th", { text: "Click" }),
+            el("th", { text: "Confirmed interaction" }), el("th", { text: "Reported" }),
+            el("th", { text: "Training started" }), el("th", { text: "Training completed" }),
+          ])]),
+          el("tbody", {}, rows.length ? rows : [el("tr", {}, [el("td", {
+            class: "empty", colspan: 8, text: "No ledger exposures found for this recipient in scope.",
+          })])]),
+        ]),
+        el("p", { class: "field-help", text: history.privacy }),
+      ]);
+    }
+
+    async function enableDrillDownExport(element) {
+      element.disabled = canExportTrend ? null : "disabled";
+    }
+
+    async function loadDrillDown() {
+      if (!drillDownRecipientId) return;
+      drillDownResults.replaceChildren(el("p", { class: "empty", text: "Loading recipient history…" }));
+      try {
+        const history = await api(`/analytics/ledger/recipients/${encodeURIComponent(drillDownRecipientId)}/history`);
+        drillDownResults.replaceChildren(
+          drillDownStatusLine(`Recipient ${drillDownRecipientId.slice(0, 8)}: ${history.truncated ? "first 500 entries shown" : "all matching entries"}.`),
+          renderDrillDownTable(history),
+        );
+        await enableDrillDownExport(drillDownExport);
+      } catch (e) {
+        drillDownResults.replaceChildren(el("div", { role: "alert", class: "modal-error", text: e.message }));
+      }
+    }
+
+    const drillDownExport = el("button", {
+      class: "btn", type: "button", text: "Download history CSV", disabled: "disabled",
+      title: canExportTrend ? "Export the currently loaded recipient history." : "Bulk export capability is required.",
+    });
+    drillDownExport.onclick = async (event) => {
+      if (!drillDownRecipientId) { toast("Load a recipient history first.", "error"); return; }
+      event.target.disabled = true;
+      try {
+        await downloadApiCsv(
+          `/analytics/ledger/recipients/${encodeURIComponent(drillDownRecipientId)}/history.csv`,
+          "awareness-ledger-recipient-history.csv",
+        );
+      } catch (e) { toast(e.message, "error"); }
+      finally { await enableDrillDownExport(event.target); }
+    };
+
+    const recipientSelect = el("select", { id: "ledger-recipient", "aria-describedby": "ledger-recipient-help" });
+    recipientSelect.appendChild(el("option", { value: "", text: "Select a recipient…" }));
+    try {
+      const page = await api("/recipients?limit=500&offset=0").then((payload) => boundedRecipientPage(payload, 500));
+      if (!page.truncated) {
+        for (const recipient of page.items) {
+          recipientSelect.appendChild(el("option", {
+            value: recipient.recipient_id,
+            text: `${recipient.department || "No department"} · ${recipient.recipient_id.slice(0, 8)} · ${recipient.status}`,
+          }));
+        }
+      }
+    } catch { /* keep the empty selector; a manual recipient id entry remains offered */ }
+    const drillDownIdInput = el("input", { type: "text", placeholder: "Or paste a 36-char recipient id", spellcheck: "false" });
+    const drillDownGo = el("button", { class: "btn primary", type: "button", text: "Show history" });
+    drillDownGo.onclick = async (event) => {
+      const id = String(recipientSelect.value || drillDownIdInput.value || "").trim();
+      if (!id) { toast("Select a recipient or paste a recipient id.", "error"); return; }
+      event.target.disabled = true;
+      drillDownRecipientId = id;
+      try { await loadDrillDown(); } catch (e) { toast(e.message, "error"); }
+      finally { event.target.disabled = false; }
+    };
+    root.appendChild(el("h2", { text: "Per-recipient ledger history" }));
+    root.appendChild(el("p", {
+      class: "sub",
+      text: "Bounded pseudonymous history for one chosen recipient. Resolved server-side with the governed pseudonym key; only ledger outcome facts are returned, never recipient attributes or the pseudonym.",
+    }));
+    root.appendChild(el("form", {
+      onsubmit: (event) => { event.preventDefault(); drillDownGo.click(); },
+    }, [
+      el("fieldset", {}, [
+        el("legend", { text: "Recipient selection" }),
+        el("div", { class: "form-grid" },
+          [el("div", {}, [el("label", { for: "ledger-recipient", text: "Recipient" }), recipientSelect]),
+            el("div", {}, [el("label", { for: "ledger-recipient-manual", text: "Recipient id" }), drillDownIdInput])]),
+        el("p", { id: "ledger-recipient-help", class: "field-help", text: "Choose from the first 500 authorized records or paste a 36-character recipient id. The drill-down never reveals identities or pseudonyms." }),
+        el("div", { class: "btn-row" }, [drillDownGo, drillDownExport]),
+      ]),
+    ]));
+    root.appendChild(drillDownResults);
   }
 };
 

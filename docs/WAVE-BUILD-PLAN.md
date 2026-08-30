@@ -353,8 +353,16 @@ These IDs passed at the recorded snapshot. Wave 29/30 source edits make them sta
   now shares the governed ledger pseudonym key with the retention worker (same
   synthetic local default in development; managed mode never falls back).
   Route-authorization inventory (115 routes) and tests updated. ANA-010 is
-  complete locally; GUI drill-down wiring and key rotation/recovery remain
-  governed follow-up.
+  complete locally; key rotation/recovery remains governed follow-up. The
+  per-recipient GUI drill-down wiring landed (2026-08-30): the ledger screen
+  (gated on `view_named`) offers a masked-restricted recipient selector or a
+  36-character recipient-id entry, renders only pseudonym-free ledger outcome
+  facts bounded to 500 entries, and a capability-gated CSV export; pinned by
+  `apps/operator-api/tests/test_analytics_ledger_drilldown_ui_contract.py`
+  (4 tests). This also fixed a latent bundle bug: `downloadApiCsv` guard
+  required `/analytics/campaigns/` only, which silently rejected the ledger
+  trend/repeats and recipient-history CSV downloads — now the exact
+  `/analytics/` export prefix.
 - AI-010 bake-off foundation landed (`scripts/ai-bakeoff/`): a fixed,
   sanitized, versioned evaluation set (fictional actors/sectors, no PII, no
   real domains, SHA-256 digest recorded per report) scored deterministically
