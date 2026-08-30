@@ -1,5 +1,23 @@
 # Next-session handoff
 
+## Addendum 2026-08-30 (post-Wave-38)
+
+- First immutable release-image publication into the production ACR
+  `atprodcuprodacr.azurecr.io` was performed and the registry hardening was
+  fully reverted. Commit `b0751cd`; the four digest-pinned references and the
+  exact revert are documented in `/Users/edierks/projects/codex-test/phishing-awareness-platform/RESUME-HERE.md`
+  (ACR section). Amazon-subscription renewal unblocked management plane, but
+  the push still required operator-approved temporary opening (no `AcrPush`,
+  private-only network, disabled exports) that was reverted after push.
+- Live E2E (loopback Mailpit + full `supervisor.py` stack) passes 6/7 console
+  smoke + 1/1 canary on a fresh seed. Two genuine findings were documented in
+  `RESUME-HERE.md`: a `sync-directory` 503 (audit-outbox dispatch under the
+  live stack, `AuditFailureError` / `post_commit_outbox_dispatch_failed`) and
+  order-dependence when both `tests/e2e` files share one seeded DB.
+- `connection_probes.py` dev-loopback allowlist fix landed (`b0751cd`) so the
+  live SMTP probe passes; new test
+  `apps/operator-api/tests/test_connection_probe_loopback.py` is 7-passing.
+
 ## Start here
 
 Repository: `/Users/edierks/projects/codex-test/phishing-awareness-platform`

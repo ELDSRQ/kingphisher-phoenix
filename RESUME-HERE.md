@@ -303,6 +303,82 @@ or `TRN-010` without a regression.
 
 Label evidence as **local/static**, **local live**, or **cloud/provider live**. Only the last category can close the corresponding production/RSA gate.
 
+## ACR release publication (2026-08-30) — pushed, hardening fully reverted
+
+First immutable release-image publication into the production ACR was
+performed, verified, and the registry was returned to its original hardened
+state. The Azure subscription had lapsed and was renewed by the operator; that
+renewal did not itself unblock the push (the registry had no `AcrPush` on any
+identity, and it is private-network-only with exports disabled), so per
+operator approval the registry was opened for the minimum window needed to
+push and then fully reverted.
+
+Commands were executed with evidence captured; the ACR is now at its original
+posture (`publicNetworkAccess=Disabled`, network rule `Deny` with no IP
+allowlist, exports `disabled`, zero `AcrPush` role assignments).
+
+**Pushed immutable references (all digest-pinned, tag
+`sha-9da6f9b-local-20260830T012238Z`, platform `linux/amd64`):**
+
+- `atprodcuprodacr.azurecr.io/migration@sha256:368d0327f69531f5009fa2c536309c8762e493535ce75568b25a50700f3836e5`
+- `atprodcuprodacr.azurecr.io/operator-api@sha256:965027aa8c65e2e6217a4cdd625481dc2f120e1635c66a26ecd18e3825008784`
+- `atprodcuprodacr.azurecr.io/tracking-api@sha256:2c5d30e9f0e854192c3f6b7d9fed23699fc3f7c9f9f354bcdac385764c0cde76`
+- `atprodcuprodacr.azurecr.io/worker@sha256:ac5fc23ddfca9602b44917ae3611a2ea38b16e4435ffc9d724ac226b44d8b963`
+
+Each was built from `infrastructure/containers/Dockerfile.{name}` on the
+remote `kp-remote-builder` (linux/amd64), pushed from this host's allowlisted IP, and
+verified by `az acr repository show --image name:tag --query digest` read-back.
+Resolving each tag in the registry returns exactly the digest above.
+
+These are local/static-built release images published to production storage,
+**not** a live-qualified deploy — no `az acr build`/ACR Tasks path was usable
+(the Azure build agent IP is not allowlisted), so the operator-approved local
+build + push path was used.
+
+## Live E2E lane (loopback Mailpit + live supervisor stack, 2026-08-30)
+
+Result: **the full supervisor stack stands up; 6/7 console smoke tests +
+1/1 mailpit canary pass on a clean seeded DB. Two genuine findings remain.**
+
+Run environment used a new isolated compose lane mapping the reviewed postgres
+image to `127.0.0.1:5433` to avoid an unrelated container owning 5432:
+`/Users/edierks/projects/codex-test/phishing-awareness-platform/docker-compose.e2e.yml`
+(commit `b0751cd`). Full script `/tmp/run_full_e2e.sh`; DB is
+migrate → `scripts/seed.py` → `scripts/bootstrap_local_audit.py`, then the full
+`scripts/supervisor.py` stack (operator/tracking/all workers). `KP_E2E_PASSWORD`
+must equal `KP_CONSOLE_PASSWORD` from `.env` (login 401 is a mismatched-password
+artifact, not a code bug).
+
+**Fix landed (commit `b0751cd`):** the connection-probe dev-loopback allowlist
+did not include `KP_WORKER_SMTP_ADDRESS`, so the live SMTP probe returned
+`ok:false`. Added it on port 1025 behind dev-auth-mode in
+`/Users/edierks/projects/codex-test/phishing-awareness-platform/apps/operator-api/src/kp_operator_api/connection_probes.py`
+with a focused test
+`apps/operator-api/tests/test_connection_probe_loopback.py` (7 passing,
+ruff/format clean). All four onboarding probes (identity/graph/ai/smtp) now
+pass live.
+
+**Findings for remediation (both relate to the audit outbox under the live
+stack):**
+
+1. `tests/e2e/test_live_console_smoke.py::test_onboarding_contract_and_local_connectors`
+fails on `sync-directory` returning **503** (expected 202) when run *after* the
+other smoke tests in the same pytest process/DB, yet returns 202 in a direct
+probe on a clean stack. 503 maps from `AuditFailureError`, and
+`post_commit_outbox_dispatch_failed reason_code=callback_failed ... OperationalError`
+is logged during seed — an audit-outbox dispatch defect that is order/sizing
+sensitive. Needs root-causing in the audit dispatcher provisioning
+(`scripts/bootstrap_local_audit.py` + the database-owned dispatcher) before the
+smoke lane is green green.
+2. Running `tests/e2e` (both files) together on one shared seeded DB is
+**order-dependent**: `test_single_administrator_campaign_lifecycle_and_alert_health`
+mutates shared seed state, so the canary fails when both files run in sequence.
+Each file passes in isolation on a fresh seed. The E2E profile needs per-file DB
+isolation or explicit independent seeds.
+
+Clean isolated results (each on a fresh migrate+seed+bootstrap, full
+supervisor): **canary 1/1 pass; console smoke 6/7 pass** (only the 503 above).
+
 ## Copy-ready continuation prompt
 
 ```text
@@ -327,7 +403,8 @@ The project-only ARM64 engine remains on 192.168.1.140 under
 /Volumes/DockerExternal/KingPhisher-Phoenix (see
 /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
 
-origin/main is 091071b; the local worktree is clean. Alembic head is
+origin/main is b0751cd (after the live E2E connection-probe fix + init
+exec + isolated E2E postgres lane). Alembic head is
 0033_training_knowledge_check. Current-head gates pass: hermetic 2,696,
 external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
 mypy (140 files). The retention P1 is closed, the migration revision-id
@@ -418,6 +495,13 @@ browser/WCAG lane remains a separate external gate. B5 remains only if a nav
 lint for the hyphenated azure-deployment key is pursued.
 
 Do not claim production/RSA readiness: current-head external E2E, exact-final
-ARM64 images, AMD64/registry, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/
-inbox, recovery, audit witness, and human acceptance remain NO-GO.
+ARM64 images, browser/WCAG, Azure/Entra/Graph/ACS/Outlook/DNS/inbox,
+recovery, audit witness, and human acceptance remain NO-GO. The 2026-08-30
+session pushed the first immutable release images into the production ACR
+(operator-api/tracking-api/worker/migration, digest-pinned @sha256, see the
+ACR section above) and then fully reverted the registry hardening; live E2E
+(loopback Mailpit + full supervisor) passes 6/7 smoke + 1/1 canary on a fresh
+seed, with two genuine audit-outbox/order findings documented above in this
+file. Converts registry publication from never-done to done-and-reverted, but
+deploy/attestation against those images is still not live-qualified.
 ```
