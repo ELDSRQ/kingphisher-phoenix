@@ -65,6 +65,37 @@
   only the two operator-chosen hostnames remain warnings). Note: ports 8080 and
   18080 on this host are owned by SSH tunnels — use a verified-free loopback
   port (the runbook's `--endpoint` takes any) for any future llama.cpp run.
+- **QA bugcheck and az030 runbook fixes (2026-08-30):** A comprehensive QA review
+  was performed. All automated gates pass (2707 hermetic, lint, mypy, bandit,
+  semgrep, bundle drift, CSP contract, drill-down UI contract). **Two bugs
+  found and fixed** in `az030-operator-runbook.sh`:
+  1. DNS resolution used `getent hosts` (Linux-only); silently fails on macOS.
+     Replaced with `_resolve_host` helper trying `getent` (Linux), `dscacheutil`
+     (macOS), then `python3` (universal fallback).
+  2. **Command injection** in the python3 fallback: `$host` was interpolated
+     directly into the `-c` string, allowing arbitrary Python execution via
+     single quotes/backslashes in `OPERATOR_FQDN`/`TRACKING_FQDN`. Fixed by
+     passing host as `argv[1]`. Verified: `example.com'; os.system('id')`
+     safely fails (literal hostname).
+  3. **`set -e` abort regression introduced by 1 and 2**, caught on
+     re-verification: the rewritten `_resolve_host` dropped the original
+     `|| true` and can itself exit nonzero (`getent hosts` returns 2 on Linux;
+     the macOS `dscacheutil | grep -m1` pipeline returns grep's 1 under
+     `set -o pipefail`; the `python3` fallback returns 1). Under the runbook's
+     `set -euo pipefail`, `addr="$(_resolve_host "$host")"` therefore aborted
+     the entire script as soon as a hostname did not resolve — the state the
+     very next line calls normal before the GUI creates the zone alias.
+     Reproduced live: two non-resolving hostnames gave 7 lines and exit 1
+     (a documented "blocker found"), skipping the hostname warnings, GitHub
+     checks, ACS/GUI field checklist and the whole STEP B guide, where the
+     committed `991251e` version gave 53 lines and exit 0. Fixed by making the
+     helper total — `|| true` on every branch, `return 0` at the end, and the
+     call-site `|| true` restored — and each branch now emits one bare address.
+     Re-proven live on non-resolving, resolving, and forced-python3 (including
+     the injection string) paths.
+  No other defects found. Security posture verified: no innerHTML/eval, CSRF
+  active, parameterized SQL, proper capability gates, session-scoped tokens.
+  Head: `991251e`.
 - **Operator-required blocker (2026-08-30): the full AZ-030 promotion is
   operator-only.** `scripts/azure_bootstrap.sh` refuses invented values: *"Do not
   invent those reviewed values by hand. A direct command is not equivalent to the

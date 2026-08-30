@@ -88,14 +88,30 @@ else
 fi
 
 # --- two hostnames -----------------------------------------------------------
+_resolve_host() {
+  # Cross-platform DNS resolution: macOS lacks getent, Linux lacks dscacheutil.
+  # Prints one bare address, or nothing. It must never fail: an unresolvable
+  # hostname is the normal pre-GUI state and has to warn, not abort the runbook
+  # under `set -euo pipefail`.
+  local host="$1"
+  if command -v getent >/dev/null 2>&1; then
+    getent hosts "$host" 2>/dev/null | awk 'NR == 1 { print $1 }' || true
+  elif command -v dscacheutil >/dev/null 2>&1; then
+    dscacheutil -q host -a name "$host" 2>/dev/null | awk '/ip_address:/ { print $2; exit }' || true
+  elif command -v python3 >/dev/null 2>&1; then
+    # Pass host as argv to avoid shell injection; do not interpolate into -c string.
+    python3 -c 'import socket,sys; print(socket.getaddrinfo(sys.argv[1], 443)[0][4][0])' "$host" 2>/dev/null || true
+  fi
+  return 0
+}
 for pair in "operator:$OPERATOR_FQDN" "tracking:$TRACKING_FQDN"; do
   role="${pair%%:*}"; host="${pair#*:}"
   if [ -z "$host" ]; then
     warn "$role hostname" "not supplied as arg; you must choose a dedicated hostname in a zone you control"
   else
-    addr="$(getent hosts "$host" 2>/dev/null || true)"
+    addr="$(_resolve_host "$host" || true)"
     if [ -n "$addr" ]; then
-      note "$role hostname $host" "resolves"
+      note "$role hostname $host" "resolves ($addr)"
     else
       warn "$role hostname $host" "does not resolve in DNS (normal pre-gui if the zone alias is created later)"
     fi

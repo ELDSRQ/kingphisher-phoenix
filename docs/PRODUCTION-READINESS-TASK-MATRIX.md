@@ -156,8 +156,19 @@ are not release claims.
   retain scan JSON/checksums. Implementation of these gates is not a pass.
   The preserved `final-v2` attempt failed closed before image build on BSD
   filesystem-mode and evidence-path/source-context defects; its evidence was
-  retained. Repaired `final-v3` remains conditional until its no-clobber
-  qualification and exact five-image scan/checksum evidence validate.
+  retained. Repaired `final-v3` then PASSED on 2026-08-30 (status `passed`,
+  exit 0, 25 phases, five images built/scanned/run on native `linux/arm64`) —
+  but **only for source `d0f03e9`**, the isolated `.140` worktree
+  `gate-worktree-final-v3`, whose manifest is byte-identical to controller
+  `d0f03e9`. It is **stale at HEAD**: `fae8929` changed
+  `apps/operator-ui/src/console/app.js`, which `Dockerfile.operator-api:17`
+  copies into the operator-api image, so HEAD's source-manifest digest is
+  `sha256:f40741ed…` versus the bound `sha256:3dfa1dc9…` and the verifier's
+  `expected_source_manifest` phase would fail closed today. `QA-030`'s
+  exact-final ARM64 element is PASSED at `d0f03e9` and PENDING at HEAD.
+  Separately, `/Users/edierks/Projects/kingphisher-phoenix` on `.140` is 37
+  commits behind at `1403d94` and contains none of the post-`1403d94` work; it
+  was never the build source and must not be mistaken for one.
 - Provider-aware SMTP/ACS and Mailpit/Microsoft 365 selects now enforce active
   field, probe, AI-context, and atomic credential-rebinding boundaries. Privacy
   export is POST-only with no-store/list and same-origin CSRF protections. OIDC

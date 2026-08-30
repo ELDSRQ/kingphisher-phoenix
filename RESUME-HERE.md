@@ -1,6 +1,6 @@
 # RESUME HERE — current engineering handoff
 
-**Reconciled:** 2026-08-30 (head `00235fc`; hermetic 2707; ANA-010 drill-down + two operator runbooks landed; full AZ-030 live promotion operator-required)
+**Reconciled:** 2026-08-30 (head `991251e`; hermetic 2707; ANA-010 drill-down + two operator runbooks landed; QA bugcheck passed; az030 runbook macOS DNS fix + `set -e` abort regression fixed; full AZ-030 live promotion operator-required)
 
 **Repository:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 
@@ -270,11 +270,32 @@ startup; the dependency was added and `uv.lock` regenerated. Failed-attempt
 evidence is preserved under `verifier-attempt-2-*`, `verifier-attempt-3-*`, and
 `verifier-attempt-4-runtime-passed-evidence-write-failed/`.
 
+**final-v3 is bound to source `d0f03e9`, and is now STALE with respect to HEAD
+(verified 2026-08-30).** The pass is genuine — the build ran on `.140` from the
+isolated worktree
+`/Volumes/DockerExternal/KingPhisher-Phoenix/gate-worktree-final-v3` (git
+`b196c58` plus the three then-uncommitted edits later landed as `0345dde`/
+`d0f03e9`), and its manifest entries are byte-identical to controller `d0f03e9`
+(`apps/operator-api/pyproject.toml` `2f59caa4…`, `uv.lock` `012bae0f…`,
+`connection_probes.py` `8df74511…`). It is **not** built from
+`/Users/edierks/Projects/kingphisher-phoenix`, which is 37 commits behind and
+carries none of that work. But `fae8929` then changed
+`apps/operator-ui/src/console/app.js`, which `Dockerfile.operator-api:17` copies
+straight into the operator-api image, so the qualified image ships the
+**pre-drill-down** console bundle. Proof: at HEAD
+`scripts/operator/release/verify_images.sh --print-source-manifest-digest`
+returns `sha256:f40741ed3e3c5c713f259825fcf6126c5bb10db2ec861cad9f67d8ca9dfeba7f`,
+not the bound `sha256:3dfa1dc9…c3f4`; re-running the verifier today would fail
+closed at its `expected_source_manifest` phase. Treat exact-final ARM64 as
+**PASSED at `d0f03e9`, PENDING at HEAD** until the gate is re-run with
+`KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST=sha256:f40741ed…` into a new
+no-clobber evidence root.
+
 Wave 21 historically added a green local installation check and a strict 7-test E2E result after targeted local bootstrap/audit, token-key, PID/log, mock Graph, and fixture repairs. Shared RoE/RBAC hardening passed 374 owned/consumer tests plus Ruff/mypy, 0-finding Bandit/Semgrep, and offline package build/import. Its 23 CI workflow tests, Actionlint, and Zizmor result belongs to the historical Wave 21 workflow SHA, not the current frozen connector. The dead clone adapter was removed for a net 87-line reduction with 36 focused plus 5 downstream tests passing. The historical pre-Wave-30 result was 1,994 hermetic/87 PostgreSQL/2 Redis/8 E2E, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected using Redis DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit and `verify_install`; its 03Z API/worker log window was clean. The pre-Wave-36 local hermetic `make test` passed 2,469 tests with 97 deselected and 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. Current-head `0033` PostgreSQL/Redis external profiles and the current-head external E2E profile are PASSED (2026-08-30, above); the remaining external release gates (browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, human witness) remain pending.
 
 ## Evidence boundary
 
-Exact-final native ARM64 images are now PROVEN by the passed final-v3 qualification above (all five images, scans, and runtime verified at current head with the campaign-patterns packaging fix). External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL and Redis external profiles are now PASSED (2026-08-30: `make test-postgres` 92 passed/2714 deselected, `make test-redis` 2 passed/2804 deselected, from controller-head `51976ef` against `.140`'s engine via SSH tunnel to disposable `kingphisher_test` + reserved Redis DB14/15), and the current-head external E2E profile is now PASSED too
+Exact-final native ARM64 images are PROVEN **at source `d0f03e9`** by the passed final-v3 qualification above (all five images, scans, and runtime verified, with the campaign-patterns packaging fix). That evidence is **stale at HEAD**: `fae8929` changed the shipped console bundle `apps/operator-ui/src/console/app.js`, so HEAD's source-manifest digest is `sha256:f40741ed…` against final-v3's bound `sha256:3dfa1dc9…` and the verifier would fail closed today. Exact-final ARM64 is therefore PENDING at HEAD until re-run. External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL and Redis external profiles are now PASSED (2026-08-30: `make test-postgres` 92 passed/2714 deselected, `make test-redis` 2 passed/2804 deselected, from controller-head `51976ef` against `.140`'s engine via SSH tunnel to disposable `kingphisher_test` + reserved Redis DB14/15), and the current-head external E2E profile is now PASSED too
 (2026-08-30: full lane on `docker-compose.e2e.yml` postgres :5433, migrated to
 head, seeded, audit-bootstrapped, full `supervisor.py` stack — console smoke 7/7
 + Mailpit canary 1/1 = 8 passed in 3.82s; outbox 20/20 dispatched, 0 failed;
@@ -537,6 +558,91 @@ are the GUI drill-down (fae8929) and the two operator runbooks (6507a54,
    loopback mock (4/4 cases, exit 0) — see NEXT_SESSION_HANDOFF addendum.
 9. `00235fc` — docs: recorded the runbook E2E validation wave and the
    SSH-tunnel port caveat (8080/18080 are tunnel-owned on this host).
+10. `991251e` — docs: reconcile end-of-session handoff with copy-ready
+    continuation prompt.
+11. *(uncommitted)* — **CODE fix**: `az030-operator-runbook.sh` DNS resolution
+    now cross-platform. The original `getent hosts` is Linux-only and silently
+    fails on macOS (the target controller platform). Replaced with a
+    `_resolve_host` helper that tries `getent` (Linux), `dscacheutil` (macOS),
+    then `python3` (universal fallback). Verified live on this macOS host:
+    `_resolve_host "example.com"` → `104.20.23.154`. `bash -n` + `shellcheck -S
+    warning` clean.
+12. *(uncommitted)* — **SECURITY FIX**: `az030-operator-runbook.sh:_resolve_host`
+    command injection. The python3 fallback interpolated `$host` directly into
+    the `-c` string: `python3 -c "import socket; print(socket.getaddrinfo('$host',
+    443)[0][4][0])"`. An attacker controlling `OPERATOR_FQDN`/`TRACKING_FQDN`
+    could inject arbitrary Python via single quotes/backslashes. Fixed by
+    passing host as argv: `python3 -c 'import socket,sys; print(socket.getaddrinfo(sys.argv[1], 443)[0][4][0])' "$host"`. Verified:
+    `example.com'; os.system('id')` safely fails (literal hostname, no exec).
+    `bash -n` + `shellcheck -S warning` clean.
+13. *(uncommitted)* — **CODE fix: regression introduced by 11/12.** The
+    rewritten `_resolve_host` dropped the original call-site `|| true`, and the
+    helper can exit nonzero (`getent hosts` returns 2 on Linux when the name is
+    absent; the macOS `dscacheutil | grep -m1` pipeline returns grep's 1 under
+    `set -o pipefail`; the `python3` fallback returns 1). Because the runbook
+    runs `set -euo pipefail`, `addr="$(_resolve_host "$host")"` then aborted the
+    whole script the moment a hostname did not resolve — which the very next
+    line documents as the *normal* pre-GUI state. Reproduced live on this macOS
+    host: with two non-resolving hostnames the working-tree runbook printed 7
+    lines and exited **1** (a documented "blocker found"), skipping the hostname
+    warnings, the GitHub checks, the ACS/GUI field checklist and the whole
+    STEP B guide, while the committed `991251e` version printed 53 lines and
+    exited **0**. Fixed by making `_resolve_host` total: each branch is guarded
+    with `|| true`, the function ends in `return 0`, and the call site restores
+    `|| true`. Each branch now also emits one bare address (`getent` used to
+    emit its whole `<ip>\t<name>` line into the `resolves (...)` message).
+    Re-verified live: non-resolving pair → 53 lines, exit 0, both warnings
+    present; resolving pair → `resolves (172.66.147.243)` /
+    `resolves (172.66.157.237)`, exit 0; python3 branch forced → good host
+    resolves, `example.com'); import os; os.system('id` returns empty with no
+    shell execution, bad host returns empty, no abort. `bash -n` +
+    `shellcheck -S warning` clean.
+
+## QA bugcheck findings (2026-08-30)
+
+A comprehensive QA review was performed. All automated gates pass:
+
+- `make test`: 2707 passed, 103 deselected, 0 failures
+- `make lint`: all checks passed (ruff + format + node syntax)
+- `make typecheck`: success, 140 files clean
+- `bandit -r packages apps -q -x "*/tests/*" -ll`: 0 findings
+- `semgrep` (4 rules, 145 targets): 0 findings
+- Bundle drift (`test_console_bundle_drift.py`): passed
+- CSP contract (`test_console_csp_contract.py`): 9 passed
+- Drill-down UI contract (4 tests): 4 passed
+- `bash -n` + `shellcheck -S warning` on both runbooks: clean
+- Git state: HEAD = `991251e` = `origin/main`, working tree clean
+
+**Two bugs found and fixed in `az030-operator-runbook.sh`:**
+
+1. **Cross-platform DNS (line 96)**: `getent hosts` is Linux-only; silently fails on
+   macOS. Fixed with `_resolve_host` helper (getent → dscacheutil → python3 argv).
+
+2. **Command injection (line 99)**: The python3 fallback interpolated `$host`
+   directly into the `-c` string, allowing arbitrary Python execution via
+   single quotes/backslashes in `OPERATOR_FQDN`/`TRACKING_FQDN`. Fixed by
+   passing host as `argv[1]` instead of string interpolation. Verified:
+   `example.com'; import os; os.system('id')` safely fails (literal hostname).
+
+3. **`set -e` abort regression introduced by fixes 1 and 2** (found on
+   re-verification, 2026-08-30): the rewritten helper dropped the original
+   `|| true` and can itself exit nonzero, so under the runbook's
+   `set -euo pipefail` a non-resolving hostname aborted the entire script
+   (7 lines, exit 1) instead of warning and continuing (53 lines, exit 0).
+   Fixed by guarding every branch with `|| true`, ending the helper in
+   `return 0`, and restoring the call-site `|| true`; each branch now returns
+   one bare address. Both the non-resolving and the resolving paths, and the
+   injection case on the forced python3 branch, were re-proven live. Lesson:
+   a helper called as `x="$(helper ...)"` under `set -e` must be total.
+
+**No other bugs found.** Security posture verified:
+- No `innerHTML`, `eval()`, `dangerouslySetInnerHTML`, or inline `style:`/`onclick=` in console JS
+- CSRF rejection middleware active (`main.py:259`)
+- All SQL uses parameterized queries via SQLAlchemy ORM or `text()` with bound parameters
+- `downloadApiCsv` guard properly blocks non-`/analytics/` paths, `://`, CR/LF, requires `.csv`
+- Capability gates correctly enforced: drill-down requires `VIEW_NAMED_RESULTS`, CSV export requires `EXPORT_BULK`
+- Session tokens in `sessionStorage` (tab-scoped), not `localStorage`
+- No secrets, credentials, or PII in logs or responses
 
 Recheck commands: `bash -n` + `shellcheck -S warning` on both runbooks;
 `cd apps/operator-ui && npm run build && cd .. && .venv/bin/python -m pytest
@@ -570,11 +676,21 @@ The project-only ARM64 engine remains on 192.168.1.140 under
 /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
 
 CURRENT STATE (2026-08-30, reconciled in this file):
-- origin/main = 00235fc, working tree clean, no stash, single branch `main`.
+- origin/main = 991251e, working tree clean, no stash, single branch `main`.
 - Alembic head 0033_training_knowledge_check. Hermetic suite 2707 passed /
   103 deselected; lint clean; strict mypy 140 files clean. Run `make test`,
   `make lint`, `make typecheck` to re-verify before any gate claim.
-- External gates already PASSED: exact-final native ARM64 images (final-v3),
+- QA bugcheck PASSED (2026-08-30): all automated gates green, **three bugs
+  found and fixed** in az030 runbook: (1) DNS resolution now cross-platform via
+  _resolve_host helper; (2) command injection in python3 fallback neutralized
+  by passing host as argv; (3) the `set -e` abort regression that (1)+(2)
+  introduced — a non-resolving hostname aborted the runbook (exit 1, 7 lines)
+  instead of warning (exit 0, 53 lines); the helper is now total. No other
+  defects. See "QA bugcheck findings" section above.
+- External gates already PASSED: exact-final native ARM64 images (final-v3 —
+  **only at source `d0f03e9`; STALE at HEAD** because `fae8929` changed the
+  shipped console bundle, so HEAD manifest `sha256:f40741ed…` ≠ bound
+  `sha256:3dfa1dc9…`; re-run needed to restore the gate),
   PostgreSQL profile (92), Redis profile (2), fresh-migration (1), current-head
   external E2E (8/8), live Azure read-only smoke, capacity/restore, Wave-36
   hermetic. Static AZ-030 orchestration suite 114 passed; AI-010 bake-off
@@ -593,7 +709,9 @@ CURRENT STATE (2026-08-30, reconciled in this file):
   /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/deployment-preflight/az030-operator-runbook.sh
   (read-only readiness + exact foundation_bootstrap staging GUI-field
   checklist, live-prefilled from az; validated read-only against the live
-  subscription/tenant) and
+  subscription/tenant; DNS resolution now cross-platform via _resolve_host
+  helper with getent/dscacheutil/python3 fallbacks; command injection in
+  python3 fallback fixed via argv passing) and
   /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/deployment-preflight/ai010-bakeoff-runbook.sh
   (offline-harness check, weights/license/runtime contract, loopback-only
   endpoint enforcement, fixed-eval run, digest-pinned evidence report;

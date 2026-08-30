@@ -77,6 +77,37 @@ The release decision is **NO-GO for production and RSA Conference use** until th
   `00235fc`; working tree clean; every session change is listed in
   `RESUME-HERE.md` under "Session changes to recheck"; the authoritative
   continuation prompt is the copy-ready prompt in `RESUME-HERE.md`.
+- 2026-08-30 exact-final ARM64 evidence is **stale at HEAD**. final-v3 PASSED,
+  but binds source `d0f03e9` (built on `.140` from `gate-worktree-final-v3`,
+  manifest byte-identical to controller `d0f03e9`). `fae8929` then changed the
+  shipped console bundle `apps/operator-ui/src/console/app.js`
+  (`Dockerfile.operator-api:17` copies it into the image), so HEAD's manifest
+  digest is `sha256:f40741ed…` against the bound `sha256:3dfa1dc9…` and the
+  verifier would fail closed at `expected_source_manifest`. Re-run the gate with
+  `KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST=sha256:f40741ed…` into a new
+  no-clobber evidence root to restore it. Also: `.140`'s
+  `/Users/edierks/Projects/kingphisher-phoenix` is 37 commits behind at
+  `1403d94` with none of the post-`1403d94` work — it is not, and was not, a
+  build source.
+- 2026-08-30 QA bugcheck: comprehensive review passed. **Two bugs found and
+  fixed** in `az030-operator-runbook.sh` — (1) DNS resolution used `getent hosts`
+  (Linux-only); replaced with cross-platform `_resolve_host` helper
+  (getent/dscacheutil/python3 fallbacks). (2) Command injection in the python3
+  fallback: `$host` was interpolated directly into the `-c` string, allowing
+  arbitrary Python execution via single quotes/backslashes in
+  `OPERATOR_FQDN`/`TRACKING_FQDN`. Fixed by passing host as `argv[1]`. Verified:
+  injection attempt `example.com'; os.system('id')` safely fails (literal
+  hostname). (3) Re-verification then caught a regression that (1)+(2)
+  introduced: the rewritten helper dropped the original `|| true` and can exit
+  nonzero (`getent` returns 2 on Linux; the macOS `dscacheutil | grep` pipeline
+  returns 1 under `pipefail`; `python3` returns 1), so under the runbook's
+  `set -euo pipefail` a non-resolving hostname aborted the whole script — exit
+  1 after 7 lines, versus exit 0 after 53 lines at `991251e` — even though the
+  next line documents non-resolution as the normal pre-GUI state. `_resolve_host`
+  is now total (`|| true` per branch, `return 0`, call-site `|| true`) and emits
+  one bare address; all three paths re-proven live. No other defects. All
+  automated gates green (2707 hermetic, lint, mypy 140 files, bandit, semgrep,
+  bundle drift, CSP, drill-down contract). Head: `991251e`.
 
 ## Architecture at a glance
 
