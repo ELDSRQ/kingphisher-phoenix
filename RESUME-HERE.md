@@ -18,6 +18,18 @@ has endpoint
 and reports `colima-kingphisher|aarch64|/var/lib/docker`; the global
 context remains `desktop-linux`. The seven internal Docker Desktop project
 containers are stopped and preserved; unrelated containers remain running.
+2026-08-30: the duplicate local Desktop `phishing-awareness-platform`
+compose project (redis, mock-idp/graph/ai, mailpit, otel, kp-e2e-postgres,
+from this workspace's docker-compose.yml; started ~11h prior) was stopped via
+`docker compose stop` — containers/volumes preserved, nothing removed — leaving
+`.140` as the single active platform carrier. The `.140` stack (same compose
+project from the separate `/Users/edierks/Projects/kingphisher-phoenix` tree)
+verifies healthy: postgres accepting connections with `kingphisher` role
+(`kingphisher`/`kingphisher_test` DBs), redis `PONG` with auth, mocks up. Note:
+the `.140` live DB is at alembic head `0029_campaign_canary_gate`, while the
+controller source is at `0033`; the current-head PostgreSQL profile (migration
+to head) is a pending external gate.
+
 If the exact external volume is absent, read-only, wrong-UUID, or low on
 space, stop—never fall back internally. See
 `scripts/operator/remote-docker-worker/README.md` and
