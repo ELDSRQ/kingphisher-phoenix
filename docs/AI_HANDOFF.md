@@ -58,9 +58,19 @@ The release decision is **NO-GO for production and RSA Conference use** until th
   (plus ANA-010 increments `aa67c17` and `c9ea716`). Current-head hermetic
   2,620/103, external PostgreSQL 92, and external Redis 2 pass; E2E, image,
   browser, and cloud gates remain open.
-- Privacy/RBAC, named-history API, and remaining ANA-010 consumers (basic
-  repeat history) are the next build work; use the copy-ready prompt in
-  `RESUME-HERE.md`.
+- Privacy/RBAC and named-history API remain open build work. ANA-010 is now
+  complete through the per-recipient GUI drill-down wiring (landed `fae8929`
+  on 2026-08-30: capability-gated on `view_named`, masked recipient selector
+  or recipient-id entry, pseudonym-free bounded table, capability-gated CSV
+  export, plus a latent `downloadApiCsv` fix that had silently rejected every
+  `/analytics/ledger/` CSV download). Only ANA-010 key rotation/recovery
+  remains governed follow-up. Use the copy-ready prompt in `RESUME-HERE.md`.
+- 2026-08-30 current state: hermetic **2707** passed, lint clean. Verified
+  independently at head `fae8929`: AZ-030 static orchestration **114** passed,
+  read-only live-Azure smoke passed, AI-010 bake-off offline harness **7**
+  passed. The full AZ-030 live promotion is **operator-required** (see the
+  Operator-required blocker section below) — a fabricated values file is never
+  production/RSA evidence.
 
 ## Architecture at a glance
 

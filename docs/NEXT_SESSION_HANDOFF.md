@@ -17,11 +17,22 @@
 - `connection_probes.py` dev-loopback allowlist fix landed (`b0751cd`) so the
   live SMTP probe passes; new test
   `apps/operator-api/tests/test_connection_probe_loopback.py` is 7-passing.
-- 2026-08-30 (post-b0751cd): current-head re-verification at `8b5da55` is green
-  and clean — AZ-030 static orchestration suite `114 passed`
+- 2026-08-30 (post-b0751cd): current-head re-verification is green and clean —
+  AZ-030 static orchestration suite `114 passed`
   (`apps/operator-api/tests/test_deployment_orchestration.py`) and the read-only
   live Azure smoke `test_live_azure_cli_can_read_selected_subscription` PASSED
   against the renewed/enabled subscription `169644fd-…`.
+- **ANA-010 per-recipient GUI drill-down landed (`fae8929`).** The ledger view
+  now offers a capability-gated (on `view_named`) per-recipient history: masked
+  recipient selector (first 500 authorized records) or a 36-char recipient-id
+  entry, a pseudonym-free bounded table of ledger outcome facts, and a
+  capability-gated CSV export. It also fixed a latent `downloadApiCsv` bug that
+  required `/analytics/campaigns/` only and silently rejected every
+  `/analytics/ledger/` CSV download (trend/repeats/recipient history); the
+  guard now allows the exact `/analytics/` export prefix. Pinned by
+  `apps/operator-api/tests/test_analytics_ledger_drilldown_ui_contract.py`
+  (4 tests); hermetic **2707** passed, lint clean. Only ANA-010 key
+  rotation/recovery remains governed follow-up.
 - **Operator-required blocker (2026-08-30): the full AZ-030 promotion is
   operator-only.** `scripts/azure_bootstrap.sh` refuses invented values: *"Do not
   invent those reviewed values by hand. A direct command is not equivalent to the
