@@ -343,6 +343,22 @@ Use the build plan’s goal-aligned dependency order:
 5. Simplify navigation/modules only after core stability; retain and support
    deferred useful behavior without expanding it.
 
+### Operator-required blocker (2026-08-30)
+
+The full AZ-030 promotion is **operator-only**, not agent-actionable. Per
+`scripts/azure_bootstrap.sh`, reviewed deployment values must come from the
+console Deployment GUI (which creates the opaque request id, canonical
+`deployment_config`, and reviewed-commit binding); a hand-invented values file or
+direct CLI dispatch *"is never production/RSA evidence."* Static guarantee:
+AZ-030 orchestration `114 passed` and the read-only live Azure smoke
+`test_live_azure_cli_can_read_selected_subscription` are green at head; the
+mutating live bootstrap/release still needs the operator to fill the reviewed
+plan and separately confirm before any cloud mutation. The same operator/human/
+engine ownership holds for DEP-010 (browser sign-in), WCAG walkthrough, native
+AMD64 allocation, and the PROD-030 human decision. An agent has no further
+low-risk step that advances a production/RSA gate until AZ-030 is
+operator-completed.
+
 Wave 21's latest completed snapshot rebuilt all five native ARM64 images; applicable checks, 30 focused contracts, and Trivy at 0 HIGH / 0 CRITICAL vulnerabilities and 0 secrets passed. Later source edits through Wave 38 make those interim images stale. External-worker capacity is now the execution path, but no exact-final rebuild/rescan has yet been claimed. AMD64, registry publication/attestation, and live Azure evidence remain open.
 
 The earlier operational-readiness interruption remains historical. Docker recovered, installation verification is green after restart, and all 8 live local E2Es pass. The backup and targeted audit repair were local reconciliation, not a restore pass. Static accessibility-shell contracts pass; full browser/WCAG and assistive-technology evidence remains open. Mailpit and Terraform now pass their focused local lanes, but those do not prove external delivery or Azure deployment. Graph/Microsoft 365/ACS-event/reported-MIME, server-derived flag/privacy, connector, outbox, and worker repairs also have focused point-in-time evidence in the canonical plan; the overlapping counts are not a final broad-suite result.

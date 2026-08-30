@@ -355,6 +355,43 @@ or `TRN-010` without a regression.
 
 Label evidence as **local/static**, **local live**, or **cloud/provider live**. Only the last category can close the corresponding production/RSA gate.
 
+## Operator-required next actions (2026-08-30) — cannot be done by an agent
+
+These are the only remaining actions that open the NO-GO gates, and each is
+operator-only by design — an agent fabricating inputs produces **zero valid
+evidence** (see `scripts/azure_bootstrap.sh` end-of-run note: *"Do not invent
+those reviewed values by hand. A direct command is not equivalent to the GUI's
+review digest, source-drift check, audit record, or protected-environment
+preflight, and is never production/RSA evidence."*).
+
+1. **AZ-030 (P0) — operator fills the reviewed deployment plan in the console GUI.**
+   Console → Deployment screen. Fill the plan form with the reviewed non-secret
+   values: Entra tenant id, both public HTTPS hostnames (operator/tracking),
+   the customer-managed ACS sender + reviewed quota/pacing, the recipient
+   allowlist (`allowed_recipient_domains`), and `network_mode`. The GUI creates
+   the **opaque request id, canonical `deployment_config`, and reviewed-commit
+   binding** that no CLI call can replicate. Then it may be dispatched for the
+   live bootstrap/release on the disposable subscription (mutating — needs a
+   further operator confirmation before any cloud mutation). This is the single
+   path that can promote AZ-030 (and unblocks OBS-036 via live worker
+   telemetry). Static (`114 passed`) and read-only live smoke are already
+   green at head `8b5da55`.
+2. **DEP-010 — browser sign-in driven by the operator** on the disposable
+   subscription (browser discovery of tenant/subscription/regions/DNS/groups,
+   live progress/cost/rollback). Needs the operator in the browser.
+3. **WCAG / A11Y-030 — operator walks a real browser with assistive tech.**
+   Static contracts are green by design (`A11Y-030` explicitly makes no full
+   WCAG claim).
+4. **Native AMD64/registry lane — operator allocates a native AMD64 engine**
+   (`.140` is ARM64; emulated AMD64 is rejected). Then exact AMD64 build →
+   pinned-Trivy scan → SBOM/attestation → deploy can close it.
+5. **PROD-030 — human production/RSA GO decision** after 1–4 plus an external
+   witness.
+
+Until at least #1 (AZ-030) is operator-completed, the remaining work is a
+waiting position for an agent: no further low-risk step exists that advances a
+production/RSA gate.
+
 ## ACR release publication (2026-08-30) — pushed, hardening fully reverted
 
 First immutable release-image publication into the production ACR was

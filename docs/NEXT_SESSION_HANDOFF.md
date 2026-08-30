@@ -17,6 +17,26 @@
 - `connection_probes.py` dev-loopback allowlist fix landed (`b0751cd`) so the
   live SMTP probe passes; new test
   `apps/operator-api/tests/test_connection_probe_loopback.py` is 7-passing.
+- 2026-08-30 (post-b0751cd): current-head re-verification at `8b5da55` is green
+  and clean — AZ-030 static orchestration suite `114 passed`
+  (`apps/operator-api/tests/test_deployment_orchestration.py`) and the read-only
+  live Azure smoke `test_live_azure_cli_can_read_selected_subscription` PASSED
+  against the renewed/enabled subscription `169644fd-…`.
+- **Operator-required blocker (2026-08-30): the full AZ-030 promotion is
+  operator-only.** `scripts/azure_bootstrap.sh` refuses invented values: *"Do not
+  invent those reviewed values by hand. A direct command is not equivalent to the
+  GUI's review digest, source-drift check, audit record, or protected-environment
+  preflight, and is never production/RSA evidence."* The reviewed non-secret
+  deployment plan must be filled in the console Deployment GUI (Entra tenant id,
+  two hostnames, customer-managed ACS sender + reviewed quota/pacing, recipient
+  allowlist, `network_mode`), which alone creates the opaque request id, canonical
+  `deployment_config`, and reviewed-commit binding. Only then can the live
+  (mutating) bootstrap/release run — with a further operator confirmation before
+  any cloud mutation. This is the single path that promotes AZ-030 and unblocks
+  OBS-036. The other NO-GO gates (DEP-010 browser sign-in, WCAG walkthrough,
+  native AMD64 engine, PROD-030 human decision) are likewise operator/human/
+  engine-owned. An agent has no further low-risk step that advances a
+  production/RSA gate until at least AZ-030 is operator-completed.
 
 ## Start here
 
