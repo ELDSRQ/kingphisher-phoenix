@@ -29,7 +29,7 @@ from kp_database.models import (
 )
 from kp_database.session import create_db_engine, make_session_factory
 from kp_domain_models import models as dm
-from kp_workers import jobs as worker_jobs
+from kp_workers import retention_jobs
 from kp_workers.config import WorkerSettings
 from kp_workers.jobs import (
     AwarenessLedgerRetentionError,
@@ -237,7 +237,7 @@ def test_retention_projects_exact_batch_before_deleting_old_assignments(
         ledger_count_before = session.scalar(select(func.count()).select_from(AwarenessLedgerEntry)) or 0
 
     projected_batches: list[tuple[str, ...]] = []
-    real_project = worker_jobs.project_awareness_ledger_batch
+    real_project = retention_jobs.project_awareness_ledger_batch
 
     def observing_project(session: Session, **arguments: Any) -> Any:
         assignment_ids = arguments["assignment_ids"]
@@ -246,7 +246,7 @@ def test_retention_projects_exact_batch_before_deleting_old_assignments(
         projected_batches.append(tuple(str(assignment_id) for assignment_id in assignment_ids))
         return real_project(session, **arguments)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(worker_jobs, "project_awareness_ledger_batch", observing_project)
+    monkeypatch.setattr(retention_jobs, "project_awareness_ledger_batch", observing_project)
     queue = StubQueue()
     with _make_ctx(queue) as ctx:
         process_retention(ctx, {"payload": {}, "idempotency_key": f"run-{uuid4()}"})
@@ -292,7 +292,7 @@ def test_projection_failure_rolls_back_and_surfaces_stable_non_secret_error(
     def fail_projection(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError(secret)
 
-    monkeypatch.setattr(worker_jobs, "project_awareness_ledger_batch", fail_projection)
+    monkeypatch.setattr(retention_jobs, "project_awareness_ledger_batch", fail_projection)
     queue = StubQueue()
     with (
         _make_ctx(queue) as ctx,
