@@ -30,6 +30,9 @@ the `.140` live DB is at alembic head `0029_campaign_canary_gate`, while the
 controller source is at `0033`. The current-head PostgreSQL/Redis gate
 PASSED by exercising the migrations on the disposable `kingphisher_test`
 database (self-isolating; it does not mutate the live `kingphisher` DB).
+`make test-fresh-migration` (`test_fresh_postgres_database_upgrades_from_base_to_head`)
+also PASSED against the same tunneled engine (1 passed, 6 deselected),
+proving the complete `0029`→head alembic chain on a fresh `kingphisher_test`.
 
 If the exact external volume is absent, read-only, wrong-UUID, or low on
 space, stop—never fall back internally. See
