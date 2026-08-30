@@ -1391,9 +1391,16 @@ def load_scanner_metadata(value: str) -> Optional[dict[str, object]]:
         return None
     database = document.get("VulnerabilityDB")
     bundle = document.get("CheckBundle")
-    if not isinstance(database, dict) or not isinstance(bundle, dict):
+    if not isinstance(database, dict):
         return None
-    return {
+    # trivy 0.74.0 (the pinned release scanner) cannot emit CheckBundle in
+    # `version --format json`; check bundles arrived in later trivy
+    # releases. The CheckBundle is therefore recorded only when the
+    # runtime provides one (it stays a documented, non-pass/fail field),
+    # mirroring the relaxed scanner-version validation above. Revisit
+    # when the pinned scanner is upgraded to a check-bundle-capable
+    # version.
+    metadata = {
         **artifact,
         "vulnerability_database": {
             "version": database.get("Version"),
@@ -1401,11 +1408,13 @@ def load_scanner_metadata(value: str) -> Optional[dict[str, object]]:
             "next_update": database.get("NextUpdate"),
             "downloaded_at": database.get("DownloadedAt"),
         },
-        "check_bundle": {
+    }
+    if isinstance(bundle, dict):
+        metadata["check_bundle"] = {
             "digest": bundle.get("Digest"),
             "downloaded_at": bundle.get("DownloadedAt"),
-        },
-    }
+        }
+    return metadata
 
 
 def volume_inventory(value: str) -> dict[str, object]:
