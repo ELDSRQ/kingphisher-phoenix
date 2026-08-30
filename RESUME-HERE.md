@@ -27,8 +27,9 @@ project from the separate `/Users/edierks/Projects/kingphisher-phoenix` tree)
 verifies healthy: postgres accepting connections with `kingphisher` role
 (`kingphisher`/`kingphisher_test` DBs), redis `PONG` with auth, mocks up. Note:
 the `.140` live DB is at alembic head `0029_campaign_canary_gate`, while the
-controller source is at `0033`; the current-head PostgreSQL profile (migration
-to head) is a pending external gate.
+controller source is at `0033`. The current-head PostgreSQL/Redis gate
+PASSED by exercising the migrations on the disposable `kingphisher_test`
+database (self-isolating; it does not mutate the live `kingphisher` DB).
 
 If the exact external volume is absent, read-only, wrong-UUID, or low on
 space, stop—never fall back internally. See
@@ -270,7 +271,7 @@ Wave 21 historically added a green local installation check and a strict 7-test 
 
 ## Evidence boundary
 
-Exact-final native ARM64 images are now PROVEN by the passed final-v3 qualification above (all five images, scans, and runtime verified at current head with the campaign-patterns packaging fix). External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL/Redis/E2E external profiles remain pending. The internal seven Docker Desktop project containers are stopped/preserved; unrelated containers remain running. Validated snapshot `20260829T013332Z-tsX1WQ` completes `EXT-002`; older invalid/unrecoverable snapshots remain preserved. Browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, and human-witness evidence remain open. No KnowBe4 parity or production readiness is claimed.
+Exact-final native ARM64 images are now PROVEN by the passed final-v3 qualification above (all five images, scans, and runtime verified at current head with the campaign-patterns packaging fix). External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL and Redis external profiles are now PASSED (2026-08-30: `make test-postgres` 92 passed/2714 deselected, `make test-redis` 2 passed/2804 deselected, from controller-head `51976ef` against `.140`'s engine via SSH tunnel to disposable `kingphisher_test` + reserved Redis DB14/15), and the current-head external E2E profile remains pending. The internal seven Docker Desktop project containers are stopped/preserved; unrelated containers remain running. Validated snapshot `20260829T013332Z-tsX1WQ` completes `EXT-002`; older invalid/unrecoverable snapshots remain preserved. Browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, and human-witness evidence remain open. No KnowBe4 parity or production readiness is claimed.
 
 The exact five verified image IDs, per-image Trivy scan digests, and sizes are
 recorded in the final-v3 `qualification.json` and its bound scan artifacts
