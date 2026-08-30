@@ -104,13 +104,16 @@ functionality or data.
   `1403d94` → `c9ea716` with the ANA-010 ledger-trend (`aa67c17`) and named
   close-disposition (`c9ea716`) increments. Worktree is clean; do not reset or
   clean it.
-- Current-head gates (all 2026-08-29, as of `a6f7d21`): hermetic 2,695/103
+- Current-head gates (all 2026-08-29, as of `091071b`): hermetic 2,696/103
   deselected with 0 failures (includes the chart/CSP contract tests from the
-  D3 wave and the console bundle drift gate); external PostgreSQL 92 passed (fresh-install/historical migration
-  to `0033`, retention concurrency, outcome-writer-versus-retention, grants);
-  external Redis 2 passed on DB15; fresh-migration 1 passed; `make lint` and
-  strict mypy (133 files) clean. E2E, exact-image, browser, and
-  cloud gates remain open.
+  D3 wave, the console bundle drift gate, and the B5 nav-lint); external
+  PostgreSQL 92 passed (fresh-install/historical migration to `0033`,
+  retention concurrency, outcome-writer-versus-retention, grants) — the
+  retention-profile gate additionally caught and verified a fix in
+  apps/workers/tests/test_retention.py (monkeypatch target re-pointed to
+  retention_jobs after the jobs split); external Redis 2 passed on DB15;
+  fresh-migration 1 passed; `make lint` and strict mypy (140 files) clean.
+  E2E, exact-image, browser, and cloud gates remain open.
 
 ## Current engineering truth
 
@@ -324,10 +327,10 @@ The project-only ARM64 engine remains on 192.168.1.140 under
 /Volumes/DockerExternal/KingPhisher-Phoenix (see
 /Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/remote-docker-worker/README.md).
 
-origin/main is a6f7d21; the local worktree is clean. Alembic head is
-0033_training_knowledge_check. Current-head gates pass: hermetic 2,695,
+origin/main is 091071b; the local worktree is clean. Alembic head is
+0033_training_knowledge_check. Current-head gates pass: hermetic 2,696,
 external PostgreSQL 92, fresh-migration 1, external Redis 2, lint, strict
-mypy. The retention P1 is closed, the migration revision-id
+mypy (140 files). The retention P1 is closed, the migration revision-id
 defect is fixed, and ANA-010/TRN-010 are complete locally. The offline-
 buildable backlog is complete: every remaining min-product item needs an
 external environment (a live llama.cpp endpoint for model selection/deployment
@@ -373,7 +376,14 @@ through the facade module object so `monkeypatch.setattr` keeps
 intercepting): (1) apps/workers/src/kp_workers/jobs.py → followup_jobs.py
 (alert/reminder) + retention_jobs.py; (2) operator-api console.py (4,154 →
 3,630) → connection_probes.py; (3) routers.py (5,418 → 5,081) →
-recipient_import_planning.py; (4) deployment_orchestration.py (3,112) →
+recipient_import_planning.py, then sending-domains/RoE cluster (8 routes +
+verification helpers + `_domain_verification_failure` + `_GUI_COLLECTION_MAX_*"`)
+→ sending_domains_roe.py — because FastAPI ≥0.141 wraps `include_router` in a
+lazy `_IncludedRouter` that hides routes from the one-level `router.routes`
+walkers the route-inventory contracts use, the facade copies the sub-router's
+route objects (same `/api/v1` prefix) into routers.router at the cluster's old
+position, preserving flat shape/order/paths (79==79 runtime route parity vs
+HEAD); (4) deployment_orchestration.py (3,112) →
 deployment_common.py + github_workflow_gateway.py (the gateway resolves
 EXPECTED_WORKFLOW_SHA256 through a deferred `_facade()` so the operator
 test's monkeypatch still intercepts); (5) operator-ui console app.js (6,884)
@@ -386,9 +396,10 @@ commit-time drift gate apps/operator-api/tests/test_console_bundle_drift.py
 rebuilds and fails if the committed bundle is stale). Source-wiring
 UI-contract tests read the authored modules; the CSP contract and D2
 behavioral harness read the served bundle. Verified behavior-preserving:
-hermetic 2,695, mypy 137 files, operator-api + UI suites green, ruff/format
-clean. Remaining D1: none structural — routers.py and the console entry stay
-single files by design.
+hermetic 2,696, mypy 140 files, operator-api suite 985 passed / 53 skipped,
+ruff/format clean. Remaining D1: none structural — the console entry stays
+single-file by design. B5 (nav lint) also landed: a contract test pins the
+hyphenated `azure-deployment` view key to bracket notation.
 
 D2 is done: apps/operator-ui/tests/chart-smoke.mjs is now an executable
 behavioral harness (brace-balanced extraction by function name so reorders
@@ -396,8 +407,8 @@ cannot silently untest it; el()/svg() behavior + chart structure/CSP
 assertions), gated in the hermetic suite by
 apps/operator-api/tests/test_console_behavior_smoke.py (shells out to node,
 skips only if node is absent, requires exit 0 "chart-smoke OK"). Proven to
-fail on an injected inline style:. Hermetic is now 2,695 (the +1 is the
-console bundle drift gate). B6 (withholder
+fail on an injected inline style:. Hermetic is now 2,696 (the +1 is the
+console bundle drift gate; the further +1 is the B5 nav-lint test). B6 (withholder
 cleanup) is done: 156 dead `# noqa` directives removed via RUF100 under the
 real ruff config (they suppressed rules outside the configured select set),
 and all remaining 65 `noqa` plus all 298 `type: ignore` were verified genuine
