@@ -13,7 +13,22 @@ set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 RUN=.dep010-run; mkdir -p "$RUN"
 
-echo "== 1/5 starting local services (postgres 5433, redis, mailpit, mocks) =="
+echo "== 1/5 starting Docker Desktop and the local services =="
+if ! docker info >/dev/null 2>&1; then
+  echo "   Docker Desktop is not running; starting it"
+  open -a Docker 2>/dev/null || true
+  for _ in $(seq 1 120); do
+    docker info >/dev/null 2>&1 && break
+    sleep 2
+  done
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "   ERROR: Docker Desktop did not become ready." >&2
+  echo "   Open the Docker Desktop app manually, wait for the whale icon to stop" >&2
+  echo "   animating, then run this script again." >&2
+  exit 1
+fi
+echo "   Docker daemon ready"
 docker compose -f docker-compose.e2e.yml up -d >/dev/null
 docker compose up -d redis mailpit mock-idp mock-graph mock-ai otel-collector >/dev/null
 for _ in $(seq 1 60); do
