@@ -657,7 +657,7 @@ or the decoding constraint.
 | Qwen2.5-7B Q4_K_M | **3/4** | 4/4 | 3/4 | **1/1** | 1/1 | **14.2 s** |
 | Mistral-7B-v0.3 Q4_K_M | **3/4** | 4/4 | **4/4** | **0/1** | 1/1 | 24.1 s |
 | Qwen3.5-9B Q4_K_M | 3/4 | 3/3 | 3/3 | **1/1** | 1/1 | **426 s** |
-| Qwen3.8-27B UD-Q4_K_M | running on `.36` | — | — | — | — | — |
+| Qwen3.8-27B UD-Q4_K_M | **not measurable** | — | — | — | — | **0.17 tok/s** |
 
 Qwen2.5-7B's only remaining miss is the phrase `shared document` in the
 injection case; Mistral's is the safe-refusal case, where it produced
@@ -695,6 +695,25 @@ about 9.6 tokens/second on the M1 and took 331 s and 411 s for its two scored
 cases, roughly 25x Qwen2.5-7B. AI-005 requires a CPU-first path that meets a
 measured operator latency target, and a four-hundred-second wait for one draft
 does not.
+
+**Qwen3.8-27B could not be measured on CPU, and that is itself the result
+AI-005 asks for.** Its reported 0/4 is not a quality score: all four cases
+returned `endpoint failure: ReadTimeout` with every dimension `not_scored`, the
+same artifact class as the earlier 120-second and context-truncation failures.
+The cause is throughput, measured directly from the server: **0.17 tokens per
+second**, 297 tokens in 120 minutes, on 16 CPU cores with 46 GB free and no
+memory pressure or swapping. For comparison the 9B managed 9.6 tok/s with GPU
+offload on the M1, and was already disqualified at ~420 s per case.
+
+That figure is anomalously low even for a 27B on CPU — a well-tuned build would
+be expected around 1–3 tok/s, and the server ran with four slots rather than
+one, on a locally compiled llama.cpp whose backend selection was not audited. It
+was not exhaustively tuned, because tuning cannot change the conclusion: a 10x
+improvement would still leave a single awareness-email draft far outside any
+operator latency target. AI-005's deployment order is CPU first, escalating to
+scale-to-zero serverless GPU "only if the CPU benchmark fails". **This is that
+CPU benchmark failing, and it is the measured evidence required before any GPU
+escalation could be justified.**
 
 Qwen3.8-27B runs on `.36` rather than `.140`, because at ~17 GB it does not fit
 in that host's 16 GB. It is the first workload to use the AMD64 host for
