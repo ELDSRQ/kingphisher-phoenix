@@ -39,6 +39,7 @@ import httpx
 from kp_contracts.generation import (
     MAX_GENERATION_REQUEST_BYTES,
     TRAINING_URL_PLACEHOLDER,
+    GenerationResponse,
 )
 
 _SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -101,6 +102,20 @@ def _bounded_response_content(endpoint: str, model: str, system: str, user: str)
             {"role": "user", "content": user},
         ],
         "temperature": 0.0,
+        # AI-010's acceptance criterion is schema-constrained generation, so the
+        # bake-off measures the candidate under the same constraint the worker
+        # applies. `json_object` alone is not enough: it still permits a raw
+        # control character inside a string, which is exactly how a candidate
+        # lost a case on formatting luck rather than capability. Constraining to
+        # the real GenerationResponse schema removes that class of artifact.
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "generation_response",
+                "schema": GenerationResponse.model_json_schema(),
+                "strict": True,
+            },
+        },
     }
     with (
         httpx.Client(timeout=_REQUEST_TIMEOUT_SECONDS) as client,
@@ -195,6 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         "evaluated_at": datetime.now(UTC).isoformat(),
         "evaluation_set_version": evaluation_set.set_version,
         "evaluation_set_digest": set_digest,
+        "structured_output": "json_schema:GenerationResponse",
         "total_cases": total,
         "passed_cases": passed,
         "pct": BakeOffReport(arguments.model, "", tuple(results), total, passed).pct,
