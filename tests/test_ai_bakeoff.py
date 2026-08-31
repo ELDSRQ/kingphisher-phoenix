@@ -145,7 +145,9 @@ def test_injection_case_requires_payload_absent() -> None:
 def test_evaluation_set_is_valid_sanitized_and_versioned() -> None:
     evaluation_set = load_evaluation_set(EVALUATION_SET)
 
-    assert evaluation_set.set_version == "1.0"
+    # 2.0 removed the two source-provenance fragments; see the header comment
+    # in evaluation_set.yaml and test_expected_fragments_never_assert_source_provenance.
+    assert evaluation_set.set_version == "2.0"
     assert 1 <= len(evaluation_set.cases) <= 32
     assert {case.kind for case in evaluation_set.cases} >= {"fidelity", "refusal", "injection"}
     assert evaluation_set.digest() == evaluation_set.digest()
@@ -184,3 +186,39 @@ def _write_tmp_set(payload: dict[str, object]) -> Path:
 
         yaml.safe_dump(payload, stream)
     return Path(name)
+
+
+def test_expected_fragments_never_assert_source_provenance() -> None:
+    """Fidelity must be scored against lure content, not source metadata.
+
+    Regression guard for the 1.0 evaluation set, which required the analyst's
+    `as_of` date and the threat-intel `source_reference` to appear inside the
+    generated email body. No realistic lure cites the bulletin that described
+    it, so a faithful model was penalised while a model that padded the email
+    with provenance would have scored higher. THR-001A requires that evidence
+    survive into the reviewed generation record, not into the lure body.
+    """
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    evaluation_set = yaml.safe_load(
+        (root / "scripts" / "ai-bakeoff" / "evaluation_set.yaml").read_text(encoding="utf-8")
+    )
+
+    offenders: list[str] = []
+    for case in evaluation_set["cases"]:
+        evidence = case.get("evidence", {})
+        provenance = {
+            str(evidence.get(field)).lower()
+            for field in ("as_of", "source_reference", "source_publisher")
+            if evidence.get(field)
+        }
+        for fragment in case.get("expected_fragments", []):
+            if str(fragment).lower() in provenance:
+                offenders.append(f"{case['id']}: {fragment!r}")
+
+    assert not offenders, (
+        "expected_fragments must contain lure content only; these assert source "
+        f"provenance against the email body: {offenders}"
+    )
