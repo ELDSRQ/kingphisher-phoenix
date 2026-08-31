@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Stop everything start-console.sh started, and return Docker to "only .140 runs".
+# Stop everything start-console.sh started. Docker on 192.168.1.140 is left
+# running (it is the project's only engine); the disposable console database
+# container is stopped but preserved, never removed.
 set -uo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)" || exit 1
 RUN=.dep010-run
-for p in supervisor forward; do
-  [ -f "$RUN/$p.pid" ] && { kill "$(cat "$RUN/$p.pid")" 2>/dev/null; rm -f "$RUN/$p.pid"; echo "stopped $p"; }
+for p in supervisor tunnel; do
+  if [ -f "$RUN/$p.pid" ]; then
+    kill "$(cat "$RUN/$p.pid")" 2>/dev/null
+    rm -f "$RUN/$p.pid"
+    echo "stopped $p"
+  fi
 done
 pkill -f "scripts/supervisor.py" 2>/dev/null
-echo "stopping local containers (preserved, not removed)"
-docker stop kp-e2e-postgres phishing-awareness-platform-redis-1 \
-  phishing-awareness-platform-mailpit-1 phishing-awareness-platform-mock-idp-1 \
-  phishing-awareness-platform-mock-graph-1 phishing-awareness-platform-mock-ai-1 \
-  phishing-awareness-platform-otel-collector-1 >/dev/null 2>&1
-echo "done - local Docker is idle; .140 is unaffected"
+echo "stopping the disposable console database on 192.168.1.140 (preserved, not removed)"
+ssh -o BatchMode=yes edierks@192.168.1.140 \
+  "DOCKER_HOST=unix:///Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock docker stop kp-console-postgres" >/dev/null 2>&1
+echo "done - no Docker ran on this Mac at any point"
