@@ -195,6 +195,10 @@ def test_response_contract_requires_placeholder_in_both_bodies(missing_from: str
         "subject": "Review this simulation",
         "plain_text": f"Learn more: {TRAINING_URL_PLACEHOLDER}",
         "safe_html": f'<a href="{TRAINING_URL_PLACEHOLDER}">Learn more</a>',
+        # model_id is a required field: without it the payload fails field
+        # validation before the placeholder model_validator can run, so this
+        # test would assert the wrong rejection reason.
+        "model_id": "test-model",
     }
     payload[missing_from] = "https://training.example.com/awareness"
 
@@ -993,6 +997,7 @@ def test_generation_placeholder_stand_in_does_not_hide_other_external_links(
         subject="Security awareness exercise",
         plain_text=f"Visit https://attacker.invalid then review {TRAINING_URL_PLACEHOLDER}",
         safe_html=f'<a href="{TRAINING_URL_PLACEHOLDER}">Review this simulation</a>',
+        model_id="test-model",
     )
     session = _GenerationSession(_Pattern())
 

@@ -180,7 +180,18 @@ class GenerationResponse(BaseModel):
     subject: str = Field(max_length=MAX_GENERATED_SUBJECT_CHARS)
     plain_text: str = Field(max_length=MAX_GENERATED_BODY_CHARS)
     safe_html: str = Field(max_length=MAX_GENERATED_BODY_CHARS)
-    model_id: str = Field(default="unknown", max_length=MAX_GENERATED_MODEL_ID_CHARS)
+    # Required, and never defaulted. This schema is handed verbatim to a strict
+    # schema-constrained decoder (``response_format: {"type": "json_schema",
+    # ... "strict": True}``), where a field absent from ``required`` may be
+    # legitimately omitted by a fully compliant model. A default would then
+    # invent an identity: the omission would land in ``TemplateVersion.model_id``
+    # and ``raw_proposal`` as though the gateway had reported it, and the
+    # worker's constant-time pin compare would measure that invention rather
+    # than the model. Listing the field in ``required`` makes the decoder emit
+    # it; dropping the default makes an omission a contract rejection before
+    # anything is persisted. ``min_length=1`` closes the same hole one step in:
+    # an empty string satisfies "present" while carrying no identity at all.
+    model_id: str = Field(min_length=1, max_length=MAX_GENERATED_MODEL_ID_CHARS)
 
     @model_validator(mode="after")
     def require_recipient_bound_training_placeholder(self) -> GenerationResponse:

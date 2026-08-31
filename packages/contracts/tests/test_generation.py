@@ -82,9 +82,76 @@ def test_response_accepts_placeholder_in_both_message_bodies() -> None:
         subject="Security awareness exercise",
         plain_text=f"Review: {TRAINING_URL_PLACEHOLDER}",
         safe_html=f'<a href="{TRAINING_URL_PLACEHOLDER}">Review</a>',
+        model_id="normal-model",
     )
 
     assert response.plain_text.endswith(TRAINING_URL_PLACEHOLDER)
+
+
+def _valid_response_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "subject": "Security awareness exercise",
+        "plain_text": f"Review: {TRAINING_URL_PLACEHOLDER}",
+        "safe_html": f'<a href="{TRAINING_URL_PLACEHOLDER}">Review</a>',
+        "model_id": "llama.cpp/Qwen3-8B-Q4_K_M-v1",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_response_schema_requires_model_id_for_schema_constrained_decoding() -> None:
+    """The schema handed to a strict decoder must force the model identity.
+
+    ``GenerationResponse.model_json_schema()`` is passed verbatim as an OpenAI
+    ``response_format: {"type": "json_schema", ..., "strict": True}``. A field
+    absent from ``required`` may be legitimately omitted by a fully compliant
+    model, so the identity the worker pins against has to be listed there.
+    """
+
+    schema = GenerationResponse.model_json_schema()
+
+    assert schema["required"] == ["subject", "plain_text", "safe_html", "model_id"]
+    # No default: nothing in the schema may suggest a substitute identity.
+    assert "default" not in schema["properties"]["model_id"]
+    assert schema["properties"]["model_id"]["minLength"] == 1
+    assert schema["properties"]["model_id"]["maxLength"] == MAX_GENERATED_MODEL_ID_CHARS
+
+
+def test_response_rejects_an_omitted_model_id_instead_of_inventing_one() -> None:
+    """An absent identity is a contract rejection, never a defaulted string.
+
+    A silent default would be compared, constant-time, against the configured
+    ``KP_WORKER_AI_MODEL_ID`` pin and persisted onto ``TemplateVersion.model_id``
+    as though the gateway had reported it.
+    """
+
+    payload = _valid_response_payload()
+    del payload["model_id"]
+
+    with pytest.raises(ValidationError) as excinfo:
+        GenerationResponse.model_validate(payload)
+
+    errors = excinfo.value.errors()
+    assert [error["loc"] for error in errors] == [("model_id",)]
+    assert errors[0]["type"] == "missing"
+
+
+def test_response_rejects_an_empty_model_id() -> None:
+    """ "Present but empty" carries no identity and must not pass as one."""
+
+    with pytest.raises(ValidationError):
+        GenerationResponse.model_validate(_valid_response_payload(model_id=""))
+
+
+def test_response_round_trips_a_supplied_model_id_unchanged() -> None:
+    payload = _valid_response_payload()
+
+    response = GenerationResponse.model_validate(payload)
+
+    assert response.model_id == "llama.cpp/Qwen3-8B-Q4_K_M-v1"
+    assert response.model_dump() == payload
+    # The persisted draft carries exactly what the gateway reported.
+    assert GenerationResponse.model_validate(response.model_dump()).model_id == response.model_id
 
 
 def test_response_limits_match_template_preview_and_database_boundaries() -> None:

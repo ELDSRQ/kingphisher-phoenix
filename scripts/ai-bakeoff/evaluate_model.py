@@ -48,6 +48,7 @@ if str(_SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_ROOT))
 
 from bakeoff.scoring import (  # noqa: E402 - local package behind the sys.path shim
+    SCORER_VERSION,
     BakeOffReport,
     CaseResult,
     Score,
@@ -228,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         "endpoint": arguments.endpoint,
         "evaluated_at": datetime.now(UTC).isoformat(),
         "evaluation_set_version": evaluation_set.set_version,
+        "scorer_version": SCORER_VERSION,
         "evaluation_set_digest": set_digest,
         "structured_output": "json_schema:GenerationResponse",
         "request_timeout_seconds": arguments.request_timeout,
