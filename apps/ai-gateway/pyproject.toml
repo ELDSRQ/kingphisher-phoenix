@@ -1,0 +1,23 @@
+[project]
+name = "kp-ai-gateway"
+version = "0.1.0"
+description = "AI generation gateway: serves the /propose and /setup-assist contract from a pinned internal llama.cpp model"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.4",
+    "httpx>=0.27",
+    "kp-contracts",
+]
+
+[project.scripts]
+kp-ai-gateway = "kp_ai_gateway.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kp_ai_gateway"]

@@ -32,6 +32,7 @@ kp-telemetry = { workspace = true }
 kp-sanitization = { workspace = true }
 kp-database = { workspace = true }
 kp-safety-validation = { workspace = true }
+kp-ai-gateway = { workspace = true }
 kp-source-adapters = { workspace = true }
 kp-campaign-patterns = { workspace = true }
 kp-test-fixtures = { workspace = true }
