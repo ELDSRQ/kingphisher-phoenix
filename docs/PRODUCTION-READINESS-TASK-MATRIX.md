@@ -164,8 +164,18 @@ are not release claims.
   `apps/operator-ui/src/console/app.js`, which `Dockerfile.operator-api:17`
   copies into the operator-api image, so HEAD's source-manifest digest is
   `sha256:f40741ed…` versus the bound `sha256:3dfa1dc9…` and the verifier's
-  `expected_source_manifest` phase would fail closed today. `QA-030`'s
-  exact-final ARM64 element is PASSED at `d0f03e9` and PENDING at HEAD.
+  `expected_source_manifest` phase would have failed closed. **That gap is now
+  closed:** the gate was re-run at head `2adb2a2` on 2026-08-30 and PASSED —
+  status `passed`, exit 0, 25/25 phases, native `linux/arm64`, source bound
+  `sha256:62e768ed…` over 487 files, five images non-root `65532:65532`, Trivy
+  0.74.0 cache unchanged, volume inventory unchanged, evidence root
+  `qualification-evidence/arm64-release-20260830-head-2adb2a2/verifier`. The new
+  operator-api image was confirmed to carry HEAD's console bundle
+  (`543bd007…`, 61 ledger refs) where final-v3's carried `886bc1df…` (50).
+  `QA-030`'s exact-final ARM64 element is therefore PASSED at `2adb2a2`;
+  final-v3 remains valid only for `d0f03e9` and is superseded, not deleted.
+  Because `docs/` and `RESUME-HERE.md` are inside the release build context,
+  any later documentation commit re-stales this gate.
   Separately, `/Users/edierks/Projects/kingphisher-phoenix` on `.140` is 37
   commits behind at `1403d94` and contains none of the post-`1403d94` work; it
   was never the build source and must not be mistaken for one.

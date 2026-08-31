@@ -270,7 +270,10 @@ startup; the dependency was added and `uv.lock` regenerated. Failed-attempt
 evidence is preserved under `verifier-attempt-2-*`, `verifier-attempt-3-*`, and
 `verifier-attempt-4-runtime-passed-evidence-write-failed/`.
 
-**final-v3 is bound to source `d0f03e9`, and is now STALE with respect to HEAD
+**Superseded by the head-2adb2a2 re-run below, which PASSED.** The staleness
+described next was real, was proven, and is now cured.
+
+**final-v3 is bound to source `d0f03e9`, and was STALE with respect to HEAD
 (verified 2026-08-30).** The pass is genuine — the build ran on `.140` from the
 isolated worktree
 `/Volumes/DockerExternal/KingPhisher-Phoenix/gate-worktree-final-v3` (git
@@ -286,16 +289,60 @@ straight into the operator-api image, so the qualified image ships the
 `scripts/operator/release/verify_images.sh --print-source-manifest-digest`
 returns `sha256:f40741ed3e3c5c713f259825fcf6126c5bb10db2ec861cad9f67d8ca9dfeba7f`,
 not the bound `sha256:3dfa1dc9…c3f4`; re-running the verifier today would fail
-closed at its `expected_source_manifest` phase. Treat exact-final ARM64 as
-**PASSED at `d0f03e9`, PENDING at HEAD** until the gate is re-run with
-`KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST=sha256:f40741ed…` into a new
-no-clobber evidence root.
+closed at its `expected_source_manifest` phase. 
+### head-2adb2a2 ARM64 re-run — PASSED (2026-08-30)
+
+The gate was re-run at HEAD and **passed**, restoring exact-final ARM64 at
+current head. Evidence root (no-clobber, new):
+`/Volumes/DockerExternal/KingPhisher-Phoenix/qualification-evidence/arm64-release-20260830-head-2adb2a2/verifier`,
+image prefix `kingphisher/verify-arm64-20260830-head`.
+`qualification.json` records status `passed`, exit 0, **25/25 phases with no
+non-passed phase**, native `linux/arm64` on the reviewed socket, source bound to
+`sha256:62e768ed9af18c92383ecc7242b99e2aafe6475e09af99f4a978ccf045d64aa0`
+(487 files, before/after identical), all five images non-root `65532:65532`,
+Trivy 0.74.0 with the cache unchanged, volume inventory unchanged, and
+preserved images/caches. `shasum -c qualification.sha256` verifies.
+
+The fix was proven at the image layer, not just the manifest: the console
+bundle extracted from the new operator-api image is
+`543bd007…` with 61 `ledger` references — byte-identical to HEAD's
+`apps/operator-ui/src/console/app.js` — while the same file in the final-v3
+image is `886bc1df…` with 50. The old image really did ship the
+pre-drill-down console. Extraction used uniquely named disposable containers
+(`kp-bundle-probe-*`), removed after the reading; 0 remain.
+
+Setup, for repeatability: the build ran on `.140` from a **new** linked
+worktree `/Volumes/DockerExternal/KingPhisher-Phoenix/gate-worktree-head-2adb2a2`
+(detached at `2adb2a2`, clean), created after an additive
+`git fetch origin main` into `/Users/edierks/Projects/kingphisher-phoenix`.
+That parent repo stayed at `1403d94` with its 320 dirty files untouched, and
+`gate-worktree-final-v3` was left intact.
+
+**Two traps for the next run.** First, compute
+`KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST` **on the build host**, never on the
+controller: the manifest hashes file *modes*, the controller runs umask 077
+(most files `600`) and the `.140` checkout is `644`, so identical content
+yields different digests — the controller said `sha256:e9af649e…` where `.140`
+said the correct `sha256:62e768ed…`. Second, the manifest enumerates
+`git ls-files --cached --others --exclude-standard`, so **untracked,
+non-ignored junk enters the release source manifest and the image context**: a
+stray 67 KB file named `-` (a `uv export --output-file -` accident) was in the
+tree and moved the digest from `sha256:e9af649e…` to `sha256:280940bf…` until
+it was deleted. Check `git status` is clean before computing the digest.
+
+**Caveat — documentation commits invalidate this gate.** `RESUME-HERE.md` and
+`docs/*.md` are inside the 487-file build context, so any docs-only commit
+changes the source-manifest digest and makes the retained image evidence stale
+at the new head even though no shipped byte changed. This record itself has
+that effect: the evidence above is bound to `2adb2a2`. Either batch the gate
+re-run to the end of a wave, or make a separate reviewed decision to exclude
+documentation from the release context.
 
 Wave 21 historically added a green local installation check and a strict 7-test E2E result after targeted local bootstrap/audit, token-key, PID/log, mock Graph, and fixture repairs. Shared RoE/RBAC hardening passed 374 owned/consumer tests plus Ruff/mypy, 0-finding Bandit/Semgrep, and offline package build/import. Its 23 CI workflow tests, Actionlint, and Zizmor result belongs to the historical Wave 21 workflow SHA, not the current frozen connector. The dead clone adapter was removed for a net 87-line reduction with 36 focused plus 5 downstream tests passing. The historical pre-Wave-30 result was 1,994 hermetic/87 PostgreSQL/2 Redis/8 E2E, the superseded intermediate external result was 2,230/86/2/8, and the now pre-remediation local/external snapshot was 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340 deselected using Redis DB14, 2 Redis/2,424 deselected using DB15, and 8 E2Es plus audit and `verify_install`; its 03Z API/worker log window was clean. The pre-Wave-36 local hermetic `make test` passed 2,469 tests with 97 deselected and 0 failures in 158.15 seconds. The final local Wave 36 hermetic suite at historical head `0030` passed 2,501 tests/97 deselected with 0 failures in 183.40 seconds. Ruff/format, mypy, and security results remain bounded to their separately recorded scopes. Current-head `0033` PostgreSQL/Redis external profiles and the current-head external E2E profile are PASSED (2026-08-30, above); the remaining external release gates (browser/WCAG, Azure/providers, AMD64/registry, rotation, production recovery, human witness) remain pending.
 
 ## Evidence boundary
 
-Exact-final native ARM64 images are PROVEN **at source `d0f03e9`** by the passed final-v3 qualification above (all five images, scans, and runtime verified, with the campaign-patterns packaging fix). That evidence is **stale at HEAD**: `fae8929` changed the shipped console bundle `apps/operator-ui/src/console/app.js`, so HEAD's source-manifest digest is `sha256:f40741ed…` against final-v3's bound `sha256:3dfa1dc9…` and the verifier would fail closed today. Exact-final ARM64 is therefore PENDING at HEAD until re-run. External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL and Redis external profiles are now PASSED (2026-08-30: `make test-postgres` 92 passed/2714 deselected, `make test-redis` 2 passed/2804 deselected, from controller-head `51976ef` against `.140`'s engine via SSH tunnel to disposable `kingphisher_test` + reserved Redis DB14/15), and the current-head external E2E profile is now PASSED too
+Exact-final native ARM64 images are PROVEN at source `2adb2a2` by the passed head-2adb2a2 qualification above (status `passed`, exit 0, 25/25 phases, five images built/scanned/run natively, source bound `sha256:62e768ed…`), and the new operator-api image was confirmed to ship HEAD's console bundle. The earlier final-v3 evidence remains valid only for source `d0f03e9` and shipped the pre-drill-down bundle; it is superseded, not deleted. Note that any later documentation commit re-stales this gate, because `docs/` and `RESUME-HERE.md` sit inside the release build context. External capacity/restore and the historical final local Wave 36 hermetic suite are proven; current-head PostgreSQL and Redis external profiles are now PASSED (2026-08-30: `make test-postgres` 92 passed/2714 deselected, `make test-redis` 2 passed/2804 deselected, from controller-head `51976ef` against `.140`'s engine via SSH tunnel to disposable `kingphisher_test` + reserved Redis DB14/15), and the current-head external E2E profile is now PASSED too
 (2026-08-30: full lane on `docker-compose.e2e.yml` postgres :5433, migrated to
 head, seeded, audit-bootstrapped, full `supervisor.py` stack — console smoke 7/7
 + Mailpit canary 1/1 = 8 passed in 3.82s; outbox 20/20 dispatched, 0 failed;
@@ -687,10 +734,13 @@ CURRENT STATE (2026-08-30, reconciled in this file):
   introduced — a non-resolving hostname aborted the runbook (exit 1, 7 lines)
   instead of warning (exit 0, 53 lines); the helper is now total. No other
   defects. See "QA bugcheck findings" section above.
-- External gates already PASSED: exact-final native ARM64 images (final-v3 —
-  **only at source `d0f03e9`; STALE at HEAD** because `fae8929` changed the
-  shipped console bundle, so HEAD manifest `sha256:f40741ed…` ≠ bound
-  `sha256:3dfa1dc9…`; re-run needed to restore the gate),
+- External gates already PASSED: exact-final native ARM64 images (re-run at
+  head `2adb2a2` on 2026-08-30: 25/25 phases, source bound
+  `sha256:62e768ed…`, evidence root `arm64-release-20260830-head-2adb2a2`;
+  the older final-v3 evidence is valid only for `d0f03e9` and shipped the
+  pre-drill-down console bundle. Compute the expected digest ON `.140`, not on
+  the controller — umask 077 vs 644 changes it — and ensure `git status` is
+  clean first, since untracked non-ignored files enter the manifest),
   PostgreSQL profile (92), Redis profile (2), fresh-migration (1), current-head
   external E2E (8/8), live Azure read-only smoke, capacity/restore, Wave-36
   hermetic. Static AZ-030 orchestration suite 114 passed; AI-010 bake-off

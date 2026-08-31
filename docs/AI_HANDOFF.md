@@ -77,7 +77,17 @@ The release decision is **NO-GO for production and RSA Conference use** until th
   `00235fc`; working tree clean; every session change is listed in
   `RESUME-HERE.md` under "Session changes to recheck"; the authoritative
   continuation prompt is the copy-ready prompt in `RESUME-HERE.md`.
-- 2026-08-30 exact-final ARM64 evidence is **stale at HEAD**. final-v3 PASSED,
+- 2026-08-30 exact-final ARM64 was re-qualified at head `2adb2a2` and **PASSED**
+  (25/25 phases, source bound `sha256:62e768ed…`, evidence root
+  `arm64-release-20260830-head-2adb2a2`); the new operator-api image carries
+  HEAD's console bundle. Two traps for the next run: compute
+  `KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST` on the build host, not the
+  controller (the manifest hashes file modes, and controller umask 077 yields a
+  different digest for identical content), and ensure `git status` is clean
+  first (the manifest includes untracked, non-ignored files). Note that
+  documentation lives inside the release build context, so a docs-only commit
+  re-stales the image gate. The superseded staleness record follows.
+- 2026-08-30 exact-final ARM64 evidence **was stale at HEAD** (now cured). final-v3 PASSED,
   but binds source `d0f03e9` (built on `.140` from `gate-worktree-final-v3`,
   manifest byte-identical to controller `d0f03e9`). `fae8929` then changed the
   shipped console bundle `apps/operator-ui/src/console/app.js`
