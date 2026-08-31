@@ -645,6 +645,51 @@ are the GUI drill-down (fae8929) and the two operator runbooks (6507a54,
     shell execution, bad host returns empty, no abort. `bash -n` +
     `shellcheck -S warning` clean.
 
+## Native AMD64 qualification PASSED (2026-08-31) — the lane is no longer blocked
+
+The AMD64 half of `QA-030` is closed. `192.168.1.36` is a Windows 11 Pro host on
+an **Intel Core Ultra 9 285H**, i.e. genuinely native x86-64, not emulation.
+
+Build host, built from nothing this session: WSL2 was enabled but had **no
+distribution**, so Ubuntu 24.04 was installed into it (`wsl --install -d
+Ubuntu-24.04 --no-launch`), systemd enabled via `/etc/wsl.conf`, and Docker CE
+**29.7.2** installed inside it. `docker version` reports `OS/Arch:
+linux/amd64` on a real Linux kernel over x86-64 hardware — a native engine, so
+the standing rejection of emulated AMD64 does not apply. 954 GiB free on the
+Docker root.
+
+Trivy 0.74.0 was installed pinned and verified against Aqua's **published**
+`trivy_0.74.0_checksums.txt` entry
+(`2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a` for the
+tarball), not a self-computed value; the extracted binary is
+`sha256:d89bcc6510a267f11b773398cbf1be5520ce39f9e8b6633178c4487f05b7d791`.
+
+**Result — `qualification.json` records status `passed`, exit 0, 25/25 phases
+with no non-passed phase**, `docker_server` `linux/amd64` matching expected,
+source bound to
+`sha256:7944811b4f9b686ac3256000e8e9b8d069b680984879ad9267884f840c543f20` over
+493 files with before/after identical, all five images built, scanned and run as
+non-root `65532:65532`, Trivy 0.74.0 with the cache unchanged, volume inventory
+unchanged, and preserved images/caches. Evidence root:
+`/opt/kp-amd64/qualification-evidence/amd64-release-20260831-head-63a3a20/verifier`
+inside the WSL distro, image prefix `kingphisher/verify-amd64-20260831-head`,
+source `63a3a20`.
+
+The manifest digest was computed **on the build host**, per the lesson recorded
+from the ARM64 run — a controller-computed digest would not have matched.
+
+Two operating notes for the next AMD64 run. `wsl --install` cannot be driven
+from a non-interactive SSH session in the usual way: it emits no output, writes
+no log, and appears to hang, but it does complete — the first attempt succeeded
+in the background after the foreground call had already been abandoned, so check
+`wsl -l -v` before retrying or installing by another route. And a plain
+`nohup`'d job dies when the WSL session closes; long work must be launched with
+`systemd-run --unit=... --collect` so it survives.
+
+This closes the native AMD64/engine half of the lane. **Registry publication and
+attestation remain separate and unwitnessed**, and browser/WCAG, Azure/provider,
+recovery/rotation and human acceptance are unchanged. NO-GO still stands.
+
 ## External profiles re-run head-exact + first AI-010 bake-off (2026-08-31)
 
 **All four external profiles now PASS at current head.** PostgreSQL and Redis
