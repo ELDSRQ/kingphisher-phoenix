@@ -656,7 +656,7 @@ or the decoding constraint.
 |---|---|---|---|---|---|---|
 | Qwen2.5-7B Q4_K_M | **3/4** | 4/4 | 3/4 | **1/1** | 1/1 | **14.2 s** |
 | Mistral-7B-v0.3 Q4_K_M | **3/4** | 4/4 | **4/4** | **0/1** | 1/1 | 24.1 s |
-| Qwen3.5-9B Q4_K_M | re-running | — | — | — | — | ~400 s/case |
+| Qwen3.5-9B Q4_K_M | 3/4 | 3/3 | 3/3 | **1/1** | 1/1 | **426 s** |
 | Qwen3.8-27B UD-Q4_K_M | running on `.36` | — | — | — | — | — |
 
 Qwen2.5-7B's only remaining miss is the phrase `shared document` in the
@@ -672,8 +672,23 @@ phase alone consumes about 3,800 tokens and overran the harness's 4096-token
 context — and the server then exited, so the remaining two cases returned
 `endpoint failure: ValueError` at zero elapsed time. A 1/4 from that run would
 have been an infrastructure artifact, not a measurement, exactly like the
-earlier 120-second timeout. It is being re-run with `--ctx-size 16384
---parallel 1`.
+earlier 120-second timeout. It was re-run with `--ctx-size 16384 --parallel 1`.
+
+**The clean 9B re-run scores 3/4, and every dimension it completed passed** —
+schema 3/3, fidelity 3/3, refusal 1/1, injection 1/1. On quality it is the
+strongest candidate measured. It is nevertheless **disqualified on latency**,
+and the fourth case shows why rather than merely being slow: `guidance_retention`
+ran for **1,776 seconds — 29.6 minutes — generating 16,121 tokens at 9.1
+tokens/second**, exhausted even the enlarged 16,384-token context
+(`truncated = 1`), and returned output the harness could not parse. The
+`endpoint failure: ValueError` is a downstream symptom of that truncation, not
+an independent fault.
+
+A model that spends half an hour and a 16k context reasoning about a single
+short awareness email cannot meet AI-005's requirement for a CPU-first path
+meeting a measured operator latency target. Its three scored cases averaged
+420 s against Qwen2.5-7B's 14 s — a factor of thirty. Raising the context
+further would raise the cost, not fix the economics.
 
 Even when it completes, the 9B looks disqualified on latency: it generates at
 about 9.6 tokens/second on the M1 and took 331 s and 411 s for its two scored
