@@ -77,6 +77,31 @@ The release decision is **NO-GO for production and RSA Conference use** until th
   `00235fc`; working tree clean; every session change is listed in
   `RESUME-HERE.md` under "Session changes to recheck"; the authoritative
   continuation prompt is the copy-ready prompt in `RESUME-HERE.md`.
+- 2026-08-31 current state: `origin/main = 40c611d`, tree clean, single linear
+  `main` (0 merges, 0 dangling, 0 stashes). **Every non-operator gate passes at
+  head**: hermetic 2707/103, lint, strict mypy 140 files, external PostgreSQL 92,
+  Redis 2, fresh-migration 1, **E2E 8/8**, exact-final ARM64 at `2adb2a2`,
+  bandit/semgrep/trivy-fs 0, pip-audit clean, SBOM 59 components, actionlint and
+  zizmor clean. The external database/queue/E2E profiles are now head-exact
+  rather than bound to older heads.
+- 2026-08-31 environment: the local Docker Desktop stack was found running
+  despite the handoffs claiming otherwise; it is now stopped with containers and
+  volumes preserved, leaving `.140` the only engine. `192.168.1.36` is the AMD64
+  host but runs **Windows with SSH closed**, so the AMD64 lane waits on
+  `scripts/operator/amd64-lane/ENABLE-SSH-ON-WINDOWS.ps1`.
+- 2026-08-31 AI-010 first measurement: llama.cpp 0.3.0 on `.140` serving
+  digest-pinned Qwen2.5-7B-Instruct Q4_K_M (Apache-2.0). Runbook exit 0, 6
+  checks, 0 blockers; **0/4 cases**, sub-scores schema 3/4, injection 1/1,
+  fidelity 0/3, latency 10–26 s. Not selection evidence: AI-005 needs two or
+  three candidates and independent review. A runbook bug was fixed in passing —
+  `PY="uv run python"` invoked as `"$PY"` was looked up as one command name on
+  any host without a repo `.venv`.
+- 2026-08-31 open findings, none changed, each needing a reviewed decision:
+  `console.py:3567` hardcodes the local probe to `127.0.0.1:5432`/`:6379`
+  instead of deriving host/port from the configured URLs; documentation is
+  inside the release source manifest although no Dockerfile copies it, so
+  docs-only commits re-stale image evidence; and the bake-off harness does not
+  request structured output.
 - 2026-08-30 exact-final ARM64 was re-qualified at head `2adb2a2` and **PASSED**
   (25/25 phases, source bound `sha256:62e768ed…`, evidence root
   `arm64-release-20260830-head-2adb2a2`); the new operator-api image carries

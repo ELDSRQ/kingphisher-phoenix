@@ -1,6 +1,6 @@
 # RESUME HERE — current engineering handoff
 
-**Reconciled:** 2026-08-30 (head `991251e`; hermetic 2707; ANA-010 drill-down + two operator runbooks landed; QA bugcheck passed; az030 runbook macOS DNS fix + `set -e` abort regression fixed; full AZ-030 live promotion operator-required)
+**Reconciled:** 2026-08-31 (head `40c611d`; hermetic 2707; **every non-operator gate passes head-exact** — external PostgreSQL 92 / Redis 2 / fresh-migration 1 / E2E 8-of-8, exact-final ARM64 re-qualified at `2adb2a2`; first AI-010 bake-off measured on Qwen2.5-7B; local Docker stopped so `.140` is the only engine; full AZ-030 live promotion still operator-required)
 
 **Repository:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 

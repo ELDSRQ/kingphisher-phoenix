@@ -24,8 +24,11 @@ Quick links: [Architecture](docs/architecture/README.md) ·
 > 1,826-day ledger are wired. Privacy/RBAC, named-history API, reporting/graph,
 > and export consumers remain open. Independent review found no P0 and one P1:
 > ORM `RetentionPolicy.__table_args__` must mirror migration `0032`'s retention
-> check and single-default index. The preserved tree is uncommitted/unpushed at
-> `1403d94`; use the continuation prompt in `RESUME-HERE.md`.
+> check and single-default index. That statement is historical: as of
+> 2026-08-31 the tree is committed and pushed at `40c611d`, with every
+> non-operator gate passing head-exact (hermetic 2707, external PostgreSQL 92,
+> Redis 2, fresh-migration 1, E2E 8/8, exact-final ARM64 at `2adb2a2`). Use the
+> continuation prompt in `RESUME-HERE.md`.
 >
 > Deferred functionality remains retained and supported without expansion.
 > Never delete potentially valuable features merely because they are deferred.
@@ -88,7 +91,9 @@ for project operations. The external volume with the `DockerExternal` label
 remains the required storage target.
 
 Loopback URLs in this runbook refer to the machine running the application. The
-seven internal Docker Desktop project containers are stopped and preserved;
+seven internal Docker Desktop project containers are stopped and preserved
+(and as of 2026-08-31 the duplicate stack on the controller Mac is stopped too,
+containers and volumes preserved, so `.140` is the only running engine);
 unrelated containers remain running. Browse on `.140` or
 establish an SSH tunnel. Never expose the Docker API over TCP. Preserve the
 external profile and stopped internal rollback copy. The legacy encrypted

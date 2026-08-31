@@ -1,5 +1,83 @@
 # Next-session handoff
 
+## Addendum 2026-08-31 — external gates head-exact, first AI-010 bake-off
+
+**Session end state: `origin/main = 40c611d`, working tree clean, no stash,
+single `main` branch.** Branch inspection found nothing abandoned anywhere:
+GitHub carries exactly one ref (`refs/heads/main`), history is linear with 0
+merges, 0 dangling commits, 0 stashes, 0 tags, and every reflog entry is an
+ancestor of `main`.
+
+**All gates that do not need an operator now pass at current head:**
+
+| Gate | Result |
+|---|---|
+| `make test` hermetic | 2707 passed / 103 deselected |
+| `make lint` / `make typecheck` | clean / 140 files clean |
+| `make test-postgres` | 92 passed (disposable `kingphisher_test`, Redis DB14) |
+| `make test-redis` | 2 passed (DB15) |
+| `make test-fresh-migration` | 1 passed (base→head) |
+| `make test-e2e` | **8 passed** (7 console smoke + 1 Mailpit canary) |
+| exact-final native ARM64 | **PASSED at source `2adb2a2`**, 25/25 phases |
+| bandit / semgrep / trivy fs / pip-audit | 0 / 0 / 0 / no known vulnerabilities |
+| SBOM | CycloneDX 1.5, 59 components, 58 external PURLs |
+| actionlint / zizmor | clean / no findings |
+
+The exact-final ARM64 gate had **silently gone stale** and the docs overstated
+it as proven "at current head". final-v3 binds source `d0f03e9`; `fae8929` then
+changed `apps/operator-ui/src/console/app.js`, which
+`Dockerfile.operator-api:17` copies into the image. The qualified image was
+shipping the pre-drill-down console — proven by extracting the bundle from both
+images (`886bc1df…`, 50 ledger refs, versus HEAD's `543bd007…`, 61). The gate
+was re-run at `2adb2a2` into a new no-clobber evidence root
+`qualification-evidence/arm64-release-20260830-head-2adb2a2/` and passed.
+
+**Traps recorded so they are not repeated.** Compute
+`KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST` on the build host, never the
+controller — the manifest hashes file modes and the controller's umask 077
+yields a different digest for identical content. Ensure `git status` is clean
+first, because the manifest includes untracked non-ignored files; a stray file
+named `-` had entered it. `audit_writer` has its own `AUDIT_WRITER_PASSWORD`,
+and using `POSTGRES_PASSWORD` for it fakes four PostgreSQL failures that look
+like defects. The E2E lane needs a genuinely fresh seed and the audit bootstrap
+refuses any database not named `kingphisher`, so a uniquely-named disposable
+database cannot substitute.
+
+**Environment state.** The local Docker Desktop stack was found **running**
+(13h) despite this file previously claiming it was stopped; it is now genuinely
+stopped with every container and volume preserved, so `.140` is the only engine.
+`192.168.1.36` is the AMD64 host: it answers ping but runs **Windows** with SSH
+closed (445/135 open), so the AMD64 lane is blocked until OpenSSH Server is
+enabled there.
+
+**AI-010 has its first real measurement.** llama.cpp 0.3.0 (build 10621, commit
+`c1d0e7a00`) is installed on `.140`, and Qwen2.5-7B-Instruct-GGUF Q4_K_M is
+downloaded and digest-pinned under
+`/Volumes/DockerExternal/KingPhisher-Phoenix/ai010-models/qwen2.5-7b-instruct`
+with its Apache-2.0 licence. The runbook completed 6 checks, 0 blockers, exit 0.
+Score **0/4 cases**; sub-scores schema validity 3/4, injection resistance 1/1,
+evidence fidelity 0/3, latency 10–26 s per case. **Not committed as selection
+evidence** — AI-005 requires two or three candidates plus independent review.
+
+**Three new operator procedures** replace prose that referenced internal
+variable names and an unreachable localhost URL:
+`scripts/operator/dep010/start-console.sh` (prints the exact URL, username and
+password), `scripts/operator/a11y030/WCAG-WALKTHROUGH.md`, and
+`scripts/operator/amd64-lane/ENABLE-SSH-ON-WINDOWS.ps1` (the Mac public key is
+already embedded).
+
+**Open findings deliberately not changed, each needing a reviewed decision:**
+the console local probe at `console.py:3567` hardcodes `127.0.0.1:5432`/`:6379`
+instead of deriving host and port from the configured URLs; documentation sits
+inside the release source manifest even though no Dockerfile copies it, so a
+docs-only commit re-stales image evidence; and the bake-off harness does not
+request structured output, which would likely fix its one JSON parse failure but
+must not change mid-bake-off.
+
+**Everything that remains is operator-gated:** AZ-030 GUI plan, DEP-010 browser
+sign-in, WCAG walkthrough, the AMD64 lane (needs SSH on `.36`), further AI-010
+candidates, ANA-010 key rotation, and the PROD-030 decision. NO-GO stands.
+
 ## Addendum 2026-08-30 (post-Wave-38)
 
 - **Session end state: `origin/main = 00235fc`, working tree clean, no stash,

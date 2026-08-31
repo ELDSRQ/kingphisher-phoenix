@@ -36,7 +36,9 @@ restore because it contains AppleDouble `._redis.rdb`; the oldest legacy
 snapshot remains unrecoverable because its identity is absent.
 
 The internal seven Docker Desktop project containers are stopped and preserved;
-unrelated containers remain running. The non-deleting source sync excluded
+unrelated containers remain running. As of 2026-08-31 the duplicate project
+stack on the controller Mac is stopped as well, with every container and volume
+preserved, so `192.168.1.140` is the only engine running this project. The non-deleting source sync excluded
 secrets, data, `.git`, evidence, and environment state. External restore proved
 39 PostgreSQL tables, Redis DB 0 at 766→766 keys and DB 15 at 12→12, then the
 installer reached migration head `0029`, durable-canary seed, ready preflight,

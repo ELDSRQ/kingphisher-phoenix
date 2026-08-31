@@ -37,8 +37,12 @@ Current local/static status:
 - **Pause gate:** Node syntax, targeted Ruff/format, `git diff --check`, and the
   focused API/tracking/worker/database suite passed with eight PostgreSQL-profile
   skips. Full hermetic, mypy, PostgreSQL/Redis/E2E, image, browser, and cloud
-  gates were not rerun after the final edits. The worktree is uncommitted and
-  unpushed at baseline `1403d94`.
+  gates were not rerun after the final edits. That is historical: as of
+  2026-08-31 the tree is committed and pushed at `40c611d` and those gates have
+  been rerun head-exact — hermetic 2707/103, strict mypy 140 files, external
+  PostgreSQL 92, Redis 2, fresh-migration 1, E2E 8/8, and exact-final native
+  ARM64 at source `2adb2a2`. Browser/WCAG, native AMD64/registry and
+  cloud/provider gates remain open.
 
 The AI QA target is internal-model-first: compare two or three small
 permissively licensed models on a fixed sanitized set, then pin the selected
