@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime
@@ -56,7 +57,12 @@ from bakeoff.scoring import (  # noqa: E402 - local package behind the sys.path 
 from bakeoff.set_schema import load_evaluation_set  # noqa: E402 - local package
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-_REQUEST_TIMEOUT_SECONDS = 120.0
+# Default kept at the historical 120s so existing candidates are unaffected.
+# Reasoning models spend most of their budget in a thinking phase before the
+# first scored byte and exceed it, which produced a whole run of
+# "endpoint failure: ReadTimeout" with every dimension not_scored - an
+# infrastructure result that must never be read as a quality score.
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
 
 SYSTEM_PROMPT = (
     "Write awareness-training content only. It must be recognisable as a simulation, "
@@ -92,7 +98,9 @@ def _user_prompt(case: dict[str, Any]) -> str:
     return prompt
 
 
-def _bounded_response_content(endpoint: str, model: str, system: str, user: str) -> tuple[str, dict[str, int]]:
+def _bounded_response_content(
+    endpoint: str, model: str, system: str, user: str, timeout_seconds: float
+) -> tuple[str, dict[str, int]]:
     """Call the chat endpoint with a bounded body read; return (content, usage)."""
 
     payload = {
@@ -118,7 +126,7 @@ def _bounded_response_content(endpoint: str, model: str, system: str, user: str)
         },
     }
     with (
-        httpx.Client(timeout=_REQUEST_TIMEOUT_SECONDS) as client,
+        httpx.Client(timeout=timeout_seconds) as client,
         client.stream("POST", f"{endpoint.rstrip('/')}/chat/completions", json=payload) as response,
     ):
         response.raise_for_status()
@@ -168,6 +176,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", required=True, help="candidate model identifier as loaded by the endpoint")
     parser.add_argument("--report", required=True, help="JSON report path written as selection evidence")
     parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=float(os.environ.get("KP_BAKEOFF_TIMEOUT_SECONDS", _DEFAULT_REQUEST_TIMEOUT_SECONDS)),
+        help=(
+            "per-case endpoint timeout in seconds (default 120). Raise it for reasoning "
+            "models, which spend most of their budget thinking before the first scored byte."
+        ),
+    )
+    parser.add_argument(
         "--evaluation-set",
         default=str(_SCRIPT_ROOT / "evaluation_set.yaml"),
         help="path to the fixed evaluation set",
@@ -187,7 +204,9 @@ def main(argv: list[str] | None = None) -> int:
         user = _user_prompt(case)
         started = time.monotonic()
         try:
-            raw, usage = _bounded_response_content(arguments.endpoint, arguments.model, SYSTEM_PROMPT, user)
+            raw, usage = _bounded_response_content(
+                arguments.endpoint, arguments.model, SYSTEM_PROMPT, user, arguments.request_timeout
+            )
         except (httpx.HTTPError, ValueError) as exc:
             failed = CaseResult(
                 case["id"],
@@ -211,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         "evaluation_set_version": evaluation_set.set_version,
         "evaluation_set_digest": set_digest,
         "structured_output": "json_schema:GenerationResponse",
+        "request_timeout_seconds": arguments.request_timeout,
         "total_cases": total,
         "passed_cases": passed,
         "pct": BakeOffReport(arguments.model, "", tuple(results), total, passed).pct,
