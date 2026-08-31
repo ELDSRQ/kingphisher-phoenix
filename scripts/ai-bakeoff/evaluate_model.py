@@ -153,7 +153,14 @@ def _bounded_response_content(
     return content, usage_counts
 
 
-def _case_result_json(result: CaseResult, *, raw_output: str, latency_ms: int, usage: dict[str, int]) -> dict[str, Any]:
+def _case_result_json(
+    result: CaseResult,
+    *,
+    raw_output: str,
+    latency_ms: int,
+    usage: dict[str, int],
+    endpoint_error: bool = False,
+) -> dict[str, Any]:
     dimensions = {
         score.dimension: {"passed": score.passed, "detail": score.detail, "not_scored": score.not_scored}
         for score in result.dimensions
@@ -163,12 +170,77 @@ def _case_result_json(result: CaseResult, *, raw_output: str, latency_ms: int, u
         "kind": result.kind,
         "passed": result.passed,
         "schema_passed": result.schema_passed,
+        # An endpoint failure (timeout, connection error, malformed wrapper) is
+        # an INFRASTRUCTURE miss, not a quality miss. It is recorded here so a
+        # reader never mistakes "the model never answered" for "the model
+        # answered badly": the case counts against the pass rate exactly as
+        # before, but this flag (and the report-level `endpoint_failures`)
+        # makes the cause explicit. See _build_report.
+        "endpoint_error": endpoint_error,
         "latency_ms": latency_ms,
         "usage": usage,
         "dimensions": dimensions,
     }
     payload["output_truncated"] = raw_output[:500]
     return payload
+
+
+def _build_report(
+    *,
+    model: str,
+    endpoint: str,
+    evaluated_at: str,
+    evaluation_set_version: str,
+    set_digest: str,
+    request_timeout_seconds: float,
+    results: list[CaseResult],
+    detail_rows: list[dict[str, Any]],
+    endpoint_failures: int,
+) -> dict[str, Any]:
+    """Assemble the selection-evidence report.
+
+    ``pct``/``passed_cases`` keep their original meaning (an endpoint failure
+    still counts against the pass rate, as it always has). What is new is that
+    infrastructure failures are made VISIBLE rather than silently blended into
+    a quality score:
+
+    * ``endpoint_failures`` - how many cases never returned a scorable answer;
+    * ``scored_cases`` - cases that actually produced model output to score;
+    * ``selection_evidence`` - false when any case errored, because a run with
+      infrastructure failures must not be read as a clean quality result. This
+      project has twice recorded a false 0/4 caused by a timeout and a context
+      overrun; the guard used to be prose in the docstring, and is now a field.
+    """
+
+    total, passed = aggregate(results)
+    return {
+        "model": model,
+        "endpoint": endpoint,
+        "evaluated_at": evaluated_at,
+        "evaluation_set_version": evaluation_set_version,
+        "scorer_version": SCORER_VERSION,
+        "evaluation_set_digest": set_digest,
+        "structured_output": "json_schema:GenerationResponse",
+        "request_timeout_seconds": request_timeout_seconds,
+        "total_cases": total,
+        "passed_cases": passed,
+        "endpoint_failures": endpoint_failures,
+        "scored_cases": total - endpoint_failures,
+        "selection_evidence": endpoint_failures == 0,
+        "pct": BakeOffReport(model, "", tuple(results), total, passed).pct,
+        "cases": detail_rows,
+        "note": (
+            "Selection requires the digest-pinned weights, runtime, license text, prompt version, "
+            "and this report; no model was downloaded or updated by this run."
+            + (
+                ""
+                if endpoint_failures == 0
+                else f" WARNING: {endpoint_failures} case(s) failed at the endpoint (timeout/connection/"
+                "wrapper error) and never produced a scorable answer; this report is NOT clean selection "
+                "evidence and pct understates model quality by that many cases."
+            )
+        ),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -201,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
 
     results: list[CaseResult] = []
     detail_rows: list[dict[str, Any]] = []
+    endpoint_failures = 0
     for case in evaluation_set.model_dump()["cases"]:
         user = _user_prompt(case)
         started = time.monotonic()
@@ -209,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
                 arguments.endpoint, arguments.model, SYSTEM_PROMPT, user, arguments.request_timeout
             )
         except (httpx.HTTPError, ValueError) as exc:
+            endpoint_failures += 1
             failed = CaseResult(
                 case["id"],
                 case["kind"],
@@ -216,36 +290,36 @@ def main(argv: list[str] | None = None) -> int:
                 (Score("schema_validity", False, f"endpoint failure: {type(exc).__name__}", not_scored=True),),
             )
             results.append(failed)
-            detail_rows.append(_case_result_json(failed, raw_output="", latency_ms=0, usage={}))
+            detail_rows.append(_case_result_json(failed, raw_output="", latency_ms=0, usage={}, endpoint_error=True))
             continue
         latency_ms = int((time.monotonic() - started) * 1000)
         scored = score_case(case, raw)
         results.append(scored)
         detail_rows.append(_case_result_json(scored, raw_output=raw, latency_ms=latency_ms, usage=usage))
 
-    total, passed = aggregate(results)
-    report = {
-        "model": arguments.model,
-        "endpoint": arguments.endpoint,
-        "evaluated_at": datetime.now(UTC).isoformat(),
-        "evaluation_set_version": evaluation_set.set_version,
-        "scorer_version": SCORER_VERSION,
-        "evaluation_set_digest": set_digest,
-        "structured_output": "json_schema:GenerationResponse",
-        "request_timeout_seconds": arguments.request_timeout,
-        "total_cases": total,
-        "passed_cases": passed,
-        "pct": BakeOffReport(arguments.model, "", tuple(results), total, passed).pct,
-        "cases": detail_rows,
-        "note": (
-            "Selection requires the digest-pinned weights, runtime, license text, prompt version, "
-            "and this report; no model was downloaded or updated by this run."
-        ),
-    }
+    report = _build_report(
+        model=arguments.model,
+        endpoint=arguments.endpoint,
+        evaluated_at=datetime.now(UTC).isoformat(),
+        evaluation_set_version=evaluation_set.set_version,
+        set_digest=set_digest,
+        request_timeout_seconds=arguments.request_timeout,
+        results=results,
+        detail_rows=detail_rows,
+        endpoint_failures=endpoint_failures,
+    )
+    total = report["total_cases"]
+    passed = report["passed_cases"]
     report_path = Path(arguments.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"bake-off complete: {passed}/{total} cases passed; report: {report_path.resolve()}")
+    if endpoint_failures:
+        print(
+            f"WARNING: {endpoint_failures}/{total} case(s) failed at the endpoint and were never scored; "
+            "this report is NOT clean selection evidence (see selection_evidence=false).",
+            file=sys.stderr,
+        )
     return 0
 
 
