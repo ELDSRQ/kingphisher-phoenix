@@ -21,7 +21,7 @@ _VALID_MANAGED_ROLE_CONFIG: dict[str, dict[str, object]] = {
     "generation": {
         "ai_base_url": "https://ai.internal.example/v1",
         "training_base_url": "https://training.example/awareness",
-        "ai_model_id": "llama.cpp/Qwen3-8B-Q4_K_M-v1",
+        "ai_model_id": "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M",
     },
     "delivery": {
         "smtp_address": "smtp.example:587",
@@ -128,8 +128,8 @@ def test_managed_generation_requires_a_pinned_model_identity() -> None:
     }
     with pytest.raises(ValidationError, match="AI model ID is required"):
         _settings(**base)
-    settings = _settings(**base, ai_model_id="llama.cpp/Qwen3-8B-Q4_K_M-v1")
-    assert settings.ai_model_id == "llama.cpp/Qwen3-8B-Q4_K_M-v1"
+    settings = _settings(**base, ai_model_id="llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M")
+    assert settings.ai_model_id == "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
 
 
 def test_development_generation_allows_an_unpinned_model() -> None:

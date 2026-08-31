@@ -93,7 +93,7 @@ def _valid_response_payload(**overrides: object) -> dict[str, object]:
         "subject": "Security awareness exercise",
         "plain_text": f"Review: {TRAINING_URL_PLACEHOLDER}",
         "safe_html": f'<a href="{TRAINING_URL_PLACEHOLDER}">Review</a>',
-        "model_id": "llama.cpp/Qwen3-8B-Q4_K_M-v1",
+        "model_id": "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M",
     }
     payload.update(overrides)
     return payload
@@ -148,7 +148,7 @@ def test_response_round_trips_a_supplied_model_id_unchanged() -> None:
 
     response = GenerationResponse.model_validate(payload)
 
-    assert response.model_id == "llama.cpp/Qwen3-8B-Q4_K_M-v1"
+    assert response.model_id == "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
     assert response.model_dump() == payload
     # The persisted draft carries exactly what the gateway reported.
     assert GenerationResponse.model_validate(response.model_dump()).model_id == response.model_id
