@@ -730,6 +730,40 @@ the lure requests...") and another re-measurement. Until then, a
 `safe_refusal` FAIL that cites a prohibited term appearing in a descriptive,
 separately-negated sentence is a scorer artifact, not a model fault.
 
+## AI-010 inference path BUILT and integrated with Qwen (2026-08-31)
+
+The AI-010 gap the worker-parity audit found — the product had no model call,
+only an out-of-tree `/propose` gateway that did not exist — is closed. A real
+gateway app, `apps/ai-gateway` (`kp-ai-gateway`), now implements the `/propose`
+and `/setup-assist` contract against the pinned Qwen2.5-7B `llama.cpp` model.
+
+It embodies the three fixes the bake-off and audit established:
+- strict `json_schema` decoding bound to `GenerationResponse` (not `json_object`,
+  which let a raw control character through);
+- `model_id` set to the configured pinned identity
+  (`llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M`), never the model's self-report, which
+  the raw model invents;
+- the recipient-binding training placeholder guaranteed present in both bodies.
+
+Evidence is framed as untrusted data in the user role, with an unconditional
+injection-resistance clause the request cannot drop. The gateway holds no
+authority; the platform re-runs its `SafetyValidator` and requires human
+approval regardless.
+
+**Proven live end-to-end** with Qwen loaded on `.140`: a real `/propose` for an
+invoice lure returned a correctly simulation-framed awareness draft with the
+placeholder in both bodies and the pinned `model_id`, and that output validates
+through the product `GenerationResponse` contract. 7 hermetic gateway tests pin
+the contract behaviour; the full suite is 2734 passed / 0 warnings.
+
+To run it: start the pinned `llama.cpp` (Qwen weights digest-pinned on `.140`
+under `ai010-models/qwen2.5-7b-instruct/`), then
+`KP_AI_GATEWAY_LLAMA_BASE_URL=<llama>/v1
+KP_AI_GATEWAY_MODEL_ID=llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M python -m
+kp_ai_gateway`, and point the worker's `KP_WORKER_AI_BASE_URL` at the gateway.
+Remaining AI-010 work: package the gateway as an image and run it as the pinned
+worker role in managed Azure deployment.
+
 ## AI-010 bake-off on evaluation set 2.0 (2026-08-31)
 
 The fidelity fix was approved and applied, and every candidate is being
