@@ -26,7 +26,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urlsplit
 
 import httpx
 import jwt
@@ -3564,8 +3564,8 @@ def get_status(
     return StatusResponse(
         operator_api=True,
         tracking_api=_http_ok(tracking_health),
-        postgres=_tcp_ok("127.0.0.1", 5432),
-        redis=_tcp_ok("127.0.0.1", 6379),
+        postgres=_tcp_ok(*_probe_target(settings.database_url, 5432)),
+        redis=_tcp_ok(*_probe_target(settings.redis_url, 6379)),
         console_password_set=_console_password(_env_path(request)) is not None,
         config_store=settings.config_store,
         workers=workers,
@@ -3616,6 +3616,27 @@ def _http_ok(url: str) -> bool:
         return httpx.get(url, timeout=3, follow_redirects=False).status_code == 200
     except httpx.HTTPError:
         return False
+
+
+def _probe_target(url: str, default_port: int) -> tuple[str, int]:
+    """Resolve the host and port a local dependency probe should test.
+
+    The probe previously hardcoded 127.0.0.1 with the default port, so an
+    operator whose PostgreSQL or Redis listened anywhere else saw the console
+    report the dependency down while the application was connected to it and
+    healthy. Deriving the target from the same URL the application uses keeps
+    the reported status truthful. Only the host and port are read; credentials
+    in the URL are never touched.
+    """
+
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or default_port
+    except ValueError:
+        # A malformed URL is a configuration problem, not a reachable service.
+        return "127.0.0.1", default_port
+    return host, port
 
 
 def _tcp_ok(host: str, port: int) -> bool:

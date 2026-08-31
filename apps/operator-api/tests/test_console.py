@@ -1875,7 +1875,18 @@ def test_local_status_uses_local_probes_and_advertises_local_controls(
     monkeypatch.setattr(console_module, "_process_alive", process_alive)
     monkeypatch.setattr(console_module, "_http_ok", http_ok)
 
-    app = _app(env_file)
+    # The probe derives its target from the configured URLs rather than assuming
+    # 127.0.0.1:5432, so this test pins them explicitly instead of inheriting the
+    # hermetic runner's deliberately unroutable port 1.
+    settings = _settings(env_file)
+    settings = settings.model_copy(
+        update={
+            "database_url": "postgresql+psycopg://kingphisher:pw@127.0.0.1:5432/kingphisher",
+            "redis_url": "redis://:pw@127.0.0.1:6379/0",
+        }
+    )
+    app = create_app(settings)
+    app.state.audit_store = FakeAuditStore()
     with TestClient(app) as client:
         response = client.get("/api/v1/console/status", headers=_auth(_login(client)))
 
@@ -1891,6 +1902,8 @@ def test_local_status_uses_local_probes_and_advertises_local_controls(
     assert body["tracking_api"] is True
     assert body["postgres"] is True
     assert body["redis"] is False
+    # The probe must have followed the configured URLs, not a hardcoded pair.
+    assert tcp_calls == [("127.0.0.1", 5432), ("127.0.0.1", 6379)]
     assert body["console_password_set"] is True
     assert body["workers"]["delivery"] is True
     assert sum(body["workers"].values()) == 1
