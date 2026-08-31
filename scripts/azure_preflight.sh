@@ -492,6 +492,15 @@ section "Resource providers"
 if PROVIDERS_JSON="$(az provider list --subscription "$SUBSCRIPTION" --query "[?contains(['Microsoft.App','Microsoft.Authorization','Microsoft.Communication','Microsoft.ContainerRegistry','Microsoft.DBforPostgreSQL','Microsoft.EventGrid','Microsoft.Insights','Microsoft.KeyVault','Microsoft.ManagedIdentity','Microsoft.Network','Microsoft.OperationalInsights','Microsoft.Storage'], namespace)].{namespace:namespace,registrationState:registrationState}" -o json 2>/dev/null)"; then
   require_bounded_output "Azure provider inventory" "$PROVIDERS_JSON"
   while IFS=$'\t' read -r provider state; do
+    # The bulk `az provider list` is eventually consistent and can omit a
+    # freshly-registered provider (observed for Microsoft.Insights), so when it
+    # does not report Registered, confirm with the authoritative per-namespace
+    # `az provider show` before failing closed.
+    if [ "$state" != "Registered" ] && [ "$state" != "Registering" ]; then
+      authoritative_state="$(az provider show --namespace "$provider" \
+        --subscription "$SUBSCRIPTION" --query registrationState -o tsv 2>/dev/null || true)"
+      [ -n "$authoritative_state" ] && state="$authoritative_state"
+    fi
     case "$state" in
       Registered)  record pass "$provider" "registered" ;;
       Registering) record warn "$provider" "still registering" ;;
