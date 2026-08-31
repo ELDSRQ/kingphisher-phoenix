@@ -645,6 +645,50 @@ are the GUI drill-down (fae8929) and the two operator runbooks (6507a54,
     shell execution, bad host returns empty, no abort. `bash -n` +
     `shellcheck -S warning` clean.
 
+## Full local gate sweep at head `a5b8d77` (2026-08-30)
+
+Every gate that does not need an operator was re-run at current head. All pass:
+
+| Gate | Result |
+|---|---|
+| `make test` (hermetic) | 2707 passed / 103 deselected, 0 failures |
+| `make lint` | clean; 386 files formatted |
+| `make typecheck` | 140 source files, no issues |
+| `make security-scan-bandit` | 0 findings |
+| `make security-scan-semgrep` | 0 findings; 4 rules, 145 targets |
+| `make security-scan-trivy` | 0 across every target (vuln/secret/misconfig, HIGH+CRITICAL) |
+| `make security-scan-dependencies` | pip-audit: no known vulnerabilities (58-pkg hash-verified closure) |
+| `make sbom` | CycloneDX 1.5, 59 components, 58 external PURLs |
+| `actionlint` | clean |
+| `zizmor` | no findings |
+| exact-final ARM64 | PASSED at `2adb2a2` (see above) |
+
+**gitleaks: 18 history findings, all verified benign — not assumed.** They are
+in test fixtures, `infrastructure/terraform/main.tf`, and
+`scripts/operator/release/verify_images.sh`. `.env` is not and has never been
+tracked. The four `age-secret-key` hits in `tests/test_remote_*checkpoint*.py`
+were the only ones that could have mattered, because age guards the recovery
+snapshots: each was fed to `age-keygen -y` and **none derives a public key**,
+so they are syntactically-shaped invalid fixtures, not real identities (the
+method was validated by deriving successfully from a freshly generated key).
+The `AGE-SECRET-KEY-1` matches in `scripts/operator/remote-docker-worker/*.sh`
+are `grep -E` validation patterns, not key material. No real recovery identity
+is in the repository.
+
+**Finding — documentation invalidates image evidence for no real reason.**
+The release source manifest is `git ls-files --cached --others
+--exclude-standard` over the whole repo, so `RESUME-HERE.md` and `docs/` are
+inside it and any docs-only commit changes the bound digest. But `.dockerignore`
+does not exclude them and, more to the point, the Dockerfiles only `COPY`
+`pyproject.toml`, `uv.lock`, `packages/` and `apps/` — **documentation never
+reaches any image**. So a docs commit makes the verifier fail closed on evidence
+that is still materially correct, which is exactly how the `fae8929` staleness
+went unnoticed among doc churn. Recommended (needs a reviewed release-contract
+decision, not done here): bind the expected digest over the paths that actually
+enter the images, or exclude documentation from the manifest. Until then the
+ARM64 evidence is bound to `2adb2a2` while HEAD is `a5b8d77`; no shipped byte
+differs between them.
+
 ## QA bugcheck findings (2026-08-30)
 
 A comprehensive QA review was performed. All automated gates pass:
