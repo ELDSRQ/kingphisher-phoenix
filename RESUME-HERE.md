@@ -645,6 +645,53 @@ are the GUI drill-down (fae8929) and the two operator runbooks (6507a54,
     shell execution, bad host returns empty, no abort. `bash -n` +
     `shellcheck -S warning` clean.
 
+## AI-010 finding — `evidence_fidelity` scores the wrong artifact (2026-08-31)
+
+The shared failure across two unrelated model families was investigated and is
+**a defect in the evaluation set, not in either model.** Do not read the current
+`evidence_fidelity` numbers as a model property.
+
+`bakeoff/scoring.py:107` builds `body` from `subject + plain_text + safe_html`
+— the simulated phishing email itself — and then requires every
+`expected_fragments` entry to appear inside it. Two of those fragments are
+**source provenance metadata, not lure content**:
+
+- `invoice_fidelity` requires `2026-08-20`, which is the analyst's `as_of`
+  observation date;
+- `guidance_retention` requires `REV-2026-3456`, which is an internal
+  threat-intel bulletin identifier.
+
+Both are supplied to the model correctly (`_user_prompt` puts `as_of` under
+`evidence` and `source_reference` under `pattern`), and the match is
+case-insensitive, so neither omission is a plumbing or casing artifact. The
+models simply decline to print them — which is the right behaviour. **A
+realistic phishing lure would never cite the threat-intel bulletin that
+described it, nor the analyst's observation date.** A model that did embed them
+would be producing an obviously fabricated email, and would score *better*.
+
+Qwen2.5-7B's `guidance_retention` output is a clean, correctly framed awareness
+message naming the password-reset lure, the IT helpdesk impersonation and the
+forged Microsoft 365 link, with the training placeholder intact. It is marked
+failed solely for omitting `REV-2026-3456`.
+
+This matters beyond the score. `THR-001A` requires evidence to be preserved
+**into the bounded reviewed generation context** — the durable record an
+approver reads — not printed inside the lure body. The scorer is asserting the
+requirement against the wrong artifact for those two fragments.
+
+**Proposed fix, not applied — it redefines a gate metric and needs a decision.**
+Split the dimension: keep content fragments (`claimed_actor`, sector, lure
+category, and the behaviour being taught) scored against the body, and score
+provenance retention against the generation record instead. The minimal version
+is to drop `2026-08-20` and `REV-2026-3456` from those two cases'
+`expected_fragments` and bump `evaluation_set_version`, which the report already
+records alongside `evaluation_set_digest`, so pre- and post-fix runs can never
+be silently compared. Every candidate must then be re-measured on the new set.
+
+Until that is decided, treat `evidence_fidelity` as **1 of 2 scoreable
+fragments** per fidelity case rather than the reported ratio, and do not select
+a model on it.
+
 ## AI-010 bake-off — second candidate measured (2026-08-31)
 
 Two candidates are now measured under identical schema-constrained decoding
