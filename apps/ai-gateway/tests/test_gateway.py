@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 from fastapi.testclient import TestClient
 from kp_ai_gateway import main as gateway_main
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER, GenerationResponse
@@ -163,3 +164,70 @@ def test_setup_assist_is_deterministic_and_does_not_echo_values() -> None:
 
 def test_healthz() -> None:
     assert TestClient(gateway_main.app).get("/healthz").json() == {"status": "ok"}
+
+
+def _stub_backend_health(monkeypatch, *, ok: bool) -> list[str]:
+    """Replace the httpx GET the readiness probe makes to llama.cpp's /health.
+
+    When ``ok`` is False the client's ``get`` raises, standing in for an
+    unreachable backend (connection error, timeout, or non-2xx).
+    """
+
+    captured: list[str] = []
+
+    class _StubResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class _StubClient:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a) -> None:
+            return None
+
+        async def get(self, url: str) -> _StubResponse:
+            captured.append(url)
+            if not ok:
+                raise httpx.ConnectError("backend down")
+            return _StubResponse()
+
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _StubClient)
+    return captured
+
+
+def test_livez_reports_alive() -> None:
+    resp = TestClient(gateway_main.app).get("/livez")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "alive"}
+
+
+def test_readyz_200_when_backend_health_succeeds(monkeypatch) -> None:
+    captured = _stub_backend_health(monkeypatch, ok=True)
+    resp = TestClient(gateway_main.app).get("/readyz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ready"}
+    # readiness must probe the backend's /health, derived by stripping the /v1 suffix
+    assert captured == [gateway_main._backend_health_url()]
+    assert captured[0].endswith("/health")
+    assert "/v1" not in captured[0]
+
+
+def test_readyz_503_when_backend_health_fails(monkeypatch) -> None:
+    _stub_backend_health(monkeypatch, ok=False)
+    resp = TestClient(gateway_main.app).get("/readyz")
+    assert resp.status_code == 503
+    assert resp.json()["status"] == "not_ready"
+
+
+def test_readyz_never_leaks_the_backend_url_or_errors(monkeypatch) -> None:
+    _stub_backend_health(monkeypatch, ok=False)
+    resp = TestClient(gateway_main.app).get("/readyz")
+    assert resp.status_code == 503
+    serialized = json.dumps(resp.json())
+    assert gateway_main.settings.llama_base_url not in serialized
+    assert "127.0.0.1" not in serialized
+    assert "backend down" not in serialized  # the raised exception's message must not leak

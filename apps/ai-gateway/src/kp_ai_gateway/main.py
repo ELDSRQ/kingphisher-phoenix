@@ -176,8 +176,57 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
     }
 
 
+#: Bounded timeout for the readiness probe's backend health check. Deliberately
+#: short so the managed platform's /readyz poll fails fast rather than hanging on
+#: an unreachable llama.cpp server; it is independent of the long per-request
+#: generation timeout.
+_READYZ_TIMEOUT_SECONDS = 3.0
+
+
+def _backend_health_url() -> str:
+    """Derive the llama.cpp server's /health URL from the configured base URL.
+
+    ``llama_base_url`` is the OpenAI-compatible base (``.../v1``); the server's
+    liveness endpoint sits at ``/health`` on the same host, so strip the ``/v1``
+    suffix before appending it.
+    """
+
+    base = settings.llama_base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return base.rstrip("/") + "/health"
+
+
+@app.get("/livez")
+async def livez() -> dict[str, str]:
+    """Process liveness only; never call downstream dependencies here."""
+
+    return {"status": "alive"}
+
+
+@app.get("/readyz", response_model=None)
+async def readyz() -> JSONResponse:
+    """Report readiness without leaking the backend URL or error details.
+
+    This gateway is stateless — it owns no database, queue, or rate limiter — so
+    unlike the operator-api and tracking-api siblings there is nothing local to
+    check. Its one dependency is the pinned llama.cpp server, so readiness is a
+    bounded, fast probe of that server's ``/health`` endpoint.
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=_READYZ_TIMEOUT_SECONDS) as client:
+            response = await client.get(_backend_health_url())
+            response.raise_for_status()
+    except Exception:  # noqa: BLE001 — any failure means "not ready"; details stay internal.
+        return JSONResponse(status_code=503, content={"status": "not_ready", "reason": "backend unreachable"})
+    return JSONResponse(status_code=200, content={"status": "ready"})
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
+    """Compatibility endpoint retained for the Dockerfile healthcheck and monitors."""
+
     return {"status": "ok"}
 
 
