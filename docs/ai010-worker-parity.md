@@ -324,3 +324,31 @@ These were read and confirmed in code, not assumed:
 * **Whether the bake-off's selected model would satisfy G4** (omitting `model_id`
   under strict decoding) — the bake-off scored schema validity, not field
   presence against a pin, and no model was run for this audit.
+
+
+---
+
+## Verification addendum (2026-08-31) — findings re-checked against the live safety layer
+
+After the internal AI gateway (apps/ai-gateway) was built and Qwen integrated,
+the audit findings were re-checked against the running SafetyValidator:
+
+- **#5 (extra live URL beside the placeholder) is NOT exploitable as described.**
+  `SafetyValidator.validate` rejects an extra URL even on the training domain: a
+  proposal containing `https://training.example.com/collect` alongside the
+  placeholder returns `allowed=False` ("external link not on training
+  allowlist: example.com (bare-domain)"). An external link
+  (`https://attacker.invalid/...`) is likewise rejected. The real Qwen output
+  passes clean (`allowed=True`). No fix required.
+- **#1 (no schema-constrained decoding product-side) is RESOLVED.** The gateway
+  performs strict `json_schema` decoding against `GenerationResponse`.
+- **#3 (pinned model_id not bound into the record) is RESOLVED at the source.**
+  The gateway returns the configured pinned identity verbatim, so the recorded
+  `model_id` is the pin, not the model's self-report.
+- **#4 (model_id optional, "unknown" default) was fixed in the contract earlier**
+  (required, min_length=1).
+
+Residual, low priority: #2 (tool-less/network-less is enforced by the gateway
+sending no tools and llama.cpp having no network egress, but there is no live
+posture probe), and #7 (cost is bytes+latency, not tokens). Neither blocks the
+supported inference path.
