@@ -645,6 +645,75 @@ are the GUI drill-down (fae8929) and the two operator runbooks (6507a54,
     shell execution, bad host returns empty, no abort. `bash -n` +
     `shellcheck -S warning` clean.
 
+## External profiles re-run head-exact + first AI-010 bake-off (2026-08-31)
+
+**All four external profiles now PASS at current head.** PostgreSQL and Redis
+ran against `.140` over an SSH tunnel, on the disposable `kingphisher_test`
+database and reserved Redis DB14/15; the live `kingphisher` database was never
+touched.
+
+| Profile | Result |
+|---|---|
+| `make test-postgres` | 92 passed / 2718 deselected |
+| `make test-redis` | 2 passed (DB15) |
+| `make test-fresh-migration` | 1 passed (base→head, fresh database) |
+| `make test-e2e` | **8 passed** (7 console smoke + 1 Mailpit canary), exit 0 |
+
+Two things that cost time and are worth not repeating. First, `audit_writer`
+has its own credential `AUDIT_WRITER_PASSWORD`; using `POSTGRES_PASSWORD` for
+it produces four misleading failures in `test_audit_store.py` and
+`test_outbox_postgres.py` that look like defects and are not. Second, the E2E
+lane needs a genuinely fresh seed — leftover `E2E readiness` campaigns from a
+previous attempt break the canary's `canary_not_queued` assertion — and the
+audit bootstrap refuses any database not named `kingphisher`, so a
+uniquely-named disposable database cannot be substituted. The lane database in
+`kp-e2e-postgres` was reset with operator authorisation, and
+`GRANT USAGE ON SCHEMA public TO audit_writer` re-applied afterwards because
+`postgres-init/001-roles.sh` only runs on first volume boot.
+
+**Finding — the console's local probe is port-hardcoded.**
+`apps/operator-api/src/kp_operator_api/console.py:3567` probes
+`_tcp_ok("127.0.0.1", 5432)` and `_tcp_ok("127.0.0.1", 6379)` rather than
+deriving host and port from the configured `DATABASE_URL`/`REDIS_URL`. Any
+operator whose PostgreSQL is not on the default port sees the console report
+postgres down while the application is connected and healthy. The E2E lane hits
+this because it runs on 5433. Not changed — it is product behaviour needing a
+reviewed decision.
+
+### AI-010 — first real bake-off result (Qwen2.5-7B-Instruct)
+
+llama.cpp 0.3.0 (build 10621, commit `c1d0e7a00`) was installed on `.140`, and
+Qwen2.5-7B-Instruct-GGUF Q4_K_M was downloaded to
+`/Volumes/DockerExternal/KingPhisher-Phoenix/ai010-models/qwen2.5-7b-instruct`
+and digest-pinned:
+
+- shard 1 `sha256:85cb3cc4a0f9533795fd6881c4d5f289c14b24668b4fb2a8fc0ee73832cdf265`
+- shard 2 `sha256:539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a`
+- LICENSE (Apache-2.0) `sha256:832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e`
+
+The runbook completed with 6 checks passed, 0 warnings, 0 blockers, exit 0.
+**Score: 0/4 cases passed**, but the sub-scores matter more than the headline —
+schema validity 3/4, injection resistance 1/1 (payload absent), evidence
+fidelity 0/3. The three fidelity failures each dropped one required evidence
+token (`2026-08-20`, `shared document`, `rev-2026-3456`); the single schema
+failure was invalid JSON from an unescaped newline inside `plain_text`.
+Latency was 10–26 s per case. This is one candidate, not a selection: AI-005
+requires two or three, and the report is **not** committed as selection
+evidence pending independent review.
+
+Worth a reviewed decision: the harness does not request structured output
+(llama.cpp grammar or `response_format: json_object`), which would likely fix
+the one JSON parse failure. Changing a fixed evaluation set mid-bake-off is
+exactly what the fixed set exists to prevent, so it should be decided before
+the next candidate, not after.
+
+**Runbook bug found and fixed:** `ai010-bakeoff-runbook.sh` set
+`PY="uv run python"` and then invoked `"$PY"`, so a host without a repo `.venv`
+looked up the whole three-word string as one command name and died with
+`uv run python: command not found` after all its checks had passed. `PY` is now
+an array. This only surfaces off the controller, which is why the earlier
+loopback-mock validation missed it.
+
 ## Full local gate sweep at head `a5b8d77` (2026-08-30)
 
 Every gate that does not need an operator was re-run at current head. All pass:

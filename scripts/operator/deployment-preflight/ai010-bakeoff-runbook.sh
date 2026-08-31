@@ -75,10 +75,12 @@ printf '\nAI-010 bake-off operator runbook\nrepo root : %s\n' "$REPO_ROOT"
 printf '%s\n' "--------------------------------------------"
 
 # 0) offline harness self-check (no model required)
-if [ -x "$REPO_ROOT/.venv/bin/python" ]; then PY="$REPO_ROOT/.venv/bin/python"
-elif command -v uv >/dev/null 2>&1; then PY="uv run python"
-else PY="python"; fi
-if "$PY" -m pytest "$REPO_ROOT/tests/test_ai_bakeoff.py" -q >/tmp/kp-bakeoff-harness.log 2>&1; then
+# An array, not a string: "uv run python" is three words and a quoted
+# expansion would be looked up as one command name.
+if [ -x "$REPO_ROOT/.venv/bin/python" ]; then PY=("$REPO_ROOT/.venv/bin/python")
+elif command -v uv >/dev/null 2>&1; then PY=(uv run python)
+else PY=(python); fi
+if "${PY[@]}" -m pytest "$REPO_ROOT/tests/test_ai_bakeoff.py" -q >/tmp/kp-bakeoff-harness.log 2>&1; then
   note "offline bake-off harness" "green (exit 0)"
 else
   warn "offline bake-off harness" "pytest exited nonzero; see /tmp/kp-bakeoff-harness.log"
@@ -116,7 +118,7 @@ if [ "$FAIL" -gt 0 ]; then
 fi
 
 printf '\nStarting fixed-evaluation run…\n'
-"$PY" "$BAKEOFF" --endpoint "$ENDPOINT" --model "$MODEL" --report "$REPORT"
+"${PY[@]}" "$BAKEOFF" --endpoint "$ENDPOINT" --model "$MODEL" --report "$REPORT"
 
 printf '\nBake-off complete. Selection evidence that must be recorded (digest-pinned):\n'
 printf '  - weights artifact + sha256  : %s\n' "$WEIGHTS"
