@@ -23,6 +23,10 @@ NOW = datetime(2026, 8, 27, 12, 0, tzinfo=UTC)
 
 @pytest.fixture
 def session() -> Iterator[Session]:
+    # Explicit adapters: Python 3.12 deprecated sqlite3's implicit date/datetime
+    # adapters. This date adapter reproduces the stdlib default (``val.isoformat()``)
+    # byte for byte, so stored values and comparison semantics are unchanged.
+    sqlite3.register_adapter(date, lambda value: value.isoformat())
     sqlite3.register_adapter(
         datetime,
         lambda value: value.astimezone(UTC).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S.%f"),
