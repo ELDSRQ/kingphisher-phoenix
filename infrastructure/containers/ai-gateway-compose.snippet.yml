@@ -1,0 +1,34 @@
+# Proposed Compose service block for the AI generation gateway (kp-ai-gateway).
+#
+# NOT applied to docker-compose.yml on purpose: the root docker-compose.yml
+# currently defines ONLY infrastructure and mock services (postgres, redis,
+# mailpit, otel-collector, mock-idp, mock-graph, mock-ai). None of the first-
+# party app services (operator-api, tracking-api, worker) are declared there,
+# so inserting an app service would be inconsistent with that file's scope.
+# Paste this under `services:` if/when the app services are added to Compose.
+#
+# Note on host binding: kp_ai_gateway.__main__ binds KP_AI_GATEWAY_HOST
+# (default 127.0.0.1), matching the sibling apps. KP_AI_GATEWAY_HOST=0.0.0.0
+# below makes the service reachable from outside the container; the container
+# HEALTHCHECK still probes 127.0.0.1:8090/healthz.
+  ai-gateway:
+    build:
+      context: .
+      dockerfile: infrastructure/containers/Dockerfile.ai-gateway
+    environment:
+      KP_AI_GATEWAY_HOST: "0.0.0.0"
+      KP_AI_GATEWAY_PORT: "8090"
+      # OpenAI-compatible base URL of the pinned internal llama.cpp server.
+      KP_AI_GATEWAY_LLAMA_BASE_URL: ${KP_AI_GATEWAY_LLAMA_BASE_URL:?set the pinned llama.cpp base URL in .env}
+    ports:
+      - "127.0.0.1:8090:8090"
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 128

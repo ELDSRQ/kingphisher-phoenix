@@ -1,0 +1,24 @@
+# Multi-stage build for the AI generation gateway image.
+# Build context is the repository root.
+FROM ghcr.io/astral-sh/uv:0.11.28@sha256:0f36cb9361a3346885ca3677e3767016687b5a170c1a6b88465ec14aefec90aa AS uvbin
+FROM cgr.dev/chainguard/python@sha256:aa8fd2447b8b52922db57deb3894b622c3229387aaaec5934d64b85dbff6eb17 AS builder
+COPY --from=uvbin /uv /uvx /usr/local/bin/
+WORKDIR /app
+COPY --chown=65532:65532 pyproject.toml uv.lock ./
+COPY --chown=65532:65532 packages ./packages
+COPY --chown=65532:65532 apps ./apps
+RUN UV_PYTHON_DOWNLOADS=never uv sync --frozen --no-dev --no-editable --package kp-ai-gateway
+
+FROM cgr.dev/chainguard/python@sha256:ee37f5e4fb445732409626797dccb6f2a6337872def2bab48729ee61b335fa77
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+COPY --from=builder --chown=65532:65532 /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+USER 65532:65532
+EXPOSE 8090
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3).read()"]
+STOPSIGNAL SIGTERM
+ENTRYPOINT []
+CMD ["kp-ai-gateway"]
