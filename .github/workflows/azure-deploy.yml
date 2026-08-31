@@ -195,6 +195,17 @@ jobs:
         with:
           version: v0.74.0
           cache: true
+      - name: Install pinned age (recovery-checkpoint contract test dependency)
+        run: |
+          set -euo pipefail
+          age_tar="$(mktemp)"
+          curl -fsSL -o "$age_tar" \
+            https://github.com/FiloSottile/age/releases/download/v1.2.1/age-v1.2.1-linux-amd64.tar.gz
+          echo "7df45a6cc87d4da11cc03a539a7470c15b1041ab2b396af088fe9990f7c79d50  $age_tar" | sha256sum -c -
+          tar -xzf "$age_tar" -C "$RUNNER_TEMP"
+          install -m0755 "$RUNNER_TEMP/age/age" /usr/local/bin/age
+          install -m0755 "$RUNNER_TEMP/age/age-keygen" /usr/local/bin/age-keygen
+          age --version
       - run: make lint
       - run: make typecheck
       - run: make security-scan
