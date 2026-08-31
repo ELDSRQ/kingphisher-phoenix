@@ -486,7 +486,10 @@ fi
 
 # --- resource providers ------------------------------------------------------
 section "Resource providers"
-if PROVIDERS_JSON="$(az provider list --subscription "$SUBSCRIPTION" -o json 2>/dev/null)"; then
+# Filter to the reviewed namespaces server-side. The unfiltered list is large
+# enough to overflow the environment when passed to python (E2BIG); the same
+# twelve namespaces are checked below, so filtering changes no result.
+if PROVIDERS_JSON="$(az provider list --subscription "$SUBSCRIPTION" --query "[?contains(['Microsoft.App','Microsoft.Authorization','Microsoft.Communication','Microsoft.ContainerRegistry','Microsoft.DBforPostgreSQL','Microsoft.EventGrid','Microsoft.Insights','Microsoft.KeyVault','Microsoft.ManagedIdentity','Microsoft.Network','Microsoft.OperationalInsights','Microsoft.Storage'], namespace)].{namespace:namespace,registrationState:registrationState}" -o json 2>/dev/null)"; then
   require_bounded_output "Azure provider inventory" "$PROVIDERS_JSON"
   while IFS=$'\t' read -r provider state; do
     case "$state" in
@@ -522,7 +525,9 @@ else
 fi
 
 section "Region and ACS boundary"
-if LOCATION_ROWS="$(az account list-locations --subscription "$SUBSCRIPTION" \
+# `az account list-locations` does not accept --subscription; it uses the
+# active subscription, which the preflight has already selected/verified above.
+if LOCATION_ROWS="$(az account list-locations \
     --query "[?name=='$LOCATION'].name" -o tsv 2>/dev/null)"; then
   require_bounded_output "Azure location inventory" "$LOCATION_ROWS"
   if printf '%s\n' "$LOCATION_ROWS" | grep -Fqx "$LOCATION"; then
