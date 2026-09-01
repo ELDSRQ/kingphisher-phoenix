@@ -63,6 +63,14 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Report available small VM sizes in the region
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Unrestricted Standard 2-4 vCPU sizes available to this subscription in eastus2:"
+          az vm list-skus --location eastus2 --resource-type virtualMachines \
+            --query "[?length(restrictions)==\`0\`].name" --output tsv 2>/dev/null \
+            | grep -E '^Standard_(B2|D2|D4|F2|F4|DS2|E2)' | sort -u | head -40 || true
       - name: Install Terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
