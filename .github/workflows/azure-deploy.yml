@@ -184,6 +184,10 @@ jobs:
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.9.8
+          # No step consumes the wrapper stdout/stderr/exitcode outputs, and the
+          # wrapper merges Terraform's stderr warnings ("No outputs found" on an
+          # empty pre-apply state) into stdout, tripping the output size guards.
+          terraform_wrapper: false
       - name: Install pinned security scanners
         run: |
           uv tool install bandit==1.9.4
@@ -714,6 +718,10 @@ jobs:
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: 1.9.8
+          # No step consumes the wrapper stdout/stderr/exitcode outputs, and the
+          # wrapper merges Terraform's stderr warnings ("No outputs found" on an
+          # empty pre-apply state) into stdout, tripping the output size guards.
+          terraform_wrapper: false
       - name: Install pinned Syft
         if: inputs.deployment_phase == 'workloads'
         id: syft
@@ -795,6 +803,8 @@ jobs:
               )
               if result.returncode != 0:
                   return None
+              if not result.stdout.strip():
+                  return None
               if len(result.stdout) > 16_384:
                   fail(f"Terraform output {name} exceeds the fixed response limit")
               try:
@@ -814,9 +824,10 @@ jobs:
               if len(result.stdout) > 512:
                   fail(f"Terraform output {name} exceeds the fixed response limit")
               try:
-                  return result.stdout.decode("utf-8").strip()
+                  value = result.stdout.decode("utf-8").strip()
               except UnicodeDecodeError:
                   fail(f"Terraform output {name} is malformed")
+              return value or None
 
           def az_rest(resource_id, query):
               return run_json(
