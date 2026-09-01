@@ -10,7 +10,8 @@ CONFIG='{"acs_daily_message_limit":"1000","acs_dkim2_verification_status":"","ac
 
 gh workflow run provision-ci-runner.yml --repo ELDSRQ/kingphisher-phoenix --ref main \
   -f environment=staging \
-  -f deployment_config="$CONFIG"
+  -f deployment_config="$CONFIG" \
+  -f replace_runner_vm="${REPLACE:-false}"
 sleep 8
 echo "--- queued run ---"
 gh run list --repo ELDSRQ/kingphisher-phoenix --workflow provision-ci-runner.yml --limit 1

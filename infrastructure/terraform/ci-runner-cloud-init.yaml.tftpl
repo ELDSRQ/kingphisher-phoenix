@@ -1,11 +1,16 @@
 #cloud-config
-# Install and register the GitHub Actions self-hosted runner. The registration
-# token is short-lived (~1h) and is only present in this VM's custom_data.
+# Install the toolchain the deploy job needs (az CLI, python3, git, jq) plus the
+# GitHub Actions self-hosted runner. GitHub-hosted runners ship these; a bare VM
+# does not. The registration token is short-lived (~1h) and only present in this
+# VM's custom_data.
 package_update: true
 packages:
   - curl
   - jq
+  - git
   - libicu-dev
+  - python3
+  - python3-venv
 write_files:
   - path: /opt/actions-runner/install.sh
     permissions: "0755"
@@ -15,6 +20,10 @@ write_files:
       set -euo pipefail
       RUNNER_VERSION=2.319.1
       RUNNER_USER=runner
+
+      # Azure CLI (the deploy job's azure/login, az acr build, az rest need it).
+      curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
       cd /opt/actions-runner
       curl -fsSL -o runner.tar.gz \
         "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"

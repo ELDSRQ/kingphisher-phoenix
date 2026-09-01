@@ -18,6 +18,11 @@ on:
         description: The reviewed non-secret deployment config (same JSON the deploy uses)
         required: true
         type: string
+      replace_runner_vm:
+        description: Force-replace the runner VM (to pick up an updated cloud-init toolchain)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -113,6 +118,7 @@ jobs:
           -var="network_mode=starter"
           -var="deploy_workloads=false"
           -var="acs_deployment_stage=foundation_bootstrap"
+          ${{ inputs.replace_runner_vm && '-replace=azurerm_linux_virtual_machine.ci_runner[0]' || '' }}
           -target=azurerm_subnet.ci_runner
           -target=azurerm_public_ip.ci_runner_nat
           -target=azurerm_nat_gateway.ci_runner
@@ -126,10 +132,12 @@ jobs:
       - name: Refuse any destructive change
         working-directory: infrastructure/terraform
         shell: bash
+        env:
+          REPLACE_RUNNER_VM: ${{ inputs.replace_runner_vm }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, subprocess
+          import json, os, subprocess
           result = subprocess.run(
               ["terraform", "show", "-json", "ci-runner.tfplan"],
               check=True, capture_output=True, text=True,
@@ -154,8 +162,14 @@ jobs:
               c["address"] for c in changes
               if isinstance(c, dict) and "delete" in c.get("change", {}).get("actions", [])
           )
-          if destructive:
-              raise SystemExit(f"runner provisioning is create/update-only; refusing deletes: {destructive}")
+          # A one-time replace of the disposable runner VM (to pick up an updated
+          # cloud-init toolchain) is permitted when explicitly requested; every
+          # other delete stays blocked.
+          replace_vm = os.environ.get("REPLACE_RUNNER_VM", "false").strip().lower() == "true"
+          allowed_destructive = {"azurerm_linux_virtual_machine.ci_runner[0]"} if replace_vm else set()
+          blocked = [a for a in destructive if a not in allowed_destructive]
+          if blocked:
+              raise SystemExit(f"runner provisioning refuses these deletes: {blocked}")
           changed = {
               c.get("address") for c in changes
               if isinstance(c, dict) and c.get("change", {}).get("actions") != ["no-op"]
