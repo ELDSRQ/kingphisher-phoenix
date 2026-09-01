@@ -1,0 +1,146 @@
+# Build the ai-llama sidecar image (pinned llama.cpp + the digest-verified Qwen
+# GGUF) entirely through GitHub OIDC — no laptop `az` login, which the tenant's
+# security defaults block. The operator uploads the two GGUF shards once to a
+# blob container (portal drag-and-drop); this workflow reads them with the same
+# OIDC identity the deploy uses, verifies their sha256, builds in ACR, and
+# prints the immutable digest to pin as AI_LLAMA_IMAGE.
+#
+# One-time prerequisites (operator, no secrets):
+#   1. Upload both shards to a blob container (e.g. storage account
+#      <tfstate/audit account>, container "ai-models"):
+#        qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
+#        qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf
+#   2. Grant the deploy OIDC app "Storage Blob Data Reader" on that container
+#      (it already has ACR push via its subscription role).
+# This workflow is separate from the frozen azure-deploy.yml and never mutates
+# Azure resources — it only reads the weights and builds an image.
+name: Build ai-llama image
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Deployment environment whose OIDC identity + ACR to use
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      acr_name:
+        description: Container registry name (e.g. acrkpstaging6117w)
+        required: true
+        type: string
+      storage_account:
+        description: Storage account holding the uploaded GGUF shards
+        required: true
+        type: string
+      models_container:
+        description: Blob container holding the two GGUF shards
+        required: false
+        default: ai-models
+        type: string
+      llama_ref:
+        description: llama.cpp server image to pin by digest
+        required: false
+        default: ghcr.io/ggml-org/llama.cpp:server
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # Azure OIDC; no stored credential.
+
+concurrency:
+  group: build-ai-llama-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and push ai-llama
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 60
+    env:
+      SHARD1: qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
+      SHARD2: qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf
+      CONTEXT_DIR: infrastructure/containers/ai-llama
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Authenticate to Azure
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Download and verify the pinned Qwen weights
+        shell: bash
+        env:
+          STORAGE_ACCOUNT: ${{ inputs.storage_account }}
+          MODELS_CONTAINER: ${{ inputs.models_container }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CONTEXT_DIR/models"
+          for shard in "$SHARD1" "$SHARD2"; do
+            az storage blob download \
+              --auth-mode login \
+              --account-name "$STORAGE_ACCOUNT" \
+              --container-name "$MODELS_CONTAINER" \
+              --name "$shard" \
+              --file "$CONTEXT_DIR/models/$shard" \
+              --no-progress \
+              --only-show-errors
+          done
+          # Fail closed unless both shards match the AI-010 selection digests.
+          ( cd "$CONTEXT_DIR/models"; printf '%s  %s\n' \
+              85cb3cc4a0f9533795fd6881c4d5f289c14b24668b4fb2a8fc0ee73832cdf265 "$SHARD1" \
+              539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a "$SHARD2" \
+              | sha256sum -c - )
+      - name: Resolve the pinned llama.cpp base digest
+        id: base
+        shell: bash
+        env:
+          LLAMA_REF: ${{ inputs.llama_ref }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect "$LLAMA_REF" --format '{{.Manifest.Digest}}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::could not resolve digest for $LLAMA_REF"; exit 1; }
+          echo "ref=${LLAMA_REF%%:*}@${digest}" >> "$GITHUB_OUTPUT"
+      - name: Build and push ai-llama in ACR
+        id: build
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+          LLAMA_BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          set -euo pipefail
+          tag="ai-llama:${GITHUB_SHA::12}"
+          az acr build \
+            --registry "$ACR" \
+            --image "$tag" \
+            --file "$CONTEXT_DIR/Dockerfile" \
+            --build-arg "LLAMA_BASE=$LLAMA_BASE" \
+            --platform linux/amd64 \
+            "$CONTEXT_DIR"
+          login_server="$(az acr show --name "$ACR" --query loginServer --output tsv)"
+          digest="$(az acr repository show --name "$ACR" --image "$tag" --query digest --output tsv)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ACR returned an invalid digest: $digest"; exit 1; }
+          echo "image=${login_server}/ai-llama@${digest}" >> "$GITHUB_OUTPUT"
+      - name: Summarize the pinned image and next steps
+        shell: bash
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+        run: |
+          {
+            echo "### ai-llama image built"
+            echo ""
+            echo '```'
+            echo "$IMAGE"
+            echo '```'
+            echo ""
+            echo "Enable the gateway in the workloads deploy by setting these"
+            echo "environment variables (Settings → Environments → ${{ inputs.environment }}):"
+            echo ""
+            echo "- \`AI_LLAMA_IMAGE\` = the image reference above"
+            echo "- \`DEPLOY_AI_GATEWAY\` = \`true\`"
+          } >> "$GITHUB_STEP_SUMMARY"
