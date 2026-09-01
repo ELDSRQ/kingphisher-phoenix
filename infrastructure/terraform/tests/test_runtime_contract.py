@@ -138,9 +138,10 @@ def test_managed_identities_follow_deployments_with_separate_provider_identities
     assert 'resource "azurerm_user_assigned_identity" "runtime"' not in MAIN
     assert 'resource "azurerm_user_assigned_identity" "workload"' in MAIN
     assert "for_each            = local.workload_identities" in MAIN
-    assert 'toset(["operator", "tracking", "migration"])' in MAIN
+    assert 'toset(["operator", "tracking", "migration", "ai-gateway"])' in MAIN
     assert "local.worker_deployments" in MAIN
     assert 'identity_ids = [azurerm_user_assigned_identity.workload["operator"].id]' in MAIN
+    assert 'identity_ids = [azurerm_user_assigned_identity.workload["ai-gateway"].id]' in MAIN
     assert 'identity_ids = [azurerm_user_assigned_identity.workload["tracking"].id]' in MAIN
     assert "provider_identity_names = {" in MAIN
     assert 'role => "provider-${role}"' in MAIN
@@ -551,3 +552,38 @@ def test_ciphertext_recovery_is_bounded_and_foundation_fails_closed() -> None:
     assert "var.deploy_workloads" in guard
     assert 'can(regex("/secrets/[A-Za-z0-9-]+$"' in guard
     assert "foundation plans cannot add recovery keys" in guard
+
+
+def test_ai_gateway_workload_is_internal_two_container_and_opt_in() -> None:
+    gateway = MAIN.split('resource "azurerm_container_app" "ai_gateway"', maxsplit=1)[1].split(
+        'resource "azurerm_container_app" "operator"', maxsplit=1
+    )[0]
+    # Opt-in and gated on workloads; never deployed by a plain foundation plan.
+    assert "var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0" in gateway
+    # Internal ingress only on the gateway port; reached in-cluster by the
+    # worker (/propose) and operator-api (/setup-assist).
+    assert "external_enabled = false" in gateway
+    assert "target_port      = 8090" in gateway
+    # Two containers: the baked-model llama.cpp sidecar and the gateway. The
+    # gateway reaches the sidecar over loopback only.
+    assert 'name   = "ai-llama"' in gateway
+    assert "image  = var.ai_llama_image" in gateway
+    assert 'name   = "ai-gateway"' in gateway
+    assert "image  = var.ai_gateway_image" in gateway
+    assert "http://localhost:18081/v1" in gateway
+    assert "/livez" in gateway and "/readyz" in gateway
+    assert "18081" in gateway
+    # The gateway holds no stored secrets.
+    assert "key_vault_secret_id" not in gateway
+    # Opt-in requires real, published images (no bootstrap.invalid placeholders).
+    assert "deploy_ai_gateway=true requires immutable, published ai_gateway_image and ai_llama_image" in MAIN
+    # Uses its own workload identity, mirroring operator/tracking.
+    assert 'identity_ids = [azurerm_user_assigned_identity.workload["ai-gateway"].id]' in gateway
+    # Internal URL is exposed so the operator can point ai_endpoint at it.
+    assert "ai_gateway_internal_url" in OUTPUTS
+
+
+def test_deploy_ai_gateway_defaults_off() -> None:
+    block = VARIABLES.split('variable "deploy_ai_gateway"', maxsplit=1)[1].split("\n}\n", maxsplit=1)[0]
+    assert "default     = false" in block
+    assert "type        = bool" in block

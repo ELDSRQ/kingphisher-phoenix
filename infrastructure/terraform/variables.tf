@@ -39,6 +39,34 @@ variable "worker_image" {
   type    = string
   default = "bootstrap.invalid/worker:pending"
 }
+variable "deploy_ai_gateway" {
+  description = <<-EOT
+    Deploy the internal Qwen generation gateway (kp-ai-gateway + baked-model
+    ai-llama sidecar) as a workload. Requires deploy_workloads and real,
+    digest-pinned ai_gateway_image and ai_llama_image. Off by default so a
+    workloads deploy that does not use the internal gateway is not forced to
+    build the large ai-llama image.
+  EOT
+  type        = bool
+  default     = false
+}
+variable "ai_gateway_image" {
+  description = "Immutable digest-pinned ACR reference for the kp-ai-gateway image."
+  type        = string
+  default     = "bootstrap.invalid/ai-gateway:pending"
+}
+variable "ai_llama_image" {
+  description = <<-EOT
+    Immutable digest-pinned ACR reference for the ai-llama sidecar image (a
+    pinned llama.cpp server with the sha256-verified Qwen2.5-7B-Instruct-Q4_K_M
+    GGUF baked in). Built out-of-band by the operator on a host holding the
+    digest-pinned weights (the CI release loop cannot build it: the ~4.7 GB
+    weights are not in the checkout and are never auto-downloaded), then pushed
+    to ACR and pinned here by digest.
+  EOT
+  type        = string
+  default     = "bootstrap.invalid/ai-llama:pending"
+}
 
 variable "isolate_delivery_worker" {
   description = "Run delivery in one dedicated Container App and identity; false keeps the default three-app runtime."

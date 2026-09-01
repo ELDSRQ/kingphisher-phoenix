@@ -4,6 +4,10 @@ output "container_registry_login_server" { value = azurerm_container_registry.ma
 output "operator_default_hostname" { value = var.deploy_workloads ? azurerm_container_app.operator[0].ingress[0].fqdn : null }
 output "tracking_default_hostname" { value = var.deploy_workloads ? azurerm_container_app.tracking[0].ingress[0].fqdn : null }
 output "migration_job_name" { value = var.deploy_workloads ? azurerm_container_app_job.migration[0].name : null }
+output "ai_gateway_internal_url" {
+  description = "Internal base URL of the Qwen generation gateway. Set the reviewed ai_endpoint to this value so the worker /propose and operator /setup-assist reach it in-cluster."
+  value       = var.deploy_workloads && var.deploy_ai_gateway ? "https://${azurerm_container_app.ai_gateway[0].ingress[0].fqdn}" : null
+}
 output "log_analytics_workspace_customer_id" {
   description = "Non-secret workspace identity used by the deployment workflow for bounded worker-readiness queries."
   value       = azurerm_log_analytics_workspace.main.workspace_id

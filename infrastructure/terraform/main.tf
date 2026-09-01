@@ -61,12 +61,12 @@ locals {
     for role in local.provider_identity_roles : role => "provider-${role}"
   }
   workload_identities = setunion(
-    toset(["operator", "tracking", "migration"]),
+    toset(["operator", "tracking", "migration", "ai-gateway"]),
     local.worker_deployments,
     toset(values(local.provider_identity_names)),
   )
   image_pull_identities = setunion(
-    toset(["operator", "tracking", "migration"]),
+    toset(["operator", "tracking", "migration", "ai-gateway"]),
     local.worker_deployments,
   )
   runtime_database_roles = merge(
@@ -156,6 +156,13 @@ resource "terraform_data" "workload_config_guard" {
         trimspace(image) != "" && !startswith(image, "bootstrap.invalid/")
       ])
       error_message = "deploy_workloads=true requires immutable, published operator, tracking, worker, and migration images; bootstrap.invalid placeholders cannot be deployed."
+    }
+    precondition {
+      condition = !(var.deploy_workloads && var.deploy_ai_gateway) || alltrue([
+        for image in [var.ai_gateway_image, var.ai_llama_image] :
+        trimspace(image) != "" && !startswith(image, "bootstrap.invalid/")
+      ])
+      error_message = "deploy_ai_gateway=true requires immutable, published ai_gateway_image and ai_llama_image; bootstrap.invalid placeholders cannot be deployed."
     }
     precondition {
       condition     = !var.deploy_workloads || lower(trimspace(var.operator_fqdn)) != lower(trimspace(var.tracking_fqdn))
@@ -953,6 +960,104 @@ locals {
     ciphertext-kek     = azurerm_key_vault_secret.runtime["ciphertext-kek"].versionless_id
     recipient-salt     = azurerm_key_vault_secret.runtime["recipient-salt"].versionless_id
   }
+}
+
+resource "azurerm_container_app" "ai_gateway" {
+  count                        = var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0
+  name                         = "ca-${local.suffix}-ai-gateway"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  resource_group_name          = azurerm_resource_group.main.name
+  revision_mode                = "Single"
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.workload["ai-gateway"].id]
+  }
+  registry {
+    server   = azurerm_container_registry.main.login_server
+    identity = azurerm_user_assigned_identity.workload["ai-gateway"].id
+  }
+  # Internal only: reached in-cluster by the worker (/propose) and operator-api
+  # (/setup-assist). No external ingress and no stored secrets (the gateway
+  # holds none; the model is baked into the ai-llama sidecar image).
+  ingress {
+    external_enabled = false
+    target_port      = 8090
+    transport        = "http"
+    traffic_weight {
+      percentage      = 100
+      latest_revision = true
+    }
+  }
+  template {
+    min_replicas = 1
+    max_replicas = 1
+    # Pinned llama.cpp Qwen server; the digest-verified GGUF is baked into the
+    # image. Serves an OpenAI-compatible API on loopback :18081 that only the
+    # gateway sidecar calls (no ingress target). CPU inference for Qwen2.5-7B
+    # Q4_K_M is memory-heavy; ACA Consumption caps a replica at 4 vCPU / 8 GiB,
+    # so llama takes 3.5/7Gi and the gateway 0.5/1Gi (4.0 vCPU / 8 GiB total).
+    # The long liveness grace tolerates the multi-second model load on start.
+    container {
+      name   = "ai-llama"
+      image  = var.ai_llama_image
+      cpu    = 3.5
+      memory = "7Gi"
+      liveness_probe {
+        transport               = "HTTP"
+        path                    = "/health"
+        port                    = 18081
+        initial_delay           = 30
+        interval_seconds        = 30
+        failure_count_threshold = 30
+      }
+      readiness_probe {
+        transport        = "HTTP"
+        path             = "/health"
+        port             = 18081
+        interval_seconds = 10
+      }
+    }
+    container {
+      name   = "ai-gateway"
+      image  = var.ai_gateway_image
+      cpu    = 0.5
+      memory = "1Gi"
+      env {
+        name  = "KP_AI_GATEWAY_HOST"
+        value = "0.0.0.0"
+      }
+      env {
+        name  = "KP_AI_GATEWAY_PORT"
+        value = "8090"
+      }
+      env {
+        name  = "KP_AI_GATEWAY_MODEL_ID"
+        value = "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
+      }
+      env {
+        name  = "KP_AI_GATEWAY_LLAMA_BASE_URL"
+        value = "http://localhost:18081/v1"
+      }
+      env {
+        name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
+        value = azurerm_application_insights.main.connection_string
+      }
+      liveness_probe {
+        transport        = "HTTP"
+        path             = "/livez"
+        port             = 8090
+        interval_seconds = 30
+      }
+      readiness_probe {
+        transport        = "HTTP"
+        path             = "/readyz"
+        port             = 8090
+        interval_seconds = 10
+      }
+    }
+  }
+  tags       = local.tags
+  depends_on = [azurerm_role_assignment.acr_pull]
 }
 
 resource "azurerm_container_app" "operator" {
