@@ -25,6 +25,8 @@ RUN set -eu; \
       > /models/SHA256SUMS; \
     sha256sum -c /models/SHA256SUMS
 
+# Run as a non-root user (the weights are world-readable and the port is >1024).
+USER 65532:65532
 EXPOSE 18081
 # llama.cpp auto-loads the split GGUF from the 00001-of-00002 shard. Bind to all
 # interfaces so the gateway sidecar reaches it over loopback in the shared pod;
