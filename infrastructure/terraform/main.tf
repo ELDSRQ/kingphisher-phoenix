@@ -932,10 +932,14 @@ resource "azurerm_role_assignment" "ciphertext_prior_key_reader" {
 }
 
 resource "azurerm_container_app_environment" "main" {
-  name                           = "cae-${local.suffix}"
-  location                       = azurerm_resource_group.main.location
-  resource_group_name            = azurerm_resource_group.main.name
-  log_analytics_workspace_id     = azurerm_log_analytics_workspace.main.id
+  name                       = "cae-${local.suffix}"
+  location                   = azurerm_resource_group.main.location
+  resource_group_name        = azurerm_resource_group.main.name
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+  # azurerm 5.x defaults logs_destination to "azure-monitor"; a workspace id may
+  # only be set when it is "log-analytics" (or ""). Pin it to route container
+  # app logs to the Log Analytics workspace created above.
+  logs_destination               = "log-analytics"
   infrastructure_subnet_id       = azurerm_subnet.container_apps.id
   internal_load_balancer_enabled = false
   zone_redundancy_enabled        = local.production
