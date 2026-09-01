@@ -359,6 +359,12 @@ jobs:
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # Self-hosted VNet runner (private-mode prerequisite). Passed as TF_VAR at
+      # the job level so every phase's terraform sees them consistently and does
+      # not plan to destroy the runner. The registration token is a short-lived
+      # secret; it is only consumed at the runner VM's first boot.
+      TF_VAR_deploy_ci_runner: ${{ vars.DEPLOY_CI_RUNNER || 'false' }}
+      TF_VAR_ci_runner_registration_token: ${{ secrets.CI_RUNNER_REGISTRATION_TOKEN }}
     steps:
       - name: Initialize append-only deployment checkpoint
         shell: bash

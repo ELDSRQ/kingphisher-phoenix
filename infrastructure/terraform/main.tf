@@ -423,6 +423,13 @@ resource "azurerm_linux_virtual_machine" "ci_runner" {
     runner_labels      = "self-hosted,linux,azure-vnet"
   }))
   tags = local.tags
+  # The token in custom_data is short-lived and only used at first boot; ignore
+  # it (and image "latest" drift) so a fresh token on a later run does not force
+  # a replacement of the in-use runner, which the create/update-only guard would
+  # block anyway.
+  lifecycle {
+    ignore_changes = [custom_data, source_image_reference]
+  }
 }
 
 resource "azurerm_log_analytics_workspace" "main" {
