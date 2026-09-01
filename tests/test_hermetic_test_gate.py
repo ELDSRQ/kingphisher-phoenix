@@ -75,6 +75,8 @@ def test_hermetic_gate_drops_host_configuration_and_uses_inert_endpoints(tmp_pat
         suffix += " and not requires_zsh"
     if shutil.which("node") is None:
         suffix += " and not requires_node"
+    if not (Path.cwd() / "apps/operator-ui/node_modules/.bin/esbuild").is_file():
+        suffix += " and not requires_esbuild"
     assert values[16] == (
         "run --frozen --no-sync python -m pytest -m "
         f"not postgres and not redis and not e2e and not azure_live{suffix} -p tests.no_skips_plugin"

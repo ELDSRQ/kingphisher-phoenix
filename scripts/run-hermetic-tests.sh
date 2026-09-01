@@ -31,6 +31,7 @@ fi
 # skipped - where it is absent, so the no-skips gate stays satisfied.
 command -v zsh  >/dev/null 2>&1 || markers="$markers and not requires_zsh"
 command -v node >/dev/null 2>&1 || markers="$markers and not requires_node"
+[ -x apps/operator-ui/node_modules/.bin/esbuild ] || markers="$markers and not requires_esbuild"
 
 # Pydantic settings normally read .env for the local GUI launcher. Tests must
 # neither inherit process configuration nor reload that file. Explicit inert

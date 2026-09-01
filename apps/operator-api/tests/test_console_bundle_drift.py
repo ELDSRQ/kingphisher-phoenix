@@ -14,7 +14,6 @@ toolchain is present.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -29,11 +28,7 @@ _ESBUILD = _REPOSITORY_ROOT / "apps" / "operator-ui" / "node_modules" / ".bin" /
 pytestmark = pytest.mark.console_ui
 
 
-def _toolchain_available() -> bool:
-    return shutil.which("node") is not None and _ESBUILD.is_file()
-
-
-@pytest.mark.skipif(not _toolchain_available(), reason="node/esbuild toolchain is not installed")
+@pytest.mark.requires_esbuild
 def test_committed_console_bundle_matches_a_fresh_build() -> None:
     entry = _CONSOLE_SRC_DIR / "app.js"
     assert entry.is_file(), "console entry module is missing"
