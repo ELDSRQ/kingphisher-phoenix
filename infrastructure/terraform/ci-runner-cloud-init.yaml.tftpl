@@ -18,7 +18,9 @@ write_files:
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
-      RUNNER_VERSION=2.319.1
+      # Use the latest runner release: newer actions (e.g. azure/login) ship a
+      # node24 runtime that older runner versions cannot load.
+      RUNNER_VERSION="$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')"
       RUNNER_USER=runner
 
       # Azure CLI (the deploy job's azure/login, az acr build, az rest need it).
