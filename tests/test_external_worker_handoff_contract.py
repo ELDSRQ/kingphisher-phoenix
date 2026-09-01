@@ -26,7 +26,7 @@ CANONICAL_REMOTE_SOURCE = "/Users/edierks/Projects/kingphisher-phoenix"
 SAFE_CONTEXT_ENDPOINT = (
     "ssh://edierks@192.168.1.140/Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock"
 )
-WORKFLOW_SHA256 = "3b56dcccefa2436f35b1e08284169f4cd454dcc01a9ee98babbedd3e44868747"
+WORKFLOW_SHA256 = "443b0fd9bb92da380f2bf622c1835f3cf7aa1e3025f1c8178860317c760aa3aa"
 EXTERNAL_CONTEXT_PROOF = "colima-kingphisher|aarch64|/var/lib/docker"
 VALIDATED_SNAPSHOT = "20260829T013332Z-tsX1WQ"
 VALIDATED_SNAPSHOT_SHA256 = "e4fb16a735d0c9d3b6aa04381c4c9d7e24269006203c551f50abf671cc3637ff"

@@ -190,7 +190,7 @@ Managed prior keys are intentionally limited to metadata-bound legacy/recovery u
 The reviewed deployment workflow, Terraform, API, and GUI now agree on exactly
 three execution stages: `foundation_bootstrap`, `foundation_finalize`, and
 `workloads`. The connector is frozen to workflow SHA-256
-`3b56dcccefa2436f35b1e08284169f4cd454dcc01a9ee98babbedd3e44868747`.
+`443b0fd9bb92da380f2bf622c1835f3cf7aa1e3025f1c8178860317c760aa3aa`.
 `foundation_bootstrap` plans/applies the complete `deploy_workloads=false`
 foundation—including ACR, private-network, data, ACS/email/domain, and DNS
 resources—without Terraform targets. It initiates four ACS DNS verification

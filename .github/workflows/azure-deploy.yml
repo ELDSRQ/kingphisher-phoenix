@@ -1347,7 +1347,13 @@ jobs:
           if not isinstance(plan, dict):
               raise SystemExit("foundation bootstrap plan is malformed")
           changes = plan.get("resource_changes", [])
-          if not isinstance(changes, list) or len(changes) > 128:
+          # The full non-workload foundation (resource group, VNet/subnets, Log
+          # Analytics, ACR, Key Vault + ~25 runtime secrets, Postgres, Redis,
+          # audit storage, ACS, workload identities and their per-secret role
+          # assignments, plus private-mode endpoints/DNS) legitimately runs to a
+          # few hundred resource changes. 384 keeps a tight ceiling against a
+          # runaway plan while admitting a real foundation.
+          if not isinstance(changes, list) or len(changes) > 384:
               raise SystemExit("foundation bootstrap plan change set is malformed or exceeds the fixed limit")
           destructive = sorted(
               change["address"]
