@@ -66,9 +66,9 @@ variable "ci_runner_repository_url" {
   default     = "https://github.com/ELDSRQ/kingphisher-phoenix"
 }
 variable "ci_runner_vm_size" {
-  description = "VM size for the self-hosted CI runner. B2s and D2s_v3 hit eastus2 capacity restrictions on this subscription; v5-generation sizes usually have more capacity."
+  description = "VM size for the self-hosted CI runner. This subscription's eastus2 only offers v7-generation sizes (B2s, D2s_v3, D2s_v5 are all capacity-restricted); Standard_D2s_v7 is available (confirmed via az vm list-skus)."
   type        = string
-  default     = "Standard_D2s_v5"
+  default     = "Standard_D2s_v7"
 }
 variable "deploy_ai_gateway" {
   description = <<-EOT
