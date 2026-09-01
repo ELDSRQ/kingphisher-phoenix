@@ -736,6 +736,7 @@ def test_environment_rewrite_is_portable_and_keeps_retired_secret_retired() -> N
     assert "TRACKING_API_CORRECTIONS_SECRET" not in source
 
 
+@pytest.mark.requires_zsh
 def test_generated_macos_launcher_validates_pid_and_preserves_gui_controls(
     tmp_path: Path,
 ) -> None:

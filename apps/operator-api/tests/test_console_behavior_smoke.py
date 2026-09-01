@@ -35,6 +35,7 @@ def test_console_behavior_smoke_harness_exists() -> None:
     assert _HARNESS.is_file()
 
 
+@pytest.mark.requires_node
 def test_console_behavior_smoke_runs_clean() -> None:
     node = shutil.which("node")
     if node is None:

@@ -26,6 +26,12 @@ if [ "$(uname -s)" != "Darwin" ]; then
   markers="$markers and not macos_only"
 fi
 
+# Optional interpreters some contract tests exercise. They run where the tool is
+# present (the controller, and CI when provisioned) and are deselected - not
+# skipped - where it is absent, so the no-skips gate stays satisfied.
+command -v zsh  >/dev/null 2>&1 || markers="$markers and not requires_zsh"
+command -v node >/dev/null 2>&1 || markers="$markers and not requires_node"
+
 # Pydantic settings normally read .env for the local GUI launcher. Tests must
 # neither inherit process configuration nor reload that file. Explicit inert
 # database/queue endpoints also keep application defaults from reaching a

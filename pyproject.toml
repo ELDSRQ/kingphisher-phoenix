@@ -75,4 +75,6 @@ markers = [
     "azure_live: opt-in read-only checks against an authenticated Azure subscription",
     "console_ui: deterministic checks for the operator console SPA (CSP, assets, and the node behavioral harness)",
     "macos_only: controller-side recovery tooling that requires macOS (Keychain, /private/tmp); deselected off Darwin",
+    "requires_zsh: needs a zsh interpreter; deselected where zsh is unavailable",
+    "requires_node: needs a node interpreter; deselected where node is unavailable",
 ]
