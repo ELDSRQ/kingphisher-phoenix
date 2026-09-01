@@ -51,6 +51,15 @@ on:
         description: Commit SHA resolved and reviewed by the fixed GUI deployment connector
         required: true
         type: string
+      allow_email_domain_replacement:
+        description: >-
+          Rotate the ACS sending domain. When true, the foundation_bootstrap plan
+          allowlist permits replacing ONLY the ACS email domain, its sender
+          username, and its verification DNS records; every other destructive
+          change stays blocked. Leave false for normal create/update bootstraps.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -749,6 +758,7 @@ jobs:
         env:
           PROTECTED_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           PROTECTED_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          KP_ALLOW_EMAIL_DOMAIN_REPLACEMENT: ${{ inputs.allow_email_domain_replacement }}
         shell: bash
         run: |
           set -euo pipefail
@@ -977,6 +987,17 @@ jobs:
                   resource_group = resources["resource_group_name"]
                   communication_service_id = resources["communication_service_id"]
                   email_domain_id = resources["email_domain_id"]
+
+          # A sending-domain rotation is about to replace the ACS email domain, so
+          # the reviewed (new) domain intentionally differs from whatever is live.
+          # Skip the live-domain match and treat readiness as pending; the plan
+          # allowlist enforces that only the ACS email slice is replaced.
+          if (
+              os.environ.get("KP_ALLOW_EMAIL_DOMAIN_REPLACEMENT", "false").strip().lower() == "true"
+              and phase == "foundation_bootstrap"
+          ):
+              communication_service_id = None
+              email_domain_id = None
 
           observed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
           statuses = {
@@ -1333,10 +1354,13 @@ jobs:
         if: inputs.deployment_phase == 'foundation_bootstrap'
         working-directory: infrastructure/terraform
         shell: bash
+        env:
+          KP_ALLOW_EMAIL_DOMAIN_REPLACEMENT: ${{ inputs.allow_email_domain_replacement }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import json
+          import os
           import subprocess
 
           result = subprocess.run(
@@ -1367,7 +1391,30 @@ jobs:
               for change in changes
               if isinstance(change, dict) and "delete" in change.get("change", {}).get("actions", [])
           )
-          if destructive:
+          # An explicit sending-domain rotation (allow_email_domain_replacement)
+          # may replace ONLY the ACS email domain, its sender username, and its
+          # verification DNS records. These hold no data and no dependent
+          # workload state; every other destructive change stays blocked so a
+          # rotation can never take down data, secrets, network, or the registry.
+          allow_domain_replacement = (
+              os.environ.get("KP_ALLOW_EMAIL_DOMAIN_REPLACEMENT", "false").strip().lower() == "true"
+          )
+          replaceable_on_domain_rotation = {
+              "azurerm_email_communication_service_domain.main[0]",
+              "azurerm_email_communication_service_domain_sender_username.main[0]",
+              'azurerm_dns_txt_record.acs_verification["domain"]',
+              'azurerm_dns_txt_record.acs_verification["spf"]',
+              'azurerm_dns_cname_record.acs_verification["dkim"]',
+              'azurerm_dns_cname_record.acs_verification["dkim2"]',
+          }
+          if allow_domain_replacement:
+              unexpected = [address for address in destructive if address not in replaceable_on_domain_rotation]
+              if unexpected:
+                  raise SystemExit(
+                      "sending-domain rotation may replace only the ACS email domain, its sender, "
+                      f"and its verification DNS records; refusing other destructive changes: {unexpected}"
+                  )
+          elif destructive:
               raise SystemExit(
                   "foundation bootstrap is create/update-only and refuses deletes or replacements; "
                   "review the existing deployment before continuing"

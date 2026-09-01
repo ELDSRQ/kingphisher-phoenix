@@ -1898,12 +1898,19 @@ def validate_azure_deployment(
     if acs_mode not in {"provision", "existing"}:
         errors["acs_resource_mode"] = "Choose provision or existing."
     acs_domain = values.get("acs_sending_domain", "").lower().rstrip(".")
+    # Microsoft-owned zones (azurecomm.net, onmicrosoft.com) cannot have their
+    # DNS edited by the tenant, so ACS custom-domain verification can never
+    # complete against them. Require a customer-managed public DNS domain.
+    microsoft_managed_zones = ("azurecomm.net", "onmicrosoft.com")
     if (
         not hostname_pattern.fullmatch(acs_domain)
-        or acs_domain == "azurecomm.net"
-        or acs_domain.endswith(".azurecomm.net")
+        or acs_domain in microsoft_managed_zones
+        or any(acs_domain.endswith("." + zone) for zone in microsoft_managed_zones)
     ):
-        errors["acs_sending_domain"] = "Use a customer-managed public DNS domain, not an Azure test domain."
+        errors["acs_sending_domain"] = (
+            "Use a customer-managed public DNS domain whose DNS you can edit, not an "
+            "Azure/Microsoft-managed domain (azurecomm.net, onmicrosoft.com)."
+        )
     local_part = values.get("acs_sender_local_part", "").lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9._+-]{0,63}", local_part):
         errors["acs_sender_local_part"] = "Use 1–64 lowercase mailbox characters before @."

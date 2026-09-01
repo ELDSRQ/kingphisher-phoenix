@@ -943,6 +943,21 @@ def test_azure_deployment_validation_accepts_safe_values_and_rejects_bad_hosts(e
         )
         assert response.json()["ok"] is False
         assert "network_mode" in response.json()["errors"]
+        # Microsoft-owned zones cannot have their DNS edited by the tenant, so an
+        # ACS custom sending domain on them can never verify and must be rejected.
+        for rejected_domain in (
+            "contoso.onmicrosoft.com",
+            "mail.contoso.onmicrosoft.com",
+            "azurecomm.net",
+            "mail.contoso.azurecomm.net",
+        ):
+            response = client.post(
+                "/api/v1/console/azure-deployment/validate",
+                headers=headers,
+                json={"values": {**valid, "acs_sending_domain": rejected_domain}},
+            )
+            assert response.json()["ok"] is False
+            assert "acs_sending_domain" in response.json()["errors"]
         existing = dict(
             valid,
             acs_resource_mode="existing",
