@@ -237,7 +237,7 @@ are not release claims.
   claimed. The exact `foundation_bootstrap`,
   `foundation_finalize`, and `workloads` stage/artifact/GUI contract is now
   integrated and pinned to workflow SHA-256
-  `54633bc610b6e2c5285f8b2a7c58cb9f4b7f6214fdcc9f4578e26fc7489f4fa7`;
+  `7a0ff66bc5baf9a9d72c81e55a919d745bdca1f92ddd98ee10732099e8f50a08`;
   its live GitHub/Azure/provider evidence remains open.
 - `PRIV-036`, `AI-036`, `NET-036`, and `OBS-036` are integrated as
   implemented/static contracts only. They add the persisted privacy default and

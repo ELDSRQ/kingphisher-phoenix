@@ -394,7 +394,7 @@ Use the console's reviewed dispatcher when it is configured; GitHub environment
 approval is still mandatory. The connector intentionally rejects workflow
 content whose exact reviewed SHA-256 does not match its code/test constant. The
 frozen digest is
-`54633bc610b6e2c5285f8b2a7c58cb9f4b7f6214fdcc9f4578e26fc7489f4fa7`.
+`7a0ff66bc5baf9a9d72c81e55a919d745bdca1f92ddd98ee10732099e8f50a08`.
 The verifier checks the explicit Docker endpoint/root/native platform,
 unchanged source/context manifests, the caller-supplied expected source-manifest
 digest, and all five image IDs. It binds the exact Trivy 0.74.0 executable/hash/cache,

@@ -875,12 +875,15 @@ jobs:
                   fail(f"{label} belongs to a different subscription")
               return segments
 
-          def require_resource_identity(value, expected_id, expected_type, label):
+          def require_resource_identity(value, expected_id, expected_type, label, *, check_type=True):
               if not isinstance(value, dict):
                   fail(f"{label} selected fields are malformed")
               if str(value.get("id", "")).lower() != expected_id.lower():
                   fail(f"{label} readback does not match the reviewed resource ID")
-              if str(value.get("type", "")).lower() != expected_type.lower():
+              # ACS SenderUsernames GET omits a top-level type; the exact ID match
+              # plus its ID-structure validation already pin identity, so callers
+              # skip the redundant type-field check for that resource.
+              if check_type and str(value.get("type", "")).lower() != expected_type.lower():
                   fail(f"{label} readback has an unexpected resource type")
 
           def require_ready_state(value, label):
@@ -1116,6 +1119,7 @@ jobs:
                   require_resource_identity(
                       sender, sender_username_id,
                       "Microsoft.Communication/EmailServices/Domains/SenderUsernames", "sender username",
+                      check_type=False,
                   )
                   # SenderUsername provisioningState is optional in the
                   # 2023-04-01 response and Microsoft's own valid sample omits
@@ -1912,12 +1916,16 @@ jobs:
                   fail(f"{label} resource ID is malformed or outside the protected subscription")
               return segments
 
-          def require_identity(value, resource_id, resource_type, label):
+          def require_identity(value, resource_id, resource_type, label, *, check_type=True):
               if not isinstance(value, dict):
                   fail(f"{label} selected fields are malformed")
               if str(value.get("id", "")).lower() != resource_id.lower():
                   fail(f"{label} readback does not match the stored resource ID")
-              if str(value.get("type", "")).lower() != resource_type.lower():
+              # The ACS SenderUsernames GET response does not echo a top-level
+              # resource type, so a type-field equality check is skipped for it;
+              # the exact resource-ID match plus the ID-structure validation
+              # (.../senderUsernames/<local part>) already pin its identity.
+              if check_type and str(value.get("type", "")).lower() != resource_type.lower():
                   fail(f"{label} readback has an unexpected resource type")
 
           def require_ready(value, label, *, optional=False):
@@ -2010,6 +2018,7 @@ jobs:
           require_identity(
               sender, sender_id,
               "Microsoft.Communication/EmailServices/Domains/SenderUsernames", "sender username",
+              check_type=False,
           )
           require_ready(communication, "Communication Service")
           require_ready(domain, "email domain")
