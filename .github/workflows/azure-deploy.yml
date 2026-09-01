@@ -1461,6 +1461,11 @@ jobs:
             echo ""
             echo "> Domain verification remains pending until a later foundation_finalize dispatch reads all four live Verified states."
           } >> "$GITHUB_STEP_SUMMARY"
+          # Also write the non-secret setup plan (including the exact DNS records
+          # the operator must add) into the uploaded evidence artifact, so the
+          # records are retrievable without GitHub web access to the run summary.
+          terraform output -json acs_delivery_readiness \
+            > "$RUNNER_TEMP/deployment-evidence/acs-delivery-readiness.json"
       - name: Checkpoint integration bootstrap plan
         if: inputs.deployment_phase == 'foundation_bootstrap'
         env:
