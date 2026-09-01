@@ -278,7 +278,8 @@ full_success = os.environ.get("KP_FAKE_FULL_SUCCESS") == "1"
 
 
 def image_name(value):
-    for index, name in enumerate(("operator-api", "tracking-api", "worker", "migration", "ai-gateway", "mock-services"), 1):
+    names = ("operator-api", "tracking-api", "worker", "migration", "ai-gateway", "mock-services")
+    for index, name in enumerate(names, 1):
         if value.endswith(f"-{name}:local"):
             return name, str(index) * 64
     return "unknown", "f" * 64
