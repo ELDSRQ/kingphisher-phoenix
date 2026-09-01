@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-RELEASE_IMAGES = ("operator-api", "tracking-api", "worker", "migration")
+RELEASE_IMAGES = ("operator-api", "tracking-api", "worker", "migration", "ai-gateway")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -162,7 +162,7 @@ def validate_manifest(path: Path) -> dict[str, Any]:
         raise EvidenceError("invalid release manifest metadata")
     images = manifest.get("images")
     if not isinstance(images, dict) or set(images) != set(RELEASE_IMAGES):
-        raise EvidenceError("release manifest must contain exactly the four release images")
+        raise EvidenceError("release manifest must contain exactly the declared release images")
     for image, evidence in images.items():
         if not isinstance(evidence, dict):
             raise EvidenceError(f"invalid evidence record for {image}")

@@ -403,7 +403,7 @@ jobs:
               "receipts_activated", "cloud_operations_complete", "workflow_interrupted",
           }
           STATUSES = {"passed", "blocked", "uncertain"}
-          DIGEST_NAMES = ("operator_api", "tracking_api", "worker", "migration")
+          DIGEST_NAMES = ("operator_api", "tracking_api", "worker", "migration", "ai_gateway")
           MAX_LEDGER_BYTES = 1_048_576
           MAX_RECORDS = 64
 
@@ -2109,7 +2109,7 @@ jobs:
           # the runner needs no Docker daemon in either network mode.
           mkdir -p "$RUNNER_TEMP/supply-chain"
           : > "$RUNNER_TEMP/supply-chain/images.tsv"
-          for image in operator-api tracking-api worker migration; do
+          for image in operator-api tracking-api worker migration ai-gateway; do
             az acr build \
               --registry "$registry" \
               --image "${image}:${tag}" \
@@ -2195,8 +2195,8 @@ jobs:
             chmod 600 "$scan_output"
             scan_count=$((scan_count + 1))
           done < "$RUNNER_TEMP/supply-chain/images.tsv"
-          if [[ "$scan_count" -ne 4 ]]; then
-            echo "::error::immutable registry scan did not cover all four release images"
+          if [[ "$scan_count" -ne 5 ]]; then
+            echo "::error::immutable registry scan did not cover all five release images"
             exit 1
           fi
           checksum_output="$evidence_dir/immutable-image-trivy.sha256"
@@ -2303,6 +2303,23 @@ jobs:
           subject-name: ${{ steps.images.outputs.registry }}/migration
           subject-digest: ${{ steps.images.outputs.migration_digest }}
           sbom-path: ${{ runner.temp }}/supply-chain/migration.spdx.json
+          push-to-registry: true
+      - name: Attest ai-gateway provenance
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_ai_gateway_provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/ai-gateway
+          subject-digest: ${{ steps.images.outputs.ai_gateway_digest }}
+          push-to-registry: true
+      - name: Attest ai-gateway SBOM
+        if: inputs.deployment_phase == 'workloads'
+        id: attest_ai_gateway_sbom
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.images.outputs.registry }}/ai-gateway
+          subject-digest: ${{ steps.images.outputs.ai_gateway_digest }}
+          sbom-path: ${{ runner.temp }}/supply-chain/ai-gateway.spdx.json
           push-to-registry: true
       - name: Verify registry attestations before deployment
         if: inputs.deployment_phase == 'workloads'

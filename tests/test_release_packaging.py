@@ -14,7 +14,7 @@ import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTAINER_DIR = REPOSITORY_ROOT / "infrastructure" / "containers"
-RELEASE_IMAGES = ("operator-api", "tracking-api", "worker", "migration")
+RELEASE_IMAGES = ("operator-api", "tracking-api", "worker", "migration", "ai-gateway")
 HARDENED_BUILDER = (
     "FROM cgr.dev/chainguard/python@sha256:aa8fd2447b8b52922db57deb3894b622c3229387aaaec5934d64b85dbff6eb17 AS builder"
 )
@@ -68,6 +68,7 @@ def test_release_images_declare_expected_entrypoints() -> None:
     assert 'CMD ["kp-tracking-api"]' in _dockerfile("tracking-api")
     assert 'ENTRYPOINT ["kp-worker"]' in _dockerfile("worker")
     assert 'CMD ["python", "/app/scripts/azure_migrate.py"]' in _dockerfile("migration")
+    assert 'CMD ["kp-ai-gateway"]' in _dockerfile("ai-gateway")
 
 
 def test_migration_package_declares_its_alembic_runtime_imports() -> None:
@@ -277,7 +278,7 @@ full_success = os.environ.get("KP_FAKE_FULL_SUCCESS") == "1"
 
 
 def image_name(value):
-    for index, name in enumerate(("operator-api", "tracking-api", "worker", "migration", "mock-services"), 1):
+    for index, name in enumerate(("operator-api", "tracking-api", "worker", "migration", "ai-gateway", "mock-services"), 1):
         if value.endswith(f"-{name}:local"):
             return name, str(index) * 64
     return "unknown", "f" * 64
@@ -614,7 +615,7 @@ def test_image_verifier_rejects_symbolic_or_out_of_storage_evidence_parent_befor
     assert not (outside_parent / "evidence").exists()
 
 
-def test_image_verifier_binds_five_pinned_trivy_scans_into_qualification(tmp_path: Path) -> None:
+def test_image_verifier_binds_six_pinned_trivy_scans_into_qualification(tmp_path: Path) -> None:
     environment, docker_marker, _, source_root = _verifier_fake_environment(tmp_path, full_success=True)
 
     result = _run_fake_verifier(source_root, environment)
@@ -643,7 +644,7 @@ def test_image_verifier_binds_five_pinned_trivy_scans_into_qualification(tmp_pat
     assert qualification["source"]["expected_digest"] == environment["KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST"]
     assert qualification["source"]["before"]["digest"] == environment["KP_IMAGE_EXPECTED_SOURCE_MANIFEST_DIGEST"]
     scans = qualification["scanner"]["artifacts"]
-    assert len(scans) == 5
+    assert len(scans) == 6
     images = {record["name"]: record for record in qualification["images"]}
     assert set(images) == {*RELEASE_IMAGES, "mock-services"}
     for scan in scans:
@@ -660,11 +661,11 @@ def test_image_verifier_binds_five_pinned_trivy_scans_into_qualification(tmp_pat
     assert phase_results["image_security_scans"] == "passed"
     assert phase_results["scanner_cache_binding"] == "passed"
     trivy_invocations = Path(environment["KP_FAKE_TRIVY_MARKER"]).read_text(encoding="utf-8").splitlines()
-    assert len(trivy_invocations) == 7
+    assert len(trivy_invocations) == 8
     assert "image --download-db-only --skip-check-update=false" in trivy_invocations[0]
     assert "version --format json" in trivy_invocations[1]
     scan_invocations = [invocation for invocation in trivy_invocations if " --output " in invocation]
-    assert len(scan_invocations) == 5
+    assert len(scan_invocations) == 6
     assert all(
         "image --skip-db-update --skip-check-update --ignorefile" in invocation
         and "--ignore-unfixed=false --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1" in invocation
@@ -674,7 +675,7 @@ def test_image_verifier_binds_five_pinned_trivy_scans_into_qualification(tmp_pat
         record["image_id"] for record in qualification["images"]
     }
     docker_invocations = docker_marker.read_text(encoding="utf-8").splitlines()
-    assert sum(invocation.endswith("--format {{.Id}}") for invocation in docker_invocations) == 10
+    assert sum(invocation.endswith("--format {{.Id}}") for invocation in docker_invocations) == 12
 
 
 def test_image_verifier_scan_failure_cannot_produce_passing_qualification(tmp_path: Path) -> None:
@@ -898,7 +899,7 @@ def test_workflow_cannot_bypass_release_image_gates() -> None:
     assert "continue-on-error" not in workflow
     assert "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2" in workflow
     assert "anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0" in workflow
-    assert workflow.count("push-to-registry: true") == 8
+    assert workflow.count("push-to-registry: true") == 10
     assert "--bundle-from-oci" in workflow
     assert '--source-digest "$GITHUB_SHA"' in workflow
     terraform_names = {
@@ -977,7 +978,7 @@ def test_image_scan_uses_the_same_unique_no_clobber_prefix_as_image_verification
 
     assert result.returncode == 0, result.stderr
     invocations = marker.read_text(encoding="utf-8").splitlines()
-    assert len(invocations) == 5
+    assert len(invocations) == 6
     for image in (*RELEASE_IMAGES, "mock-services"):
         assert any(invocation.endswith(f"{prefix}-{image}:local") for invocation in invocations)
 
@@ -1007,7 +1008,7 @@ def test_azure_release_builds_only_production_images_for_linux_amd64() -> None:
         "      - name: Authenticate supply-chain tools to ACR\n", maxsplit=1
     )[0]
 
-    assert "for image in operator-api tracking-api worker migration; do" in build_step
+    assert "for image in operator-api tracking-api worker migration ai-gateway; do" in build_step
     assert "              --platform linux/amd64 \\" in build_step
     assert sum(line.strip() == "az acr build \\" for line in build_step.splitlines()) == 1
     assert "mock-services" not in build_step

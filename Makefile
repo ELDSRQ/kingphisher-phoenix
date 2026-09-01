@@ -133,7 +133,7 @@ security-scan-images:
 		image_prefix="$${KP_IMAGE_PREFIX:-kingphisher/verify}"; \
 		[[ "$$image_prefix" =~ ^kingphisher/verify(-[a-z0-9][a-z0-9._-]{0,47})?$$ ]] \
 			|| { echo "KP_IMAGE_PREFIX must be a dedicated kingphisher/verify[-unique-suffix] namespace" >&2; exit 2; }; \
-		for image in operator-api tracking-api worker migration mock-services; do \
+		for image in operator-api tracking-api worker migration ai-gateway mock-services; do \
 			trivy image --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 "$${image_prefix}-$$image:local" || exit 1; \
 	done
 

@@ -804,7 +804,7 @@ require_unused_image_targets() {
     printf 'KP_IMAGE_PREFIX must be a dedicated kingphisher/verify[-unique-suffix] namespace\n' >&2
     return 2
   fi
-  for image in operator-api tracking-api worker migration mock-services; do
+  for image in operator-api tracking-api worker migration ai-gateway mock-services; do
     target="$(image_tag "${image}")"
     if docker_bounded image inspect "${target}" >/dev/null 2>&1; then
       printf 'Refusing to move preserved verification image tag: %s\n' "${target}" >&2
@@ -832,7 +832,7 @@ copy_clean_context() {
 
 build_images() {
   local image
-  for image in operator-api tracking-api worker migration; do
+  for image in operator-api tracking-api worker migration ai-gateway; do
     printf 'Building %s from isolated context for %s\n' "${image}" "${expected_platform}"
     docker_bounded build \
       --pull \
@@ -853,7 +853,7 @@ build_images() {
 
 assert_and_record_image_metadata() {
   local architecture health image image_id os_name record repo_digests tag user
-  for image in operator-api tracking-api worker migration mock-services; do
+  for image in operator-api tracking-api worker migration ai-gateway mock-services; do
     tag="$(image_tag "${image}")"
     record="$(docker_bounded image inspect "${tag}" \
       --format '{{.Id}}|{{json .RepoDigests}}|{{.Os}}|{{.Architecture}}|{{.Config.User}}')"
@@ -979,8 +979,8 @@ PY
       "${image}|${tag}|${image_id}|${artifact##*/}|${checksum_artifact##*/}|${scan_digest}"
     )
   done
-  if (( ${#scan_records[@]} != 6 )); then
-    printf 'Release-image scan evidence does not cover all five inspected images\n' >&2
+  if (( ${#scan_records[@]} != 7 )); then
+    printf 'Release-image scan evidence does not cover all six inspected images\n' >&2
     return 1
   fi
   scan_performed_by_verifier=1
@@ -1471,7 +1471,7 @@ image_bindings = {item["name"]: (item["tag"], item["image_id"]) for item in imag
 scan_bindings = {item["name"]: (item["tag"], item["image_id"]) for item in scans}
 if len(image_bindings) != len(images) or len(scan_bindings) != len(scans):
     raise SystemExit("release-image qualification evidence contains duplicate image names")
-if scan_performed and (len(scans) != 5 or scan_bindings != image_bindings):
+if scan_performed and (len(scans) != 6 or scan_bindings != image_bindings):
     raise SystemExit("release-image scan evidence is not bound to all inspected images")
 
 exit_status = int(exit_status_value)
@@ -1651,7 +1651,7 @@ finalize() {
     final_status=1
   fi
   if (( scan_performed_by_verifier == 0 && final_status == 0 )); then
-    printf 'Release qualification cannot pass without all five pinned Trivy scans\n' >&2
+    printf 'Release qualification cannot pass without all six pinned Trivy scans\n' >&2
     final_status=1
   fi
   if [[ "${scanner_cache_unchanged}" != "true" && "${final_status}" == "0" ]]; then
