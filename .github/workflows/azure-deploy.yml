@@ -1047,13 +1047,20 @@ jobs:
                   fail("live email domain does not match the reviewed sending domain")
               if domain.get("domainManagement") not in {"CustomerManaged", "CustomerManagedInExchangeOnline"}:
                   fail("live email domain is not customer managed")
-              expected_data_location = str(config.get("communication_data_location", "")).strip().lower()
+              # Azure returns dataLocation in the compact enum form
+              # ("UnitedStates") while the reviewed config and the azurerm
+              # provider use the spaced form ("United States"). Compare the
+              # geography with all whitespace removed so the two spellings of the
+              # same data-residency location match.
+              def _norm_location(raw):
+                  return "".join(str(raw).split()).lower()
+              expected_data_location = _norm_location(config.get("communication_data_location", ""))
               for value, label in (
                   (communication, "Communication Service"),
                   (email_service, "Email Communication Service"),
                   (domain, "email domain"),
               ):
-                  if str(value.get("dataLocation", "")).strip().lower() != expected_data_location:
+                  if _norm_location(value.get("dataLocation", "")) != expected_data_location:
                       fail(f"{label} data location differs from the reviewed deployment")
 
               statuses.update({
@@ -1105,7 +1112,7 @@ jobs:
                   sender_data_location = sender.get("dataLocation")
                   if (
                       sender_data_location is not None
-                      and str(sender_data_location).strip().lower() != expected_data_location
+                      and _norm_location(sender_data_location) != expected_data_location
                   ):
                       fail("live sender data location differs from the reviewed deployment")
                   statuses["sender"] = "verified"
@@ -1971,14 +1978,19 @@ jobs:
               fail("live sender username does not match the reviewed local part")
           if str(sender.get("displayName", "")) != str(config.get("acs_sender_display_name", "")).strip():
               fail("live sender display name does not match the reviewed deployment")
-          expected_location = str(config.get("communication_data_location", "")).strip().lower()
+          # Azure returns dataLocation in the compact enum form ("UnitedStates")
+          # while the reviewed config uses the spaced form ("United States");
+          # compare with all whitespace removed so the two spellings match.
+          def _norm_location(raw):
+              return "".join(str(raw).split()).lower()
+          expected_location = _norm_location(config.get("communication_data_location", ""))
           if not expected_location or any(
-              str(value.get("dataLocation", "")).strip().lower() != expected_location
+              _norm_location(value.get("dataLocation", "")) != expected_location
               for value in (communication, domain)
           ):
               fail("live ACS parent data locations differ from the reviewed deployment")
           if sender.get("dataLocation") is not None and (
-              str(sender["dataLocation"]).strip().lower() != expected_location
+              _norm_location(sender["dataLocation"]) != expected_location
           ):
               fail("live sender data location differs from the reviewed deployment")
 
