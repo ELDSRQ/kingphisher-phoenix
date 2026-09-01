@@ -718,6 +718,7 @@ def test_embedded_checkpoint_helper_compiles_and_enforces_ledger_integrity(tmp_p
         "KP_TRACKING_API_DIGEST": f"sha256:{'2' * 64}",
         "KP_WORKER_DIGEST": f"sha256:{'3' * 64}",
         "KP_MIGRATION_DIGEST": f"sha256:{'4' * 64}",
+        "KP_AI_GATEWAY_DIGEST": f"sha256:{'5' * 64}",
     }
     assert append("immutable_images_verified", extra=digests).returncode == 0
     assert (
@@ -732,6 +733,7 @@ def test_embedded_checkpoint_helper_compiles_and_enforces_ledger_integrity(tmp_p
     assert [record["sequence"] for record in records] == [1, 2, 3]
     assert records[1]["previous_record_sha256"] == records[0]["record_sha256"]
     assert records[2]["evidence"]["image_digests"]["migration"] == digests["KP_MIGRATION_DIGEST"]
+    assert records[2]["evidence"]["image_digests"]["ai_gateway"] == digests["KP_AI_GATEWAY_DIGEST"]
     assert records[2]["evidence"]["migration_result"] == "passed"
     assert records[2]["evidence"]["health_result"] == "passed"
     for record in records:
