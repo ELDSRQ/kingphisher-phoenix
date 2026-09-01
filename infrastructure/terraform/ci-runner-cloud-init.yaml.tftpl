@@ -1,0 +1,36 @@
+#cloud-config
+# Install and register the GitHub Actions self-hosted runner. The registration
+# token is short-lived (~1h) and is only present in this VM's custom_data.
+package_update: true
+packages:
+  - curl
+  - jq
+  - libicu-dev
+write_files:
+  - path: /opt/actions-runner/install.sh
+    permissions: "0755"
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      RUNNER_VERSION=2.319.1
+      RUNNER_USER=runner
+      cd /opt/actions-runner
+      curl -fsSL -o runner.tar.gz \
+        "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"
+      tar xzf runner.tar.gz
+      rm -f runner.tar.gz
+      chown -R "$${RUNNER_USER}:$${RUNNER_USER}" /opt/actions-runner
+      # config.sh refuses to run as root; register as the runner user.
+      sudo -u "$${RUNNER_USER}" ./config.sh --unattended \
+        --url "${repository_url}" \
+        --token "${registration_token}" \
+        --name "${runner_name}" \
+        --labels "${runner_labels}" \
+        --replace
+      # Install + start as a systemd service (runs as the runner user).
+      ./svc.sh install "$${RUNNER_USER}"
+      ./svc.sh start
+runcmd:
+  - mkdir -p /opt/actions-runner
+  - /opt/actions-runner/install.sh

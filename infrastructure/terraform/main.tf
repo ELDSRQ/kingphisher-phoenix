@@ -165,6 +165,10 @@ resource "terraform_data" "workload_config_guard" {
       error_message = "deploy_ai_gateway=true requires immutable, published ai_gateway_image and ai_llama_image; bootstrap.invalid placeholders cannot be deployed."
     }
     precondition {
+      condition     = !var.deploy_ci_runner || trimspace(var.ci_runner_registration_token) != ""
+      error_message = "deploy_ci_runner=true requires ci_runner_registration_token (a fresh GitHub Actions runner registration token, supplied at apply time)."
+    }
+    precondition {
       condition     = !var.deploy_workloads || lower(trimspace(var.operator_fqdn)) != lower(trimspace(var.tracking_fqdn))
       error_message = "operator_fqdn and tracking_fqdn must be different so the public tracking boundary remains isolated from the operator console."
     }
@@ -288,6 +292,137 @@ resource "azurerm_subnet" "private_endpoints" {
   virtual_network_name              = azurerm_virtual_network.main.name
   address_prefixes                  = ["10.42.2.0/24"]
   private_endpoint_network_policies = "Disabled"
+}
+
+# --- Self-hosted GitHub Actions runner inside the VNet -----------------------
+# Required before any private-mode deploy: the private data plane is unreachable
+# from a hosted runner. Created from a starter-mode bootstrap, then used for the
+# private bootstrap and workloads. No inbound; outbound to GitHub via a NAT
+# gateway. Gated by deploy_ci_runner so it is absent from normal deploys.
+locals {
+  ci_runner = var.deploy_ci_runner ? 1 : 0
+}
+
+resource "azurerm_subnet" "ci_runner" {
+  count                = local.ci_runner
+  name                 = "snet-ci-runner"
+  resource_group_name  = azurerm_resource_group.main.name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = ["10.42.3.0/24"]
+}
+
+resource "azurerm_public_ip" "ci_runner_nat" {
+  count               = local.ci_runner
+  name                = "pip-${local.suffix}-runner-nat"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = local.tags
+}
+
+resource "azurerm_nat_gateway" "ci_runner" {
+  count               = local.ci_runner
+  name                = "nat-${local.suffix}-runner"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  sku_name            = "Standard"
+  tags                = local.tags
+}
+
+resource "azurerm_nat_gateway_public_ip_association" "ci_runner" {
+  count                = local.ci_runner
+  nat_gateway_id       = azurerm_nat_gateway.ci_runner[0].id
+  public_ip_address_id = azurerm_public_ip.ci_runner_nat[0].id
+}
+
+resource "azurerm_subnet_nat_gateway_association" "ci_runner" {
+  count          = local.ci_runner
+  subnet_id      = azurerm_subnet.ci_runner[0].id
+  nat_gateway_id = azurerm_nat_gateway.ci_runner[0].id
+}
+
+resource "azurerm_network_security_group" "ci_runner" {
+  count               = local.ci_runner
+  name                = "nsg-${local.suffix}-runner"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  security_rule {
+    name                       = "DenyAllInbound"
+    priority                   = 4000
+    direction                  = "Inbound"
+    access                     = "Deny"
+    protocol                   = "*"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+  tags = local.tags
+}
+
+resource "azurerm_subnet_network_security_group_association" "ci_runner" {
+  count                     = local.ci_runner
+  subnet_id                 = azurerm_subnet.ci_runner[0].id
+  network_security_group_id = azurerm_network_security_group.ci_runner[0].id
+}
+
+resource "azurerm_network_interface" "ci_runner" {
+  count               = local.ci_runner
+  name                = "nic-${local.suffix}-runner"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.ci_runner[0].id
+    private_ip_address_allocation = "Dynamic"
+  }
+  tags = local.tags
+}
+
+resource "random_password" "ci_runner" {
+  count            = local.ci_runner
+  length           = 32
+  special          = true
+  override_special = "!@#%*-_=+"
+  min_lower        = 2
+  min_upper        = 2
+  min_numeric      = 2
+  min_special      = 2
+}
+
+resource "azurerm_linux_virtual_machine" "ci_runner" {
+  count                 = local.ci_runner
+  name                  = "vm-${local.suffix}-runner"
+  location              = azurerm_resource_group.main.location
+  resource_group_name   = azurerm_resource_group.main.name
+  size                  = var.ci_runner_vm_size
+  admin_username        = "runner"
+  admin_password        = random_password.ci_runner[0].result
+  network_interface_ids = [azurerm_network_interface.ci_runner[0].id]
+  # No inbound reaches this VM (NSG denies it, no public IP); password auth is
+  # acceptable and avoids provisioning an unused SSH key/provider.
+  disable_password_authentication = false
+  identity {
+    type = "SystemAssigned"
+  }
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "ubuntu-24_04-lts"
+    sku       = "server"
+    version   = "latest"
+  }
+  custom_data = base64encode(templatefile("${path.module}/ci-runner-cloud-init.yaml.tftpl", {
+    repository_url     = var.ci_runner_repository_url
+    registration_token = var.ci_runner_registration_token
+    runner_name        = "vm-${local.suffix}-runner"
+    runner_labels      = "self-hosted,linux,azure-vnet"
+  }))
+  tags = local.tags
 }
 
 resource "azurerm_log_analytics_workspace" "main" {

@@ -39,6 +39,37 @@ variable "worker_image" {
   type    = string
   default = "bootstrap.invalid/worker:pending"
 }
+variable "deploy_ci_runner" {
+  description = <<-EOT
+    Provision the self-hosted GitHub Actions runner VM inside the VNet. This is
+    required before any private-mode deploy (the private data plane is
+    unreachable from a hosted runner). Create it from a starter-mode bootstrap
+    (a hosted runner can create the VM even though it lives inside the VNet),
+    then switch to private mode. Off by default.
+  EOT
+  type        = bool
+  default     = false
+}
+variable "ci_runner_registration_token" {
+  description = <<-EOT
+    Short-lived GitHub Actions runner registration token (expires ~1h). Supplied
+    only at apply time via TF_VAR_ci_runner_registration_token from a secret set
+    right before the run; never committed. Required when deploy_ci_runner=true.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+variable "ci_runner_repository_url" {
+  description = "GitHub repository URL the self-hosted runner registers against."
+  type        = string
+  default     = "https://github.com/ELDSRQ/kingphisher-phoenix"
+}
+variable "ci_runner_vm_size" {
+  description = "VM size for the self-hosted CI runner."
+  type        = string
+  default     = "Standard_B2s"
+}
 variable "deploy_ai_gateway" {
   description = <<-EOT
     Deploy the internal Qwen generation gateway (kp-ai-gateway + baked-model
