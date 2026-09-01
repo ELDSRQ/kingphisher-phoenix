@@ -350,6 +350,11 @@ jobs:
           mkdir -p "$evidence_dir"
           echo "KP_DEPLOYMENT_EVIDENCE_FILE=$evidence_file" >> "$GITHUB_ENV"
           echo "KP_CHECKPOINT_HELPER=$helper" >> "$GITHUB_ENV"
+          # GITHUB_ENV only reaches later steps, but the runner_preflight
+          # checkpoint below runs in THIS step and the helper reads
+          # KP_DEPLOYMENT_EVIDENCE_FILE from the environment, so export it here.
+          export KP_DEPLOYMENT_EVIDENCE_FILE="$evidence_file"
+          export KP_CHECKPOINT_HELPER="$helper"
           python3 - <<'PY'
           import os
           from pathlib import Path
