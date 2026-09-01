@@ -166,6 +166,43 @@ services:
       - /tmp:noexec,nosuid,nodev
     pids_limit: 128
 
+  # Internal Qwen generation gateway (kp-ai-gateway). Behind the "ai" profile so
+  # the default `docker compose up` (infra + mocks) is unchanged; start it with
+  # `docker compose --profile ai up ai-gateway`. It proxies to the operator-run,
+  # pinned llama.cpp Qwen2.5-7B server named by KP_AI_GATEWAY_LLAMA_BASE_URL.
+  # From inside the container, reach a llama.cpp server running on the host via
+  # host.docker.internal, e.g. KP_AI_GATEWAY_LLAMA_BASE_URL=http://host.docker.internal:18081/v1.
+  # Point the apps at it with KP_WORKER_AI_BASE_URL=http://127.0.0.1:8090 to use
+  # real Qwen instead of the mock-ai stand-in.
+  ai-gateway:
+    profiles: ["ai"]
+    build:
+      context: .
+      dockerfile: infrastructure/containers/Dockerfile.ai-gateway
+    environment:
+      KP_AI_GATEWAY_HOST: "0.0.0.0"
+      KP_AI_GATEWAY_PORT: "8090"
+      # Defaulted (not required) so a plain `docker compose up` never fails
+      # interpolation for this inactive-by-default service. For the containerized
+      # gateway, reach a host llama.cpp via host.docker.internal; override in .env
+      # if your pinned llama.cpp server is elsewhere.
+      KP_AI_GATEWAY_LLAMA_BASE_URL: ${KP_AI_GATEWAY_LLAMA_BASE_URL:-http://host.docker.internal:18081/v1}
+      KP_AI_GATEWAY_MODEL_ID: ${KP_AI_GATEWAY_MODEL_ID:-llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8090:8090"
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 128
+
 volumes:
   postgres_data:
     name: phishing-awareness-platform_postgres_data

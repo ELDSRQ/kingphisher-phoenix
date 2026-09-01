@@ -38,6 +38,27 @@ Quick links: [Architecture](docs/architecture/README.md) ·
 > Foundry managed compute/always-on GPU is out of scope. `.140` is
 > development/qualification infrastructure only.
 
+### Run the Qwen gateway locally (real inference instead of mock-ai)
+
+The apps default to the `mock-ai` stand-in (`:8282`). To exercise real Qwen
+through the internal gateway:
+
+1. Start the pinned `llama.cpp` Qwen server (operator-run; weights are the
+   digest-pinned `Qwen2.5-7B-Instruct-Q4_K_M` from `docs/ai010-selection/`,
+   never auto-downloaded), OpenAI-compatible, e.g. on Docker host `.140`:
+   `llama-server -m Qwen2.5-7B-Instruct-Q4_K_M.gguf --host 0.0.0.0 --port 18081`
+2. Bring up the gateway (behind the `ai` profile, so the default stack is
+   unchanged). In `.env` set `KP_AI_GATEWAY_LLAMA_BASE_URL` to that server
+   (`http://host.docker.internal:18081/v1` from the container), then:
+   `docker compose --profile ai up ai-gateway`
+3. Point the apps at the gateway instead of the mock:
+   `KP_WORKER_AI_BASE_URL=http://127.0.0.1:8090`
+4. Verify: `curl -fsS http://127.0.0.1:8090/readyz` (503 until the llama.cpp
+   backend answers) and `curl -fsS http://127.0.0.1:8090/healthz`.
+
+The gateway pins `model_id=llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M`, which the
+worker's response guard (`KP_WORKER_AI_MODEL_ID`) checks on every `/propose`.
+
 > **Release status (2026-08-29): NO-GO for production and RSA Conference.**
 > The pre-remediation local and external operational-readiness snapshot reached
 > head `0029` and passed 2,329 hermetic/97 deselected, 86 PostgreSQL/2,340
