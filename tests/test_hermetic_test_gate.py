@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import re
 import subprocess
 from pathlib import Path
@@ -61,9 +62,12 @@ def test_hermetic_gate_drops_host_configuration_and_uses_inert_endpoints(tmp_pat
     assert values[1] == "hermetic"
     assert all("127.0.0.1:1" in value for value in values[2:15])
     assert values[15] == "missing"
+    # The runner appends "and not macos_only" off Darwin: the controller-side
+    # recovery-checkpoint tests require macOS and are deselected elsewhere.
+    macos_only = "" if platform.system() == "Darwin" else " and not macos_only"
     assert values[16] == (
         "run --frozen --no-sync python -m pytest -m "
-        "not postgres and not redis and not e2e and not azure_live -p tests.no_skips_plugin"
+        f"not postgres and not redis and not e2e and not azure_live{macos_only} -p tests.no_skips_plugin"
     )
     assert all("live.invalid" not in value for value in values)
 
