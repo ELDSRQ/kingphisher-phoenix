@@ -31,9 +31,19 @@ Current local/static status:
   observed events; raw evidence is capped at 365 days; terminal-only projection
   and all current outcome writers share a lock boundary; the PII-free ledger,
   pseudonym configuration, grants, and migrated policy bounds are wired.
-  Privacy/RBAC, named-history API, reporting/graph, and export remain open.
-- **Independent review:** no P0. One P1 remains: mirror migration `0032`'s
-  retention-policy check/single-default index in ORM metadata and test it.
+  Those consumers are now complete and tested: privacy/RBAC
+  (`view_named:results` / `view_aggregate:results` / `export_bulk:results`
+  capabilities), the named-history API
+  (`GET /analytics/ledger/recipients/{recipient_id}/history[.csv]`),
+  reporting/graph (`/analytics/ledger/trend`, `/analytics/ledger/repeats`), and
+  formula-safe CSV+JSON export are implemented and covered by
+  `apps/operator-api/tests/test_analytics_ledger_*` and
+  `packages/database/tests/test_reporting_ledger_*` /
+  `test_ledger_recipient_history.py`.
+- **Independent review:** no P0. The former P1 is closed:
+  `RetentionPolicy.__table_args__` mirrors migration `0032`'s retention-policy
+  check and `uq_retention_policies_single_default` index, regression-pinned by
+  `packages/database/tests/test_migration_0032.py`.
 - **Pause gate:** Node syntax, targeted Ruff/format, `git diff --check`, and the
   focused API/tracking/worker/database suite passed with eight PostgreSQL-profile
   skips. Full hermetic, mypy, PostgreSQL/Redis/E2E, image, browser, and cloud

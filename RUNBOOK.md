@@ -21,10 +21,14 @@ Quick links: [Architecture](docs/architecture/README.md) ·
 > Alembic head `0032_source_explicit_curation`: confirmed interaction,
 > terminal-only project-before-purge, current outcome-writer locks, stable
 > pseudonym configuration/grants, a 365-day raw maximum, and a PII-free
-> 1,826-day ledger are wired. Privacy/RBAC, named-history API, reporting/graph,
-> and export consumers remain open. Independent review found no P0 and one P1:
-> ORM `RetentionPolicy.__table_args__` must mirror migration `0032`'s retention
-> check and single-default index. That statement is historical: as of
+> 1,826-day ledger are wired. Those consumers are now complete and tested:
+> privacy/RBAC (view_named/view_aggregate/export_bulk capabilities), the
+> named-history API (`/analytics/ledger/recipients/{id}/history[.csv]`),
+> reporting/graph (`/analytics/ledger/trend`, `/analytics/ledger/repeats`), and
+> formula-safe CSV+JSON export. Independent review found no P0, and the one P1
+> is closed: ORM `RetentionPolicy.__table_args__` mirrors migration `0032`'s
+> retention check and single-default index, pinned by test_migration_0032.py.
+> That statement is historical: as of
 > 2026-08-31 the tree is committed and pushed at `40c611d`, with every
 > non-operator gate passing head-exact (hermetic 2707, external PostgreSQL 92,
 > Redis 2, fresh-migration 1, E2E 8/8, exact-final ARM64 at `2adb2a2`). Use the
