@@ -2,23 +2,18 @@
 # baked in. Runs as the sidecar of the ai-gateway Container App and serves an
 # OpenAI-compatible API on loopback :18081 that only the gateway calls.
 #
-# This image is built OUT-OF-BAND by the operator on a host that holds the
-# digest-pinned weights (see docs/ai010-selection/SELECTION.md) — the CI release
-# loop cannot build it because the ~4.7 GB weights are not in the checkout and
-# are never auto-downloaded. Build it with:
-#   scripts/operator/deployment-preflight/build-ai-llama-image.sh
-# then pin the resulting ACR digest into the AI_LLAMA_IMAGE repo variable.
+# Built OUT-OF-BAND by the operator with build-ai-llama-image.sh (the CI release
+# loop cannot build it: the ~4.7 GB weights are not in the checkout and are
+# never auto-downloaded). The base image is supplied pinned-by-digest via the
+# LLAMA_BASE build arg; the build script resolves and passes it for you.
 #
 # The build context must contain the two GGUF shards at ./models/ :
 #   models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf
 #   models/qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf
 # Their sha256 are verified below against the AI-010 selection evidence.
 
-# OPERATOR: pin the exact digest of the selected llama.cpp server build
-# (SELECTION.md records build 10621, commit c1d0e7a00). Replace the digest with
-# the one you verify from the registry before building; an unpinned tag is not
-# acceptable for a release artifact.
-FROM ghcr.io/ggml-org/llama.cpp:server@sha256:REPLACE_WITH_PINNED_LLAMA_CPP_SERVER_DIGEST
+ARG LLAMA_BASE
+FROM ${LLAMA_BASE}
 
 # Digest-pinned weights, verified at build. Fail closed on any mismatch.
 COPY models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf /models/

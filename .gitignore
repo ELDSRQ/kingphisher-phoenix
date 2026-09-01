@@ -50,3 +50,6 @@ migration-checkpoint/
 # Built launcher bundle (regenerate with scripts/build_launcher_app.sh)
 Kingphisher Launcher.app/
 Kingphisher Launcher.app.backup-*/
+
+# ai-llama build context: operator-staged GGUF weights (never committed)
+infrastructure/containers/ai-llama/models/
