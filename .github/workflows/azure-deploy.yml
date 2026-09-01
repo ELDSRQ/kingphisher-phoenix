@@ -813,21 +813,29 @@ jobs:
                   fail(f"Terraform output {name} is malformed")
 
           def terraform_raw_output(name):
+              # Use -json (not -raw): on a state with zero outputs, "output -raw
+              # <name>" prints Terraform's multi-line "No outputs found" warning to
+              # stdout and exits 0, tripping the size guard. "-json <name>" exits 1
+              # for a missing output and never emits that warning to stdout.
               result = subprocess.run(
-                  ["terraform", "-chdir=infrastructure/terraform", "output", "-raw", name],
+                  ["terraform", "-chdir=infrastructure/terraform", "output", "-json", name],
                   check=False,
                   capture_output=True,
                   timeout=30,
               )
               if result.returncode != 0:
                   return None
+              if not result.stdout.strip():
+                  return None
               if len(result.stdout) > 512:
                   fail(f"Terraform output {name} exceeds the fixed response limit")
               try:
-                  value = result.stdout.decode("utf-8").strip()
-              except UnicodeDecodeError:
+                  value = json.loads(result.stdout)
+              except (TypeError, ValueError):
                   fail(f"Terraform output {name} is malformed")
-              return value or None
+              if value is None:
+                  return None
+              return str(value).strip() or None
 
           def az_rest(resource_id, query):
               return run_json(
