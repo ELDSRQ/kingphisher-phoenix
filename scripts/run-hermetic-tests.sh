@@ -16,6 +16,16 @@ case "${1:-}" in
     ;;
 esac
 
+# The controller-side recovery-checkpoint contract tests exercise macOS-only
+# tooling (Keychain via `security`, `/private/tmp`, and a `uname = Darwin`
+# guard). They run on the macOS controller and on the .140 worker, but a
+# Linux CI runner has no `/private/tmp`, so they cannot pass there. Deselect
+# them off Darwin. This is a deselection, not a skip, so the no-skips gate is
+# unaffected.
+if [ "$(uname -s)" != "Darwin" ]; then
+  markers="$markers and not macos_only"
+fi
+
 # Pydantic settings normally read .env for the local GUI launcher. Tests must
 # neither inherit process configuration nor reload that file. Explicit inert
 # database/queue endpoints also keep application defaults from reaching a

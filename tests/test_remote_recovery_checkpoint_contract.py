@@ -4,8 +4,11 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKER = ROOT / "scripts/operator/remote-docker-worker"
+pytestmark = pytest.mark.macos_only
 IDENTITY_PATH = WORKER / "recovery-identity.sh"
 CHECKPOINT_PATH = WORKER / "checkpoint-state.sh"
 IDENTITY = IDENTITY_PATH.read_text(encoding="utf-8")

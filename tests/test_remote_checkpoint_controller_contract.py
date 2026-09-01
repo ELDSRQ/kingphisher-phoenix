@@ -5,8 +5,11 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 WORKER = ROOT / "scripts/operator/remote-docker-worker"
+pytestmark = pytest.mark.macos_only
 CONTROLLER_PATH = WORKER / "checkpoint-remote.sh"
 CHECKPOINT_PATH = WORKER / "checkpoint-state.sh"
 CONTROLLER = CONTROLLER_PATH.read_text(encoding="utf-8")

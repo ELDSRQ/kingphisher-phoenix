@@ -7,6 +7,10 @@ import subprocess
 import tarfile
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.macos_only
+
 ROOT = Path(__file__).resolve().parents[1]
 STAGER_PATH = ROOT / "scripts/operator/remote-docker-worker/stage-checkpoint.sh"
 STAGER = STAGER_PATH.read_text(encoding="utf-8")

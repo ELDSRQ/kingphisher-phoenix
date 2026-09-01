@@ -74,4 +74,5 @@ markers = [
     "e2e: end-to-end tests against a running local stack",
     "azure_live: opt-in read-only checks against an authenticated Azure subscription",
     "console_ui: deterministic checks for the operator console SPA (CSP, assets, and the node behavioral harness)",
+    "macos_only: controller-side recovery tooling that requires macOS (Keychain, /private/tmp); deselected off Darwin",
 ]
