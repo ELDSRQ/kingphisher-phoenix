@@ -51,6 +51,20 @@ for url in http://127.0.0.1:8000/readyz http://127.0.0.1:8001/readyz; do
   echo "   ready: $url"
 done
 
+# The APIs report ready before the supervisor finishes spawning all workers, and
+# the console-smoke test asserts every worker is healthy. Wait for all eight
+# worker pid files (supervisor writes data/run/worker-<name>.pid on spawn) so
+# the health assertion is not raced.
+echo "== waiting for all 8 workers to register =="
+workers_ready=""
+for _ in $(seq 1 90); do
+  n=$(ls data/run/worker-*.pid 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$n" -ge 8 ]; then workers_ready=1; break; fi
+  sleep 1
+done
+[ -n "$workers_ready" ] || { echo "error: workers did not all register (saw ${n:-0}/8)" >&2; exit 1; }
+echo "   all 8 workers registered"
+
 echo "== running the live E2E gate (make test-e2e) =="
 set +e
 KP_E2E_PASSWORD="$CONSOLE_PW" \
