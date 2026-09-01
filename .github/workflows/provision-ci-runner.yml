@@ -1,0 +1,173 @@
+# Provision the self-hosted VNet runner via a targeted terraform apply, through
+# GitHub OIDC. Standalone (not a deploy phase) so it cannot disturb the ACS
+# email binding: it plans/applies ONLY the ci_runner resources. Required before
+# any private-mode deploy. Set the CI_RUNNER_REGISTRATION_TOKEN secret (a fresh,
+# short-lived GitHub runner token) right before dispatching.
+name: Provision CI runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment whose OIDC identity, state, and VNet to use
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      deployment_config:
+        description: The reviewed non-secret deployment config (same JSON the deploy uses)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # Azure OIDC; no stored Azure credential.
+
+concurrency:
+  # Share the deploy's concurrency group so this never races a deploy on the
+  # same Terraform state.
+  group: azure-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Provision the self-hosted VNet runner
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }} # required-reviewer gate + env secret
+    timeout-minutes: 30
+    env:
+      DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+      TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+      TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+      TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_deploy_ci_runner: "true"
+      TF_VAR_ci_runner_registration_token: ${{ secrets.CI_RUNNER_REGISTRATION_TOKEN }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Fail fast without a registration token
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${TF_VAR_ci_runner_registration_token}" ] || {
+            echo "::error::CI_RUNNER_REGISTRATION_TOKEN secret is empty; set a fresh runner token first"; exit 1; }
+      - name: Authenticate to Azure
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - name: Write the reviewed config as tfvars
+        working-directory: infrastructure/terraform
+        shell: bash
+        env:
+          REVIEWED_DEPLOYMENT_CONFIG: ${{ inputs.deployment_config }}
+        run: |
+          set -euo pipefail
+          if [ "$(printf '%s' "$REVIEWED_DEPLOYMENT_CONFIG" | wc -c)" -gt 32768 ]; then
+            echo "::error::reviewed deployment configuration exceeds the fixed limit"; exit 1
+          fi
+          python3 - <<'PY'
+          import json, os
+          config = json.loads(os.environ["REVIEWED_DEPLOYMENT_CONFIG"])
+          if not isinstance(config, dict):
+              raise SystemExit("reviewed deployment configuration is malformed")
+          with open("reviewed.tfvars.json", "w", encoding="utf-8") as handle:
+              json.dump(config, handle, separators=(",", ":"), sort_keys=True)
+          PY
+      - name: Initialize Terraform
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform init
+          -backend-config="resource_group_name=$TF_STATE_RESOURCE_GROUP"
+          -backend-config="storage_account_name=$TF_STATE_STORAGE_ACCOUNT"
+          -backend-config="container_name=$TF_STATE_CONTAINER"
+          -backend-config="key=$DEPLOYMENT_ENVIRONMENT/kingphisher.tfstate"
+          -backend-config="use_azuread_auth=true"
+      - name: Plan the runner (targeted)
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform plan -out=ci-runner.tfplan
+          -var-file="environments/$DEPLOYMENT_ENVIRONMENT.tfvars"
+          -var-file="reviewed.tfvars.json"
+          -var="environment=$DEPLOYMENT_ENVIRONMENT"
+          -var="network_mode=starter"
+          -var="deploy_workloads=false"
+          -var="acs_deployment_stage=foundation_bootstrap"
+          -target=azurerm_subnet.ci_runner
+          -target=azurerm_public_ip.ci_runner_nat
+          -target=azurerm_nat_gateway.ci_runner
+          -target=azurerm_nat_gateway_public_ip_association.ci_runner
+          -target=azurerm_subnet_nat_gateway_association.ci_runner
+          -target=azurerm_network_security_group.ci_runner
+          -target=azurerm_subnet_network_security_group_association.ci_runner
+          -target=azurerm_network_interface.ci_runner
+          -target=random_password.ci_runner
+          -target=azurerm_linux_virtual_machine.ci_runner
+      - name: Refuse any destructive change
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, subprocess
+          result = subprocess.run(
+              ["terraform", "show", "-json", "ci-runner.tfplan"],
+              check=True, capture_output=True, text=True,
+          )
+          plan = json.loads(result.stdout)
+          allowed = {
+              "azurerm_subnet.ci_runner[0]",
+              "azurerm_public_ip.ci_runner_nat[0]",
+              "azurerm_nat_gateway.ci_runner[0]",
+              "azurerm_nat_gateway_public_ip_association.ci_runner[0]",
+              "azurerm_subnet_nat_gateway_association.ci_runner[0]",
+              "azurerm_network_security_group.ci_runner[0]",
+              "azurerm_subnet_network_security_group_association.ci_runner[0]",
+              "azurerm_network_interface.ci_runner[0]",
+              "random_password.ci_runner[0]",
+              "azurerm_linux_virtual_machine.ci_runner[0]",
+          }
+          changes = plan.get("resource_changes", [])
+          if not isinstance(changes, list) or len(changes) > 64:
+              raise SystemExit("runner plan change set is malformed or exceeds the fixed limit")
+          destructive = sorted(
+              c["address"] for c in changes
+              if isinstance(c, dict) and "delete" in c.get("change", {}).get("actions", [])
+          )
+          if destructive:
+              raise SystemExit(f"runner provisioning is create/update-only; refusing deletes: {destructive}")
+          changed = {
+              c.get("address") for c in changes
+              if isinstance(c, dict) and c.get("change", {}).get("actions") != ["no-op"]
+          }
+          unexpected = sorted(a for a in changed if a not in allowed)
+          if unexpected:
+              raise SystemExit(f"runner plan contains unrelated changes: {unexpected}")
+          PY
+      - name: Apply the runner
+        working-directory: infrastructure/terraform
+        run: terraform apply -auto-approve ci-runner.tfplan
+      - name: Next steps
+        shell: bash
+        run: |
+          {
+            echo "### Self-hosted runner provisioned"
+            echo ""
+            echo "The VM self-registers via cloud-init in ~2-3 minutes. Verify:"
+            echo '```'
+            echo "gh api /repos/${{ github.repository }}/actions/runners --jq '.runners[] | .name + \"  \" + .status'"
+            echo '```'
+            echo "Then set DEPLOY_CI_RUNNER=true and proceed with the private bootstrap + workloads."
+          } >> "$GITHUB_STEP_SUMMARY"
