@@ -2364,6 +2364,7 @@ jobs:
           OPERATOR_API_DIGEST: ${{ steps.images.outputs.operator_api_digest }}
           TRACKING_API_DIGEST: ${{ steps.images.outputs.tracking_api_digest }}
           WORKER_DIGEST: ${{ steps.images.outputs.worker_digest }}
+          AI_GATEWAY_DIGEST: ${{ steps.images.outputs.ai_gateway_digest }}
         working-directory: infrastructure/terraform
         run: >-
           terraform plan -out=release.tfplan
@@ -2378,6 +2379,9 @@ jobs:
           -var="tracking_image=$IMAGE_REGISTRY/tracking-api@$TRACKING_API_DIGEST"
           -var="worker_image=$IMAGE_REGISTRY/worker@$WORKER_DIGEST"
           -var="migration_image=$IMAGE_REGISTRY/migration@$MIGRATION_DIGEST"
+          -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
+          -var="ai_gateway_image=$IMAGE_REGISTRY/ai-gateway@$AI_GATEWAY_DIGEST"
+          -var="ai_llama_image=${{ vars.AI_LLAMA_IMAGE }}"
       - name: Refuse destructive workload changes
         if: inputs.deployment_phase == 'workloads'
         working-directory: infrastructure/terraform
@@ -2592,6 +2596,7 @@ jobs:
           OPERATOR_API_DIGEST: ${{ steps.images.outputs.operator_api_digest }}
           TRACKING_API_DIGEST: ${{ steps.images.outputs.tracking_api_digest }}
           WORKER_DIGEST: ${{ steps.images.outputs.worker_digest }}
+          AI_GATEWAY_DIGEST: ${{ steps.images.outputs.ai_gateway_digest }}
         working-directory: infrastructure/terraform
         run: >-
           terraform plan -out=acs-receipts.tfplan
@@ -2606,6 +2611,9 @@ jobs:
           -var="tracking_image=$IMAGE_REGISTRY/tracking-api@$TRACKING_API_DIGEST"
           -var="worker_image=$IMAGE_REGISTRY/worker@$WORKER_DIGEST"
           -var="migration_image=$IMAGE_REGISTRY/migration@$MIGRATION_DIGEST"
+          -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
+          -var="ai_gateway_image=$IMAGE_REGISTRY/ai-gateway@$AI_GATEWAY_DIGEST"
+          -var="ai_llama_image=${{ vars.AI_LLAMA_IMAGE }}"
       - name: Refuse unrelated changes in receipt activation plan
         if: inputs.deployment_phase == 'workloads'
         working-directory: infrastructure/terraform
