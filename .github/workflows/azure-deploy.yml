@@ -2529,15 +2529,18 @@ jobs:
                       ],
                       f"active revision inventory for {app_name}",
                   )
-                  if isinstance(inventory, list) and len(inventory) == 1 and isinstance(inventory[0], dict):
+                  settled = isinstance(inventory, list) and len(inventory) == 1 and isinstance(inventory[0], dict)
+                  if settled:
                       revision = inventory[0]
                       revision_name = revision.get("name")
                       if (
-                          isinstance(revision_name, str)
-                          and REVISION_NAME.fullmatch(revision_name) is not None
-                          and str(revision.get("healthState", "")).lower() == "healthy"
-                          and str(revision.get("provisioningState", "")).lower() == "provisioned"
+                          not isinstance(revision_name, str)
+                          or REVISION_NAME.fullmatch(revision_name) is None
+                          or str(revision.get("healthState", "")).lower() != "healthy"
+                          or str(revision.get("provisioningState", "")).lower() != "provisioned"
                       ):
+                          settled = False
+                      else:
                           return revision_name
                   if time.monotonic() >= settle_deadline:
                       fail(f"{app_name} did not settle to one healthy, provisioned active worker revision")
