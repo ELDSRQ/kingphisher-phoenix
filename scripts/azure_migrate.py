@@ -80,6 +80,9 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     "ingestion": {
         "SELECT, UPDATE": ("sources",),
         "SELECT, INSERT": ("source_items", "campaign_patterns"),
+        # process_ingestion reads current licence terms (session.get(SourceTerms))
+        # to gate fetching; read-only.
+        "SELECT": ("source_terms",),
     },
     "delivery": {
         "SELECT": (

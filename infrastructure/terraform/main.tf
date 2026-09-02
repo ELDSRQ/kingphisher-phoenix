@@ -805,11 +805,16 @@ resource "azurerm_storage_container_immutability_policy" "audit_anchor" {
 resource "azurerm_role_definition" "audit_anchor_writer" {
   name        = "kp-audit-anchor-${local.suffix}-${random_string.unique.result}"
   scope       = azurerm_resource_group.main.id
-  description = "Create and compare immutable audit head anchors without overwrite or delete access."
+  description = "Create and compare immutable audit head anchors; overwrite/delete are blocked by the container's locked immutability policy, not by omitting write."
   permissions {
     actions     = []
     not_actions = []
+    # Azure gates create-block-blob (PUT Blob, used with If-None-Match:* for
+    # create-only anchors) behind blobs/write, not blobs/add/action; the latter
+    # only covers append operations. The container's locked immutability policy
+    # is what actually prevents overwrite and delete.
     data_actions = [
+      "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
       "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action",
       "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
     ]

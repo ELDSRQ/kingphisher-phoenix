@@ -50,7 +50,10 @@ def test_anchor_identity_has_only_create_and_read_data_actions_at_container_scop
     )[0]
     assert "containers/blobs/add/action" in role
     assert "containers/blobs/read" in role
-    assert "containers/blobs/write" not in role
+    # Azure gates create-block-blob (PUT Blob, used create-only via If-None-Match:*)
+    # behind blobs/write; overwrite and delete are prevented by the container's
+    # locked immutability (WORM) policy, not by withholding write.
+    assert "containers/blobs/write" in role
     assert "containers/blobs/delete" not in role
     assert "runAsSuperUser" not in role
     assert "azurerm_storage_container.audit_anchor.id" in assignment
