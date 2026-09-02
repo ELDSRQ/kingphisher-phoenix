@@ -298,6 +298,41 @@ def main() -> None:
         ):
             connection.execute(text(f"ALTER FUNCTION public.{signature} OWNER TO audit_owner"))
         connection.execute(text("REVOKE CREATE ON SCHEMA public FROM audit_owner"))
+        # Azure's admin is not a superuser: the SECURITY DEFINER audit functions
+        # execute as audit_owner and must be able to call pgcrypto's digest/hmac
+        # (used to hash the audit chain). Grant those explicitly so correctness
+        # does not depend on PUBLIC's default execute; ignore absence defensively.
+        connection.execute(
+            text(
+                "DO $$ BEGIN "
+                "GRANT EXECUTE ON FUNCTION public.digest(bytea, text) TO audit_owner; "
+                "GRANT EXECUTE ON FUNCTION public.hmac(bytea, bytea, text) TO audit_owner; "
+                "EXCEPTION WHEN undefined_function OR undefined_object THEN NULL; END $$"
+            )
+        )
+        try:
+            _diag = (
+                connection.execute(
+                    text(
+                        "SELECT "
+                        "(SELECT n.nspname FROM pg_extension e "
+                        " JOIN pg_namespace n ON n.oid = e.extnamespace "
+                        " WHERE e.extname = 'pgcrypto') AS pgcrypto_schema, "
+                        "has_schema_privilege('audit_owner', 'public', 'USAGE') AS owner_usage_public, "
+                        "(SELECT bool_and(has_function_privilege('audit_owner', p.oid, 'EXECUTE')) "
+                        " FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                        " WHERE p.proname IN ('digest', 'hmac')) AS owner_exec_crypto, "
+                        "has_function_privilege("
+                        " 'audit_writer', 'public.kp_dispatch_pending_audit(integer)', 'EXECUTE'"
+                        ") AS writer_exec_dispatch"
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            print(f"AUDIT_DIAG {dict(_diag)}", flush=True)
+        except Exception as _diag_exc:  # pragma: no cover - diagnostic only
+            print(f"AUDIT_DIAG error {type(_diag_exc).__name__}: {_diag_exc}", flush=True)
         installed_audit_root = connection.scalar(
             text("SELECT key_hex FROM public.audit_integrity_secret WHERE singleton_id = 1")
         )
