@@ -89,11 +89,13 @@ locals {
     },
   )
 
-  tracking_base_url = "https://${lower(trimspace(var.tracking_fqdn))}"
-  training_base_url = "${local.tracking_base_url}/v1/training/awareness"
-  # Bake-off-selected model identity; the generation worker must pin the same
-  # identity the ai-gateway serves so generated content is attributable to it.
-  ai_model_id                   = "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
+  # Bake-off-selected model identity the generation worker pins; kept identical
+  # to the ai-gateway's KP_AI_GATEWAY_MODEL_ID. Isolated on its own line so it
+  # does not join the tracking/training alignment group the contract test pins.
+  ai_model_id = "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
+
+  tracking_base_url             = "https://${lower(trimspace(var.tracking_fqdn))}"
+  training_base_url             = "${local.tracking_base_url}/v1/training/awareness"
   acs_receipt_subscription_name = "acs-delivery-receipts"
   acs_receipt_webhook_path      = "/api/v1/integrations/acs/events"
   acs_provision                 = var.acs_resource_mode == "provision"
