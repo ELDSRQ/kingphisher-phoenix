@@ -61,6 +61,14 @@ write_files:
         --name "${runner_name}" \
         --labels "${runner_labels}" \
         --replace
+      # actions/attest (push-to-registry) reads registry creds from
+      # $HOME/.docker/config.json, not from DOCKER_CONFIG. The workloads deploy
+      # writes ACR creds to $RUNNER_TEMP/docker-config (a stable path). Point the
+      # runner's ~/.docker at it so attest finds the same creds trivy/syft use.
+      sudo -u "$${RUNNER_USER}" mkdir -p "/home/$${RUNNER_USER}"
+      sudo -u "$${RUNNER_USER}" ln -sfn /opt/actions-runner/_work/_temp/docker-config \
+        "/home/$${RUNNER_USER}/.docker"
+
       # Install + start as a systemd service (runs as the runner user).
       ./svc.sh install "$${RUNNER_USER}"
       ./svc.sh start
