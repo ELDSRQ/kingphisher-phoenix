@@ -32,19 +32,31 @@ def _as_anchor(snapshot: AuditHeadSnapshot) -> AuditAnchor:
     return AuditAnchor(snapshot.sequence, snapshot.event_hash, snapshot.signed_at)
 
 
-def verified_audit_head(ctx: WorkerContext) -> AuditAnchor:
-    """Return only a chain head that remained stable throughout verification."""
+#: How many times to re-verify when the head advances mid-check before giving up.
+_VERIFY_STABILITY_ATTEMPTS = 6
 
-    before = ctx.audit_store.head_snapshot()
-    problems = ctx.audit_store.verify()
-    after = ctx.audit_store.head_snapshot()
-    if problems:
-        raise AuditIntegrityUnhealthyError(f"audit integrity verification failed ({len(problems)} problem(s))")
-    if before is None or after is None:
-        raise AuditIntegrityUnhealthyError("no signed audit head is available")
-    if before != after:
-        raise AuditIntegrityUnhealthyError("audit head changed during verification")
-    return _as_anchor(after)
+
+def verified_audit_head(ctx: WorkerContext) -> AuditAnchor:
+    """Return only a chain head that remained stable throughout verification.
+
+    Concurrent audit appends (e.g. the API's periodic outbox dispatch) can advance
+    the head between the two snapshots. That is healthy activity, not corruption,
+    so retry a bounded number of times to catch a window where the head is briefly
+    stable rather than failing the anchor on the first race. A genuine integrity
+    problem or a missing head still fails closed immediately.
+    """
+
+    for _ in range(_VERIFY_STABILITY_ATTEMPTS):
+        before = ctx.audit_store.head_snapshot()
+        problems = ctx.audit_store.verify()
+        after = ctx.audit_store.head_snapshot()
+        if problems:
+            raise AuditIntegrityUnhealthyError(f"audit integrity verification failed ({len(problems)} problem(s))")
+        if before is None or after is None:
+            raise AuditIntegrityUnhealthyError("no signed audit head is available")
+        if before == after:
+            return _as_anchor(after)
+    raise AuditIntegrityUnhealthyError("audit head did not stabilize during verification")
 
 
 def anchor_verified_head(ctx: WorkerContext, provider: _AnchorProvider) -> str:

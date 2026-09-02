@@ -60,14 +60,31 @@ def test_integrity_failure_blocks_publication() -> None:
     assert provider.anchors == []
 
 
-def test_head_change_during_verification_blocks_publication() -> None:
-    ctx = _ctx(snapshots=(_head_snapshot(3), _head_snapshot(4, "cd" * 32)))
+def test_persistent_head_change_blocks_publication() -> None:
+    # Head advances on every attempt -> never stabilizes -> fail closed.
+    ctx = _ctx(snapshots=(_head_snapshot(3), _head_snapshot(4, "cd" * 32)) * 6)
     provider = FakeProvider()
 
-    with pytest.raises(AuditIntegrityUnhealthyError, match="changed during verification"):
+    with pytest.raises(AuditIntegrityUnhealthyError, match="did not stabilize"):
         anchor_verified_head(ctx, provider)
 
     assert provider.anchors == []
+
+
+def test_head_that_stabilizes_on_retry_is_published() -> None:
+    # First attempt races (3 -> 4), second attempt sees a stable head (3 == 3).
+    ctx = _ctx(
+        snapshots=(
+            _head_snapshot(3),
+            _head_snapshot(4, "cd" * 32),
+            _head_snapshot(3),
+            _head_snapshot(3),
+        )
+    )
+    provider = FakeProvider()
+
+    assert anchor_verified_head(ctx, provider) == "created"
+    assert provider.anchors == [_head()]
 
 
 def test_interval_bucket_is_the_queue_idempotency_boundary() -> None:

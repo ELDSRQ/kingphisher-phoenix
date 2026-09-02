@@ -136,7 +136,10 @@ def test_bootstrap_grants_only_the_real_audit_tables(monkeypatch: pytest.MonkeyP
     assert "GRANT UPDATE (training_resource_id) ON TABLE campaigns TO kp_tracking" not in statements
     assert "GRANT SELECT, UPDATE ON TABLE campaigns, recipient_assignments TO kp_tracking" not in statements
     assert "GRANT SELECT ON TABLE" in statements and "system_safety_state" in statements
-    assert "GRANT SELECT, UPDATE ON TABLE campaigns, recipient_assignments TO kp_worker_delivery" in statements
+    assert (
+        "GRANT SELECT, UPDATE ON TABLE campaigns, recipient_assignments, system_safety_state, campaign_launch_gates "
+        "TO kp_worker_delivery" in statements
+    )
     assert "audit_events TO kp_operator" not in statements
     assert "GRANT CREATE ON SCHEMA public TO kp_" not in statements
     assert engine.connection.raw_statements

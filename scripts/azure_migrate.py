@@ -90,11 +90,16 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
             "campaign_patterns",
             "recipients",
             "rules_of_engagement",
-            "system_safety_state",
             "template_versions",
             "tracking_tokens",
+            "campaign_audiences",
+            "training_resources",
+            "campaign_canary_recipients",
         ),
-        "SELECT, UPDATE": ("campaigns", "recipient_assignments"),
+        # system_safety_state is taken with a FOR SHARE lock (with_for_update
+        # read=True) which requires UPDATE; campaign_launch_gates is locked and
+        # its gate state is mutated during the launch/canary checks.
+        "SELECT, UPDATE": ("campaigns", "recipient_assignments", "system_safety_state", "campaign_launch_gates"),
         # One retry-stable row is created before the provider call and updated
         # only with the provider's non-secret acceptance metadata. Delivery
         # receipts may activate a suppression and reserve durable ACS pacing;
@@ -108,14 +113,17 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "retention": {
         "SELECT": ("retention_policies",),
-        "SELECT, UPDATE": ("campaigns",),
+        # microsoft365_integration_states is locked (FOR UPDATE SKIP LOCKED) and
+        # its status/cursor fields updated during reported-mail retention.
+        "SELECT, UPDATE": ("campaigns", "microsoft365_integration_states"),
         "SELECT, UPDATE, DELETE": ("recipient_assignments", "tracking_tokens"),
-        "SELECT, DELETE": ("events", "training_assignments"),
+        "SELECT, DELETE": ("events", "training_assignments", "reported_mail_receipts"),
         "SELECT, INSERT": ("retention_actions",),
         "SELECT, INSERT, UPDATE, DELETE": ("awareness_ledger_entries",),
     },
     "reminder": {
-        "SELECT": ("recipients", "tracking_tokens"),
+        # process_reminder re-reads the assignment row (plain read, no lock).
+        "SELECT": ("recipients", "tracking_tokens", "recipient_assignments"),
         "SELECT, UPDATE": ("training_assignments",),
     },
     "alert": {"SELECT, UPDATE": ("alert_subscriptions",)},
@@ -124,7 +132,10 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     # outbox payloads, append/dispatch evidence, or access business tables.
     "audit-anchor": {},
     "generation": {
-        "SELECT": ("campaign_patterns", "source_items"),
+        # process_generation takes FOR UPDATE row locks on the source and pattern
+        # rows it advances (with_for_update=True), so it needs UPDATE, not just
+        # SELECT, on each — FOR UPDATE requires the UPDATE privilege.
+        "SELECT, UPDATE": ("sources", "source_terms", "source_items", "campaign_patterns"),
         "SELECT, INSERT": ("template_versions",),
     },
     "directory": {
@@ -313,29 +324,6 @@ def main() -> None:
                 "EXCEPTION WHEN undefined_function OR undefined_object THEN NULL; END $$"
             )
         )
-        try:
-            _diag = (
-                connection.execute(
-                    text(
-                        "SELECT "
-                        "(SELECT n.nspname FROM pg_extension e "
-                        " JOIN pg_namespace n ON n.oid = e.extnamespace "
-                        " WHERE e.extname = 'pgcrypto') AS pgcrypto_schema, "
-                        "has_schema_privilege('audit_owner', 'public', 'USAGE') AS owner_usage_public, "
-                        "(SELECT bool_and(has_function_privilege('audit_owner', p.oid, 'EXECUTE')) "
-                        " FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
-                        " WHERE p.proname IN ('digest', 'hmac')) AS owner_exec_crypto, "
-                        "has_function_privilege("
-                        " 'audit_writer', 'public.kp_dispatch_pending_audit(integer)', 'EXECUTE'"
-                        ") AS writer_exec_dispatch"
-                    )
-                )
-                .mappings()
-                .one()
-            )
-            print(f"AUDIT_DIAG {dict(_diag)}", flush=True)
-        except Exception as _diag_exc:  # pragma: no cover - diagnostic only
-            print(f"AUDIT_DIAG error {type(_diag_exc).__name__}: {_diag_exc}", flush=True)
         installed_audit_root = connection.scalar(
             text("SELECT key_hex FROM public.audit_integrity_secret WHERE singleton_id = 1")
         )
