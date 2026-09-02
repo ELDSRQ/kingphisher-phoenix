@@ -274,6 +274,12 @@ def main() -> None:
     with engine.begin() as connection:
         # The NOLOGIN owner is reachable only by the explicit migration
         # principal. No workload or dispatcher login can exploit owner bypass.
+        # PostgreSQL requires the *incoming* owner to hold CREATE on the object's
+        # schema before ALTER ... OWNER succeeds. A superuser migration principal
+        # bypasses this check (local dev), but Azure Database for PostgreSQL's
+        # admin is not a superuser, so grant CREATE to audit_owner transiently and
+        # revoke it below, leaving the NOLOGIN owner no standing schema-create right.
+        connection.execute(text("GRANT USAGE, CREATE ON SCHEMA public TO audit_owner"))
         for table_name in (
             "audit_events",
             "audit_chain_head",
@@ -291,6 +297,7 @@ def main() -> None:
             "kp_verify_audit_head()",
         ):
             connection.execute(text(f"ALTER FUNCTION public.{signature} OWNER TO audit_owner"))
+        connection.execute(text("REVOKE CREATE ON SCHEMA public FROM audit_owner"))
         installed_audit_root = connection.scalar(
             text("SELECT key_hex FROM public.audit_integrity_secret WHERE singleton_id = 1")
         )
