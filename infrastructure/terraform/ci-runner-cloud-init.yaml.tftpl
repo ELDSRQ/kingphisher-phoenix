@@ -48,6 +48,16 @@ write_files:
       rm -f /tmp/syft.tar.gz
       chmod 0755 /usr/local/bin/syft
 
+      # GitHub CLI: the workloads 'Verify registry attestations' step runs
+      # `gh attestation verify --bundle-from-oci`. Hosted runners ship gh; a bare
+      # VM does not. Install the latest release binary.
+      GH_VER="$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | jq -r .tag_name | sed 's/^v//')"
+      curl -fsSL -o /tmp/gh.tar.gz \
+        "https://github.com/cli/cli/releases/download/v$${GH_VER}/gh_$${GH_VER}_linux_amd64.tar.gz"
+      tar -xzf /tmp/gh.tar.gz -C /tmp
+      install -m 0755 "/tmp/gh_$${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh
+      rm -rf /tmp/gh.tar.gz "/tmp/gh_$${GH_VER}_linux_amd64"
+
       cd /opt/actions-runner
       curl -fsSL -o runner.tar.gz \
         "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"
