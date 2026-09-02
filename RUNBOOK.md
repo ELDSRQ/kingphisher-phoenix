@@ -742,7 +742,7 @@ cross-origin authorization endpoint blocks navigation; cross-origin token or
 JWKS endpoints block before code, credential, or token transmission.
 
 The reviewed workflow is frozen to SHA-256
-`898383a686efa02abd8db474dfeb959a93842d976e39532075d1f462962a6378`.
+`8490945e6a2648b515f544c28722d9b0f26c9a94bae15554b3c3a7a1c0417ae5`.
 `foundation_bootstrap` plans and applies the complete
 `deploy_workloads=false` foundation, including ACR, private-network, data,
 ACS/email/domain, and DNS resources, without Terraform targets. It refuses

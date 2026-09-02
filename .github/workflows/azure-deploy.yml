@@ -2370,6 +2370,7 @@ jobs:
           KP_TRACKING_API_DIGEST: ${{ steps.images.outputs.tracking_api_digest }}
           KP_WORKER_DIGEST: ${{ steps.images.outputs.worker_digest }}
           KP_MIGRATION_DIGEST: ${{ steps.images.outputs.migration_digest }}
+          KP_AI_GATEWAY_DIGEST: ${{ steps.images.outputs.ai_gateway_digest }}
         run: python3 "$KP_CHECKPOINT_HELPER" --stage immutable_images_verified --status passed
       - name: Plan workloads
         if: inputs.deployment_phase == 'workloads'
