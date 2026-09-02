@@ -381,7 +381,7 @@ def test_managed_acs_rejects_fallback_identity_and_invalid_readiness(override: d
         "https://attacker.example",
         "https://mailer.communication.azure.com.attacker.example",
         "https://communication.azure.com",
-        "https://nested.mailer.communication.azure.com",
+        "https://deep.nested.mailer.communication.azure.com",
         "https://mailer.communication.azure.com:444",
         "https://mailer.communication.azure.com/private",
         "https://mailer.communication.azure.com./",
@@ -392,6 +392,18 @@ def test_managed_acs_rejects_fallback_identity_and_invalid_readiness(override: d
 def test_managed_acs_rejects_unapproved_data_plane_endpoints(endpoint: str) -> None:
     with pytest.raises(ValidationError, match=r"ACS email endpoint must (?:be|use)"):
         _settings(**{**_managed_acs_values(), "acs_email_endpoint": endpoint})
+
+
+def test_managed_acs_accepts_regional_data_location_endpoint() -> None:
+    # Azure ACS resources with a data_location expose a regional host of the form
+    # <name>.<datalocation>.communication.azure.com (e.g. …unitedstates…).
+    settings = _settings(
+        **{
+            **_managed_acs_values(),
+            "acs_email_endpoint": "https://acs-kp-staging.unitedstates.communication.azure.com",
+        }
+    )
+    assert settings.email_provider == "azure_communication_services"
 
 
 def test_managed_acs_accepts_explicit_standard_tls_port() -> None:

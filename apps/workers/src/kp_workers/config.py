@@ -16,8 +16,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _LOCAL_PROVIDER_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "mock-graph", "mock-ai", "mailpit"})
 _MANAGED_RUNTIME_MODES = frozenset({"managed", "production"})
 _MICROSOFT_GRAPH_HOST = "graph.microsoft.com"
+# Azure Communication Services data-plane endpoints carry a data-location label
+# when the resource has a data_location (e.g. <name>.unitedstates.communication
+# .azure.com); accept that optional middle label as well as the plain
+# <name>.communication.azure.com form. The whole domain is Azure-owned and the
+# \Z anchor still rejects suffix tricks (…communication.azure.com.attacker.tld)
+# and deeper (3+ label) nesting.
 _ACS_ENDPOINT_HOST = re.compile(
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.communication\.azure\.com\Z",
+    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)?"
+    r"\.communication\.azure\.com\Z",
     re.IGNORECASE,
 )
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")

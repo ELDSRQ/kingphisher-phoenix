@@ -983,7 +983,7 @@ def test_azure_deployment_validation_accepts_safe_values_and_rejects_bad_hosts(e
         assert response.json()["ok"] is True
         for endpoint in (
             "endpoint=https://acs.example;accesskey=secret",
-            "https://nested.acs-existing.communication.azure.com",
+            "https://deep.nested.acs-existing.communication.azure.com",
             "https://acs-existing.communication.azure.com:444",
             "https://-acs.communication.azure.com",
             "https://acs-.communication.azure.com",
