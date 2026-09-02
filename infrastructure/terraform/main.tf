@@ -721,6 +721,15 @@ resource "azurerm_postgresql_flexible_server_database" "main" {
   charset   = "UTF8"
 }
 
+# Azure Database for PostgreSQL Flexible Server refuses CREATE EXTENSION unless
+# the extension is allow-listed here. Migration 0020 creates pgcrypto; this is a
+# dynamic parameter, so the allowlist takes effect without a server restart.
+resource "azurerm_postgresql_flexible_server_configuration" "extensions" {
+  name      = "azure.extensions"
+  server_id = azurerm_postgresql_flexible_server.main.id
+  value     = "PGCRYPTO"
+}
+
 resource "azurerm_managed_redis" "main" {
   name                      = "redis-${local.suffix}-${random_string.unique.result}"
   resource_group_name       = azurerm_resource_group.main.name
