@@ -27,6 +27,24 @@ write_files:
       # Azure CLI (the deploy job's azure/login, az acr build, az rest need it).
       curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 
+      # Trivy + Syft on the system PATH, pinned to the versions the workloads
+      # supply-chain steps require. The setup-trivy action caches its binary under
+      # an absolute $HOME path; that cache is saved by the hosted qualify runner
+      # and restores to the wrong location on this self-hosted runner, leaving
+      # `trivy` off PATH. A system install is found regardless of that cache.
+      TRIVY_VERSION=0.74.0
+      curl -fsSL -o /tmp/trivy.tar.gz \
+        "https://github.com/aquasecurity/trivy/releases/download/v$${TRIVY_VERSION}/trivy_$${TRIVY_VERSION}_Linux-64bit.tar.gz"
+      tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy
+      rm -f /tmp/trivy.tar.gz
+      chmod 0755 /usr/local/bin/trivy
+      SYFT_VERSION=1.42.3
+      curl -fsSL -o /tmp/syft.tar.gz \
+        "https://github.com/anchore/syft/releases/download/v$${SYFT_VERSION}/syft_$${SYFT_VERSION}_linux_amd64.tar.gz"
+      tar -xzf /tmp/syft.tar.gz -C /usr/local/bin syft
+      rm -f /tmp/syft.tar.gz
+      chmod 0755 /usr/local/bin/syft
+
       cd /opt/actions-runner
       curl -fsSL -o runner.tar.gz \
         "https://github.com/actions/runner/releases/download/v$${RUNNER_VERSION}/actions-runner-linux-x64-$${RUNNER_VERSION}.tar.gz"
