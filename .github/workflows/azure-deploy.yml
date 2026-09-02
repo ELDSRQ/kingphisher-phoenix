@@ -2486,6 +2486,23 @@ jobs:
               except (UnicodeDecodeError, ValueError):
                   fail(f"{label} returned malformed JSON")
 
+          def run_json_optional(command, label):
+              # Transient control-plane / Log Analytics hiccups (throttling, brief
+              # 5xx, query-service warm-up) should be retried by the surrounding
+              # polling loop within its deadline rather than failing the gate on a
+              # single bad call. Return None so the caller can retry; a persistent
+              # failure still surfaces as unconfirmed readiness at the deadline.
+              try:
+                  result = subprocess.run(command, check=False, capture_output=True, timeout=60)
+              except (OSError, subprocess.TimeoutExpired):
+                  return None
+              if result.returncode != 0 or len(result.stdout) > MAX_RESPONSE_BYTES:
+                  return None
+              try:
+                  return json.loads(result.stdout.decode("utf-8"))
+              except (UnicodeDecodeError, ValueError):
+                  return None
+
           resource_group = run(
               ["terraform", "-chdir=infrastructure/terraform", "output", "-raw", "resource_group_name"],
               "resource-group output",
@@ -2520,7 +2537,7 @@ jobs:
               # fails at the deadline.
               settle_deadline = time.monotonic() + 300
               while True:
-                  inventory = run_json(
+                  inventory = run_json_optional(
                       [
                           "az", "containerapp", "revision", "list", "--resource-group", resource_group,
                           "--name", app_name, "--query",
@@ -2567,6 +2584,7 @@ jobs:
           stable_passes = 0
           while stable_passes < 2 and time.monotonic() < deadline:
               observed = {}
+              telemetry_available = True
               for app_name, roles in expected.items():
                   revision_name = revisions[app_name]
                   query = f'''ContainerAppConsoleLogs_CL
@@ -2577,13 +2595,18 @@ jobs:
           | extend role = tostring(payload.role), ready = tobool(payload.ready), reason = tostring(payload.reason)
           | summarize arg_max(TimeGenerated, ready, reason) by role
           | project role, ready, reason, observed_at=TimeGenerated'''
-                  rows = run_json(
+                  rows = run_json_optional(
                       [
                           "az", "monitor", "log-analytics", "query", "--workspace", workspace,
                           "--analytics-query", query, "--timespan", "PT1H", "-o", "json",
                       ],
                       f"worker readiness telemetry for {app_name}",
                   )
+                  if rows is None:
+                      # A transient query failure is retried on the next pass
+                      # rather than failing the gate on a single bad call.
+                      telemetry_available = False
+                      break
                   if not isinstance(rows, list) or len(rows) > 16:
                       fail(f"worker readiness telemetry for {app_name} was malformed")
                   for row in rows:
@@ -2593,6 +2616,9 @@ jobs:
                       ready = row.get("ready")
                       if role in roles and isinstance(ready, bool):
                           observed[(app_name, role)] = ready
+              if not telemetry_available:
+                  time.sleep(10)
+                  continue
               # Re-evaluate every role on every pass so an earlier success
               # cannot mask a newer not-ready event while another role waits.
               pending = {target for target in all_targets if observed.get(target) is not True}

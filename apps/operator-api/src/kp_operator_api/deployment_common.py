@@ -42,7 +42,7 @@ MAX_ACS_EVIDENCE_BYTES = 16 * 1024
 MAX_ACS_EVIDENCE_AGE_SECONDS = 24 * 60 * 60
 # Updated only when the fixed workflow and connector contract are reviewed
 # together. A repository ref that resolves to any other content is not ready.
-EXPECTED_WORKFLOW_SHA256 = "314193e7a0afc01661ce7d927010b50b8a48e6ac5ed0b1892e75d98bace4f028"
+EXPECTED_WORKFLOW_SHA256 = "099856b39c86edc306b65460bbf7404e8772311716817c93fc35ad9dd981700b"
 REQUIRED_WORKFLOW_INPUTS = frozenset(
     {
         "environment",
