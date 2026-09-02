@@ -34,7 +34,13 @@ def test_release_images_pin_every_external_base_and_run_as_numeric_non_root() ->
         assert from_lines
         assert all("@sha256:" in line for line in from_lines), image
         assert dockerfile.count("USER 65532:65532") == 1, image
-        assert "USER root" not in dockerfile, image
+        # The runtime image must never run as root. The discarded builder stage
+        # may (it only produces /app/.venv, which the runtime re-chowns to 65532):
+        # under the classic Docker builder `az acr build` uses, WORKDIR creates a
+        # root-owned /app that a nonroot default user cannot write, so the builder
+        # runs as root. Scope the ban to the runtime stage, not the whole file.
+        runtime_stage = dockerfile.split(HARDENED_RUNTIME, maxsplit=1)[1]
+        assert "USER root" not in runtime_stage, image
         assert "STOPSIGNAL SIGTERM" in dockerfile, image
 
 
