@@ -28,6 +28,7 @@ locals {
   provider_worker_env = {
     generation = trimspace(var.ai_endpoint) == "" ? {} : {
       KP_WORKER_AI_BASE_URL = trimspace(var.ai_endpoint)
+      KP_WORKER_AI_MODEL_ID = local.ai_model_id
     }
     directory = trimspace(var.graph_endpoint) == "" ? {} : {
       KP_WORKER_GRAPH_BASE_URL      = trimspace(var.graph_endpoint)
@@ -88,8 +89,11 @@ locals {
     },
   )
 
-  tracking_base_url             = "https://${lower(trimspace(var.tracking_fqdn))}"
-  training_base_url             = "${local.tracking_base_url}/v1/training/awareness"
+  tracking_base_url = "https://${lower(trimspace(var.tracking_fqdn))}"
+  training_base_url = "${local.tracking_base_url}/v1/training/awareness"
+  # Bake-off-selected model identity; the generation worker must pin the same
+  # identity the ai-gateway serves so generated content is attributable to it.
+  ai_model_id                   = "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
   acs_receipt_subscription_name = "acs-delivery-receipts"
   acs_receipt_webhook_path      = "/api/v1/integrations/acs/events"
   acs_provision                 = var.acs_resource_mode == "provision"
@@ -1183,7 +1187,7 @@ resource "azurerm_container_app" "ai_gateway" {
       }
       env {
         name  = "KP_AI_GATEWAY_MODEL_ID"
-        value = "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
+        value = local.ai_model_id
       }
       env {
         name  = "KP_AI_GATEWAY_LLAMA_BASE_URL"
