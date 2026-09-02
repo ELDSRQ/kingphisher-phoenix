@@ -2513,27 +2513,35 @@ jobs:
           revisions = {}
 
           def healthy_revision(app_name):
-              inventory = run_json(
-                  [
-                      "az", "containerapp", "revision", "list", "--resource-group", resource_group,
-                      "--name", app_name, "--query",
-                      "[?properties.active].{name:name,healthState:properties.healthState,provisioningState:properties.provisioningState}",
-                      "-o", "json",
-                  ],
-                  f"active revision inventory for {app_name}",
-              )
-              if not isinstance(inventory, list) or len(inventory) != 1 or not isinstance(inventory[0], dict):
-                  fail(f"{app_name} did not have exactly one active worker revision")
-              revision = inventory[0]
-              revision_name = revision.get("name")
-              if (
-                  not isinstance(revision_name, str)
-                  or REVISION_NAME.fullmatch(revision_name) is None
-                  or str(revision.get("healthState", "")).lower() != "healthy"
-                  or str(revision.get("provisioningState", "")).lower() != "provisioned"
-              ):
-                  fail(f"{app_name} active worker revision was not healthy and provisioned")
-              return revision_name
+              # A fresh apply (new image digest each build) briefly leaves the
+              # previous revision active while the new one activates. Poll until
+              # exactly one active, healthy, provisioned revision remains instead
+              # of failing on that transition; a genuinely stuck rollout still
+              # fails at the deadline.
+              settle_deadline = time.monotonic() + 300
+              while True:
+                  inventory = run_json(
+                      [
+                          "az", "containerapp", "revision", "list", "--resource-group", resource_group,
+                          "--name", app_name, "--query",
+                          "[?properties.active].{name:name,healthState:properties.healthState,provisioningState:properties.provisioningState}",
+                          "-o", "json",
+                      ],
+                      f"active revision inventory for {app_name}",
+                  )
+                  if isinstance(inventory, list) and len(inventory) == 1 and isinstance(inventory[0], dict):
+                      revision = inventory[0]
+                      revision_name = revision.get("name")
+                      if (
+                          isinstance(revision_name, str)
+                          and REVISION_NAME.fullmatch(revision_name) is not None
+                          and str(revision.get("healthState", "")).lower() == "healthy"
+                          and str(revision.get("provisioningState", "")).lower() == "provisioned"
+                      ):
+                          return revision_name
+                  if time.monotonic() >= settle_deadline:
+                      fail(f"{app_name} did not settle to one healthy, provisioned active worker revision")
+                  time.sleep(10)
 
           for app_name, target in targets.items():
               roles = target.get("roles") if isinstance(target, dict) else None
