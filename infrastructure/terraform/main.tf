@@ -1733,13 +1733,36 @@ resource "azurerm_container_app" "worker" {
   ]
 }
 
+# Least-privilege custom role for Entra-ID (managed identity) ACS email sending.
+# Azure has no built-in "Email Sender" data role for ACS; per Microsoft's managed-
+# identity guidance, Entra data-plane email access is authorized by the
+# Microsoft.Communication/CommunicationServices read+write management actions.
+# This grants exactly those (no ListKeys/RegenerateKey, no delete) and is only
+# assignable to the one Communication Service the workloads use.
+resource "azurerm_role_definition" "acs_email_sender" {
+  count       = var.deploy_workloads ? 1 : 0
+  name        = "kp-acs-email-sender-${local.suffix}-${random_string.unique.result}"
+  scope       = azurerm_resource_group.main.id
+  description = "Send email through Azure Communication Services via managed identity (read+write only, no key access)."
+  permissions {
+    actions = [
+      "Microsoft.Communication/CommunicationServices/read",
+      "Microsoft.Communication/CommunicationServices/write",
+    ]
+    not_actions      = []
+    data_actions     = []
+    not_data_actions = []
+  }
+  assignable_scopes = [local.acs_communication_service_id]
+}
+
 resource "azurerm_role_assignment" "communication_sender" {
   for_each = var.deploy_workloads ? (
     var.isolate_delivery_worker ? toset(["worker", "delivery"]) : toset(["worker"])
   ) : toset([])
-  scope                = local.acs_communication_service_id
-  role_definition_name = "Azure Communication Services Email Sender"
-  principal_id         = azurerm_user_assigned_identity.workload[each.key].principal_id
+  scope              = local.acs_communication_service_id
+  role_definition_id = azurerm_role_definition.acs_email_sender[0].role_definition_resource_id
+  principal_id       = azurerm_user_assigned_identity.workload[each.key].principal_id
 }
 
 resource "azurerm_container_app_job" "migration" {
