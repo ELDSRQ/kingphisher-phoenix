@@ -60,7 +60,18 @@ def verified_audit_head(ctx: WorkerContext) -> AuditAnchor:
 
 
 def anchor_verified_head(ctx: WorkerContext, provider: _AnchorProvider) -> str:
-    result = provider.publish(verified_audit_head(ctx))
+    try:
+        anchor = verified_audit_head(ctx)
+    except AuditIntegrityUnhealthyError:
+        # An entirely empty chain (no events, no signed head) is the valid initial
+        # state — there is simply nothing to witness yet — so treat it as a healthy
+        # no-op rather than a failure. A non-empty but head-less/inconsistent chain
+        # is genuine corruption and still raises.
+        if ctx.audit_store.is_chain_empty():
+            logger.info("audit_anchor_skipped", reason="empty_chain")
+            return "empty"
+        raise
+    result = provider.publish(anchor)
     logger.info("audit_anchor_published", outcome=result)
     return result
 

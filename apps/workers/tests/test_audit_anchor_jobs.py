@@ -27,9 +27,17 @@ class FakeQueue:
         self.published.append((topic, payload, idempotency_key))
 
 
-def _ctx(problems: list[str] | None = None, snapshots: tuple[AuditHeadSnapshot | None, ...] = ()) -> Any:
+def _ctx(
+    problems: list[str] | None = None,
+    snapshots: tuple[AuditHeadSnapshot | None, ...] = (),
+    chain_empty: bool = False,
+) -> Any:
     values = iter(snapshots or (_head_snapshot(), _head_snapshot()))
-    audit_store = SimpleNamespace(verify=lambda: list(problems or []), head_snapshot=lambda: next(values))
+    audit_store = SimpleNamespace(
+        verify=lambda: list(problems or []),
+        head_snapshot=lambda: next(values),
+        is_chain_empty=lambda: chain_empty,
+    )
     settings = SimpleNamespace(audit_anchor_interval_seconds=3600)
     return SimpleNamespace(audit_store=audit_store, settings=settings, queue=FakeQueue())
 
@@ -48,6 +56,26 @@ def test_verified_stable_head_is_published() -> None:
 
     assert anchor_verified_head(ctx, provider) == "created"
     assert provider.anchors == [_head()]
+
+
+def test_empty_chain_is_a_healthy_no_op() -> None:
+    # No signed head yet + an entirely empty chain -> skip, do not fail.
+    ctx = _ctx(snapshots=(None, None), chain_empty=True)
+    provider = FakeProvider()
+
+    assert anchor_verified_head(ctx, provider) == "empty"
+    assert provider.anchors == []
+
+
+def test_missing_head_on_non_empty_chain_still_fails() -> None:
+    # No signed head but the chain is NOT empty -> genuine corruption -> fail.
+    ctx = _ctx(snapshots=(None, None), chain_empty=False)
+    provider = FakeProvider()
+
+    with pytest.raises(AuditIntegrityUnhealthyError, match="no signed audit head"):
+        anchor_verified_head(ctx, provider)
+
+    assert provider.anchors == []
 
 
 def test_integrity_failure_blocks_publication() -> None:

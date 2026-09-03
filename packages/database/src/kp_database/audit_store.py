@@ -243,6 +243,20 @@ class AuditStore:
             signed_at=row["signed_at"],
         )
 
+    def is_chain_empty(self) -> bool:
+        """True when no audit event and no signed head exist yet.
+
+        This is the valid initial state before any evidence has been recorded;
+        callers use it to distinguish "nothing to anchor yet" from a corrupt
+        chain that is missing its head. Counts a granted column so a least-
+        privilege reader (the audit-anchor role) can run it.
+        """
+
+        with self._engine.connect() as conn:
+            events = conn.scalar(text("SELECT count(event_hash) FROM audit_events"))
+            heads = conn.scalar(text("SELECT count(event_hash) FROM audit_chain_head WHERE id = 1"))
+        return (events or 0) == 0 and (heads or 0) == 0
+
     def verify(self) -> list[str]:
         """Verify both chain generations and surface failed/stale intents."""
         problems: list[str] = []

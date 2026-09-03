@@ -384,26 +384,6 @@ def main() -> None:
                         text(f"GRANT EXECUTE ON FUNCTION kp_outbox_health(), kp_verify_audit_head() TO {role_name}")
                     )
 
-        # Diagnostic (read-only): confirm the audit-anchor worker's own role can
-        # read the audit chain, and whether a signed head exists to anchor.
-        try:
-            _q = (
-                "SELECT "
-                "has_column_privilege('kp_worker_audit_anchor',"
-                "'audit_chain_head','signed_at','SELECT') AS ach, "
-                "has_column_privilege('kp_worker_audit_anchor',"
-                "'audit_events','canonical_payload','SELECT') AS ae, "
-                "has_function_privilege('kp_worker_audit_anchor',"
-                "'public.kp_verify_audit_head()','EXECUTE') AS fn, "
-                "has_schema_privilege('kp_worker_audit_anchor','public','USAGE') AS usg, "
-                "(SELECT count(*) FROM public.audit_chain_head WHERE id=1) AS heads, "
-                "(SELECT count(*) FROM public.audit_events) AS events"
-            )
-            _adiag = connection.execute(text(_q)).mappings().one()
-            print(f"ANCHOR_DIAG {dict(_adiag)}", flush=True)
-        except Exception as _adx:  # pragma: no cover - diagnostic only
-            print(f"ANCHOR_DIAG error: {type(_adx).__name__}: {str(_adx)[:200]}", flush=True)
-
 
 if __name__ == "__main__":
     main()
