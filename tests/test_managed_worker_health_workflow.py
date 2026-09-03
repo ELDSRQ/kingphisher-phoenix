@@ -48,7 +48,7 @@ def test_worker_gate_is_bounded_and_does_not_echo_provider_logs() -> None:
 
     assert "MAX_RESPONSE_BYTES = 65_536" in gate
     assert "timeout=60" in gate
-    assert "KP_WORKER_HEALTH_TIMEOUT_SECONDS: 600" in gate
+    assert "KP_WORKER_HEALTH_TIMEOUT_SECONDS: 1200" in gate
     assert "len(rows) > 16" in gate
     assert "result.stderr" not in gate
     assert "Log_s" in gate

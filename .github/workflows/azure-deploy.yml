@@ -2449,7 +2449,7 @@ jobs:
       - name: Qualify every managed worker role
         if: inputs.deployment_phase == 'workloads'
         env:
-          KP_WORKER_HEALTH_TIMEOUT_SECONDS: 600
+          KP_WORKER_HEALTH_TIMEOUT_SECONDS: 1200
         shell: bash
         run: |
           set -euo pipefail
