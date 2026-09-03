@@ -5,8 +5,12 @@ worker). Nothing here edits or replaces the `.140` tooling; the two run in
 parallel until `.105` is fully qualified and cut over. See the full risk-ordered
 plan in `docs/migration/WSL2-105-MIGRATION-PLAN.md`.
 
-Host: `edierks@192.168.1.105` — Windows 11, WSL2 (Ubuntu), Docker Engine native
+Host: `erikd@192.168.1.105` — Windows 11, WSL2 (Ubuntu), Docker Engine native
 in WSL2, `x86_64`, 64 GB RAM / 2 TB disk.
+
+**Reviewed 2026-09-03 (read-only):** Ubuntu 24.04 WSL2, Docker 29.8 native linux/amd64 engine already running, ~48 GB to WSL2, 12 vCPU, ~952 GB free. Remaining gaps: `uv` and Python 3.13 (host has 3.12), repo not yet cloned.
+
+**Access:** `ssh erikd@192.168.1.105` lands in Windows cmd; the engine is in WSL2, reached via `wsl -e bash` (tooling wraps this automatically via `KP_WSL_LAUNCH`). `.105` is a **shared host**; all tooling is scoped to the `phishing-awareness-platform` compose project and never touches other workloads. **While another agent is moving containers onto `.105`, make no Docker/WSL changes and do not reboot it.**
 
 ## Files
 - `preflight-105.sh` — read-only controller-side qualification of `.105`.

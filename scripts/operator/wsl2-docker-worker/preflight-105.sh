@@ -8,10 +8,14 @@
 # never selects, changes, or stops any Docker resource.
 set -euo pipefail
 
-KP_WSL2_HOST="${KP_WSL2_HOST:-edierks@192.168.1.105}"
+KP_WSL2_HOST="${KP_WSL2_HOST:-erikd@192.168.1.105}"
 KP_MIN_FREE_GIB="${KP_MIN_FREE_GIB:-100}"
 KP_PROJECT_NAME=phishing-awareness-platform
 KP_MAC_ENGINE_NAME='colima-kingphisher'   # must NOT be the target
+# SSH to the Windows host lands in cmd.exe; the Docker engine lives inside WSL2.
+# Every remote command is therefore routed through `wsl -e bash`. Overridable in
+# case a direct-into-WSL2 sshd (e.g. on port 2222) is configured later.
+KP_WSL_LAUNCH="${KP_WSL_LAUNCH:-wsl -e bash -s}"
 
 case "$KP_MIN_FREE_GIB" in
   ''|*[!0-9]*|0) printf 'error: KP_MIN_FREE_GIB must be a positive whole number\n' >&2; exit 2 ;;
@@ -20,7 +24,7 @@ esac
 KP_SSH_OPTIONS=(
   -o BatchMode=yes
   -o ConnectTimeout=10
-  -o StrictHostKeyChecking=yes
+  -o StrictHostKeyChecking=accept-new
 )
 
 fail() { printf 'PREFLIGHT BLOCKED: %s\n' "$*" >&2; exit 1; }
@@ -30,29 +34,33 @@ pass() { printf 'pass\t%s\n' "$*"; }
 # remote engine facts we are about to read.
 [ -z "${DOCKER_HOST:-}" ] || fail "DOCKER_HOST must be unset on the controller for a clean read"
 
-# One remote read collects every fact; parsed locally so the target is touched
-# exactly once and only with read-only commands.
-KP_FACTS="$(ssh "${KP_SSH_OPTIONS[@]}" "$KP_WSL2_HOST" '
-  set -eu
-  printf "wsl_interop=%s\n" "${WSL_INTEROP:-}${WSL_DISTRO_NAME:-}"
-  printf "uname_s=%s\n" "$(uname -s)"
-  printf "uname_m=%s\n" "$(uname -m)"
-  if command -v docker >/dev/null 2>&1; then
-    printf "docker_cli=present\n"
-    printf "engine_name=%s\n"  "$(docker info --format "{{.Name}}" 2>/dev/null || echo UNREACHABLE)"
-    printf "engine_os=%s\n"    "$(docker info --format "{{.OSType}}" 2>/dev/null || echo unknown)"
-    printf "engine_arch=%s\n"  "$(docker info --format "{{.Architecture}}" 2>/dev/null || echo unknown)"
-    printf "engine_root=%s\n"  "$(docker info --format "{{.DockerRootDir}}" 2>/dev/null || echo unknown)"
-    printf "proj_containers=%s\n" "$(docker ps -aq --filter label=com.docker.compose.project='"$KP_PROJECT_NAME"' 2>/dev/null | wc -l | tr -d " ")"
-    printf "proj_volumes=%s\n"    "$(docker volume ls -q --filter label=com.docker.compose.project='"$KP_PROJECT_NAME"' 2>/dev/null | wc -l | tr -d " ")"
-    printf "proj_networks=%s\n"   "$(docker network ls -q --filter label=com.docker.compose.project='"$KP_PROJECT_NAME"' 2>/dev/null | wc -l | tr -d " ")"
-  else
-    printf "docker_cli=absent\n"
-  fi
-  printf "uv=%s\n" "$(command -v uv >/dev/null 2>&1 && echo present || echo absent)"
-  printf "py=%s\n" "$(python3 --version 2>/dev/null || echo absent)"
-  printf "free_kib=%s\n" "$(df -Pk "$HOME" | awk "NR==2 {print \$4}")"
-' 2>/dev/null)" || fail "cannot SSH to $KP_WSL2_HOST (enable OpenSSH into WSL2 and authorize the controller key)"
+# The read-only fact-gathering script, piped into `wsl -e bash -s` so it runs in
+# WSL2 rather than the Windows cmd shell SSH lands in. Read-only throughout.
+read -r -d '' KP_REMOTE_SCRIPT <<REMOTE || true
+set -u
+printf 'wsl_interop=%s\n' "\${WSL_INTEROP:-}\${WSL_DISTRO_NAME:-}"
+printf 'uname_s=%s\n' "\$(uname -s)"
+printf 'uname_m=%s\n' "\$(uname -m)"
+if command -v docker >/dev/null 2>&1; then
+  printf 'docker_cli=present\n'
+  printf 'engine_name=%s\n'  "\$(docker info --format '{{.Name}}' 2>/dev/null || echo UNREACHABLE)"
+  printf 'engine_os=%s\n'    "\$(docker info --format '{{.OSType}}' 2>/dev/null || echo unknown)"
+  printf 'engine_arch=%s\n'  "\$(docker info --format '{{.Architecture}}' 2>/dev/null || echo unknown)"
+  printf 'engine_root=%s\n'  "\$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo unknown)"
+  printf 'proj_containers=%s\n' "\$(docker ps -aq --filter label=com.docker.compose.project=$KP_PROJECT_NAME 2>/dev/null | wc -l | tr -d ' ')"
+  printf 'proj_volumes=%s\n'    "\$(docker volume ls -q --filter label=com.docker.compose.project=$KP_PROJECT_NAME 2>/dev/null | wc -l | tr -d ' ')"
+  printf 'proj_networks=%s\n'   "\$(docker network ls -q --filter label=com.docker.compose.project=$KP_PROJECT_NAME 2>/dev/null | wc -l | tr -d ' ')"
+else
+  printf 'docker_cli=absent\n'
+fi
+printf 'uv=%s\n' "\$(command -v uv >/dev/null 2>&1 && echo present || echo absent)"
+printf 'py=%s\n' "\$(python3 --version 2>/dev/null || echo absent)"
+printf 'free_kib=%s\n' "\$(df -Pk "\$HOME" | awk 'NR==2 {print \$4}')"
+REMOTE
+
+KP_FACTS="$(printf '%s\n' "$KP_REMOTE_SCRIPT" \
+  | ssh "${KP_SSH_OPTIONS[@]}" "$KP_WSL2_HOST" "$KP_WSL_LAUNCH" 2>/dev/null)" \
+  || fail "cannot SSH to $KP_WSL2_HOST (authorize the controller key; SSH lands in cmd and routes to '$KP_WSL_LAUNCH')"
 
 get() { printf '%s\n' "$KP_FACTS" | awk -F= -v k="$1" '$1==k {sub(/^[^=]*=/,""); print; exit}'; }
 

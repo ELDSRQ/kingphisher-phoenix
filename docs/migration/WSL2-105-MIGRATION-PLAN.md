@@ -1,163 +1,162 @@
-# Migrating the local Docker qualification worker: `.140` (macOS/ARM64/Colima) → `.105` (Windows 11 / WSL2 / AMD64)
+# Removing the `.140` dependency: relocating the local Docker qualification worker to `.105`
 
-**Status:** planning + additive tooling landed on branch `migrate/wsl2-105-docker-worker`.
-**Owner:** operator (`edierks`).
-**Scope:** the *local engineering & qualification* Docker worker only. This does
-**not** touch Azure staging (Container Apps / AMD64), `az acr build` (server-side),
-or the self-hosted CI runner (Azure VNet). Migrating this worker cannot break the
-live platform.
+**Goal (reframed):** eliminate every dependency the repo/tooling has on the
+`.140` macOS/Colima worker so `.140` can be freed. **Nothing in Azure moves** —
+Azure staging (Container Apps/AMD64), `az acr build` (server-side), and the
+self-hosted CI runner (Azure VNet) have no dependency on `.140` or `.105` and are
+out of scope.
 
----
+**Status:** `.105` reviewed and preflight-qualified (read-only). Additive tooling
+on branch `migrate/wsl2-105-docker-worker`. Existing `.140` tooling untouched.
 
-## 0. What is actually moving
-
-| | Source `.140` | Target `.105` |
-|---|---|---|
-| Host OS | macOS (Apple Silicon) | Windows 11 + WSL2 (Ubuntu) |
-| CPU arch | ARM64 (`aarch64`) | AMD64 (`x86_64`) |
-| Engine | Colima VM `kingphisher` on `/Volumes/DockerExternal` | Docker Engine native in WSL2 |
-| Reached by | SSH `edierks@192.168.1.140` + project-isolated socket | SSH into WSL2 (OpenSSH), default socket |
-| Role | hermetic tests, e2e, local image builds | same |
-| RAM / disk | — | 64 GB / 2 TB |
-
-**Why the arch change is low-risk:** Azure already runs this exact stack on AMD64;
-`docker-compose.yml` pins only multi-arch public images (postgres/redis/mailpit/otel)
-with **no `platform:` locks**; and the data path is **logical dumps**
-(`pg_restore` + Redis RDB→AOF), which are architecture-independent. `.36` was
-already the designated AMD64 lane in the handoff docs — `.105` realizes that plan
-on a better box.
-
-**Where the real work is:** the `scripts/operator/remote-docker-worker/` layer is
-macOS/Colima/Apple-Silicon-specific (`external-engine.sh` *hard-fails on x86*).
-We do **not** edit it. We add a parallel `scripts/operator/wsl2-docker-worker/`
-layer that reuses the portable checkpoint archives.
+**Concurrency constraint (current):** another agent is actively moving its own
+containers onto `.105`. **Do not reboot `.105`, and do not change its Docker
+engine / WSL config right now.** All work here is either on repo files (this Mac)
+or strictly read-only against `.105` until that agent is done and we coordinate
+Phase 1 host changes.
 
 ---
 
-## 1. Guiding safety invariants (never relaxed)
+## 1. Reviewed state of `.105` (read-only, 2026-09-03)
 
-1. **`.140` stays the untouched source of truth** through Phase 5. Every phase
-   before cutover is additive on `.105`; if it fails, discard `.105` and lose nothing.
-2. **No edits to the working `.140`/Colima scripts.** All new tooling is additive
-   (new directory), so the current qualification path is byte-for-byte unchanged.
-3. **A fresh, verified backup exists before any cutover** (Phase 0) and `.140`
-   remains recoverable (frozen, not decommissioned) through Phase 6.
-4. **Restore only ever targets a CLEAN engine.** The WSL2 restore refuses to run
-   if the target already holds project containers/volumes/networks, and refuses to
-   run against the `.140` Colima engine (guard by engine name).
-5. **Cutover is gated on `.105` passing the *identical* qualification gates** that
-   `.140` passes today — not a subset.
+| Property | Value |
+|---|---|
+| Reach | `ssh erikd@192.168.1.105` → **lands in Windows cmd**; Docker is in WSL2, reached via `wsl -e bash` |
+| OS | Ubuntu 24.04.4 LTS, WSL2 (kernel 6.18), distro `Ubuntu-24.04`, interop on |
+| Arch | **x86_64** (the AMD64 lane) |
+| RAM / CPU | ~48 GB to WSL2 / 12 vCPU |
+| Disk | **952 GB free** of ~1 TB on `$HOME` |
+| Docker | **29.8.0** client+server, native linux engine, `root=/var/lib/docker`, name `Docker` |
+| Current load | 0 `phishing-awareness-platform` containers/volumes (other agent's workload is separate) |
+| Toolchain gaps | **uv absent**, **python 3.12** (repo wants 3.13), repo not cloned |
+
+`preflight-105.sh` passes against the live host today. The clean-target check is
+scoped to the `phishing-awareness-platform` compose project, so **`.105` is a
+shared host** and our worker coexists with the other agent's containers without
+collision.
+
+### Access pattern (important)
+Windows OpenSSH drops into `cmd`, so tooling reaches the engine as
+`ssh erikd@192.168.1.105 "wsl -e bash -s" < script.sh`. Two cleaner options for
+later (both are Phase-1 host changes, deferred, need coordination):
+- **(recommended)** run an sshd **inside WSL2** on e.g. port 2222 → `ssh -p 2222`
+  lands directly in bash; set `KP_WSL_LAUNCH=` empty and target `:2222`.
+- set the Windows OpenSSH default shell to `wsl.exe`.
+
+Until then, all tooling uses the `wsl -e bash` hop (already wired via
+`KP_WSL_LAUNCH`).
 
 ---
 
-## 2. Risk-ordered phases (low risk first)
+## 2. The `.140` dependency inventory (what must be cut)
 
-### Phase 0 — Backup & baseline `.140` **(do first; non-destructive, on `.140`)**
-Lowest risk, highest value. Uses the **existing proven** checkpoint tooling.
+Enumerated from `grep` over `scripts/` + `.github/` (docs references are cosmetic).
 
-1. On the controller (this Mac), create a fresh encrypted checkpoint of `.140`:
-   ```
-   scripts/operator/remote-docker-worker/checkpoint-remote.sh            # dry-run first
-   scripts/operator/remote-docker-worker/checkpoint-remote.sh --apply    # logical DB snapshots + additive files only
-   ```
-   This performs **only** logical `postgres.dump` + `redis.rdb` snapshots and
-   additive file creation on `/Volumes/DockerExternal/.../migration-snapshots`.
-   It never stops/removes/recreates any container, volume, image, or unrelated
-   resource.
-2. Stage + validate the snapshot (decrypt-verify without mutating it):
-   ```
-   scripts/operator/remote-docker-worker/stage-remote.sh
-   ```
-3. Record the **rollback anchor** in `docs/migration/105-cutover-log.md`:
-   git HEAD, engine identity (`colima-kingphisher|aarch64|/var/lib/docker`),
-   snapshot archive name + SHA-256, and the date.
+**A. Runtime (breaks when `.140` is gone) — the real work:**
+1. `scripts/operator/dep010/start-console.sh` & `stop-console.sh` — hardcode
+   `edierks@192.168.1.140`, SSH-tunnel to it, run the disposable console DB on its
+   Colima socket. **Primary functional dependency** (used by e2e).
+2. `scripts/operator/e2e/run-e2e.sh` — drives start/stop-console → `.140`.
+3. `scripts/operator/deployment-preflight/build-ai-llama-image.sh` — builds the
+   llama.cpp AI-gateway image on `.140`.
 
-**Recovery guarantee after Phase 0:** the encrypted snapshot restores the DB/Redis
-state onto any clean engine, and `.140` itself is still fully live. Nothing here
-can degrade the current build.
+**B. Worker plumbing (macOS/Colima-specific; replace, don't port):**
+4. `scripts/operator/remote-docker-worker/*` — Colima engine, external volume,
+   checkpoint/restore, `bootstrap-macos.command`. Superseded by the additive
+   `scripts/operator/wsl2-docker-worker/` layer.
+5. `scripts/install.sh` — macOS/Colima install path; add a WSL2/Linux path.
 
-### Phase 1 — Stand up `.105` foundation **(low risk; additive, parallel to `.140`)**
-Operator runs the bring-up runbook: `scripts/operator/wsl2-docker-worker/README.md`.
-Installs WSL2 Ubuntu, Docker Engine in WSL2, `uv`+Python 3.13, OpenSSH server into
-WSL2, `.wslconfig` memory cap, repo cloned onto the **ext4** filesystem (never
-`/mnt/c`). `.140` is untouched; a failure here costs nothing.
+**C. Cosmetic:** `.140` mentions across `docs/*`, `README.md`, `RUNBOOK.md` —
+updated last, non-blocking.
 
-### Phase 2 — Qualify the `.105` host (read-only) **(low risk)**
-From the controller:
+Everything above is **local qualification/e2e tooling**. None of it touches Azure.
+
+---
+
+## 3. Risk-ordered phases (low risk first; never jeopardize the build)
+
+### Phase 0 — Back up `.140` **(do first; non-destructive; on `.140`, unchanged)**
+`.140` is untouched by this migration, so it remains the source of truth and the
+rollback target. Still, capture a fresh verified snapshot before any cutover using
+the **existing proven** tooling:
 ```
-KP_WSL2_HOST=edierks@192.168.1.105 scripts/operator/wsl2-docker-worker/preflight-105.sh
+scripts/operator/remote-docker-worker/checkpoint-remote.sh            # dry-run
+scripts/operator/remote-docker-worker/checkpoint-remote.sh --apply    # logical dumps + additive files only
+scripts/operator/remote-docker-worker/stage-remote.sh                 # decrypt-verify without mutating
 ```
-Confirms SSH reachability, a **linux/x86_64** Docker engine, ≥100 GiB free, and a
-**clean** target (no pre-existing project containers/volumes). Read-only: it
-creates and mutates nothing.
+Record git HEAD, `.140` engine identity, and the snapshot SHA-256 in
+`docs/migration/105-cutover-log.md`. Non-destructive; cannot degrade the build.
 
-### Phase 3 — Restore data onto `.105` **(medium risk; fully reversible)**
-Copy the Phase 0 encrypted checkpoint to `.105`, decrypt into `migration-checkpoint/`,
-then run the clean-engine restore inside WSL2:
-```
-scripts/operator/wsl2-docker-worker/restore-state-wsl2.sh          # preflight (clean-target + archive integrity)
-scripts/operator/wsl2-docker-worker/restore-state-wsl2.sh --apply  # create the two project volumes + verified restore
-```
-The restore mirrors the proven `.140` restore: disposable verify-DB `pg_restore`,
-public-table-count assertion, Redis RDB→AOF materialization with DB-0/DB-15
-key-count invariants, and AOF-durability check. **If anything fails it aborts
-without touching `.140`;** discard the `.105` engine and retry.
+### Phase 1 — Finish `.105` toolchain **(low risk; host change; COORDINATE — not now)**
+Blocked on the other agent finishing and on your go-ahead (no `.105` changes yet).
+Inside WSL2 on `.105` (see `scripts/operator/wsl2-docker-worker/README.md`):
+add `uv`, Python **3.13**, clone the repo on **ext4** (never `/mnt/c`), and
+(recommended) an sshd inside WSL2 on port 2222. Purely additive; does not touch
+the other agent's containers or `.140`.
 
-### Phase 4 — Qualify `.105` against the identical gates **(medium risk)**
-On `.105` (or driven over SSH), run the same gates `.140` passes:
+### Phase 2 — Host-parametrize the runtime `.140` scripts **(low risk; repo only; testable)**
+Make the dependency-A scripts host-agnostic instead of hardcoding `.140`:
+- Introduce a single host descriptor, e.g. `KP_DOCKER_WORKER` (default keeps
+  `.140` until cutover) + a launch shim (`ssh … wsl -e bash` for `.105`, direct
+  ssh for `.140`).
+- `start-console.sh`/`stop-console.sh`/`run-e2e.sh`/`build-ai-llama-image.sh` read
+  that descriptor. Add unit-level tests (mocked ssh) to the existing
+  `wsl2-docker-worker/test-tooling.sh` harness. No live host needed to land this.
+
+### Phase 3 — Restore + qualify on `.105` **(medium risk; reversible; `.105` only)**
+After Phase 1: copy the Phase 0 checkpoint to `.105`, decrypt into
+`migration-checkpoint/`, then inside WSL2:
 ```
-scripts/run-hermetic-tests.sh all          # macos_only tests auto-deselected on Linux
+scripts/operator/wsl2-docker-worker/restore-state-wsl2.sh           # clean-target preflight
+scripts/operator/wsl2-docker-worker/restore-state-wsl2.sh --apply   # verified restore
+```
+Then run the **identical** gates `.140` passes:
+```
+scripts/run-hermetic-tests.sh all                                   # macos_only auto-deselected on Linux
 scripts/operator/base-image-qualification/run.sh --timeout-seconds 300
-scripts/operator/e2e/run-e2e.sh            # pointed at .105 via KP_E2E_DOCKER_HOST (see runbook)
-# plus the five container image builds (az acr build is unaffected; local build parity check only)
+KP_DOCKER_WORKER=erikd@192.168.1.105 scripts/operator/e2e/run-e2e.sh
 ```
-Record results next to the `.140` baseline. **Gate:** `.105` must match `.140`'s
-pass set. Any divergence blocks cutover.
+Restore refuses a dirty target and refuses the `.140` engine; a failure discards
+`.105` state and leaves `.140` untouched.
 
-### Phase 5 — Cutover **(highest risk; gated + reversible)**
-Only after Phase 4 is green. Repoint the controller default host/engine profile to
-`.105` (config file, not code), update the runbooks. **Freeze `.140` (stop the
-project engine, do NOT delete)** so it is a hot rollback for the soak window.
-Rollback = flip the host profile back to `.140` and restart its engine.
+### Phase 4 — Cut the default over to `.105` **(higher risk; gated; reversible)**
+Only after Phase 3 matches `.140`'s pass set. Flip the `KP_DOCKER_WORKER` default
+to `.105`, update runbooks. Keep `.140` **frozen (not deleted)** as a hot rollback.
+Rollback = flip the default back.
 
-### Phase 6 — Decommission `.140` **(final; after a clean soak)**
-After an agreed soak (e.g. 2 weeks of green `.105` qualification), retire `.140`'s
-project engine. Keep the Phase 0 encrypted snapshot archived off-box. Reversible
-until this step.
+### Phase 5 — Confirm `.140` is dependency-free & retire **(final; after soak)**
+`grep` proves no runtime script targets `.140`; update cosmetic docs; retire the
+`remote-docker-worker/` layer (or leave it inert). Keep the Phase 0 snapshot
+archived. Reversible until decommission.
 
 ---
 
-## 3. Rollback matrix
+## 4. Rollback matrix
 
 | Failing phase | Blast radius | Rollback |
 |---|---|---|
 | 0 backup | none (read-only + additive) | re-run; `.140` unaffected |
-| 1 foundation | `.105` only | reinstall / discard WSL2 distro |
-| 2 preflight | none (read-only) | fix `.105`, re-run |
-| 3 restore | `.105` engine only | `docker compose down -v` on `.105`; re-copy snapshot; `.140` untouched |
-| 4 qualify | `.105` only | keep using `.140`; debug `.105` offline |
-| 5 cutover | controller default | flip host profile back to `.140`, restart its engine |
-| 6 decommission | `.140` retired | restore Phase 0 snapshot onto a fresh clean engine |
+| 1 toolchain | `.105` only | remove uv/repo; other agent + `.140` unaffected |
+| 2 parametrize | repo branch only | default still `.140`; revert commit |
+| 3 restore/qualify | `.105` project scope only | `docker compose -p … down -v` on `.105`; `.140` untouched |
+| 4 cutover | controller default | flip `KP_DOCKER_WORKER` back to `.140` |
+| 5 retire | `.140` freed | restore Phase 0 snapshot onto a clean engine |
 
-The build is only ever served by a **fully qualified** engine; `.140` is never
-removed before `.105` proves itself and a soak passes.
-
----
-
-## 4. Known WSL2 gotchas (addressed in the runbook)
-- Repo on WSL2 **ext4**, not `/mnt/c` (bind-mount perf).
-- `.wslconfig`: give Docker generous memory (host has 64 GB); enable **systemd**.
-- Reaching `.105` services **from the Mac** needs the Windows host IP + WSL2 port
-  proxy (or mirrored networking) — the WSL2 analogue of today's `.140` SSH tunnel.
-- The **llama.cpp AI-gateway** (Qwen2.5-7B-Q4_K_M, CPU inference) is the only
-  perf-sensitive image; 64 GB RAM is ample, but re-measure throughput on AMD64.
-- Dev volumes are reproducible; the **only** state that migrates is the Phase 0
-  logical dumps.
+Invariants: `.140` stays the untouched source of truth until Phase 4 and frozen
+through Phase 5; every new tool is scoped to the `phishing-awareness-platform`
+project so it can never disturb the other agent's containers on `.105`; no reboot
+or Docker/WSL change is made to `.105` while the other agent is active.
 
 ---
 
-## 5. Test status of the tooling in this branch
-See `docs/migration/105-cutover-log.md` for the live checklist. Static tests
-(`bash -n`, `shellcheck`, compose-YAML parse, mock-engine guard) run in
-`scripts/operator/wsl2-docker-worker/test-tooling.sh` and pass locally without a
-Docker daemon. Live verification of the restore + gates is Phase 3/4 on `.105`.
+## 5. Tooling status (branch `migrate/wsl2-105-docker-worker`)
+- `scripts/operator/wsl2-docker-worker/preflight-105.sh` — read-only host qualify;
+  **run live against `.105` and passed** (routes through `wsl -e bash`).
+- `restore-state-wsl2.sh` — clean-engine restore; guard unit-tested (accepts
+  wsl2 amd64; rejects `.140` Colima / arm64 / windows engines).
+- `test-tooling.sh` — daemon-free static tests, all passing.
+- README — operator runbook.
+
+Still to build (Phase 2): the `KP_DOCKER_WORKER` host descriptor + parametrized
+console/e2e/llama scripts with mocked-ssh tests. Live restore + gates are Phase 3
+on `.105` after the other agent finishes and Phase 1 lands.
