@@ -12,10 +12,6 @@ output "log_analytics_workspace_customer_id" {
   description = "Non-secret workspace identity used by the deployment workflow for bounded worker-readiness queries."
   value       = azurerm_log_analytics_workspace.main.workspace_id
 }
-output "log_analytics_workspace_resource_id" {
-  description = "ARM resource ID of the workspace, used to query readiness telemetry through management.azure.com (the ARM token the OIDC runner holds, not a data-plane token)."
-  value       = azurerm_log_analytics_workspace.main.id
-}
 output "managed_worker_health_targets" {
   description = "Exact Container App and role inventory that must report ready before a workload deployment is healthy."
   value = var.deploy_workloads ? {

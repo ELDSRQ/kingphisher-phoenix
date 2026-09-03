@@ -2503,16 +2503,20 @@ jobs:
               except (UnicodeDecodeError, ValueError):
                   return None
 
-          def query_readiness(resource_id, kql):
-              # Query Log Analytics through the ARM proxy (management.azure.com) so
-              # the OIDC runner's ARM token is used. `az monitor log-analytics query`
-              # needs a separate api.loganalytics.io data-plane token that the
-              # federated OIDC session cannot mint, so it fails on the self-hosted
-              # runner. Returns the same list-of-row-dicts shape, or None on failure.
-              url = "https://management.azure.com" + resource_id + "/api/query?api-version=2017-10-01"
+          def query_readiness(customer_id, kql):
+              # Query the Log Analytics data plane through `az rest` with an explicit
+              # --resource so the OIDC service principal mints an api.loganalytics.io
+              # token directly. `az monitor log-analytics query` fails to obtain that
+              # token under federated OIDC on the self-hosted runner. Returns the
+              # same list-of-row-dicts shape, or None on failure.
+              url = "https://api.loganalytics.io/v1/workspaces/" + customer_id + "/query"
               body = json.dumps({"query": kql, "timespan": "PT1H"})
               payload = run_json_optional(
-                  ["az", "rest", "--method", "post", "--url", url, "--body", body],
+                  [
+                      "az", "rest", "--method", "post",
+                      "--resource", "https://api.loganalytics.io",
+                      "--url", url, "--body", body,
+                  ],
                   "worker readiness telemetry",
               )
               if not isinstance(payload, dict):
@@ -2538,13 +2542,6 @@ jobs:
               ],
               "Log Analytics workspace output",
           ).strip()
-          workspace_resource_id = run(
-              [
-                  "terraform", "-chdir=infrastructure/terraform", "output", "-raw",
-                  "log_analytics_workspace_resource_id",
-              ],
-              "Log Analytics workspace resource id output",
-          ).strip()
           targets = run_json(
               [
                   "terraform", "-chdir=infrastructure/terraform", "output", "-json",
@@ -2554,12 +2551,6 @@ jobs:
           )
           if not re.fullmatch(r"[A-Za-z0-9._()-]{1,90}", resource_group) or UUID.fullmatch(workspace) is None:
               fail("managed worker health output identities were invalid")
-          if re.fullmatch(
-              r"/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[A-Za-z0-9._()-]{1,90}"
-              r"/providers/Microsoft\.OperationalInsights/workspaces/[A-Za-z0-9._-]{1,90}",
-              workspace_resource_id,
-          ) is None:
-              fail("Log Analytics workspace resource id was invalid")
           if not isinstance(targets, dict) or not targets or len(targets) > 2:
               fail("managed worker health target inventory was empty or invalid")
 
@@ -2632,7 +2623,7 @@ jobs:
           | extend role = tostring(payload.role), ready = tobool(payload.ready), reason = tostring(payload.reason)
           | summarize arg_max(TimeGenerated, ready, reason) by role
           | project role, ready, reason, observed_at=TimeGenerated'''
-                  rows = query_readiness(workspace_resource_id, query)
+                  rows = query_readiness(workspace, query)
                   if rows is None:
                       # A transient query failure is retried on the next pass
                       # rather than failing the gate on a single bad call.
