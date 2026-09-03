@@ -2605,8 +2605,10 @@ jobs:
                   if rows is None:
                       # A transient query failure is retried on the next pass
                       # rather than failing the gate on a single bad call.
+                      print(f"TELEMETRY_DIAG {app_name}: query returned no result", flush=True)
                       telemetry_available = False
                       break
+                  print(f"TELEMETRY_DIAG {app_name}: query returned {len(rows)} rows", flush=True)
                   if not isinstance(rows, list) or len(rows) > 16:
                       fail(f"worker readiness telemetry for {app_name} was malformed")
                   for row in rows:
