@@ -40,6 +40,7 @@ class _RoleState:
     integration_required: bool = True
     recovery_required: bool = True
     proven_live: bool = False
+    last_readiness_log: float = 0.0
 
 
 def _exception_code(exc: Exception) -> str:
@@ -90,13 +91,20 @@ class WorkerSupervisor:
     def readiness(self) -> dict[str, dict[str, str | bool]]:
         return {role: {"ready": state.ready, "reason": state.readiness_reason} for role, state in self._states.items()}
 
+    #: Re-emit a role's readiness at least this often even when unchanged, so the
+    #: health gate reads a fresh readiness signal per role rather than depending
+    #: on a single on-change event surviving Log Analytics ingestion latency.
+    _READINESS_HEARTBEAT_SECONDS = 30.0
+
     def _set_readiness(self, role: str, *, ready: bool, reason: str) -> None:
         state = self._states[role]
         changed = state.ready != ready or state.readiness_reason != reason
         state.ready = ready
         state.readiness_reason = reason
         metrics.set_gauge("kp_worker_role_ready", float(ready), role=metric_role(role))
-        if changed:
+        now = self._clock()
+        if changed or (now - state.last_readiness_log) >= self._READINESS_HEARTBEAT_SECONDS:
+            state.last_readiness_log = now
             self._logger.info("worker_role_readiness", role=role, ready=ready, reason=reason)
 
     def _recover(self, spec: RoleSpec) -> bool:
