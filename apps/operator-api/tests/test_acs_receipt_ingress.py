@@ -187,6 +187,21 @@ def test_subscription_validation_is_authenticated_and_never_queued(client: tuple
     assert queue.published == []
 
 
+def test_uppercased_subscription_name_header_is_accepted(client: tuple[TestClient, _Queue]) -> None:
+    """Azure Event Grid delivers ``aeg-subscription-name`` upper-cased."""
+    http, queue = client
+
+    response = http.post(
+        receipt_module.WEBHOOK_PATH,
+        headers=_headers(**{"aeg-subscription-name": SUBSCRIPTION.upper()}),
+        json=[_event()],
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"accepted": 1}
+    assert len(queue.published) == 1
+
+
 @pytest.mark.parametrize(
     ("headers", "status"),
     [

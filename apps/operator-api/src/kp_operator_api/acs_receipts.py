@@ -320,8 +320,11 @@ async def receive_acs_event_grid(request: Request) -> JSONResponse:
     except PermissionError:
         return JSONResponse(status_code=401, content={"detail": "invalid Event Grid authentication"})
 
+    # Event Grid delivers ``aeg-subscription-name`` upper-cased on every request,
+    # including the subscription-validation handshake, so fold case like the
+    # topic check below rather than demanding an exact byte match.
     subscription = request.headers.get("aeg-subscription-name", "")
-    if not secrets.compare_digest(subscription, settings.event_grid_subscription_name):
+    if not secrets.compare_digest(subscription.casefold(), settings.event_grid_subscription_name.casefold()):
         return JSONResponse(status_code=403, content={"detail": "unexpected Event Grid subscription"})
     content_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
     if content_type != "application/json":
