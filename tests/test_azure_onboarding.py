@@ -862,7 +862,7 @@ def test_workflow_activates_acs_receipts_only_after_migration_and_readiness() ->
     assert "enable_acs_event_subscription=true" in workflow
     assert "azurerm_eventgrid_system_topic_event_subscription.acs_delivery[0]" in workflow
     assert "receipt activation plan contains unrelated changes" in workflow
-    assert "receipt activation plan did not contain exactly the Event Grid subscription" in workflow
+    assert "receipt activation plan did not create the Event Grid subscription" in workflow
     assert "./scripts/azure_release.sh" in workflow[:activation_plan]
 
 

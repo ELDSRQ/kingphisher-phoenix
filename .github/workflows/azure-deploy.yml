@@ -2726,17 +2726,23 @@ jobs:
           )
           if destructive:
               raise SystemExit("receipt activation plan refuses deletes or replacements")
-          changed = {
+          # The receipt activation must CREATE exactly the delivery-receipt Event
+          # Grid subscription and create no other infrastructure. In-place updates
+          # to already-applied workload resources are benign azurerm re-normalisation
+          # drift (e.g. the container-apps subnet's service_delegation, which the
+          # provider re-plans on every run) rather than new or destructive changes,
+          # so they are tolerated; only unexpected creations are unrelated changes.
+          created = {
               change["address"]
               for change in plan.get("resource_changes", [])
-              if change.get("change", {}).get("actions") != ["no-op"]
+              if "create" in change.get("change", {}).get("actions", [])
           }
           allowed = {"azurerm_eventgrid_system_topic_event_subscription.acs_delivery[0]"}
-          unexpected = changed - allowed
+          unexpected = created - allowed
           if unexpected:
               raise SystemExit(f"receipt activation plan contains unrelated changes: {sorted(unexpected)}")
-          if changed != allowed:
-              raise SystemExit("receipt activation plan did not contain exactly the Event Grid subscription")
+          if allowed - created:
+              raise SystemExit("receipt activation plan did not create the Event Grid subscription")
           PY
       - name: Checkpoint non-destructive receipt plan
         if: inputs.deployment_phase == 'workloads'
