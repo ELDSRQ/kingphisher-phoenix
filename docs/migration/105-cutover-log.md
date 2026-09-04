@@ -45,3 +45,36 @@ Docker engine or the other agent's containers; installs are WSL2 host-side (root
   secrets + weights on `.105` — secret transfer is operator-gated; schedule
   separately.
 - Cutover (flip `KP_DOCKER_WORKER` default) only after e2e parity — plan Phase 4.
+### E2E gate on `.105` (self-contained, local profile) — ✅ 8 passed
+Driven with `KP_DOCKER_WORKER=local`. The stack runs entirely on `.105`: fresh
+`.env` via `bootstrap_env`, `docker compose up -d postgres redis mailpit
+otel-collector mock-graph mock-ai mock-idp`, then `scripts/operator/e2e/run-e2e.sh`.
+The local profile brought up the console (no tunnel), operator+tracking readyz
+200, all 8 workers registered, and `make test-e2e` = **8 passed**.
+
+**Three `.env` adjustments were needed on `.105` (reproducible) — the fresh
+`bootstrap_env` `.env` surfaced two latent `.env.example` issues:**
+1. `KP_WORKER_SMTP_STARTTLS=false` — `.env.example` ships it empty; pydantic
+   rejects `""` as a bool, crashing the ingestion worker.
+2. Remove empty `KP_WORKER_SMTP_USERNAME=`/`KP_WORKER_SMTP_PASSWORD=` — empty `""`
+   is `not None`, so smtp.py:213 attempts SMTP AUTH against mailpit (which
+   rejects it: `SMTPNotSupportedError`). They must be UNSET, not empty.
+3. DB DSNs → port **5434** (the local console Postgres). In the tunnel model the
+   app funnels through 5432→5434; in local mode there is no tunnel, so the e2e
+   suite's direct DB access must target the migrated console DB on 5434.
+
+**Recommended repo follow-up (not done here — needs config-test validation):**
+set `env_ignore_empty=True` on the worker settings (or drop the empty optional
+lines from `.env.example`) so a fresh bootstrap works unmodified. #1 and #2 are
+latent bugs independent of this migration.
+
+### `.105` qualification: COMPLETE
+- hermetic: 2711 passed ✅  · base-image: ✅  · e2e: 8 passed ✅
+- Full stack (console + operator + tracking + 8 workers) healthy in local mode.
+`.105` is a proven self-contained worker; the `.140` runtime dependency is
+removed (KP_DOCKER_WORKER selects the worker; `local` = self-contained `.105`).
+
+### Remaining
+- Phase 4 cutover: make `.105`/local the operator default + update docs (plan).
+- Phase 0 backup of `.140` remains available (it is untouched and is the rollback).
+
