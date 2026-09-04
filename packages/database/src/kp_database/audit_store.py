@@ -103,6 +103,19 @@ class AuditStore:
             self.dispatch_pending_audit()
             return self._record_for_outbox(outbox_id) or receipt
         except Exception as exc:
+            # TEMP DIAGNOSTIC (staging KP-008): the mapped 503 handler does not
+            # log the chained cause, so surface a bounded DB error string here to
+            # pin the audit-intent write failure. Remove after diagnosis.
+            try:
+                from kp_telemetry.logging import get_logger
+
+                get_logger("kp_database.audit").error(
+                    "audit_intent_write_failed_detail",
+                    error_type=type(exc).__name__[:64],
+                    error_detail=str(exc)[:400],
+                )
+            except Exception:  # noqa: S110 - diagnostic logging must never mask the real error
+                pass
             raise AuditFailureError("audit intent write failed") from exc
 
     def dispatch_pending_audit(self) -> int:
