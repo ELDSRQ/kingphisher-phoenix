@@ -3,11 +3,14 @@
 # digest-verified Qwen2.5-7B-Instruct-Q4_K_M GGUF), then print the exact
 # gh variable commands to enable the gateway in the workloads deploy.
 #
-# Run this on the .140 worker (it has Docker and the digest-pinned weights).
-# The CI release loop deliberately cannot build this image: the ~4.7 GB weights
-# are not in the repo and are never auto-downloaded.
+# Run this ON the docker worker itself (it has Docker and the digest-pinned
+# weights): the .140 macOS worker, or inside WSL2 on the .105 worker. The CI
+# release loop deliberately cannot build this image: the ~4.7 GB weights are not
+# in the repo and are never auto-downloaded.
 #
-# Inputs (env vars; defaults target the .140 layout):
+# Inputs (env vars; the MODEL_DIR default targets the .140 macOS layout — on the
+# .105 WSL2 worker set MODEL_DIR to the ext4 path holding the shards, e.g.
+# MODEL_DIR=$HOME/ai010-models/qwen2.5-7b-instruct):
 #   ACR        (required) deployment container registry name, e.g. acr-kp-staging-6117w
 #   MODEL_DIR  directory holding the two GGUF shards
 #              (default: /Volumes/DockerExternal/KingPhisher-Phoenix/ai010-models/qwen2.5-7b-instruct)

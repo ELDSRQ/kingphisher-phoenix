@@ -7,18 +7,23 @@
 # Stop it again with:
 #   ./scripts/operator/dep010/stop-console.sh
 #
-# DOCKER RUNS ONLY ON 192.168.1.140. Nothing is started on this Mac's Docker.
-# The database, redis, mailpit and the mock services all live on .140; this
-# script opens an SSH tunnel so the console can reach them over loopback, then
-# runs the operator API, tracking API and workers here as ordinary Python
-# processes. The .140 live `kingphisher` database is never touched: a separate
-# disposable container with its own volume is used instead.
+# DOCKER RUNS ON THE REMOTE WORKER, never on this Mac. The database, redis,
+# mailpit and the mock services all live on the worker (default .140 macOS/Colima;
+# set KP_DOCKER_WORKER=erikd@192.168.1.105 for the .105 WSL2 worker). This script
+# opens an SSH tunnel so the console can reach them over loopback, then runs the
+# operator API, tracking API and workers here as ordinary Python processes. The
+# worker's live `kingphisher` database is never touched: a separate disposable
+# container with its own volume is used instead.
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 RUN=.dep010-run; mkdir -p "$RUN"
 
-WORKER=edierks@192.168.1.140
-REMOTE_SOCK=unix:///Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock
+# Docker worker selection. Defaults to the .140 macOS/Colima host so existing
+# runs are unchanged; override with KP_DOCKER_WORKER=erikd@192.168.1.105 to use
+# the .105 WSL2 worker.
+# shellcheck source=scripts/operator/lib/docker-worker.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/docker-worker.sh"
+WORKER="$(kp_worker_target)"
 PG_IMAGE='postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777'
 PG_CONTAINER=kp-console-postgres
 PG_VOLUME=kp_console_postgres_data
@@ -37,20 +42,21 @@ for line in pathlib.Path(".env").read_text().splitlines():
 PY
 )"
 
-echo "== 1/6 starting the disposable console database on 192.168.1.140 =="
-ssh -o BatchMode=yes "$WORKER" \
-  "DOCKER_HOST=$REMOTE_SOCK docker inspect $PG_CONTAINER >/dev/null 2>&1 \
-   && DOCKER_HOST=$REMOTE_SOCK docker start $PG_CONTAINER >/dev/null \
-   || DOCKER_HOST=$REMOTE_SOCK docker run -d --name $PG_CONTAINER \
-        -e POSTGRES_USER=kingphisher \
-        -e POSTGRES_PASSWORD='$POSTGRES_PASSWORD' \
-        -e POSTGRES_DB=kingphisher \
-        -p 127.0.0.1:$PG_REMOTE_PORT:5432 \
-        -v $PG_VOLUME:/var/lib/postgresql/data \
-        --restart no $PG_IMAGE >/dev/null"
-echo "   container $PG_CONTAINER up on .140:$PG_REMOTE_PORT"
+echo "== 1/6 starting the disposable console database on $WORKER ($(kp_worker_profile)) =="
+kp_worker_run <<SCRIPT
+docker inspect $PG_CONTAINER >/dev/null 2>&1 \
+  && docker start $PG_CONTAINER >/dev/null \
+  || docker run -d --name $PG_CONTAINER \
+       -e POSTGRES_USER=kingphisher \
+       -e POSTGRES_PASSWORD='$POSTGRES_PASSWORD' \
+       -e POSTGRES_DB=kingphisher \
+       -p 127.0.0.1:$PG_REMOTE_PORT:5432 \
+       -v $PG_VOLUME:/var/lib/postgresql/data \
+       --restart no $PG_IMAGE >/dev/null
+SCRIPT
+echo "   container $PG_CONTAINER up on $WORKER:$PG_REMOTE_PORT"
 
-echo "== 2/6 opening the SSH tunnel to .140 (no local Docker) =="
+echo "== 2/6 opening the SSH tunnel to the worker (no local Docker) =="
 pkill -f "kp-dep010-tunnel" 2>/dev/null || true
 ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
   -o "SetEnv KPTUNNEL=kp-dep010-tunnel" \
@@ -67,7 +73,7 @@ for _ in $(seq 1 60); do
   nc -z 127.0.0.1 5432 >/dev/null 2>&1 && break
   sleep 1
 done
-nc -z 127.0.0.1 5432 >/dev/null 2>&1 || { echo "   ERROR: tunnel to .140 did not come up" >&2; exit 1; }
+nc -z 127.0.0.1 5432 >/dev/null 2>&1 || { echo "   ERROR: tunnel to the worker did not come up" >&2; exit 1; }
 echo "   tunnel up (5432 6379 1025 8025 8443 8181 8282)"
 
 PG="postgresql+psycopg://kingphisher:${POSTGRES_PASSWORD}@127.0.0.1:5432/kingphisher"
@@ -116,6 +122,6 @@ echo " URL      : http://127.0.0.1:8000/console/"
 echo " Username : admin"
 echo " Password : ${KP_CONSOLE_PASSWORD}"
 echo "==========================================="
-echo " Docker containers run on 192.168.1.140 only; none on this Mac."
+echo " Docker containers run on the worker ($WORKER) only; none on this Mac."
 echo " Log: $(pwd)/$RUN/console.log"
 echo " Stop with: ./scripts/operator/dep010/stop-console.sh"

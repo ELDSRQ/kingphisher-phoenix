@@ -94,14 +94,24 @@ add `uv`, Python **3.13**, clone the repo on **ext4** (never `/mnt/c`), and
 (recommended) an sshd inside WSL2 on port 2222. Purely additive; does not touch
 the other agent's containers or `.140`.
 
-### Phase 2 — Host-parametrize the runtime `.140` scripts **(low risk; repo only; testable)**
-Make the dependency-A scripts host-agnostic instead of hardcoding `.140`:
-- Introduce a single host descriptor, e.g. `KP_DOCKER_WORKER` (default keeps
-  `.140` until cutover) + a launch shim (`ssh … wsl -e bash` for `.105`, direct
-  ssh for `.140`).
-- `start-console.sh`/`stop-console.sh`/`run-e2e.sh`/`build-ai-llama-image.sh` read
-  that descriptor. Add unit-level tests (mocked ssh) to the existing
-  `wsl2-docker-worker/test-tooling.sh` harness. No live host needed to land this.
+### Phase 2 — Host-parametrize the runtime `.140` scripts **(DONE; repo only; tested)**
+Landed. The dependency-A scripts are now host-agnostic:
+- `scripts/operator/lib/docker-worker.sh` — a sourced abstraction. `KP_DOCKER_WORKER`
+  (default `edierks@192.168.1.140`) selects the worker; profile auto-detects
+  `mac140` (direct ssh + Colima socket) vs `wsl105` (`ssh … wsl -e bash -s` +
+  native socket). `kp_worker_run` pipes a script to the worker with the right
+  DOCKER_HOST; `kp_worker_target`/`kp_worker_profile` expose the selection.
+- `start-console.sh`, `stop-console.sh`, `run-e2e.sh` route through the library;
+  the only `.140`/Colima literals left in the repo's runtime path are the
+  library's documented default. `build-ai-llama-image.sh` (runs *on* the worker)
+  is doc-parametrized (`MODEL_DIR` override for the `.105` ext4 path).
+- Tests: `scripts/operator/lib/test-docker-worker.sh` (mocked ssh) asserts the
+  `.140` default still emits the Colima socket over `bash -s`, and `.105` uses
+  `wsl -e bash -s` with no DOCKER_HOST. All pass; shellcheck clean; default
+  resolves to `.140`/mac140 (behaviour preserved).
+
+Usage once `.105` is ready (Phase 3): prefix any of these with
+`KP_DOCKER_WORKER=erikd@192.168.1.105`.
 
 ### Phase 3 — Restore + qualify on `.105` **(medium risk; reversible; `.105` only)**
 After Phase 1: copy the Phase 0 checkpoint to `.105`, decrypt into

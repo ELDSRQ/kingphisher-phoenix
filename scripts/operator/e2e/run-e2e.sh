@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # Conduct the live end-to-end campaign-lifecycle gate in one command:
 # bring up the full local stack (operator API :8000, tracking API :8001, all
-# workers) against the .140 infra over an SSH tunnel, run the E2E suite with the
+# workers) against the worker infra over an SSH tunnel, run the E2E suite with the
 # right authorization env, then tear the stack down again.
 #
 #   ./scripts/operator/e2e/run-e2e.sh
+#   KP_DOCKER_WORKER=erikd@192.168.1.105 ./scripts/operator/e2e/run-e2e.sh
 #
-# DOCKER RUNS ONLY ON 192.168.1.140. This reuses start-console.sh, which starts
-# a disposable console database on .140 and tunnels redis/mailpit/mock services;
-# nothing runs on this Mac's Docker. The live .140 `kingphisher` database is
-# never touched.
+# DOCKER RUNS ON THE REMOTE WORKER, never on this Mac. This reuses
+# start-console.sh, which starts a disposable console database on the worker
+# (default .140 macOS/Colima; KP_DOCKER_WORKER selects .105 WSL2) and tunnels
+# redis/mailpit/mock services; nothing runs on this Mac's Docker. The worker's
+# live `kingphisher` database is never touched.
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+
+# shellcheck source=scripts/operator/lib/docker-worker.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/docker-worker.sh"
+echo "== E2E docker worker: $(kp_worker_target) ($(kp_worker_profile)) =="
 
 START=scripts/operator/dep010/start-console.sh
 STOP=scripts/operator/dep010/stop-console.sh
