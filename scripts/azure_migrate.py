@@ -354,20 +354,30 @@ def main() -> None:
             # managed deployment must retain ledger authority only on the
             # dedicated retention login after its privilege reset.
             connection.execute(text("REVOKE ALL ON TABLE awareness_ledger_entries FROM worker"))
-        connection.execute(
-            text(
-                "REVOKE ALL PRIVILEGES ON TABLE audit_events, audit_chain_head, "
-                "audit_integrity_secret, transactional_outbox FROM audit_writer"
+        # audit_events, audit_chain_head, audit_integrity_secret,
+        # transactional_outbox and the audit/outbox functions are owned by
+        # audit_owner. Under Azure Database for PostgreSQL the migration
+        # principal is not a superuser, and a GRANT/REVOKE it issues on another
+        # role's objects does not take effect, so these privileges must be
+        # (re)issued AS the owning role. Do so explicitly.
+        connection.execute(text("SET ROLE audit_owner"))
+        try:
+            connection.execute(
+                text(
+                    "REVOKE ALL PRIVILEGES ON TABLE audit_events, audit_chain_head, "
+                    "audit_integrity_secret, transactional_outbox FROM audit_writer"
+                )
             )
-        )
-        connection.execute(text("GRANT SELECT ON TABLE audit_events, audit_chain_head TO audit_writer"))
-        connection.execute(
-            text(
-                "GRANT EXECUTE ON FUNCTION kp_dispatch_audit_outbox(uuid), kp_dispatch_pending_audit(integer), "
-                "kp_claim_queue_outbox(integer), kp_complete_outbox(uuid), kp_fail_outbox(uuid,text), "
-                "kp_outbox_health(), kp_verify_audit_head() TO audit_writer"
+            connection.execute(text("GRANT SELECT ON TABLE audit_events, audit_chain_head TO audit_writer"))
+            connection.execute(
+                text(
+                    "GRANT EXECUTE ON FUNCTION kp_dispatch_audit_outbox(uuid), kp_dispatch_pending_audit(integer), "
+                    "kp_claim_queue_outbox(integer), kp_complete_outbox(uuid), kp_fail_outbox(uuid,text), "
+                    "kp_outbox_health(), kp_verify_audit_head() TO audit_writer"
+                )
             )
-        )
+        finally:
+            connection.execute(text("RESET ROLE"))
         connection.execute(text("REVOKE CREATE ON SCHEMA public FROM audit_writer"))
         connection.execute(text("GRANT USAGE ON SCHEMA public TO audit_writer"))
         for workload, role_name in RUNTIME_ROLES.items():
@@ -376,17 +386,25 @@ def main() -> None:
                 _grant_workload(connection, workload, role_name)
                 # Workloads may create intent but cannot select another
                 # workload's bearer payload or alter dispatch/evidence state.
-                if workload != "audit-anchor":
-                    connection.execute(
-                        text(
-                            f"GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
-                            f"ON TABLE transactional_outbox TO {role_name}"
+                # transactional_outbox and these functions are owned by
+                # audit_owner, so grant AS the owner (see note above).
+                connection.execute(text("SET ROLE audit_owner"))
+                try:
+                    if workload != "audit-anchor":
+                        connection.execute(
+                            text(
+                                f"GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
+                                f"ON TABLE transactional_outbox TO {role_name}"
+                            )
                         )
-                    )
-                else:
-                    connection.execute(
-                        text(f"GRANT EXECUTE ON FUNCTION kp_outbox_health(), kp_verify_audit_head() TO {role_name}")
-                    )
+                    else:
+                        connection.execute(
+                            text(
+                                f"GRANT EXECUTE ON FUNCTION kp_outbox_health(), kp_verify_audit_head() TO {role_name}"
+                            )
+                        )
+                finally:
+                    connection.execute(text("RESET ROLE"))
 
 
 if __name__ == "__main__":
