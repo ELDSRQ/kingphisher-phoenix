@@ -23,6 +23,7 @@ export KP_SSH_ARGS="$KP_TMP/args" KP_SSH_STDIN="$KP_TMP/stdin"
 run_case() { # $1 KP_DOCKER_WORKER (empty = default)
   (
     PATH="$KP_TMP:$PATH"
+    export KP_DOCKER_WORKER_AUTODETECT=0
     if [ -n "$1" ]; then export KP_DOCKER_WORKER="$1"; fi
     unset KP_DOCKER_WORKER_PROFILE KP_WORKER_LAUNCH KP_WORKER_DOCKER_HOST 2>/dev/null || true
     # shellcheck disable=SC1090
@@ -42,7 +43,8 @@ assert_absent() { # label file needle
 
 printf '== profile resolution ==\n'
 # shellcheck disable=SC1090
-prof() { ( if [ -n "$1" ]; then export KP_DOCKER_WORKER="$1"; fi; unset KP_DOCKER_WORKER_PROFILE; . "$KP_LIB"; kp_worker_profile ); }
+# Autodetect off so explicit/default resolution is deterministic on any test host.
+prof() { ( export KP_DOCKER_WORKER_AUTODETECT=0; if [ -n "$1" ]; then export KP_DOCKER_WORKER="$1"; fi; unset KP_DOCKER_WORKER_PROFILE; . "$KP_LIB"; kp_worker_profile ); }
 [ "$(prof '')" = mac140 ]                        && ok "default -> mac140"        || bad "default -> mac140 (got $(prof ''))"
 [ "$(prof edierks@192.168.1.140)" = mac140 ]     && ok ".140 -> mac140"           || bad ".140 -> mac140"
 [ "$(prof erikd@192.168.1.105)" = wsl105 ]       && ok ".105 -> wsl105"           || bad ".105 -> wsl105"
@@ -81,6 +83,32 @@ LOCAL_OUT="$(
 )"
 printf '%s' "$LOCAL_OUT" | grep -qx LOCALOK && ok "local run executes locally" || bad "local run executes locally (got: $LOCAL_OUT)"
 [ ! -f "$KP_SSH_ARGS" ] && ok "local run did not invoke ssh" || bad "local run invoked ssh"
+
+printf '\n== autodetection (KP_DOCKER_WORKER unset) ==\n'
+# Isolated PATH with a mock docker whose `info` we control.
+detect_profile() { # $1 = ok|down
+  local d; d="$(mktemp -d)"
+  if [ "$1" = ok ]; then
+    printf '#!/usr/bin/env bash\n[ "$1" = info ] && exit 0\nexit 0\n' > "$d/docker"
+  else
+    printf '#!/usr/bin/env bash\n[ "$1" = info ] && exit 1\nexit 0\n' > "$d/docker"
+  fi
+  chmod +x "$d/docker"
+  (
+    PATH="$d:$KP_TMP:$PATH"
+    unset KP_DOCKER_WORKER KP_DOCKER_WORKER_PROFILE 2>/dev/null || true
+    export KP_DOCKER_WORKER_AUTODETECT=1
+    # shellcheck disable=SC1090
+    . "$KP_LIB"
+    kp_worker_profile
+  )
+  rm -rf "$d"
+}
+[ "$(detect_profile ok)" = local ]    && ok "daemon reachable -> local"   || bad "daemon reachable -> local (got $(detect_profile ok))"
+[ "$(detect_profile down)" = mac140 ] && ok "daemon unreachable -> mac140" || bad "daemon unreachable -> mac140 (got $(detect_profile down))"
+# autodetect disabled -> always the remote worker
+AD_OFF="$( ( unset KP_DOCKER_WORKER KP_DOCKER_WORKER_PROFILE; export KP_DOCKER_WORKER_AUTODETECT=0; . "$KP_LIB"; kp_worker_profile ) )"
+[ "$AD_OFF" = mac140 ] && ok "autodetect off -> mac140" || bad "autodetect off -> mac140 (got $AD_OFF)"
 
 printf '\n== summary ==\n'
 if [ "$KP_FAILURES" -eq 0 ]; then printf 'ALL DOCKER-WORKER TESTS PASSED\n'; exit 0

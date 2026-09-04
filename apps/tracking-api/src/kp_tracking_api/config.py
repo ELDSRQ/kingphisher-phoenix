@@ -42,6 +42,9 @@ class TrackingApiSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TRACKING_API_",
         env_file=local_dotenv_file(),
+        # Empty env/.env values ("") are treated as unset so optional fields use
+        # their defaults; a fresh .env from .env.example must work unmodified.
+        env_ignore_empty=True,
         extra="ignore",
         populate_by_name=True,
         hide_input_in_errors=True,

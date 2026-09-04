@@ -14,7 +14,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class GatewaySettings(BaseSettings):
     """Environment-driven settings for the AI gateway."""
 
-    model_config = SettingsConfigDict(env_prefix="KP_AI_GATEWAY_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="KP_AI_GATEWAY_", extra="ignore", env_ignore_empty=True)
 
     #: OpenAI-compatible base URL of the pinned llama.cpp server, e.g.
     #: http://127.0.0.1:18081/v1. Never a public secretless promise: the gateway

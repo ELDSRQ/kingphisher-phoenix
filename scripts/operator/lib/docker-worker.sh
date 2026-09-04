@@ -17,11 +17,31 @@
 #   wsl105  - Windows/WSL2:  ssh lands in cmd, so route through `wsl -e bash` and
 #             use WSL2's native default socket.
 
-KP_DOCKER_WORKER="${KP_DOCKER_WORKER:-edierks@192.168.1.140}"
+# Worker selection. Left at "auto" it autodetects: if a local Docker daemon
+# answers, run self-contained (local); otherwise fall back to the remote worker
+# below. Set KP_DOCKER_WORKER to an explicit target to override, or
+# KP_DOCKER_WORKER_AUTODETECT=0 to skip detection and always use the remote worker.
+KP_DEFAULT_REMOTE_WORKER="${KP_DEFAULT_REMOTE_WORKER:-edierks@192.168.1.140}"
+KP_DOCKER_WORKER="${KP_DOCKER_WORKER:-auto}"
 KP_DOCKER_WORKER_PROFILE="${KP_DOCKER_WORKER_PROFILE:-auto}"
 KP_COLIMA_SOCK='unix:///Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock'
 
+# True when a local Docker daemon is reachable (so the worker can be this host).
+kp_worker_local_docker_available() {
+  [ "${KP_DOCKER_WORKER_AUTODETECT:-1}" = 1 ] || return 1
+  command -v docker >/dev/null 2>&1 || return 1
+  docker info >/dev/null 2>&1
+}
+
 kp_worker_resolve() {
+  # Resolve "auto" once: local when a Docker daemon is here, else the remote worker.
+  if [ "${KP_DOCKER_WORKER:-auto}" = auto ]; then
+    if kp_worker_local_docker_available; then
+      KP_DOCKER_WORKER=local
+    else
+      KP_DOCKER_WORKER="$KP_DEFAULT_REMOTE_WORKER"
+    fi
+  fi
   case "$KP_DOCKER_WORKER_PROFILE" in
     mac140|wsl105|local) : ;;
     auto)

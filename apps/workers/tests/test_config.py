@@ -684,3 +684,52 @@ def test_worker_ciphertext_prior_key_parser_redacts_malformed_key_material() -> 
     assert "private/key.pem" not in rendered
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
+
+
+def test_empty_smtp_env_values_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fresh .env from .env.example ships empty optional SMTP values. With
+    env_ignore_empty an empty string must be treated as unset, so an empty
+    SMTP_STARTTLS does not fail bool parsing and an empty SMTP_USERNAME does not
+    turn into "" (which would trigger SMTP AUTH). Regression for the .105 bootstrap.
+    """
+    monkeypatch.setenv("KP_WORKER_SMTP_STARTTLS", "")
+    monkeypatch.setenv("KP_WORKER_SMTP_USERNAME", "")
+    monkeypatch.setenv("KP_WORKER_SMTP_PASSWORD", "")
+    settings = WorkerSettings(
+        worker_name="delivery",
+        runtime_mode="development",
+        email_provider="smtp",
+        smtp_address="127.0.0.1:1025",
+        smtp_sender="awareness@example.com",
+        smtp_ssl=False,
+        sending_domains="example.com",
+        allowed_recipient_domains="example.com",
+        tracking_base_url="http://127.0.0.1:8001",
+        training_base_url="http://127.0.0.1:8001/v1/training/awareness",
+        training_token_hmac_key="",
+    )
+    assert settings.smtp_starttls is None
+    assert settings.smtp_username is None
+    assert settings.smtp_password is None
+
+
+def test_non_empty_smtp_env_values_still_parse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """env_ignore_empty must not swallow real values: a set SMTP_STARTTLS parses."""
+    monkeypatch.setenv("KP_WORKER_SMTP_STARTTLS", "true")
+    monkeypatch.setenv("KP_WORKER_SMTP_USERNAME", "postbox")
+    monkeypatch.setenv("KP_WORKER_SMTP_PASSWORD", "secret")
+    settings = WorkerSettings(
+        worker_name="delivery",
+        runtime_mode="development",
+        email_provider="smtp",
+        smtp_address="127.0.0.1:1025",
+        smtp_sender="awareness@example.com",
+        smtp_ssl=False,
+        sending_domains="example.com",
+        allowed_recipient_domains="example.com",
+        tracking_base_url="http://127.0.0.1:8001",
+        training_base_url="http://127.0.0.1:8001/v1/training/awareness",
+        training_token_hmac_key="",
+    )
+    assert settings.smtp_starttls is True
+    assert settings.smtp_username == "postbox"

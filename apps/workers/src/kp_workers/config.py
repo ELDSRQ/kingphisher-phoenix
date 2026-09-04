@@ -156,6 +156,11 @@ class WorkerSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="KP_WORKER_",
         env_file=local_dotenv_file(),
+        # Treat an empty env/.env value ("") as unset so optional fields fall back
+        # to their None/computed defaults instead of failing validation (e.g. an
+        # empty SMTP_STARTTLS parsing as a bool, or an empty SMTP_USERNAME
+        # triggering SMTP AUTH). A fresh .env from .env.example must work as-is.
+        env_ignore_empty=True,
         extra="ignore",
         populate_by_name=True,
         hide_input_in_errors=True,
