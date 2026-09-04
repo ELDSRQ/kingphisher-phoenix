@@ -78,3 +78,24 @@ removed (KP_DOCKER_WORKER selects the worker; `local` = self-contained `.105`).
 - Phase 4 cutover: make `.105`/local the operator default + update docs (plan).
 - Phase 0 backup of `.140` remains available (it is untouched and is the rollback).
 
+
+
+## 2026-09-03 — REMEDIATED + LANDED (main e1bbf18)
+- **env_ignore_empty=True** added to worker/operator/tracking/ai-gateway settings
+  → empty `.env` values are treated as unset. Fixes the two latent bugs; a fresh
+  `bootstrap_env` `.env` now works unmodified. Regression tests added.
+- **Autodetection**: with `KP_DOCKER_WORKER` unset the docker-worker lib runs
+  `local` when a Docker daemon is reachable, else the remote worker (default
+  `.140`). `KP_DOCKER_WORKER_AUTODETECT=0` forces remote. Library tests cover it.
+- **Local-mode DB on 5432**: the disposable console DB publishes on 5432 in local
+  mode (no tunnel, no compose postgres), so a fresh `.env` needs no port edit.
+- **Fresh-bootstrap proof on `.105`**: deleted `.env`, re-ran `bootstrap_env`
+  (empty SMTP values), brought up the stack without postgres, ran `run-e2e.sh`
+  with `KP_DOCKER_WORKER` UNSET → `E2E docker worker: local (local)` →
+  **8 passed, EXIT=0**. No manual `.env` edits.
+
+### Cutover complete
+On `.105` the operator runs the console/e2e with no env at all (autodetect →
+local, self-contained). The Mac controller still autodetects to `.140` (no local
+daemon) until `.140` is retired. The `.140` runtime dependency is removed; `.140`
+stays untouched as the rollback (plan Phase 0/5).
