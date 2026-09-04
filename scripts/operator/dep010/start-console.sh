@@ -29,6 +29,11 @@ PG_CONTAINER=kp-console-postgres
 PG_VOLUME=kp_console_postgres_data
 PG_REMOTE_PORT=5434
 
+# When Docker is on THIS host (local profile), the console connects straight to
+# the published container port; no SSH tunnel and no 5432<-5434 remap. Otherwise
+# the tunnel maps local 5432 to the worker's 5434.
+if kp_worker_is_local; then KP_LOCAL=1; APP_PG_PORT=$PG_REMOTE_PORT; else KP_LOCAL=0; APP_PG_PORT=5432; fi
+
 # Load .env as inert data (it holds quoted, space-bearing values).
 eval "$(python3 - <<'PY'
 import pathlib, shlex
@@ -56,28 +61,39 @@ docker inspect $PG_CONTAINER >/dev/null 2>&1 \
 SCRIPT
 echo "   container $PG_CONTAINER up on $WORKER:$PG_REMOTE_PORT"
 
-echo "== 2/6 opening the SSH tunnel to the worker (no local Docker) =="
-pkill -f "kp-dep010-tunnel" 2>/dev/null || true
-ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-  -o "SetEnv KPTUNNEL=kp-dep010-tunnel" \
-  -L "127.0.0.1:5432:127.0.0.1:$PG_REMOTE_PORT" \
-  -L 127.0.0.1:6379:127.0.0.1:6379 \
-  -L 127.0.0.1:1025:127.0.0.1:1025 \
-  -L 127.0.0.1:8025:127.0.0.1:8025 \
-  -L 127.0.0.1:8443:127.0.0.1:8443 \
-  -L 127.0.0.1:8181:127.0.0.1:8181 \
-  -L 127.0.0.1:8282:127.0.0.1:8282 \
-  "$WORKER" > "$RUN/tunnel.log" 2>&1 &
-echo $! > "$RUN/tunnel.pid"
-for _ in $(seq 1 60); do
-  nc -z 127.0.0.1 5432 >/dev/null 2>&1 && break
-  sleep 1
-done
-nc -z 127.0.0.1 5432 >/dev/null 2>&1 || { echo "   ERROR: tunnel to the worker did not come up" >&2; exit 1; }
-echo "   tunnel up (5432 6379 1025 8025 8443 8181 8282)"
+if [ "$KP_LOCAL" = 1 ]; then
+  echo "== 2/6 local worker: no tunnel; using localhost services directly =="
+  for _ in $(seq 1 60); do
+    nc -z 127.0.0.1 "$APP_PG_PORT" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  nc -z 127.0.0.1 "$APP_PG_PORT" >/dev/null 2>&1 \
+    || { echo "   ERROR: console database on 127.0.0.1:$APP_PG_PORT is not reachable" >&2; exit 1; }
+  echo "   console db reachable on 127.0.0.1:$APP_PG_PORT (redis/mailpit/mocks expected on their localhost ports)"
+else
+  echo "== 2/6 opening the SSH tunnel to the worker (no local Docker) =="
+  pkill -f "kp-dep010-tunnel" 2>/dev/null || true
+  ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+    -o "SetEnv KPTUNNEL=kp-dep010-tunnel" \
+    -L "127.0.0.1:5432:127.0.0.1:$PG_REMOTE_PORT" \
+    -L 127.0.0.1:6379:127.0.0.1:6379 \
+    -L 127.0.0.1:1025:127.0.0.1:1025 \
+    -L 127.0.0.1:8025:127.0.0.1:8025 \
+    -L 127.0.0.1:8443:127.0.0.1:8443 \
+    -L 127.0.0.1:8181:127.0.0.1:8181 \
+    -L 127.0.0.1:8282:127.0.0.1:8282 \
+    "$WORKER" > "$RUN/tunnel.log" 2>&1 &
+  echo $! > "$RUN/tunnel.pid"
+  for _ in $(seq 1 60); do
+    nc -z 127.0.0.1 5432 >/dev/null 2>&1 && break
+    sleep 1
+  done
+  nc -z 127.0.0.1 5432 >/dev/null 2>&1 || { echo "   ERROR: tunnel to the worker did not come up" >&2; exit 1; }
+  echo "   tunnel up (5432 6379 1025 8025 8443 8181 8282)"
+fi
 
-PG="postgresql+psycopg://kingphisher:${POSTGRES_PASSWORD}@127.0.0.1:5432/kingphisher"
-AU="postgresql+psycopg://audit_writer:${AUDIT_WRITER_PASSWORD}@127.0.0.1:5432/kingphisher"
+PG="postgresql+psycopg://kingphisher:${POSTGRES_PASSWORD}@127.0.0.1:${APP_PG_PORT}/kingphisher"
+AU="postgresql+psycopg://audit_writer:${AUDIT_WRITER_PASSWORD}@127.0.0.1:${APP_PG_PORT}/kingphisher"
 export DATABASE_URL="$PG" OPERATOR_API_DATABASE_URL="$PG" TRACKING_API_DATABASE_URL="$PG" KP_WORKER_DATABASE_URL="$PG"
 export AUDIT_DATABASE_URL="$AU" OPERATOR_API_AUDIT_DATABASE_URL="$AU" KP_WORKER_AUDIT_DATABASE_URL="$AU"
 export REDIS_URL="redis://:${REDIS_PASSWORD}@127.0.0.1:6379/0"
@@ -87,13 +103,13 @@ echo "== 3/6 ensuring the audit role exists =="
 for _ in $(seq 1 60); do
   .venv/bin/python - <<PY >/dev/null 2>&1 && break
 import psycopg
-psycopg.connect("host=127.0.0.1 port=5432 user=kingphisher password=${POSTGRES_PASSWORD} dbname=kingphisher", connect_timeout=3).close()
+psycopg.connect("host=127.0.0.1 port=${APP_PG_PORT} user=kingphisher password=${POSTGRES_PASSWORD} dbname=kingphisher", connect_timeout=3).close()
 PY
   sleep 1
 done
 .venv/bin/python - <<PY
 import psycopg
-c = psycopg.connect("host=127.0.0.1 port=5432 user=kingphisher password=${POSTGRES_PASSWORD} dbname=kingphisher", connect_timeout=10)
+c = psycopg.connect("host=127.0.0.1 port=${APP_PG_PORT} user=kingphisher password=${POSTGRES_PASSWORD} dbname=kingphisher", connect_timeout=10)
 c.autocommit = True
 c.execute("DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='audit_writer') "
           "THEN CREATE ROLE audit_writer LOGIN PASSWORD '${AUDIT_WRITER_PASSWORD}'; END IF; END \$\$;")

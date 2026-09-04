@@ -23,9 +23,10 @@ KP_COLIMA_SOCK='unix:///Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingph
 
 kp_worker_resolve() {
   case "$KP_DOCKER_WORKER_PROFILE" in
-    mac140|wsl105) : ;;
+    mac140|wsl105|local) : ;;
     auto)
       case "$KP_DOCKER_WORKER" in
+        local|localhost)        KP_DOCKER_WORKER_PROFILE=local ;;
         *192.168.1.105*|*@*105) KP_DOCKER_WORKER_PROFILE=wsl105 ;;
         *)                      KP_DOCKER_WORKER_PROFILE=mac140 ;;  # safe default = current behavior
       esac ;;
@@ -40,7 +41,18 @@ kp_worker_resolve() {
       KP_WORKER_LAUNCH="${KP_WORKER_LAUNCH:-wsl -e bash -s}"
       KP_WORKER_DOCKER_HOST="${KP_WORKER_DOCKER_HOST-}"   # native default socket in WSL2
       ;;
+    local)
+      # Docker is on THIS host: run scripts directly, no ssh, native socket.
+      KP_WORKER_LAUNCH="${KP_WORKER_LAUNCH:-bash -s}"
+      KP_WORKER_DOCKER_HOST="${KP_WORKER_DOCKER_HOST-}"
+      ;;
   esac
+}
+
+# True when the worker is this host (no ssh, services reachable on localhost).
+kp_worker_is_local() {
+  kp_worker_resolve || return
+  [ "$KP_DOCKER_WORKER_PROFILE" = local ]
 }
 
 # Echo the ssh target (for tunnels / plain ssh). Resolves first so a bad profile
@@ -63,10 +75,20 @@ kp_worker_run() {
   kp_worker_resolve || return
   # KP_WORKER_LAUNCH is intentionally word-split into remote-command args.
   # shellcheck disable=SC2086
-  {
-    if [ -n "${KP_WORKER_DOCKER_HOST:-}" ]; then
-      printf 'export DOCKER_HOST=%s\n' "$KP_WORKER_DOCKER_HOST"
-    fi
-    cat
-  } | ssh -o BatchMode=yes "$KP_DOCKER_WORKER" $KP_WORKER_LAUNCH
+  if [ "$KP_DOCKER_WORKER_PROFILE" = local ]; then
+    # Run the script on THIS host; no ssh, native docker socket.
+    {
+      if [ -n "${KP_WORKER_DOCKER_HOST:-}" ]; then
+        printf 'export DOCKER_HOST=%s\n' "$KP_WORKER_DOCKER_HOST"
+      fi
+      cat
+    } | $KP_WORKER_LAUNCH
+  else
+    {
+      if [ -n "${KP_WORKER_DOCKER_HOST:-}" ]; then
+        printf 'export DOCKER_HOST=%s\n' "$KP_WORKER_DOCKER_HOST"
+      fi
+      cat
+    } | ssh -o BatchMode=yes "$KP_DOCKER_WORKER" $KP_WORKER_LAUNCH
+  fi
 }

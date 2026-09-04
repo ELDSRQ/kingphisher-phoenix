@@ -63,6 +63,25 @@ assert_contains "wsl105 launcher"     "$KP_SSH_ARGS"  "wsl -e bash -s"
 assert_absent   "wsl105 no DOCKER_HOST" "$KP_SSH_STDIN" "DOCKER_HOST"
 assert_contains "wsl105 script body"  "$KP_SSH_STDIN" "docker ps -q"
 
+printf '\n== local profile: runs on THIS host, no ssh ==\n'
+[ "$(prof local)" = local ]      && ok "local -> local"        || bad "local -> local (got $(prof local))"
+[ "$(prof localhost)" = local ]  && ok "localhost -> local"    || bad "localhost -> local"
+# is_local predicate
+( export KP_DOCKER_WORKER=local; . "$KP_LIB"; kp_worker_is_local ) && ok "is_local true for local" || bad "is_local true for local"
+if ( export KP_DOCKER_WORKER=erikd@192.168.1.105; . "$KP_LIB"; kp_worker_is_local ); then bad "is_local false for .105"; else ok "is_local false for .105"; fi
+# local run executes locally and does NOT invoke ssh
+rm -f "$KP_SSH_ARGS"
+LOCAL_OUT="$(
+  PATH="$KP_TMP:$PATH" KP_DOCKER_WORKER=local bash -c '
+    unset KP_DOCKER_WORKER_PROFILE KP_WORKER_LAUNCH KP_WORKER_DOCKER_HOST 2>/dev/null || true
+    # shellcheck disable=SC1090
+    . "'"$KP_LIB"'"
+    printf "echo LOCALOK\n" | kp_worker_run
+  ' 2>/dev/null
+)"
+printf '%s' "$LOCAL_OUT" | grep -qx LOCALOK && ok "local run executes locally" || bad "local run executes locally (got: $LOCAL_OUT)"
+[ ! -f "$KP_SSH_ARGS" ] && ok "local run did not invoke ssh" || bad "local run invoked ssh"
+
 printf '\n== summary ==\n'
 if [ "$KP_FAILURES" -eq 0 ]; then printf 'ALL DOCKER-WORKER TESTS PASSED\n'; exit 0
 else printf '%d TEST(S) FAILED\n' "$KP_FAILURES"; exit 1; fi
