@@ -29,10 +29,16 @@ PG_CONTAINER=kp-console-postgres
 PG_VOLUME=kp_console_postgres_data
 PG_REMOTE_PORT=5434
 
-# When Docker is on THIS host (local profile), the console connects straight to
-# the published container port; no SSH tunnel and no 5432<-5434 remap. Otherwise
-# the tunnel maps local 5432 to the worker's 5434.
-if kp_worker_is_local; then KP_LOCAL=1; APP_PG_PORT=$PG_REMOTE_PORT; else KP_LOCAL=0; APP_PG_PORT=5432; fi
+# Remote worker: publish the console DB on 5434 to avoid clashing with the
+# worker's compose postgres, and tunnel local 5432 -> 5434 so the app/.env use
+# 5432. Local worker: no tunnel and no compose postgres competing, so publish the
+# console DB on the standard 5432 directly — a fresh .env (DATABASE_URL=...:5432)
+# then works for both the app and `make test-e2e` with no edits.
+if kp_worker_is_local; then
+  KP_LOCAL=1; PUB_PORT=5432; APP_PG_PORT=5432
+else
+  KP_LOCAL=0; PUB_PORT=$PG_REMOTE_PORT; APP_PG_PORT=5432
+fi
 
 # Load .env as inert data (it holds quoted, space-bearing values).
 eval "$(python3 - <<'PY'
@@ -55,11 +61,11 @@ docker inspect $PG_CONTAINER >/dev/null 2>&1 \
        -e POSTGRES_USER=kingphisher \
        -e POSTGRES_PASSWORD='$POSTGRES_PASSWORD' \
        -e POSTGRES_DB=kingphisher \
-       -p 127.0.0.1:$PG_REMOTE_PORT:5432 \
+       -p 127.0.0.1:$PUB_PORT:5432 \
        -v $PG_VOLUME:/var/lib/postgresql/data \
        --restart no $PG_IMAGE >/dev/null
 SCRIPT
-echo "   container $PG_CONTAINER up on $WORKER:$PG_REMOTE_PORT"
+echo "   container $PG_CONTAINER up on $WORKER:$PUB_PORT"
 
 if [ "$KP_LOCAL" = 1 ]; then
   echo "== 2/6 local worker: no tunnel; using localhost services directly =="
@@ -75,7 +81,7 @@ else
   pkill -f "kp-dep010-tunnel" 2>/dev/null || true
   ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
     -o "SetEnv KPTUNNEL=kp-dep010-tunnel" \
-    -L "127.0.0.1:5432:127.0.0.1:$PG_REMOTE_PORT" \
+    -L "127.0.0.1:5432:127.0.0.1:$PUB_PORT" \
     -L 127.0.0.1:6379:127.0.0.1:6379 \
     -L 127.0.0.1:1025:127.0.0.1:1025 \
     -L 127.0.0.1:8025:127.0.0.1:8025 \
