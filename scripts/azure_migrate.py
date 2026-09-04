@@ -399,9 +399,7 @@ def main() -> None:
                         )
                     else:
                         connection.execute(
-                            text(
-                                f"GRANT EXECUTE ON FUNCTION kp_outbox_health(), kp_verify_audit_head() TO {role_name}"
-                            )
+                            text(f"GRANT EXECUTE ON FUNCTION kp_outbox_health(), kp_verify_audit_head() TO {role_name}")
                         )
                 finally:
                     connection.execute(text("RESET ROLE"))
