@@ -32,7 +32,7 @@ EXPOSE 18081
 # interfaces so the gateway sidecar reaches it over loopback in the shared pod;
 # there is no ingress target for this port. Deterministic decoding matches the
 # gateway's temperature=0 contract.
-ENTRYPOINT ["/llama-server"]
+ENTRYPOINT ["/app/llama-server"]
 CMD ["--model", "/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf", \
      "--host", "0.0.0.0", "--port", "18081", \
      "--temp", "0", "--ctx-size", "8192", "--parallel", "1"]

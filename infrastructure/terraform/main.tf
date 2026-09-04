@@ -1164,6 +1164,15 @@ resource "azurerm_container_app" "ai_gateway" {
       image  = var.ai_llama_image
       cpu    = 3.5
       memory = "7Gi"
+      # The pinned llama.cpp :server base ships the binary at /app/llama-server;
+      # override the container command so a stale image ENTRYPOINT cannot break
+      # startup. Args match the deterministic decoding contract (temp 0).
+      command = [
+        "/app/llama-server",
+        "--model", "/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+        "--host", "0.0.0.0", "--port", "18081",
+        "--temp", "0", "--ctx-size", "8192", "--parallel", "1",
+      ]
       liveness_probe {
         transport               = "HTTP"
         path                    = "/health"
