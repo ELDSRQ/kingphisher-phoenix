@@ -2419,9 +2419,9 @@ jobs:
           # stages: the main workloads apply runs with enable_acs_event_subscription
           # =false (so it is never created before worker readiness), and the later
           # receipt-activation stage recreates it with =true after readiness. On a
-          # re-run the main plan therefore shows this one subscription as a delete
+          # re-run the main plan therefore shows this one subscription as a removal
           # that the activation stage immediately restores. Tolerate exactly that
-          # address; every other delete/replacement is still refused.
+          # address; every other removal or replacement is still refused.
           allowed_deletions = {
               "azurerm_eventgrid_system_topic_event_subscription.acs_delivery[0]",
           }
