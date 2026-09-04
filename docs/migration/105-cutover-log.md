@@ -39,7 +39,8 @@ Docker engine or the other agent's containers; installs are WSL2 host-side (root
 
 ### Still to do
 - ~~Full hermetic re-run~~ ✅ 2711 passed (see above).
-- `base-image-qualification/run.sh` on `.105` (docker present).
+- ~~`base-image-qualification/run.sh`~~ ✅ postgres+redis QUALIFIED on
+  linux/amd64 with the exact reviewed digests (EXIT=0).
 - **e2e gate** (`KP_DOCKER_WORKER=erikd@192.168.1.105 run-e2e.sh`): needs `.env`
   secrets + weights on `.105` — secret transfer is operator-gated; schedule
   separately.
