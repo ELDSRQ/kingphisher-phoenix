@@ -58,9 +58,13 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
             "audience_group_members",
             "campaign_audiences",
             "campaign_audience_manifest",
+            "campaign_launch_gates",
         ),
         "SELECT, INSERT, UPDATE": ("campaign_programs",),
         "SELECT, INSERT": ("campaign_program_occurrences",),
+        # The console binds the durable launch review (create/re-create) and
+        # reads canary membership; re-review deletes and re-inserts these rows.
+        "SELECT, INSERT, DELETE": ("campaign_canary_recipients",),
         # The console exposes integration health and campaign reportability,
         # but it never owns provider cursors, receipts or report verifiers.
         "SELECT": (
