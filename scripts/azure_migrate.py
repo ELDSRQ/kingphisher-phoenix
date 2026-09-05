@@ -465,6 +465,14 @@ def main() -> None:
                                 f"ON TABLE public.transactional_outbox TO {role_name}"
                             )
                         )
+                        # enqueue uses INSERT ... ON CONFLICT (idempotency_key)
+                        # DO NOTHING; the conflict arbiter needs SELECT on the
+                        # arbiter column, or the INSERT is denied "for table"
+                        # (KP-008). Column-scoped SELECT on idempotency_key alone
+                        # satisfies it without exposing payload or origin_role.
+                        connection.execute(
+                            text(f"GRANT SELECT (idempotency_key) ON TABLE public.transactional_outbox TO {role_name}")
+                        )
                     else:
                         connection.execute(
                             text(f"GRANT EXECUTE ON FUNCTION kp_outbox_health(), kp_verify_audit_head() TO {role_name}")

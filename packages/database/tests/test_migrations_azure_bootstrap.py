@@ -533,9 +533,14 @@ def test_outbox_insert_granted_to_enqueue_roles_and_probed(monkeypatch: pytest.M
         "GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
         "ON TABLE public.transactional_outbox TO kp_operator" in statements
     )
+    # ON CONFLICT (idempotency_key) needs SELECT on the arbiter column, granted
+    # column-scoped so payload/origin_role stay unreadable (KP-008 root cause).
+    assert "GRANT SELECT (idempotency_key) ON TABLE public.transactional_outbox TO kp_operator" in statements
     assert (
         "GRANT EXECUTE ON FUNCTION kp_outbox_health(), kp_verify_audit_head() TO kp_worker_audit_anchor" in statements
     )
+    # audit-anchor never enqueues, so it gets no outbox INSERT/SELECT.
+    assert "transactional_outbox TO kp_worker_audit_anchor" not in statements
     # The post-commit probe exercised the real runtime operations from fresh
     # least-privilege logins.
     assert "INSERT INTO transactional_outbox" in statements
