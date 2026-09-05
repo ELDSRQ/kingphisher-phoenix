@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hmac
 import os
+import sys
+import uuid
 
 from alembic import command
 from alembic.config import Config
 from psycopg import sql
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 
 RUNTIME_ROLES = {
     "operator": "kp_operator",
@@ -185,9 +188,58 @@ AUDIT_ANCHOR_COLUMN_GRANTS = {
 }
 
 
-def _quote_identifier(name: str) -> str:
-    """Double-quote a SQL identifier for safe interpolation into DDL."""
-    return '"' + name.replace('"', '""') + '"'
+def _runtime_url(database_url: str, role_name: str, password: str) -> str:
+    """Derive a runtime role DSN from the migration DSN (same host/db/params)."""
+    return make_url(database_url).set(username=role_name, password=password).render_as_string(hide_password=False)
+
+
+def _probe_runtime_privileges(database_url: str, operator_password: str, audit_password: str) -> None:
+    """Authoritative post-commit KP-008 gate.
+
+    The in-transaction grant checks run as the migration admin and can read true
+    while a fresh least-privilege session is still denied at runtime (the KP-008
+    contradiction). So verify from ACTUAL role logins, over the same DSN the
+    services use, and fail closed with the exact denial rather than shipping a
+    deploy that 503s on the first console write. Covers the two synchronous steps
+    of an audit write: kp_operator enqueues intent, then audit_writer dispatches.
+    """
+    failures: list[str] = []
+    op_engine = create_engine(_runtime_url(database_url, "kp_operator", operator_password))
+    try:
+        with op_engine.connect() as probe:
+            current = probe.exec_driver_sql("SELECT current_user").scalar()
+            probe_id = str(uuid.uuid4())
+            transaction = probe.begin()
+            try:
+                probe.exec_driver_sql(
+                    "INSERT INTO transactional_outbox "
+                    "(outbox_id, kind, payload, idempotency_key, available_at) "
+                    "VALUES (%(id)s, 'audit', '{}'::jsonb, %(key)s, now()) "
+                    "ON CONFLICT (idempotency_key) DO NOTHING",
+                    {"id": probe_id, "key": f"kp008-probe:{probe_id}"},
+                )
+                print(f"KP-008 probe OK: {current} can INSERT into transactional_outbox", file=sys.stderr, flush=True)
+            except Exception as exc:  # noqa: BLE001 - report the exact runtime denial
+                failures.append(f"kp_operator enqueue: {type(exc).__name__}: {str(exc)[:200]}")
+            finally:
+                transaction.rollback()
+    finally:
+        op_engine.dispose()
+    audit_engine = create_engine(_runtime_url(database_url, "audit_writer", audit_password))
+    try:
+        with audit_engine.connect() as probe:
+            current = probe.exec_driver_sql("SELECT current_user").scalar()
+            try:
+                probe.exec_driver_sql("SELECT kp_outbox_health()")
+                print(f"KP-008 probe OK: {current} can EXECUTE kp_outbox_health()", file=sys.stderr, flush=True)
+            except Exception as exc:  # noqa: BLE001 - report the exact runtime denial
+                failures.append(f"audit_writer dispatch EXECUTE: {type(exc).__name__}: {str(exc)[:200]}")
+    finally:
+        audit_engine.dispose()
+    if failures:
+        raise RuntimeError(
+            "KP-008 runtime privilege probe FAILED (fresh least-privilege sessions): " + " | ".join(failures)
+        )
 
 
 def _password_env(workload: str) -> str:
@@ -391,16 +443,21 @@ def main() -> None:
                 _grant_workload(connection, workload, role_name)
                 # Workloads may create intent but cannot select another
                 # workload's bearer payload or alter dispatch/evidence state.
-                # transactional_outbox and these functions are owned by
-                # audit_owner, so grant AS the owner (see note above).
+                # transactional_outbox and the two read-only audit functions are
+                # owned by the NOLOGIN audit_owner, so these privileges are issued
+                # AS the owner. The column list intentionally excludes origin_role
+                # (defaults to session_user) and status so a workload cannot forge
+                # provenance or mark its own intent dispatched. The authoritative
+                # KP-008 check is the post-commit fresh-session probe below, not
+                # this in-transaction grant -- an in-transaction privilege check
+                # can read true while a fresh runtime session is still denied.
                 connection.execute(text("SET ROLE audit_owner"))
-                set_role_user = str(connection.scalar(text("SELECT current_user")))
                 try:
                     if workload != "audit-anchor":
                         connection.execute(
                             text(
                                 f"GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
-                                f"ON TABLE transactional_outbox TO {role_name}"
+                                f"ON TABLE public.transactional_outbox TO {role_name}"
                             )
                         )
                     else:
@@ -409,57 +466,14 @@ def main() -> None:
                         )
                 finally:
                     connection.execute(text("RESET ROLE"))
-                # Verify the owner-issued outbox grant actually persisted. On
-                # Azure Database for PostgreSQL the migration admin is not a
-                # superuser; if SET ROLE-as-owner does not land the grant, every
-                # enqueue path (KP-008) breaks silently at runtime as a 503.
-                if workload != "audit-anchor":
-                    landed = connection.scalar(
-                        text("SELECT has_column_privilege(:role, 'transactional_outbox', 'kind', 'INSERT')"),
-                        {"role": role_name},
-                    )
-                    if not landed:
-                        # Fallback via the proven path: the migration principal is
-                        # a member of audit_owner, so it may take ownership of the
-                        # outbox, GRANT as the real owner (exactly how every
-                        # business table is granted), then hand ownership back.
-                        # Column grants survive an ownership change, so kp_operator
-                        # keeps its INSERT after the outbox returns to audit_owner.
-                        # ALTER ... OWNER TO requires the incoming owner to hold
-                        # CREATE on the schema, so re-grant it transiently as above.
-                        owner_ident = _quote_identifier(migration_role)
-                        connection.execute(text(f"ALTER TABLE public.transactional_outbox OWNER TO {owner_ident}"))
-                        connection.execute(
-                            text(
-                                f"GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
-                                f"ON TABLE public.transactional_outbox TO {role_name}"
-                            )
-                        )
-                        connection.execute(text("GRANT USAGE, CREATE ON SCHEMA public TO audit_owner"))
-                        connection.execute(text("ALTER TABLE public.transactional_outbox OWNER TO audit_owner"))
-                        connection.execute(text("REVOKE CREATE ON SCHEMA public FROM audit_owner"))
-                        landed = connection.scalar(
-                            text("SELECT has_column_privilege(:role, 'transactional_outbox', 'kind', 'INSERT')"),
-                            {"role": role_name},
-                        )
-                    if not landed:
-                        owner = connection.scalar(
-                            text(
-                                "SELECT pg_get_userbyid(relowner) FROM pg_class "
-                                "WHERE oid = 'public.transactional_outbox'::regclass"
-                            )
-                        )
-                        acl = connection.scalar(
-                            text(
-                                "SELECT relacl::text FROM pg_class WHERE oid = 'public.transactional_outbox'::regclass"
-                            )
-                        )
-                        can_set = connection.scalar(text("SELECT pg_has_role('audit_owner', 'MEMBER')"))
-                        raise RuntimeError(
-                            "outbox INSERT grant did not persist for "
-                            f"{role_name}: table_owner={owner!r} set_role_current_user={set_role_user!r} "
-                            f"migration_role_member_of_audit_owner={can_set!r} relacl={acl!r}"
-                        )
+
+    # Block 2 has committed. Verify from fresh runtime logins that the audit
+    # write path actually works, and fail the deploy with the exact denial if
+    # not (KP-008). This is the authoritative gate; do not trust the
+    # in-transaction admin-session checks above.
+    operator_password = runtime_passwords.get("operator")
+    if operator_password and audit_password:
+        _probe_runtime_privileges(database_url, operator_password, audit_password)
 
 
 if __name__ == "__main__":

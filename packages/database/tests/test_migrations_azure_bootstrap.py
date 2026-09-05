@@ -55,6 +55,22 @@ class _Context:
         return None
 
 
+class _Result:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def scalar(self) -> object:
+        return self._value
+
+
+class _Transaction:
+    def rollback(self) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
+
+
 class _Connection:
     def __init__(
         self,
@@ -68,23 +84,14 @@ class _Connection:
         self.installed_audit_root = installed_audit_root
         self.connection = SimpleNamespace(driver_connection=SimpleNamespace(execute=self.raw_statements.append))
 
-    # Model whether the owner-issued outbox INSERT grant is observed to have
-    # landed. Default True models the healthy path (SET ROLE-as-owner grant
-    # persists). When simulate_primary_grant_fails is set, the FIRST probe
-    # returns False (so the first workload takes the ownership-flip fallback) and
-    # every later probe returns True (the fallback made the grant land).
-    outbox_grant_landed: bool = True
-    simulate_primary_grant_fails: bool = False
-    _grant_probe_calls: int = 0
+    # Model whether a fresh runtime session can enqueue. Default True is the
+    # healthy path; a test sets it False so the post-commit KP-008 probe fails
+    # (proving the migration fails the deploy closed instead of shipping a 503).
+    probe_enqueue_ok: bool = True
 
     def scalar(self, statement: object, parameters: dict[str, object] | None = None) -> int | str | bool | None:
         if "current_user" in str(statement):
             return "kpadmin"
-        if "has_column_privilege" in str(statement):
-            if self.simulate_primary_grant_fails:
-                self._grant_probe_calls += 1
-                return self._grant_probe_calls != 1
-            return self.outbox_grant_landed
         if "to_regclass" in str(statement):
             return "audit_integrity_secret" if self.installed_audit_root is not None else None
         if "SELECT key_hex" in str(statement):
@@ -95,6 +102,19 @@ class _Connection:
 
     def execute(self, statement: object, _parameters: dict[str, object] | None = None) -> None:
         self.statements.append(str(statement))
+
+    # --- Post-commit probe surface (fresh-session runtime checks) ---
+    def exec_driver_sql(self, statement: object, parameters: dict[str, object] | None = None) -> _Result:
+        text_sql = str(statement)
+        self.statements.append(text_sql)
+        if "current_user" in text_sql:
+            return _Result("kp_operator")
+        if "INSERT INTO transactional_outbox" in text_sql and not self.probe_enqueue_ok:
+            raise RuntimeError("permission denied for table transactional_outbox")
+        return _Result(None)
+
+    def begin(self) -> _Transaction:
+        return _Transaction()
 
 
 class _Engine:
@@ -111,6 +131,12 @@ class _Engine:
 
     def begin(self) -> _Context:
         return _Context(self.connection)
+
+    def connect(self) -> _Context:
+        return _Context(self.connection)
+
+    def dispose(self) -> None:
+        return None
 
 
 def test_bootstrap_grants_only_the_real_audit_tables(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -404,7 +430,7 @@ def test_enabled_microsoft365_roles_emit_scoped_grants(monkeypatch: pytest.Monke
     for role in ("kp_worker_directory", "kp_worker_mailbox"):
         assert (
             "GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
-            f"ON TABLE transactional_outbox TO {role}" in statements
+            f"ON TABLE public.transactional_outbox TO {role}" in statements
         )
 
 
@@ -476,18 +502,7 @@ def test_existing_audit_root_mismatch_fails_before_any_role_or_migration_change(
     assert upgrades == []
 
 
-def test_outbox_grant_falls_back_to_ownership_flip_when_owner_grant_does_not_land(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # On Azure Database for PostgreSQL the migration admin is not a superuser; if
-    # the SET ROLE-as-owner GRANT does not persist, the migration must recover by
-    # taking ownership of the outbox as the migration principal, granting as the
-    # real owner, then handing ownership back to audit_owner (grants survive an
-    # ownership change). Verify that recovery path emits the expected DDL and does
-    # not raise, rather than letting KP-008 surface as a runtime 503.
-    script = _load_script()
-    engine = _Engine()
-    engine.connection.simulate_primary_grant_fails = True
+def _run_bootstrap(script: ModuleType, engine: _Engine, monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, str]]:
     upgrades: list[tuple[Any, str]] = []
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://example.invalid/platform")
     monkeypatch.setenv("AUDIT_WRITER_PASSWORD", "test-only")
@@ -496,18 +511,42 @@ def test_outbox_grant_falls_back_to_ownership_flip_when_owner_grant_does_not_lan
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
     monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
     monkeypatch.setattr(script.command, "upgrade", lambda config, target: upgrades.append((config, target)))
+    return upgrades
+
+
+def test_outbox_insert_granted_to_enqueue_roles_and_probed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The outbox column-INSERT is granted to every enqueueing role as the owner,
+    # and the migration then runs a post-commit fresh-session probe that actually
+    # attempts the enqueue INSERT (as the real runtime role) and an audit_writer
+    # dispatch EXECUTE -- the authoritative KP-008 gate.
+    script = _load_script()
+    engine = _Engine()
+    _run_bootstrap(script, engine, monkeypatch)
 
     script.main()
 
     statements = "\n".join(engine.connection.statements)
-    # The fallback takes ownership as the migration principal (quoted identity),
-    # grants INSERT as the real owner, restores CREATE transiently, hands the
-    # table back to audit_owner, and removes the transient CREATE.
-    assert 'ALTER TABLE public.transactional_outbox OWNER TO "kpadmin"' in statements
     assert (
         "GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
         "ON TABLE public.transactional_outbox TO kp_operator" in statements
     )
-    assert "GRANT USAGE, CREATE ON SCHEMA public TO audit_owner" in statements
-    assert "ALTER TABLE public.transactional_outbox OWNER TO audit_owner" in statements
-    assert "REVOKE CREATE ON SCHEMA public FROM audit_owner" in statements
+    assert (
+        "GRANT EXECUTE ON FUNCTION kp_outbox_health(), kp_verify_audit_head() TO kp_worker_audit_anchor" in statements
+    )
+    # The post-commit probe exercised the real runtime operations from fresh
+    # least-privilege logins.
+    assert "INSERT INTO transactional_outbox" in statements
+    assert "SELECT kp_outbox_health()" in statements
+
+
+def test_migration_fails_closed_when_runtime_enqueue_probe_denied(monkeypatch: pytest.MonkeyPatch) -> None:
+    # If a fresh kp_operator session cannot actually enqueue (the KP-008 failure
+    # mode), the migration must fail the deploy with the exact denial rather than
+    # ship a build that 503s on the first console write.
+    script = _load_script()
+    engine = _Engine()
+    engine.connection.probe_enqueue_ok = False
+    _run_bootstrap(script, engine, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="KP-008 runtime privilege probe FAILED"):
+        script.main()
