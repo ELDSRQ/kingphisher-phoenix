@@ -207,9 +207,12 @@ def _probe_runtime_privileges(database_url: str, operator_password: str, audit_p
     op_engine = create_engine(_runtime_url(database_url, "kp_operator", operator_password))
     try:
         with op_engine.connect() as probe:
+            # exec_driver_sql autobegins a transaction; never commit it, and roll
+            # it back in finally so nothing is persisted and any aborted state
+            # from a denied INSERT is cleared. Do NOT call probe.begin() here --
+            # that conflicts with the already-open autobegun transaction.
             current = probe.exec_driver_sql("SELECT current_user").scalar()
             probe_id = str(uuid.uuid4())
-            transaction = probe.begin()
             try:
                 probe.exec_driver_sql(
                     "INSERT INTO transactional_outbox "
@@ -222,7 +225,7 @@ def _probe_runtime_privileges(database_url: str, operator_password: str, audit_p
             except Exception as exc:  # noqa: BLE001 - report the exact runtime denial
                 failures.append(f"kp_operator enqueue: {type(exc).__name__}: {str(exc)[:200]}")
             finally:
-                transaction.rollback()
+                probe.rollback()
     finally:
         op_engine.dispose()
     audit_engine = create_engine(_runtime_url(database_url, "audit_writer", audit_password))
@@ -234,6 +237,8 @@ def _probe_runtime_privileges(database_url: str, operator_password: str, audit_p
                 print(f"KP-008 probe OK: {current} can EXECUTE kp_outbox_health()", file=sys.stderr, flush=True)
             except Exception as exc:  # noqa: BLE001 - report the exact runtime denial
                 failures.append(f"audit_writer dispatch EXECUTE: {type(exc).__name__}: {str(exc)[:200]}")
+            finally:
+                probe.rollback()
     finally:
         audit_engine.dispose()
     if failures:

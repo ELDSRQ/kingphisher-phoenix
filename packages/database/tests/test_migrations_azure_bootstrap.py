@@ -116,6 +116,9 @@ class _Connection:
     def begin(self) -> _Transaction:
         return _Transaction()
 
+    def rollback(self) -> None:
+        return None
+
 
 class _Engine:
     def __init__(
