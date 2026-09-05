@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kingphisher.dr-sync</string>
+
+  <!-- Run the hash-guarded DR sync. It self-skips when nothing security-relevant changed. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/edierks/projects/codex-test/phishing-awareness-platform/scripts/operator/dr-sync.sh</string>
+  </array>
+
+  <!-- Fire whenever any of these change (add/edit/remove within the dirs). -->
+  <key>WatchPaths</key>
+  <array>
+    <string>/Users/edierks/projects/codex-test/phishing-awareness-platform/.env</string>
+    <string>/Users/edierks/.ssh</string>
+    <string>/Users/edierks/.config/gh</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/edierks</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/edierks/.kingphisher-dr/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/edierks/.kingphisher-dr/launchd.log</string>
+</dict>
+</plist>
