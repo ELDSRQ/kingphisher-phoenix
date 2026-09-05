@@ -13,49 +13,43 @@ Azure operator console workflow. "Fully built" = realistic AI content (ai-gatewa
 Qwen weights) + real delivery (ACS to a real target domain). Both are deployed; we are
 driving the first real end-to-end send through the console UI.
 
-## ACTIVE BLOCKER (start here): KP-008 audit-intent write failed
-Creating anything in the console (e.g. a Source) returns {"code":"KP-008","detail":
-"KP-008: audit intent write failed"}. Root cause at the DB layer:
-  psycopg.errors.InsufficientPrivilege: permission denied for table transactional_outbox
-  SQL: INSERT INTO transactional_outbox (outbox_id, kind, payload, idempotency_key, available_at) ...
-The operator enqueues audit intent as DB role kp_operator (business engine,
-OPERATOR_API_DATABASE_URL). transactional_outbox is owned by the NOLOGIN role
-audit_owner. kp_operator needs column-INSERT on that table.
+## KP-008 — RESOLVED (2026-09-05, commit 894b105); verify in the console first
+KP-008 ("audit intent write failed", HTTP 503 on every console create) is FIXED.
+ROOT CAUSE: the enqueue statement is
+  INSERT INTO transactional_outbox (...) ON CONFLICT (idempotency_key) DO NOTHING
+and PostgreSQL's ON CONFLICT requires SELECT on the conflict-arbiter column. kp_operator
+was granted the outbox INSERT columns but NO SELECT, so the ON CONFLICT clause was denied
+and surfaced (misleadingly) as "permission denied for table transactional_outbox". It was
+NEVER about Azure, grantor identity, SET ROLE persistence, non-superuser admin, or
+ownership -- it reproduced on a stock postgres:16 with a SUPERUSER admin. Isolation on
+real postgres: plain INSERT -> OK; INSERT ... ON CONFLICT -> denied; add table SELECT ->
+OK; add column SELECT on idempotency_key alone -> OK.
+FIX: scripts/azure_migrate.py grants each enqueueing role
+  GRANT SELECT (idempotency_key) ON public.transactional_outbox TO <role>
+alongside the INSERT columns. Column-scoped so payload/origin_role stay unreadable
+(verified: kp_operator can enqueue + idempotent-retry, but SELECT payload/origin_role
+still denied). The migration also has a post-commit RUNTIME PROBE (commit df6bbb2): it
+connects as fresh kp_operator/audit_writer logins over the real DSN and actually runs the
+enqueue INSERT + kp_outbox_health(), failing the deploy with the exact denial if either
+can't -- this is the authoritative gate (an in-transaction has_column_privilege check runs
+as admin and reads true while a fresh session is denied). Landed via deploy run
+33970611034 (verify-images + probe passed against a real postgres).
+FIRST NEXT STEP: after the OIDC re-patch, log in and create the Source (SANS ISC:
+base_domain=isc.sans.edu, source_type=rss, fetch_path=/rssfeed.xml). It should now
+succeed with no KP-008. Then drive the content-authoring -> real-send flow below.
 
-WHAT WAS TRIED (commit e370679, scripts/azure_migrate.py): after the existing
-`SET ROLE audit_owner; GRANT INSERT (cols) ON transactional_outbox TO kp_operator`,
-the migration now VERIFIES has_column_privilege and, if the grant did not land, runs a
-fallback (migration principal takes ownership of the outbox, GRANTs as the real owner,
-hands ownership back to audit_owner), then RAISES if it still failed. The deploy ran and
-the migrate step SUCCEEDED (so has_column_privilege returned TRUE at migration time), yet
-runtime kp_operator STILL gets "permission denied". This migration-vs-runtime
-contradiction is UNRESOLVED.
+Two EARLIER theories were WRONG and were dropped (do not revisit): (1) "SET ROLE-as-owner
+grant does not persist to runtime" -- a fable review showed ALTER TABLE OWNER rewrites the
+grantor and Postgres ignores grantor in privilege checks; (2) the ownership-flip fix
+(commit e370679) was a no-op producing a byte-identical ACL.
 
-IMMEDIATE NEXT STEP: a diagnostic was handed to the operator to run (az containerapp
-exec is blocked for the assistant by the classifier — the operator runs it). It queries
-the DB as the operator's own runtime connection and prints current_user/session_user,
-has_table_privilege + has_column_privilege on public.transactional_outbox, the table
-owner, relacl, search_path, and current_database. The base64-python-via-exec command is
-in the last assistant turn / docs/NEXT_SESSION_HANDOFF.md. INTERPRET IT:
-  - If current_user != kp_operator -> operator connects as a different role; grant that role.
-  - If has_table/col = false and relacl lacks kp_operator -> the migration grant did not
-    persist to runtime (investigate whether a second migration execution reset it, whether
-    the block committed, or whether the operator holds a stale pooled connection from
-    before the grant — try restarting the operator revision first).
-  - If has_* = true but runtime still 503s -> stale connection/pool; restart operator.
-ROBUST FALLBACK FIX if the table grant cannot be made to stick: route enqueue through a
-SECURITY DEFINER function owned by audit_owner (kp_enqueue_outbox) and GRANT EXECUTE to
-kp_operator — mirrors the existing SECURITY DEFINER dispatch functions and sidesteps the
-table grant entirely (enqueue_audit lives in packages/database/src/kp_database/outbox.py;
-AuditStore in .../audit_store.py binds intent to the business engine in
-apps/operator-api/src/kp_operator_api/main.py:482-484).
-
-## TEMP DIAGNOSTICS TO REMOVE once KP-008 is fixed
+## TEMP DIAGNOSTIC TO REMOVE (cleanup)
 - packages/database/src/kp_database/audit_store.py: the `audit_intent_write_failed_detail`
-  logging block in record() (logs error_type/error_detail). Useful right now for the DB
-  error string; remove after fix.
-- scripts/azure_migrate.py: the verify + ownership-flip fallback is a real fix, keep it,
-  but review the raise/fallback once the true cause is known.
+  logging block in record() (logs error_type/error_detail). It surfaced the exact DB
+  error that cracked KP-008; remove it now that the cause is known (keep it only until you
+  confirm a clean Source-create in the console).
+- scripts/azure_migrate.py: the SELECT(idempotency_key) grant and the post-commit runtime
+  probe are the real fix -- KEEP them.
 
 ## AZURE DEPLOY PROCEDURE (every workloads deploy)
 1. Re-enable ACR public network (terraform re-locks it each apply):

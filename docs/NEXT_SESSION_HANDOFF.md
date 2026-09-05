@@ -1,32 +1,36 @@
 # Next-session handoff
 
-## Addendum 2026-09-05 — Azure real-send drive; KP-008 blocker; .140 retired
+## Addendum 2026-09-05 (b) — KP-008 RESOLVED and landed
 
-**Head `e370679` (origin/main). Full copy/paste resume prompt: `docs/NEXT-SESSION-PROMPT.md`.**
+**Head `894b105` (origin/main). Full copy/paste resume prompt: `docs/NEXT-SESSION-PROMPT.md`.**
 
 **Where we are:** driving the first real end-to-end phishing-sim send to
 erik.dierks@gmail.com through the Azure operator console. AI (ai-gateway + Qwen) and ACS
-delivery are deployed. Blocked on **KP-008** (audit-intent enqueue): the console 503s on
-every create because `kp_operator` gets `permission denied for table transactional_outbox`
-on `INSERT (outbox_id, kind, payload, idempotency_key, available_at)`. The table is owned
-by NOLOGIN `audit_owner`. Migration `scripts/azure_migrate.py` (commit `e370679`) grants the
-column-INSERT via `SET ROLE audit_owner`, verifies `has_column_privilege`, runs an
-ownership-flip fallback, and raises on failure. Last deploy's migrate step SUCCEEDED (verify
-TRUE at migration time) yet runtime is STILL denied — unresolved migration-vs-runtime
-contradiction.
+delivery are deployed. **KP-008 is FIXED.**
 
-**Immediate next step — run this DB diagnostic (assistant is classifier-blocked from
-`az containerapp exec`; the operator runs it). It prints the live grant state as the
-operator's own `kp_operator` connection:**
+**KP-008 root cause + fix (commit `894b105`):** the audit-intent enqueue is
+`INSERT INTO transactional_outbox (...) ON CONFLICT (idempotency_key) DO NOTHING`, and
+PostgreSQL's `ON CONFLICT` requires SELECT on the conflict-arbiter column. `kp_operator`
+had the outbox INSERT columns but no SELECT, so the clause was denied and surfaced
+(misleadingly) as `permission denied for table transactional_outbox`. It was NEVER about
+Azure, grantor identity, SET ROLE persistence, non-superuser admin, or ownership — it
+reproduced on a stock `postgres:16` with a SUPERUSER admin (plain INSERT ok; INSERT ...
+ON CONFLICT denied; +table SELECT ok; +column SELECT on idempotency_key alone ok). Fix:
+`scripts/azure_migrate.py` grants each enqueueing role `GRANT SELECT (idempotency_key) ON
+public.transactional_outbox` alongside the INSERT columns — column-scoped so
+payload/origin_role stay unreadable (verified on real postgres). The migration also has a
+post-commit runtime probe (commit `df6bbb2`) that fresh-session tests the real enqueue +
+`kp_outbox_health()` and fails the deploy on the exact denial — the authoritative gate.
+Landed via deploy run 33970611034 (verify-images + probe passed). Two earlier theories
+were WRONG and dropped: "SET ROLE grantor doesn't persist" (a fable review debunked it —
+ALTER TABLE OWNER rewrites the grantor and Postgres ignores grantor in privilege checks)
+and the ownership-flip fix (commit `e370679`, a no-op).
 
-```
-az containerapp exec --name ca-kp-staging-operator -g rg-kp-staging --command "sh -c 'echo aW1wb3J0IG9zLCBzcWxhbGNoZW15IGFzIHNhCnVybCA9IG9zLmVudmlyb24uZ2V0KCJPUEVSQVRPUl9BUElfREFUQUJBU0VfVVJMIikgb3Igb3MuZW52aXJvbi5nZXQoIkRBVEFCQVNFX1VSTCIpCndpdGggc2EuY3JlYXRlX2VuZ2luZSh1cmwpLmNvbm5lY3QoKSBhcyBjOgogICAgciA9IGMuZXhlY19kcml2ZXJfc3FsKCJzZWxlY3QgY3VycmVudF91c2VyLCBzZXNzaW9uX3VzZXIiKS5mZXRjaG9uZSgpCiAgICBwcmludCgiQ1VSUkVOVF9VU0VSOiIsIHJbMF0sICJTRVNTSU9OX1VTRVI6IiwgclsxXSkKICAgIHByaW50KCJIQVNfVEFCTEVfSU5TRVJUOiIsIGMuZXhlY19kcml2ZXJfc3FsKCJzZWxlY3QgaGFzX3RhYmxlX3ByaXZpbGVnZShjdXJyZW50X3VzZXIsJ3B1YmxpYy50cmFuc2FjdGlvbmFsX291dGJveCcsJ0lOU0VSVCcpIikuZmV0Y2hvbmUoKVswXSkKICAgIHByaW50KCJIQVNfQ09MX0lOU0VSVF9raW5kOiIsIGMuZXhlY19kcml2ZXJfc3FsKCJzZWxlY3QgaGFzX2NvbHVtbl9wcml2aWxlZ2UoY3VycmVudF91c2VyLCdwdWJsaWMudHJhbnNhY3Rpb25hbF9vdXRib3gnLCdraW5kJywnSU5TRVJUJykiKS5mZXRjaG9uZSgpWzBdKQogICAgcHJpbnQoIk9XTkVSOiIsIGMuZXhlY19kcml2ZXJfc3FsKCJzZWxlY3QgcGdfZ2V0X3VzZXJieWlkKHJlbG93bmVyKSBmcm9tIHBnX2NsYXNzIHdoZXJlIG9pZD0ncHVibGljLnRyYW5zYWN0aW9uYWxfb3V0Ym94Jzo6cmVnY2xhc3MiKS5mZXRjaG9uZSgpWzBdKQogICAgcHJpbnQoIlJFTEFDTDoiLCBjLmV4ZWNfZHJpdmVyX3NxbCgic2VsZWN0IHJlbGFjbDo6dGV4dCBmcm9tIHBnX2NsYXNzIHdoZXJlIG9pZD0ncHVibGljLnRyYW5zYWN0aW9uYWxfb3V0Ym94Jzo6cmVnY2xhc3MiKS5mZXRjaG9uZSgpWzBdKQogICAgcHJpbnQoIlNFQVJDSF9QQVRIOiIsIGMuZXhlY19kcml2ZXJfc3FsKCJzaG93IHNlYXJjaF9wYXRoIikuZmV0Y2hvbmUoKVswXSkKICAgIHByaW50KCJEQjoiLCBjLmV4ZWNfZHJpdmVyX3NxbCgic2VsZWN0IGN1cnJlbnRfZGF0YWJhc2UoKSIpLmZldGNob25lKClbMF0pCg== | base64 -d | python'"
-```
-
-Interpret: current_user != kp_operator -> grant that role; has_*=false & relacl lacks
-kp_operator -> grant didn't persist (try restarting the operator revision for a stale pool;
-else route enqueue through a SECURITY DEFINER `kp_enqueue_outbox` owned by audit_owner with
-EXECUTE to kp_operator); has_*=true but still 503 -> stale pooled connection, restart operator.
+**First next step:** after the OIDC re-patch, log in and create the Source (SANS ISC:
+base_domain=isc.sans.edu, source_type=rss, fetch_path=/rssfeed.xml) — should succeed with
+no KP-008 — then drive the content-authoring → real-send flow. Cleanup: remove the temp
+`audit_intent_write_failed_detail` logging in
+`packages/database/src/kp_database/audit_store.py`.
 
 **Deploy procedure reminders:** re-enable ACR public before each deploy
 (`az acr update --name acrkpstaging --public-network-enabled true`); dispatch via

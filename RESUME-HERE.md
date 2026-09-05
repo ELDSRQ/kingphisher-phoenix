@@ -7,20 +7,23 @@
 console. AI content (ai-gateway + Qwen) and ACS delivery are DEPLOYED; we are driving the
 first end-to-end send through the console.
 
-**ACTIVE BLOCKER — KP-008 audit-intent write failed (UNRESOLVED).** Creating anything in
-the console 503s with `KP-008`: at the DB, `permission denied for table transactional_outbox`
-on the `INSERT ... (outbox_id, kind, payload, idempotency_key, available_at)` that the
-operator runs as role `kp_operator`. transactional_outbox is owned by NOLOGIN `audit_owner`.
-The migration (`scripts/azure_migrate.py`, commit `e370679`) grants the column-INSERT via
-`SET ROLE audit_owner`, then VERIFIES `has_column_privilege` and, if absent, runs an
-ownership-flip fallback and RAISES on failure. The last deploy's migrate step SUCCEEDED
-(verify returned TRUE at migration time) yet runtime `kp_operator` is STILL denied — a
-migration-vs-runtime contradiction. **Next action:** the operator runs a DB diagnostic
-(base64 python via `az containerapp exec`, in `docs/NEXT_SESSION_HANDOFF.md` /
-`docs/NEXT-SESSION-PROMPT.md`) to print live current_user / has_*_privilege / owner /
-relacl. Interpret, then fix (wrong connecting role -> grant it; stale pool -> restart
-operator; grant genuinely absent -> route enqueue through a SECURITY DEFINER
-`kp_enqueue_outbox` owned by audit_owner and GRANT EXECUTE to kp_operator).
+**KP-008 — RESOLVED (2026-09-05, commit `894b105`).** The console-write 503 is fixed.
+ROOT CAUSE: the enqueue is `INSERT INTO transactional_outbox (...) ON CONFLICT
+(idempotency_key) DO NOTHING`, and Postgres's `ON CONFLICT` requires SELECT on the
+arbiter column. `kp_operator` had the outbox INSERT columns but no SELECT, so the clause
+was denied and surfaced (misleadingly) as `permission denied for table
+transactional_outbox`. NOT Azure/grantor/ownership — it reproduced on a stock
+`postgres:16` with a SUPERUSER admin. FIX: `scripts/azure_migrate.py` grants each
+enqueueing role `GRANT SELECT (idempotency_key)` alongside the INSERT columns —
+column-scoped, so payload/origin_role stay unreadable (verified on real postgres). The
+migration also gained a post-commit runtime probe (commit `df6bbb2`) that fresh-session
+tests the real enqueue + `kp_outbox_health()` and fails the deploy on the exact denial —
+the authoritative gate. Landed via deploy run 33970611034 (verify-images + probe passed).
+Two earlier theories were WRONG and dropped: "SET ROLE grantor doesn't persist" (a fable
+review debunked it) and the ownership-flip fix (a no-op). **Next action:** after the OIDC
+re-patch, log in and create the Source (SANS ISC) — should succeed with no KP-008 — then
+drive the content-authoring → real-send flow. Remove the temp
+`audit_intent_write_failed_detail` logging in `audit_store.py` once confirmed.
 
 **Working now:** Azure workloads deploy green; ai-gateway/Qwen serving; ACS ready
 (mail.floridamanevolved.us, gmail.com allowlisted). OIDC login works — console at
