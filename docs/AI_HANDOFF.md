@@ -1,3 +1,15 @@
+# AI Handoff
+
+## Addendum 2026-09-05 — see the current resume prompt
+
+**Current state, active blocker (KP-008), Azure architecture, deploy procedure, OIDC notes,
+the .140->.105 retirement, and the content-authoring->real-send flow are all captured in
+[`docs/NEXT-SESSION-PROMPT.md`](NEXT-SESSION-PROMPT.md) (copy/paste) and summarized at the top
+of [`RESUME-HERE.md`](../RESUME-HERE.md) and [`docs/NEXT_SESSION_HANDOFF.md`](NEXT_SESSION_HANDOFF.md).**
+Head at handoff: `e370679`. The section below is retained for historical context.
+
+---
+
 # Engineering handoff
 
 This is a navigation and invariants document, not a second status tracker. Read [the integrated build plan](WAVE-BUILD-PLAN.md) for the current decision, exact gate evidence, findings, and backlog. Read [the architecture description](architecture/README.md) before changing a trust boundary. Azure operating steps remain in [Azure deployment](AZURE_DEPLOYMENT.md).

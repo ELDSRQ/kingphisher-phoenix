@@ -1,5 +1,58 @@
 # Next-session handoff
 
+## Addendum 2026-09-05 — Azure real-send drive; KP-008 blocker; .140 retired
+
+**Head `e370679` (origin/main). Full copy/paste resume prompt: `docs/NEXT-SESSION-PROMPT.md`.**
+
+**Where we are:** driving the first real end-to-end phishing-sim send to
+erik.dierks@gmail.com through the Azure operator console. AI (ai-gateway + Qwen) and ACS
+delivery are deployed. Blocked on **KP-008** (audit-intent enqueue): the console 503s on
+every create because `kp_operator` gets `permission denied for table transactional_outbox`
+on `INSERT (outbox_id, kind, payload, idempotency_key, available_at)`. The table is owned
+by NOLOGIN `audit_owner`. Migration `scripts/azure_migrate.py` (commit `e370679`) grants the
+column-INSERT via `SET ROLE audit_owner`, verifies `has_column_privilege`, runs an
+ownership-flip fallback, and raises on failure. Last deploy's migrate step SUCCEEDED (verify
+TRUE at migration time) yet runtime is STILL denied — unresolved migration-vs-runtime
+contradiction.
+
+**Immediate next step — run this DB diagnostic (assistant is classifier-blocked from
+`az containerapp exec`; the operator runs it). It prints the live grant state as the
+operator's own `kp_operator` connection:**
+
+```
+az containerapp exec --name ca-kp-staging-operator -g rg-kp-staging --command "sh -c 'echo aW1wb3J0IG9zLCBzcWxhbGNoZW15IGFzIHNhCnVybCA9IG9zLmVudmlyb24uZ2V0KCJPUEVSQVRPUl9BUElfREFUQUJBU0VfVVJMIikgb3Igb3MuZW52aXJvbi5nZXQoIkRBVEFCQVNFX1VSTCIpCndpdGggc2EuY3JlYXRlX2VuZ2luZSh1cmwpLmNvbm5lY3QoKSBhcyBjOgogICAgciA9IGMuZXhlY19kcml2ZXJfc3FsKCJzZWxlY3QgY3VycmVudF91c2VyLCBzZXNzaW9uX3VzZXIiKS5mZXRjaG9uZSgpCiAgICBwcmludCgiQ1VSUkVOVF9VU0VSOiIsIHJbMF0sICJTRVNTSU9OX1VTRVI6IiwgclsxXSkKICAgIHByaW50KCJIQVNfVEFCTEVfSU5TRVJUOiIsIGMuZXhlY19kcml2ZXJfc3FsKCJzZWxlY3QgaGFzX3RhYmxlX3ByaXZpbGVnZShjdXJyZW50X3VzZXIsJ3B1YmxpYy50cmFuc2FjdGlvbmFsX291dGJveCcsJ0lOU0VSVCcpIikuZmV0Y2hvbmUoKVswXSkKICAgIHByaW50KCJIQVNfQ09MX0lOU0VSVF9raW5kOiIsIGMuZXhlY19kcml2ZXJfc3FsKCJzZWxlY3QgaGFzX2NvbHVtbl9wcml2aWxlZ2UoY3VycmVudF91c2VyLCdwdWJsaWMudHJhbnNhY3Rpb25hbF9vdXRib3gnLCdraW5kJywnSU5TRVJUJykiKS5mZXRjaG9uZSgpWzBdKQogICAgcHJpbnQoIk9XTkVSOiIsIGMuZXhlY19kcml2ZXJfc3FsKCJzZWxlY3QgcGdfZ2V0X3VzZXJieWlkKHJlbG93bmVyKSBmcm9tIHBnX2NsYXNzIHdoZXJlIG9pZD0ncHVibGljLnRyYW5zYWN0aW9uYWxfb3V0Ym94Jzo6cmVnY2xhc3MiKS5mZXRjaG9uZSgpWzBdKQogICAgcHJpbnQoIlJFTEFDTDoiLCBjLmV4ZWNfZHJpdmVyX3NxbCgic2VsZWN0IHJlbGFjbDo6dGV4dCBmcm9tIHBnX2NsYXNzIHdoZXJlIG9pZD0ncHVibGljLnRyYW5zYWN0aW9uYWxfb3V0Ym94Jzo6cmVnY2xhc3MiKS5mZXRjaG9uZSgpWzBdKQogICAgcHJpbnQoIlNFQVJDSF9QQVRIOiIsIGMuZXhlY19kcml2ZXJfc3FsKCJzaG93IHNlYXJjaF9wYXRoIikuZmV0Y2hvbmUoKVswXSkKICAgIHByaW50KCJEQjoiLCBjLmV4ZWNfZHJpdmVyX3NxbCgic2VsZWN0IGN1cnJlbnRfZGF0YWJhc2UoKSIpLmZldGNob25lKClbMF0pCg== | base64 -d | python'"
+```
+
+Interpret: current_user != kp_operator -> grant that role; has_*=false & relacl lacks
+kp_operator -> grant didn't persist (try restarting the operator revision for a stale pool;
+else route enqueue through a SECURITY DEFINER `kp_enqueue_outbox` owned by audit_owner with
+EXECUTE to kp_operator); has_*=true but still 503 -> stale pooled connection, restart operator.
+
+**Deploy procedure reminders:** re-enable ACR public before each deploy
+(`az acr update --name acrkpstaging --public-network-enabled true`); dispatch via
+`scripts/operator/deployment-preflight/dispatch-staging-workloads.sh`; operator approves the
+staging reviewer gate; **re-patch OIDC env after EVERY deploy** (deploy resets
+OPERATOR_API_OIDC_AUDIENCE to "kp-operator-api" and clears OIDC_SCOPES):
+
+```
+az containerapp update --name ca-kp-staging-operator -g rg-kp-staging --set-env-vars "OPERATOR_API_OIDC_SCOPES=openid profile api://97466174-d0ac-460c-94e8-7b6ff3c83da5/console" "OPERATOR_API_OIDC_AUDIENCE=97466174-d0ac-460c-94e8-7b6ff3c83da5"
+```
+
+**OIDC identity note:** console at `/console/` (root 404s); capabilities come from the token
+`roles` claim, fail closed; `administrator` is on erik.dierks@gmail.com (obj eacd7c6c), not on
+licensing@erikdierksgmail.onmicrosoft.com (obj ee54cb16). Sign in as the gmail account, or
+grant administrator to whichever account signs in.
+
+**Docker .140->.105:** done + .140 retired (default remote worker now erikd@192.168.1.105,
+commit fff07ce; the remote-docker-worker macOS scripts are retired legacy that fail fast).
+
+**Temp diagnostics to remove after fix:** `audit_intent_write_failed_detail` logging in
+`packages/database/src/kp_database/audit_store.py`.
+
+---
+
+# Next-session handoff
+
 ## Addendum 2026-08-31 — external gates head-exact, first AI-010 bake-off
 
 **Session end state: `origin/main = 40c611d`, working tree clean, no stash,

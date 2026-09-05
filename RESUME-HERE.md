@@ -1,3 +1,48 @@
+# RESUME HERE — 2026-09-05 (Azure real-send drive; head `e370679`)
+
+> **Full copy/paste resume prompt: [`docs/NEXT-SESSION-PROMPT.md`](docs/NEXT-SESSION-PROMPT.md).**
+> The section below is the current state; older history follows further down.
+
+**Goal:** send ONE real phishing-sim email to erik.dierks@gmail.com via the Azure operator
+console. AI content (ai-gateway + Qwen) and ACS delivery are DEPLOYED; we are driving the
+first end-to-end send through the console.
+
+**ACTIVE BLOCKER — KP-008 audit-intent write failed (UNRESOLVED).** Creating anything in
+the console 503s with `KP-008`: at the DB, `permission denied for table transactional_outbox`
+on the `INSERT ... (outbox_id, kind, payload, idempotency_key, available_at)` that the
+operator runs as role `kp_operator`. transactional_outbox is owned by NOLOGIN `audit_owner`.
+The migration (`scripts/azure_migrate.py`, commit `e370679`) grants the column-INSERT via
+`SET ROLE audit_owner`, then VERIFIES `has_column_privilege` and, if absent, runs an
+ownership-flip fallback and RAISES on failure. The last deploy's migrate step SUCCEEDED
+(verify returned TRUE at migration time) yet runtime `kp_operator` is STILL denied — a
+migration-vs-runtime contradiction. **Next action:** the operator runs a DB diagnostic
+(base64 python via `az containerapp exec`, in `docs/NEXT_SESSION_HANDOFF.md` /
+`docs/NEXT-SESSION-PROMPT.md`) to print live current_user / has_*_privilege / owner /
+relacl. Interpret, then fix (wrong connecting role -> grant it; stale pool -> restart
+operator; grant genuinely absent -> route enqueue through a SECURITY DEFINER
+`kp_enqueue_outbox` owned by audit_owner and GRANT EXECUTE to kp_operator).
+
+**Working now:** Azure workloads deploy green; ai-gateway/Qwen serving; ACS ready
+(mail.floridamanevolved.us, gmail.com allowlisted). OIDC login works — console at
+`/console/` (root 404s). Capabilities come from the token `roles` claim and fail closed;
+`administrator` is on erik.dierks@gmail.com (obj `eacd7c6c`), NOT on
+`licensing@erikdierksgmail.onmicrosoft.com` (obj `ee54cb16`) — signing in as the latter
+gives a blank console. Sign in as erik.dierks@gmail.com (or grant it administrator).
+
+**Deploy gotchas:** re-enable ACR public before each deploy; operator must approve the
+staging reviewer gate; **re-patch OIDC env after every deploy** (deploy resets
+`OPERATOR_API_OIDC_AUDIENCE`/`_SCOPES`). Exact commands in `docs/NEXT-SESSION-PROMPT.md`.
+
+**Docker .140->.105:** DONE and .140 RETIRED (default remote worker now
+`erikd@192.168.1.105`, commit `fff07ce`). The three `remote-docker-worker/*.sh` macOS
+Keychain scripts are retired legacy (fail fast; not usable on WSL2). No build dependency on
+.140 remains; .140 kept untouched only as a manual rollback.
+
+**Temp diagnostics to remove after KP-008:** the `audit_intent_write_failed_detail` logging
+in `packages/database/src/kp_database/audit_store.py`.
+
+---
+
 # RESUME HERE — current engineering handoff
 
 **Reconciled:** 2026-08-31 (head `40c611d`; hermetic 2707; **every non-operator gate passes head-exact** — external PostgreSQL 92 / Redis 2 / fresh-migration 1 / E2E 8-of-8, exact-final ARM64 re-qualified at `2adb2a2`; first AI-010 bake-off measured on Qwen2.5-7B; local Docker stopped so `.140` is the only engine; full AZ-030 live promotion still operator-required)
