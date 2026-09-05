@@ -7,9 +7,27 @@
 
 set -euo pipefail
 
+# --- Retired legacy macOS-only helper ----------------------------------------
+# This helper runs the Docker Desktop recovery checkpoint on the macOS/Colima
+# Docker worker that formerly lived at edierks@192.168.1.140, transferring the
+# recovery identity from the macOS controller Keychain. That worker has been
+# RETIRED: the canonical Docker worker is now the Windows/WSL2 host
+# erikd@192.168.1.105 (profile wsl105). This flow is macOS-only end to end -- it
+# depends on the macOS Keychain, BSD `stat -f`, and an ssh session landing in a
+# POSIX shell -- so it CANNOT be repointed at the WSL2 host. It refuses to run
+# unless an operator explicitly opts into the retired legacy path with
+# KP_ALLOW_LEGACY_MAC140=1.
+if [ "${KP_ALLOW_LEGACY_MAC140:-0}" != 1 ]; then
+  printf 'LEGACY MACOS-ONLY HELPER: refusing to run.\n' >&2
+  printf 'The .140 macOS/Colima worker is retired; the canonical worker is erikd@192.168.1.105 (wsl105).\n' >&2
+  printf 'This macOS Keychain/Colima checkpoint flow cannot target a WSL2 host.\n' >&2
+  printf 'To run the retired legacy .140 path anyway, set KP_ALLOW_LEGACY_MAC140=1.\n' >&2
+  exit 1
+fi
+
 KP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)"
 KP_LOCAL_CHECKPOINT="$KP_ROOT/scripts/operator/remote-docker-worker/checkpoint-state.sh"
-KP_REMOTE_TARGET='edierks@192.168.1.140'
+KP_REMOTE_TARGET='edierks@192.168.1.140'  # retired legacy macOS worker (guarded above)
 KP_REMOTE_SOURCE='/Users/edierks/Projects/kingphisher-phoenix'
 KP_REMOTE_CHECKPOINT="$KP_REMOTE_SOURCE/scripts/operator/remote-docker-worker/checkpoint-state.sh"
 KP_RECOVERY_KEYCHAIN_SERVICE='com.kingphisher.phishing-awareness-platform.migration-recovery.v1'

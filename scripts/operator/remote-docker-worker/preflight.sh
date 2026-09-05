@@ -3,7 +3,24 @@
 
 set -euo pipefail
 
-KP_REMOTE_HOST='edierks@192.168.1.140'
+# --- Retired legacy macOS-only helper ----------------------------------------
+# This helper qualifies the macOS/Colima external Docker host that formerly lived
+# at edierks@192.168.1.140, driving the Colima `external-engine.sh` and reading
+# macOS-only facts (`sw_vers -productVersion`). That worker has been RETIRED: the
+# canonical Docker worker is now the Windows/WSL2 host erikd@192.168.1.105
+# (profile wsl105). This qualification is macOS-only -- it CANNOT be repointed at
+# the WSL2 host, whose ssh lands in cmd and which has no `sw_vers`/Colima engine.
+# It refuses to run unless an operator explicitly opts into the retired legacy
+# path with KP_ALLOW_LEGACY_MAC140=1.
+if [ "${KP_ALLOW_LEGACY_MAC140:-0}" != 1 ]; then
+  printf 'LEGACY MACOS-ONLY HELPER: refusing to run.\n' >&2
+  printf 'The .140 macOS/Colima worker is retired; the canonical worker is erikd@192.168.1.105 (wsl105).\n' >&2
+  printf 'This macOS/Colima preflight cannot qualify a WSL2 host.\n' >&2
+  printf 'To run the retired legacy .140 path anyway, set KP_ALLOW_LEGACY_MAC140=1.\n' >&2
+  exit 1
+fi
+
+KP_REMOTE_HOST='edierks@192.168.1.140'  # retired legacy macOS worker (guarded above)
 KP_REMOTE_PROJECT_DIR='/Users/edierks/Projects/kingphisher-phoenix'
 KP_REMOTE_MIN_FREE_GIB="${KP_REMOTE_MIN_FREE_GIB:-100}"
 KP_EXPECTED_CONTROLLER_CONTEXT=desktop-linux

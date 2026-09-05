@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Daemon-free, host-free tests for lib/docker-worker.sh. Mocks `ssh` and asserts
 # the exact target, launcher, and DOCKER_HOST prefix each profile emits. Proves
-# the .140 default behaviour is preserved and .105 routes through `wsl -e bash`
-# with the native socket. Contacts no real host.
+# the .105 wsl105 worker is the resolved default (routing through `wsl -e bash`
+# with the native socket) and that the retired legacy .140 mac140 profile still
+# works when selected explicitly. Contacts no real host.
 set -euo pipefail
 KP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KP_LIB="$KP_DIR/docker-worker.sh"
@@ -45,20 +46,27 @@ printf '== profile resolution ==\n'
 # shellcheck disable=SC1090
 # Autodetect off so explicit/default resolution is deterministic on any test host.
 prof() { ( export KP_DOCKER_WORKER_AUTODETECT=0; if [ -n "$1" ]; then export KP_DOCKER_WORKER="$1"; fi; unset KP_DOCKER_WORKER_PROFILE; . "$KP_LIB"; kp_worker_profile ); }
-[ "$(prof '')" = mac140 ]                        && ok "default -> mac140"        || bad "default -> mac140 (got $(prof ''))"
+[ "$(prof '')" = wsl105 ]                        && ok "default -> wsl105"        || bad "default -> wsl105 (got $(prof ''))"
 [ "$(prof edierks@192.168.1.140)" = mac140 ]     && ok ".140 -> mac140"           || bad ".140 -> mac140"
 [ "$(prof erikd@192.168.1.105)" = wsl105 ]       && ok ".105 -> wsl105"           || bad ".105 -> wsl105"
-[ "$(prof someone@10.0.0.9)" = mac140 ]          && ok "unknown -> mac140 (safe)" || bad "unknown -> mac140"
+[ "$(prof someone@10.0.0.9)" = mac140 ]          && ok "unknown -> mac140 (legacy fallback)" || bad "unknown -> mac140"
 
-printf '\n== mac140 (default) emits the Colima socket over direct bash ==\n'
+printf '\n== default resolves to the .105 wsl105 worker over wsl -e bash ==\n'
 run_case '' >/dev/null 2>&1
+assert_contains "default ssh target"    "$KP_SSH_ARGS"  "erikd@192.168.1.105"
+assert_contains "default launcher"      "$KP_SSH_ARGS"  "wsl -e bash -s"
+assert_absent   "default no DOCKER_HOST" "$KP_SSH_STDIN" "DOCKER_HOST"
+assert_contains "default script body"   "$KP_SSH_STDIN" "docker ps -q"
+
+printf '\n== mac140 (explicit) emits the Colima socket over direct bash ==\n'
+run_case 'edierks@192.168.1.140' >/dev/null 2>&1
 assert_contains "mac140 ssh target"   "$KP_SSH_ARGS"  "edierks@192.168.1.140"
 assert_contains "mac140 launcher"     "$KP_SSH_ARGS"  "bash -s"
 assert_absent   "mac140 not wsl"      "$KP_SSH_ARGS"  "wsl -e"
 assert_contains "mac140 DOCKER_HOST"  "$KP_SSH_STDIN" "export DOCKER_HOST=unix:///Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock"
 assert_contains "mac140 script body"  "$KP_SSH_STDIN" "docker ps -q"
 
-printf '\n== wsl105 routes through wsl -e bash with the native socket ==\n'
+printf '\n== wsl105 (explicit) routes through wsl -e bash with the native socket ==\n'
 run_case 'erikd@192.168.1.105' >/dev/null 2>&1
 assert_contains "wsl105 ssh target"   "$KP_SSH_ARGS"  "erikd@192.168.1.105"
 assert_contains "wsl105 launcher"     "$KP_SSH_ARGS"  "wsl -e bash -s"
@@ -105,10 +113,10 @@ detect_profile() { # $1 = ok|down
   rm -rf "$d"
 }
 [ "$(detect_profile ok)" = local ]    && ok "daemon reachable -> local"   || bad "daemon reachable -> local (got $(detect_profile ok))"
-[ "$(detect_profile down)" = mac140 ] && ok "daemon unreachable -> mac140" || bad "daemon unreachable -> mac140 (got $(detect_profile down))"
-# autodetect disabled -> always the remote worker
+[ "$(detect_profile down)" = wsl105 ] && ok "daemon unreachable -> wsl105" || bad "daemon unreachable -> wsl105 (got $(detect_profile down))"
+# autodetect disabled -> always the default remote worker
 AD_OFF="$( ( unset KP_DOCKER_WORKER KP_DOCKER_WORKER_PROFILE; export KP_DOCKER_WORKER_AUTODETECT=0; . "$KP_LIB"; kp_worker_profile ) )"
-[ "$AD_OFF" = mac140 ] && ok "autodetect off -> mac140" || bad "autodetect off -> mac140 (got $AD_OFF)"
+[ "$AD_OFF" = wsl105 ] && ok "autodetect off -> wsl105" || bad "autodetect off -> wsl105 (got $AD_OFF)"
 
 printf '\n== summary ==\n'
 if [ "$KP_FAILURES" -eq 0 ]; then printf 'ALL DOCKER-WORKER TESTS PASSED\n'; exit 0

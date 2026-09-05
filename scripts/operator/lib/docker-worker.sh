@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Shared Docker-worker abstraction so operator tooling is not hardcoded to the
-# .140 macOS/Colima host. Source this; do not execute it.
+# Shared Docker-worker abstraction so operator tooling is not hardcoded to a
+# single Docker host. Source this; do not execute it.
 #
 #   . "$(dirname "$0")/../lib/docker-worker.sh"
 #   kp_worker_run <<'SH'
@@ -8,20 +8,22 @@
 #   SH
 #   ssh -N "$(kp_worker_target)" -L ...    # tunnels
 #
-# Selection is via KP_DOCKER_WORKER (an ssh target). The DEFAULT is the current
-# .140 worker, so existing workflows are unchanged until an operator opts in with
-#   KP_DOCKER_WORKER=erikd@192.168.1.105 ...
+# Selection is via KP_DOCKER_WORKER (an ssh target). The DEFAULT is the .105
+# Windows/WSL2 worker (the canonical remote worker). Override with an explicit
+# target, e.g. to fall back to the retired legacy .140 host:
+#   KP_DOCKER_WORKER=edierks@192.168.1.140 ...
 #
 # Two profiles, auto-detected from the target (override with KP_DOCKER_WORKER_PROFILE):
-#   mac140  - macOS/Colima: reach the project-isolated Colima socket over direct ssh.
 #   wsl105  - Windows/WSL2:  ssh lands in cmd, so route through `wsl -e bash` and
-#             use WSL2's native default socket.
+#             use WSL2's native default socket. This is the current default.
+#   mac140  - macOS/Colima: reach the project-isolated Colima socket over direct
+#             ssh. Retired legacy fallback; kept as an override option only.
 
 # Worker selection. Left at "auto" it autodetects: if a local Docker daemon
 # answers, run self-contained (local); otherwise fall back to the remote worker
 # below. Set KP_DOCKER_WORKER to an explicit target to override, or
 # KP_DOCKER_WORKER_AUTODETECT=0 to skip detection and always use the remote worker.
-KP_DEFAULT_REMOTE_WORKER="${KP_DEFAULT_REMOTE_WORKER:-edierks@192.168.1.140}"
+KP_DEFAULT_REMOTE_WORKER="${KP_DEFAULT_REMOTE_WORKER:-erikd@192.168.1.105}"
 KP_DOCKER_WORKER="${KP_DOCKER_WORKER:-auto}"
 KP_DOCKER_WORKER_PROFILE="${KP_DOCKER_WORKER_PROFILE:-auto}"
 KP_COLIMA_SOCK='unix:///Volumes/DockerExternal/KingPhisher-Phoenix/colima/kingphisher/docker.sock'
@@ -47,8 +49,8 @@ kp_worker_resolve() {
     auto)
       case "$KP_DOCKER_WORKER" in
         local|localhost)        KP_DOCKER_WORKER_PROFILE=local ;;
-        *192.168.1.105*|*@*105) KP_DOCKER_WORKER_PROFILE=wsl105 ;;
-        *)                      KP_DOCKER_WORKER_PROFILE=mac140 ;;  # safe default = current behavior
+        *192.168.1.105*|*@*105) KP_DOCKER_WORKER_PROFILE=wsl105 ;;  # canonical default worker
+        *)                      KP_DOCKER_WORKER_PROFILE=mac140 ;;  # retired legacy fallback
       esac ;;
     *) printf 'docker-worker: unknown KP_DOCKER_WORKER_PROFILE=%s\n' "$KP_DOCKER_WORKER_PROFILE" >&2; return 2 ;;
   esac
