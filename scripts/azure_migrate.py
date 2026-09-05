@@ -388,8 +388,23 @@ def main() -> None:
                 # workload's bearer payload or alter dispatch/evidence state.
                 # transactional_outbox and these functions are owned by
                 # audit_owner, so grant AS the owner (see note above).
+                if workload == "operator":
+                    import sys as _sys
+
+                    _owner = connection.scalar(
+                        text(
+                            "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public.transactional_outbox'::regclass"
+                        )
+                    )
+                    _cu_before = connection.scalar(text("SELECT current_user"))
+                    print(f"DIAG before: owner={_owner} current_user={_cu_before}", file=_sys.stderr, flush=True)
                 connection.execute(text("SET ROLE audit_owner"))
                 try:
+                    if workload == "operator":
+                        import sys as _sys
+
+                        _cu_in = connection.scalar(text("SELECT current_user"))
+                        print(f"DIAG in-set-role: current_user={_cu_in}", file=_sys.stderr, flush=True)
                     if workload != "audit-anchor":
                         connection.execute(
                             text(
@@ -403,6 +418,16 @@ def main() -> None:
                         )
                 finally:
                     connection.execute(text("RESET ROLE"))
+                if workload == "operator":
+                    import sys as _sys
+
+                    _hcp = connection.scalar(
+                        text("SELECT has_column_privilege('kp_operator', 'transactional_outbox', 'kind', 'INSERT')")
+                    )
+                    _acl = connection.scalar(
+                        text("SELECT relacl::text FROM pg_class WHERE oid='public.transactional_outbox'::regclass")
+                    )
+                    print(f"DIAG after: kp_operator_insert_kind={_hcp} relacl={_acl}", file=_sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
