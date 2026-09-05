@@ -68,9 +68,23 @@ class _Connection:
         self.installed_audit_root = installed_audit_root
         self.connection = SimpleNamespace(driver_connection=SimpleNamespace(execute=self.raw_statements.append))
 
-    def scalar(self, statement: object, parameters: dict[str, object] | None = None) -> int | str | None:
+    # Model whether the owner-issued outbox INSERT grant is observed to have
+    # landed. Default True models the healthy path (SET ROLE-as-owner grant
+    # persists). When simulate_primary_grant_fails is set, the FIRST probe
+    # returns False (so the first workload takes the ownership-flip fallback) and
+    # every later probe returns True (the fallback made the grant land).
+    outbox_grant_landed: bool = True
+    simulate_primary_grant_fails: bool = False
+    _grant_probe_calls: int = 0
+
+    def scalar(self, statement: object, parameters: dict[str, object] | None = None) -> int | str | bool | None:
         if "current_user" in str(statement):
             return "kpadmin"
+        if "has_column_privilege" in str(statement):
+            if self.simulate_primary_grant_fails:
+                self._grant_probe_calls += 1
+                return self._grant_probe_calls != 1
+            return self.outbox_grant_landed
         if "to_regclass" in str(statement):
             return "audit_integrity_secret" if self.installed_audit_root is not None else None
         if "SELECT key_hex" in str(statement):
@@ -460,3 +474,40 @@ def test_existing_audit_root_mismatch_fails_before_any_role_or_migration_change(
     assert engine.connection.raw_statements == []
     assert engine.connection.statements == []
     assert upgrades == []
+
+
+def test_outbox_grant_falls_back_to_ownership_flip_when_owner_grant_does_not_land(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On Azure Database for PostgreSQL the migration admin is not a superuser; if
+    # the SET ROLE-as-owner GRANT does not persist, the migration must recover by
+    # taking ownership of the outbox as the migration principal, granting as the
+    # real owner, then handing ownership back to audit_owner (grants survive an
+    # ownership change). Verify that recovery path emits the expected DDL and does
+    # not raise, rather than letting KP-008 surface as a runtime 503.
+    script = _load_script()
+    engine = _Engine()
+    engine.connection.simulate_primary_grant_fails = True
+    upgrades: list[tuple[Any, str]] = []
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://example.invalid/platform")
+    monkeypatch.setenv("AUDIT_WRITER_PASSWORD", "test-only")
+    monkeypatch.setenv("AUDIT_ROOT_KEY", "01" * 32)
+    for workload in script.REQUIRED_WORKLOADS:
+        monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
+    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script.command, "upgrade", lambda config, target: upgrades.append((config, target)))
+
+    script.main()
+
+    statements = "\n".join(engine.connection.statements)
+    # The fallback takes ownership as the migration principal (quoted identity),
+    # grants INSERT as the real owner, restores CREATE transiently, hands the
+    # table back to audit_owner, and removes the transient CREATE.
+    assert 'ALTER TABLE public.transactional_outbox OWNER TO "kpadmin"' in statements
+    assert (
+        "GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
+        "ON TABLE public.transactional_outbox TO kp_operator" in statements
+    )
+    assert "GRANT USAGE, CREATE ON SCHEMA public TO audit_owner" in statements
+    assert "ALTER TABLE public.transactional_outbox OWNER TO audit_owner" in statements
+    assert "REVOKE CREATE ON SCHEMA public FROM audit_owner" in statements

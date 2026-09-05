@@ -185,6 +185,11 @@ AUDIT_ANCHOR_COLUMN_GRANTS = {
 }
 
 
+def _quote_identifier(name: str) -> str:
+    """Double-quote a SQL identifier for safe interpolation into DDL."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _password_env(workload: str) -> str:
     return f"KP_DB_PASSWORD_{workload.upper().replace('-', '_')}"
 
@@ -388,23 +393,9 @@ def main() -> None:
                 # workload's bearer payload or alter dispatch/evidence state.
                 # transactional_outbox and these functions are owned by
                 # audit_owner, so grant AS the owner (see note above).
-                if workload == "operator":
-                    import sys as _sys
-
-                    _owner = connection.scalar(
-                        text(
-                            "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid='public.transactional_outbox'::regclass"
-                        )
-                    )
-                    _cu_before = connection.scalar(text("SELECT current_user"))
-                    print(f"DIAG before: owner={_owner} current_user={_cu_before}", file=_sys.stderr, flush=True)
                 connection.execute(text("SET ROLE audit_owner"))
+                set_role_user = str(connection.scalar(text("SELECT current_user")))
                 try:
-                    if workload == "operator":
-                        import sys as _sys
-
-                        _cu_in = connection.scalar(text("SELECT current_user"))
-                        print(f"DIAG in-set-role: current_user={_cu_in}", file=_sys.stderr, flush=True)
                     if workload != "audit-anchor":
                         connection.execute(
                             text(
@@ -418,16 +409,57 @@ def main() -> None:
                         )
                 finally:
                     connection.execute(text("RESET ROLE"))
-                if workload == "operator":
-                    import sys as _sys
-
-                    _hcp = connection.scalar(
-                        text("SELECT has_column_privilege('kp_operator', 'transactional_outbox', 'kind', 'INSERT')")
+                # Verify the owner-issued outbox grant actually persisted. On
+                # Azure Database for PostgreSQL the migration admin is not a
+                # superuser; if SET ROLE-as-owner does not land the grant, every
+                # enqueue path (KP-008) breaks silently at runtime as a 503.
+                if workload != "audit-anchor":
+                    landed = connection.scalar(
+                        text("SELECT has_column_privilege(:role, 'transactional_outbox', 'kind', 'INSERT')"),
+                        {"role": role_name},
                     )
-                    _acl = connection.scalar(
-                        text("SELECT relacl::text FROM pg_class WHERE oid='public.transactional_outbox'::regclass")
-                    )
-                    print(f"DIAG after: kp_operator_insert_kind={_hcp} relacl={_acl}", file=_sys.stderr, flush=True)
+                    if not landed:
+                        # Fallback via the proven path: the migration principal is
+                        # a member of audit_owner, so it may take ownership of the
+                        # outbox, GRANT as the real owner (exactly how every
+                        # business table is granted), then hand ownership back.
+                        # Column grants survive an ownership change, so kp_operator
+                        # keeps its INSERT after the outbox returns to audit_owner.
+                        # ALTER ... OWNER TO requires the incoming owner to hold
+                        # CREATE on the schema, so re-grant it transiently as above.
+                        owner_ident = _quote_identifier(migration_role)
+                        connection.execute(text(f"ALTER TABLE public.transactional_outbox OWNER TO {owner_ident}"))
+                        connection.execute(
+                            text(
+                                f"GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at) "
+                                f"ON TABLE public.transactional_outbox TO {role_name}"
+                            )
+                        )
+                        connection.execute(text("GRANT USAGE, CREATE ON SCHEMA public TO audit_owner"))
+                        connection.execute(text("ALTER TABLE public.transactional_outbox OWNER TO audit_owner"))
+                        connection.execute(text("REVOKE CREATE ON SCHEMA public FROM audit_owner"))
+                        landed = connection.scalar(
+                            text("SELECT has_column_privilege(:role, 'transactional_outbox', 'kind', 'INSERT')"),
+                            {"role": role_name},
+                        )
+                    if not landed:
+                        owner = connection.scalar(
+                            text(
+                                "SELECT pg_get_userbyid(relowner) FROM pg_class "
+                                "WHERE oid = 'public.transactional_outbox'::regclass"
+                            )
+                        )
+                        acl = connection.scalar(
+                            text(
+                                "SELECT relacl::text FROM pg_class WHERE oid = 'public.transactional_outbox'::regclass"
+                            )
+                        )
+                        can_set = connection.scalar(text("SELECT pg_has_role('audit_owner', 'MEMBER')"))
+                        raise RuntimeError(
+                            "outbox INSERT grant did not persist for "
+                            f"{role_name}: table_owner={owner!r} set_role_current_user={set_role_user!r} "
+                            f"migration_role_member_of_audit_owner={can_set!r} relacl={acl!r}"
+                        )
 
 
 if __name__ == "__main__":
