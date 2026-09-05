@@ -1,5 +1,26 @@
 # Next-session handoff
 
+## Addendum 2026-09-05 (c) — repo pushed + scope boundary (no engineering change)
+
+**Head `8e8eb1b` (fully pushed to origin/main).** This session made no change to the
+engineering state — KP-008 stays RESOLVED and the next step is still the console send flow
+(addendum (b) below is fully current). What changed:
+
+- **Repo is now recovery-safe.** `main` was 2 commits ahead of origin + 1 untracked doc;
+  all pushed (`811bba0..8e8eb1b`). The phishing app now recovers cleanly: code on GitHub,
+  `.env` in the DR archive on Alice (192.168.1.36).
+- **SCOPE — hard rule for future sessions:** work ONLY in this repo. A SEPARATE agent owns
+  **CROW (`~/crow`)** and the **DR/backup mechanism** (dr-sync, the Alice archive, the
+  `crow-*` launchd agents). Do NOT modify `~/crow`, `~/bin`, or `~/Library/LaunchAgents`
+  even though the harness lists them as writable. Reading for context is fine; changing is
+  not. Any process guardrail must **warn, never auto-kill** (operator runs several
+  concurrent agent sessions). The DR-scope target (owned by the other agent) is
+  "everything not in GitHub → Alice, regularly resync'd".
+- **Unchanged carry-overs:** OIDC env reverts every deploy (re-patch — see (b) / the prompt);
+  remove the temp `audit_intent_write_failed_detail` logging in
+  `packages/database/src/kp_database/audit_store.py` once a clean console Source-create is
+  confirmed.
+
 ## Addendum 2026-09-05 (b) — KP-008 RESOLVED and landed
 
 **Head `894b105` (origin/main). Full copy/paste resume prompt: `docs/NEXT-SESSION-PROMPT.md`.**

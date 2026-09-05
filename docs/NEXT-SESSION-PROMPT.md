@@ -1,11 +1,20 @@
 # Next-session resume prompt (copy/paste)
 
 > Copy everything in the fenced block below into a fresh session to resume seamlessly.
-> Written 2026-09-05. Repo head at handoff: `e370679` (origin/main).
+> Written 2026-09-05 (updated). Repo head at handoff: `8e8eb1b` (fully pushed to origin/main).
 
 ```
 You are resuming the Kingphisher-Phoenix phishing-awareness-platform build. Repo:
-/Users/edierks/projects/codex-test/phishing-awareness-platform (branch main, head e370679).
+/Users/edierks/projects/codex-test/phishing-awareness-platform (branch main, head 8e8eb1b,
+fully pushed to origin/main — the app is recovery-safe: code on GitHub, .env in the DR archive).
+
+## SCOPE (READ FIRST — hard rule)
+Work ONLY inside this repo (phishing-awareness-platform). NEVER modify any other project.
+A SEPARATE agent owns CROW (~/crow) and the DR/backup mechanism (dr-sync, the Alice/.36
+archive, the crow-* launchd agents) — do NOT edit ~/crow, ~/bin, or ~/Library/LaunchAgents,
+even though the harness may list them as writable working dirs. Reading them for context is
+fine; changing them is not. Any process/CPU guardrail must WARN, never auto-kill (the operator
+runs several concurrent agent/coding sessions and a false kill mid-build is unacceptable).
 
 ## THE GOAL (unchanged)
 Send ONE real phishing-simulation email to erik.dierks@gmail.com through the governed

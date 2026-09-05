@@ -1,7 +1,14 @@
-# RESUME HERE — 2026-09-05 (Azure real-send drive; head `e370679`)
+# RESUME HERE — 2026-09-05 (Azure real-send drive; head `8e8eb1b`, pushed)
 
 > **Full copy/paste resume prompt: [`docs/NEXT-SESSION-PROMPT.md`](docs/NEXT-SESSION-PROMPT.md).**
 > The section below is the current state; older history follows further down.
+
+> **SCOPE (hard rule):** work ONLY in this repo. A SEPARATE agent owns CROW (`~/crow`) and
+> the DR/backup mechanism (dr-sync, the Alice/.36 archive, the `crow-*` launchd agents) —
+> do not modify `~/crow`, `~/bin`, or `~/Library/LaunchAgents`. Any process guardrail must
+> warn, never auto-kill. This repo is recovery-safe: all code on origin/main, `.env` in the
+> DR archive on Alice. (2026-09-05: repo pushed to `8e8eb1b`; nothing else engineering-wise
+> changed this session — KP-008 stays RESOLVED, next step is still the console send flow.)
 
 **Goal:** send ONE real phishing-sim email to erik.dierks@gmail.com via the Azure operator
 console. AI content (ai-gateway + Qwen) and ACS delivery are DEPLOYED; we are driving the
