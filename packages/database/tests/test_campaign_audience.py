@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from kp_database.base import Base
+from _migrate_schema import rebuild_public_schema_via_migrations
 from kp_database.campaign_service import (
     AudienceDefinition,
     audience_matches_preview,
@@ -66,9 +66,9 @@ requires_db = pytest.mark.skipif(not _db_available(), reason="PostgreSQL integra
 
 
 def _setup() -> None:
+    # TST-002: exercise the migrated schema, not Base.metadata.create_all().
+    rebuild_public_schema_via_migrations(TEST_URL)
     engine = create_db_engine(TEST_URL)
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
     now = datetime.now(UTC)
     with make_session_factory(engine)() as session:
         session.add_all(

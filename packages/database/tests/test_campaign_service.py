@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from kp_database.base import Base
+from _migrate_schema import rebuild_public_schema_via_migrations
 from kp_database.campaign_service import (
     bind_campaign_training_resource,
     empty_audience,
@@ -67,10 +67,8 @@ TOKEN_KEY = b"t" * 32
 
 
 def _setup() -> None:
-    engine = create_db_engine(TEST_URL)
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    engine.dispose()
+    # TST-002: exercise the migrated schema, not Base.metadata.create_all().
+    rebuild_public_schema_via_migrations(TEST_URL)
     CipherText.configure_key(b"0" * 32)
 
 

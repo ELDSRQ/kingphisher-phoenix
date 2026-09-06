@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from kp_database.base import Base
+from _migrate_schema import rebuild_public_schema_via_migrations
 from kp_database.models import Campaign, CampaignApproval, CampaignPattern, CipherText, TemplateVersion
 from kp_database.session import create_db_engine, make_session_factory
 from kp_domain_models import models as dm
@@ -51,10 +51,8 @@ requires_db = pytest.mark.skipif(not _db_available(), reason="PostgreSQL integra
 
 
 def _setup() -> None:
-    engine = create_db_engine(TEST_URL)
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
-    engine.dispose()
+    # TST-002: exercise the migrated schema, not Base.metadata.create_all().
+    rebuild_public_schema_via_migrations(TEST_URL)
     CipherText.configure_key(b"0" * 32)
 
 
