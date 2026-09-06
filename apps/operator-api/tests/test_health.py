@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import kp_operator_api.main as main_module
 import pytest
@@ -13,6 +15,7 @@ from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import (
     _AUDIT_GATE_EXEMPT_ROUTES,
     _audit_mutation_state_is_healthy,
+    _make_anchor_heartbeat_reader,
     _requires_healthy_audit,
     create_app,
 )
@@ -194,6 +197,79 @@ def test_audit_health_is_fail_closed_for_unknown_and_unhealthy_state() -> None:
         SimpleNamespace(status="ok"),
         SimpleNamespace(outbox_health=lambda: {"failed": 0}),
     )
+
+
+def _healthy_store() -> Any:
+    return SimpleNamespace(outbox_health=lambda: {"overdue_pending": 0, "failed": 0, "dispatching_stale": 0})
+
+
+def test_anchor_age_gate_is_disabled_when_no_interval_is_given() -> None:
+    # Backward compatible: without an interval the anchor-age check is skipped.
+    assert _audit_mutation_state_is_healthy(SimpleNamespace(status="ok"), _healthy_store())
+
+
+def test_fresh_anchor_passes_the_age_gate() -> None:
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+    assert _audit_mutation_state_is_healthy(
+        SimpleNamespace(status="ok"),
+        _healthy_store(),
+        last_successful_anchor_at=now - timedelta(seconds=3600),
+        anchor_interval_seconds=3600,
+        now=now,
+    )
+
+
+def test_stalled_anchor_fails_closed() -> None:
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+    # Older than 2x the interval -> unwitnessed -> disable mutations.
+    assert not _audit_mutation_state_is_healthy(
+        SimpleNamespace(status="ok"),
+        _healthy_store(),
+        last_successful_anchor_at=now - timedelta(seconds=3 * 3600),
+        anchor_interval_seconds=3600,
+        now=now,
+    )
+
+
+def test_absent_or_naive_anchor_heartbeat_fails_open_when_gate_enabled() -> None:
+    # Fail OPEN on absence: a fresh / just-restarted stack (or a Redis blip that
+    # the reader turns into None) must NOT 503 the console.
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+    assert _audit_mutation_state_is_healthy(
+        SimpleNamespace(status="ok"),
+        _healthy_store(),
+        last_successful_anchor_at=None,
+        anchor_interval_seconds=3600,
+        now=now,
+    )
+    assert _audit_mutation_state_is_healthy(
+        SimpleNamespace(status="ok"),
+        _healthy_store(),
+        last_successful_anchor_at=datetime(2026, 9, 6, 11, 59),  # naive -> not evaluable
+        anchor_interval_seconds=3600,
+        now=now,
+    )
+
+
+def test_anchor_heartbeat_reader_fails_open_on_absence_and_redis_error() -> None:
+    warnings: list[str] = []
+    logger = SimpleNamespace(warning=lambda event, **_kw: warnings.append(event))
+    when = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+
+    present = _make_anchor_heartbeat_reader(SimpleNamespace(read_audit_anchor_heartbeat=lambda: when), logger)
+    assert present() == when
+    assert warnings == []
+
+    absent = _make_anchor_heartbeat_reader(SimpleNamespace(read_audit_anchor_heartbeat=lambda: None), logger)
+    assert absent() is None
+    assert absent() is None  # warned only once per absence episode
+    assert warnings == ["audit_anchor_heartbeat_absent"]
+
+    def _boom() -> datetime:
+        raise RuntimeError("redis unreachable")
+
+    unreachable = _make_anchor_heartbeat_reader(SimpleNamespace(read_audit_anchor_heartbeat=_boom), logger)
+    assert unreachable() is None  # Redis blip -> None -> gate does not trip
 
 
 def test_future_scheduled_outbox_work_is_healthy() -> None:

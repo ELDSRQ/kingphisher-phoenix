@@ -176,6 +176,34 @@ def test_managed_audit_anchor_rejects_missing_or_non_azure_configuration() -> No
         )
 
 
+def test_audit_anchor_provider_defaults_to_azure_blob() -> None:
+    settings = _settings(worker_name="audit-anchor")
+    assert settings.audit_anchor_provider_kind.value == "azure_blob"
+
+
+def test_managed_local_worm_audit_anchor_requires_a_directory() -> None:
+    from kp_workers.config import AuditAnchorProviderKind
+
+    with pytest.raises(ValidationError, match="local directory"):
+        _settings(
+            worker_name="audit-anchor",
+            runtime_mode="managed",
+            audit_anchor_provider="local_worm",
+        )
+
+    settings = _settings(
+        worker_name="audit-anchor",
+        runtime_mode="managed",
+        audit_anchor_provider="local_worm",
+        audit_anchor_local_dir="data/audit-anchors",
+        # Azure fields deliberately absent: local_worm must not require them.
+        audit_anchor_container_url=None,
+        audit_anchor_client_id=None,
+    )
+    assert settings.audit_anchor_provider_kind is AuditAnchorProviderKind.LOCAL_WORM
+    assert settings.require_local_audit_anchor_dir() == "data/audit-anchors"
+
+
 def test_managed_graph_roles_require_distinct_explicit_identity_client_ids() -> None:
     with pytest.raises(ValidationError, match="distinct managed identity client IDs"):
         _settings(

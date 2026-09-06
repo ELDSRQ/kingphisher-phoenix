@@ -192,12 +192,12 @@ class WorkerSupervisor:
             return False
         return True
 
-    def _reject(self, spec: RoleSpec, message: dict[str, Any]) -> bool:
+    def _reject(self, spec: RoleSpec, message: dict[str, Any], *, max_retries: int | None = None) -> bool:
         try:
             spec.context.queue.reject(
                 spec.topic,
                 message,
-                max_retries=spec.context.settings.max_retries,
+                max_retries=spec.context.settings.max_retries if max_retries is None else max_retries,
             )
         except Exception as exc:
             self._record_failure(spec.name, "queue_reject_failed")
@@ -284,14 +284,29 @@ class WorkerSupervisor:
                     self._set_readiness(spec.name, ready=True, reason="polling")
                     return True
                 except Exception as exc:
-                    metrics.increment("kp_worker_jobs_total", role=metric_role(spec.name), outcome="error")
-                    rejected = self._reject(spec, message)
-                    if rejected:
+                    # A handler may mark an error non-retryable (retryable=False)
+                    # when retrying cannot possibly succeed — e.g. an immutable
+                    # audit-anchor key already holds different content, or a
+                    # published anchor no longer matches the chain (AUD-003).
+                    # Route those straight to the dead-letter queue and drop
+                    # readiness rather than retrying an unwinnable job.
+                    non_retryable = getattr(exc, "retryable", True) is False
+                    metrics.increment(
+                        "kp_worker_jobs_total",
+                        role=metric_role(spec.name),
+                        outcome="permanent_failure" if non_retryable else "error",
+                    )
+                    rejected = self._reject(spec, message, max_retries=1 if non_retryable else None)
+                    if rejected and not non_retryable:
                         self._record_failure(spec.name, "processing_failed")
-                    self._logger.error(
+                    if non_retryable:
+                        self._set_readiness(spec.name, ready=False, reason="integrity_failure")
+                    log = self._logger.critical if non_retryable else self._logger.error
+                    log(
                         "worker_role_processing_failed",
                         role=spec.name,
                         error_code=_exception_code(exc),
+                        retryable=not non_retryable,
                     )
                     return True
 

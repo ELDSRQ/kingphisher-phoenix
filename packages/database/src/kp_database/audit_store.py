@@ -271,6 +271,48 @@ class AuditStore:
             heads = conn.scalar(text("SELECT count(event_hash) FROM audit_chain_head WHERE id = 1"))
         return (events or 0) == 0 and (heads or 0) == 0
 
+    def hashes_by_sequence(self, sequences: set[int]) -> dict[int, str | None]:
+        """Return the event hash at each 1-indexed chain position in ``sequences``.
+
+        Walks the chain from genesis by ``prev_hash`` links (position 1 is the
+        first event) and records the ``event_hash`` at each requested position.
+        A position past the end of the canonical single chain — or one reached
+        only through a fork/cycle — maps to ``None`` so the caller fails closed.
+
+        Least-privilege safe: reads only ``prev_hash``/``event_hash``, the
+        columns already granted to the read-only audit-anchor role. Used by the
+        anchor worker's read-back verification, not by chain integrity itself
+        (see AuditStore.verify for that).
+        """
+
+        wanted = {sequence for sequence in sequences if sequence >= 1}
+        if not wanted:
+            return {}
+        with self._engine.connect() as conn:
+            rows = conn.execute(text("SELECT prev_hash, event_hash FROM audit_events")).mappings().all()
+        children: dict[str, list[str]] = {}
+        for row in rows:
+            children.setdefault(row["prev_hash"], []).append(row["event_hash"])
+        result: dict[int, str | None] = {sequence: None for sequence in wanted}
+        current = GENESIS_HASH
+        position = 0
+        visited: set[str] = set()
+        while True:
+            successors = children.get(current, [])
+            # Stop at the end, a fork (ambiguous position) or a cycle; verify()
+            # is responsible for reporting those as integrity problems.
+            if len(successors) != 1:
+                break
+            nxt = successors[0]
+            if nxt in visited:
+                break
+            visited.add(nxt)
+            position += 1
+            if position in result:
+                result[position] = nxt
+            current = nxt
+        return result
+
     def verify(self) -> list[str]:
         """Verify both chain generations and surface failed/stale intents."""
         problems: list[str] = []
@@ -300,6 +342,17 @@ class AuditStore:
         for row in rows:
             by_prev.setdefault(row["prev_hash"], []).append(row)
             if row["chain_version"] == 2:
+                # AUD-003 OPEN QUESTION (deferred, needs human review): this
+                # re-hashes the STORED canonical_payload text. It therefore only
+                # detects tampering with prev_hash/nonce/canonical_payload — an
+                # UPDATE to the actor/action/object_*/detail COLUMNS is invisible
+                # because the stale canonical text is what gets re-hashed. To
+                # close that gap, v2 verification should REBUILD canonical from
+                # the columns (as the v1 branch below does) and compare it to the
+                # stored canonical_payload before hashing. Not changed here: the
+                # exact v2 canonical byte format must be confirmed to match the
+                # writer so this does not raise false integrity failures across
+                # the whole chain. See report.
                 canonical = row["canonical_payload"]
                 recomputed = hashlib.sha256((row["prev_hash"] + canonical + row["nonce"]).encode("utf-8")).hexdigest()
             else:
