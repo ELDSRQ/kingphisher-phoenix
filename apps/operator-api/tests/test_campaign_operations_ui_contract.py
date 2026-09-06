@@ -31,7 +31,10 @@ def test_campaign_report_combines_aggregate_surfaces_without_named_access() -> N
     assert "namedResults.total" in NAMED_RESULTS
     assert "namedResults.slice" not in NAMED_RESULTS
     assert "Capability-protected recipient outcomes" in NAMED_RESULTS
-    assert "result.recipient_id" in NAMED_RESULTS
+    # UX-011 §1: the outcome row shows a masked identification label (display
+    # name + masked mailbox for VIEW_NAMED_RESULTS holders), not the raw UUID.
+    assert "recipientReference(result)" in NAMED_RESULTS
+    assert "result.recipient_id" not in NAMED_RESULTS
     assert "result.department" in NAMED_RESULTS
     assert 'result.confirmed_interaction ? "Yes" : "No"' in NAMED_RESULTS
     assert "result.close_disposition" in NAMED_RESULTS

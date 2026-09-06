@@ -115,6 +115,27 @@ function validateRecipientCsvText(csvText) {
   return csvText;
 }
 
+// UX-011 §1: a person is shown by a masked label, never an 8-char UUID, for
+// callers the server already authorised to see names (VIEW_NAMED_RESULTS). The
+// server sends display_name + masked_mailbox only to that capability; when they
+// are absent (a MANAGE_RECIPIENTS-only operator) we fall back to the truncated
+// reference exactly as before. No client-side unmasking is possible: the raw
+// mailbox is never sent to the browser.
+function recipientReference(recipient) {
+  if (recipient && recipient.display_name && recipient.masked_mailbox) {
+    return `${recipient.display_name} · ${recipient.masked_mailbox}`;
+  }
+  if (recipient && recipient.masked_mailbox) return recipient.masked_mailbox;
+  return String((recipient && recipient.recipient_id) || "").slice(0, 8);
+}
+
+function recipientPickerLabel(recipient) {
+  const reference = recipientReference(recipient);
+  const department = (recipient && recipient.department) || "No department";
+  const status = recipient && recipient.status;
+  return status ? `${department} · ${reference} · ${status}` : `${department} · ${reference}`;
+}
+
 async function boundedCsvBlob(response) {
   const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
   if (contentType !== "text/csv") throw new Error("Export returned an unexpected content type");
@@ -139,6 +160,69 @@ async function boundedCsvBlob(response) {
     chunks.push(value);
   }
   return new Blob(chunks, { type: "text/csv" });
+}
+
+// UX-011 §7: the campaign report/evidence downloads reuse the same 5 MB cap and
+// streaming guard, generalised over the expected content type so the evidence
+// bundle (application/zip) is bounded exactly like a CSV.
+async function boundedDownloadBlob(response, expectedType) {
+  const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== expectedType) throw new Error("Export returned an unexpected content type");
+  const declared = response.headers.get("content-length");
+  if (declared !== null) {
+    if (!/^\d{1,10}$/.test(declared) || Number(declared) > MAX_CSV_DOWNLOAD_BYTES) {
+      throw new Error("Export exceeded the 5 MB download limit");
+    }
+  }
+  if (!response.body) throw new Error("Export returned no downloadable content");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > MAX_CSV_DOWNLOAD_BYTES) {
+      await reader.cancel();
+      throw new Error("Export exceeded the 5 MB download limit");
+    }
+    chunks.push(value);
+  }
+  return new Blob(chunks, { type: expectedType });
+}
+
+// UX-011 §7: the campaign report/evidence exports are the only allow-listed
+// downloads outside /analytics/. Same 5 MB cap and content-type check as the
+// analytics CSVs; evidence.zip is the one binary export. No path outside this
+// exact shape can be requested.
+const CAMPAIGN_EXPORT_PATH = /^\/campaigns\/[0-9a-fA-F-]{36}\/(?:report\.csv|evidence\.zip)$/;
+
+async function downloadCampaignExport(path, filename, expectedType) {
+  if (!CAMPAIGN_EXPORT_PATH.test(path) || path.includes("://") || /[\r\n]/.test(path)) {
+    throw new Error("Export path is not allowed");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,126}\.(?:csv|zip)$/.test(filename)) {
+    throw new Error("Export filename is not allowed");
+  }
+  const headers = { Accept: expectedType };
+  if (token()) headers.Authorization = `Bearer ${token()}`;
+  const response = await fetch(`${API}${path}`, { headers, credentials: "same-origin", cache: "no-store" });
+  if (response.status === 401) {
+    clearToken();
+    render();
+    throw new Error("Session expired");
+  }
+  if (!response.ok) throw new Error(`Export failed (${response.status})`);
+  const blob = await boundedDownloadBlob(response, expectedType);
+  const url = URL.createObjectURL(blob);
+  try {
+    const link = el("a", { href: url, download: filename });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 async function downloadApiCsv(path, filename) {
@@ -172,7 +256,24 @@ async function downloadApiCsv(path, filename) {
 /* ---------- state ---------- */
 let onboardingChecked = false;
 let lastRenderedView = null;
+// ARC-002 Item 1: default true so the console behaves exactly as before the
+// flag existed; set to false only when /console/auth-mode reports the deploy
+// connector is disabled. Consumed by canNavigateTo to hide "Azure deployment".
+let deployConnectorEnabled = true;
+let deployConnectorChecked = false;
 const views = {};
+
+async function ensureDeployConnectorState() {
+  if (deployConnectorChecked) return;
+  deployConnectorChecked = true;
+  try {
+    const resp = await fetch(`${API}/console/auth-mode`);
+    if (resp.ok) {
+      const payload = await resp.json();
+      deployConnectorEnabled = payload.deploy_connector_enabled !== false;
+    }
+  } catch { /* Leave the default; the nav shows as before if the hint is unreachable. */ }
+}
 
 function toast(message, type = "") {
   const notice = document.createElement("div");
@@ -627,7 +728,7 @@ async function openCampaignAnalytics(campaign, evidenceStart = "", evidenceEnd =
         el("th", { text: "Training" }),
       ])]),
       el("tbody", {}, visibleResults.length ? visibleResults.map((result) => el("tr", {}, [
-        el("td", { class: "mono", text: String(result.recipient_id || "").slice(0, 8) }),
+        el("td", { text: recipientReference(result) }),
         el("td", { text: result.department || "No department" }),
         el("td", { text: result.send_state }),
         el("td", { text: result.failure_reason || "None" }),
@@ -662,6 +763,35 @@ async function openCampaignAnalytics(campaign, evidenceStart = "", evidenceEnd =
       event.target.disabled = true;
       try { await downloadAnalyticsCsv(campaign.campaign_id, start.value.trim(), end.value.trim()); }
       catch (err) { toast(err.message, "error"); }
+      finally { event.target.disabled = false; }
+    } }),
+  );
+  // UX-011 §7: wire the pre-existing report.csv endpoint and the new read-only
+  // evidence bundle. Both are EXPORT_BULK — the same capability as the aggregate
+  // CSV; nothing about the export authorization changes.
+  if (hasCapability(CAPABILITY.EXPORT_BULK)) actions.push(
+    el("button", { class: "btn", type: "button", text: "Download report CSV", onclick: async (event) => {
+      event.target.disabled = true;
+      try {
+        await downloadCampaignExport(
+          `/campaigns/${campaign.campaign_id}/report.csv`,
+          `campaign-${campaign.campaign_id}-report.csv`,
+          "text/csv",
+        );
+      } catch (err) { toast(err.message, "error"); }
+      finally { event.target.disabled = false; }
+    } }),
+  );
+  if (hasCapability(CAPABILITY.EXPORT_BULK)) actions.push(
+    el("button", { class: "btn", type: "button", text: "Download evidence bundle", onclick: async (event) => {
+      event.target.disabled = true;
+      try {
+        await downloadCampaignExport(
+          `/campaigns/${campaign.campaign_id}/evidence.zip`,
+          `campaign-${campaign.campaign_id}-evidence.zip`,
+          "application/zip",
+        );
+      } catch (err) { toast(err.message, "error"); }
       finally { event.target.disabled = false; }
     } }),
   );
@@ -799,7 +929,12 @@ views.login = async (root) => {
   try {
     const resp = await fetch(`${API}/console/auth-mode`);
     if (!resp.ok) throw new Error("Authentication mode is unavailable");
-    authMode = (await resp.json()).auth_mode;
+    const authModePayload = await resp.json();
+    authMode = authModePayload.auth_mode;
+    // ARC-002 Item 1: reuse the same hint to record the deploy-connector state
+    // so the nav is correct on the first authenticated render after sign-in.
+    deployConnectorEnabled = authModePayload.deploy_connector_enabled !== false;
+    deployConnectorChecked = true;
     if (!new Set(["dev", "oidc"]).has(authMode)) throw new Error("Authentication mode is invalid");
   } catch {
     root.replaceChildren(el("div", { class: "login-wrap" }, [
@@ -836,6 +971,81 @@ views.login = async (root) => {
     ]),
   ]));
 };
+
+/* ---------- emergency stop (UX-011 §3) ----------
+   The global emergency stop is a single audited, capability-gated control:
+   POST /kill-switch (engage) / POST /kill-switch/reset, both USE_KILL_SWITCH,
+   both requiring confirm=true + a reason server-side. Nothing here changes that
+   authorization. The change is reachability: the identical flow is surfaced in
+   the sidebar footer so the operator running a live send no longer has to open
+   Audit (which campaign_operator cannot even see) to reach the stop. */
+async function toggleGlobalStop(engaged, targetEl) {
+  const values = await promptDialog({
+    title: engaged ? "Why is the global stop safe to reset?" : "Why is the global stop required?",
+    description: engaged
+      ? "Resetting reopens future scheduling and delivery. Cancelled assignments and revoked links stay cancelled."
+      : "The reason is retained with the persistent safety-state audit trail.",
+    fields: [{ name: "reason", label: "Operator reason", type: "textarea", required: true }],
+    submitLabel: "Continue",
+  });
+  if (!values) return;
+  const ok = await confirmDialog({
+    title: engaged ? "Reset the GLOBAL emergency stop?" : "Engage the GLOBAL emergency stop?",
+    message: engaged
+      ? "Future campaigns may schedule and deliver again. Previously cancelled work is not restored."
+      : "This persistently blocks scheduling and delivery across every replica and restart, cancels queued delivery, and revokes active tracking links.",
+    detail: { Reason: values.reason },
+    confirmLabel: engaged ? "Reset global stop" : "Engage global stop", danger: true,
+  });
+  if (!ok) return;
+  if (targetEl) targetEl.disabled = true;
+  try {
+    const path = engaged ? "/kill-switch/reset" : "/kill-switch";
+    const res = await api(path, { method: "POST", body: JSON.stringify({ confirm: true, reason: values.reason }) });
+    toast(engaged
+      ? "Global emergency stop reset; future delivery is enabled"
+      : `Global stop engaged: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
+    location.reload();
+  } catch (err) { toast(err.message, "error"); }
+  finally { if (targetEl) targetEl.disabled = false; }
+}
+
+function globalStopButton(engaged, { compact = false } = {}) {
+  return el("button", {
+    class: `btn ${engaged ? "primary" : "danger"}${compact ? " small" : ""}`,
+    type: "button",
+    text: engaged ? "Reset global stop" : (compact ? "STOP all delivery" : "Engage global stop"),
+    "aria-label": engaged ? "Reset the global emergency stop" : "Engage the global emergency stop",
+    onclick: (event) => toggleGlobalStop(engaged, event.target),
+  });
+}
+
+function sidebarEmergencyStop() {
+  // Visible only to holders of USE_KILL_SWITCH — the same capability the
+  // endpoint enforces. Approvers (who lack it) never see the control here,
+  // exactly as before.
+  if (!hasCapability(CAPABILITY.USE_KILL_SWITCH)) return null;
+  const container = el("div", { class: "emergency-stop", role: "group", "aria-label": "Emergency stop" });
+  const pill = el("div", {
+    class: "emergency-stop-pill", role: "status", "aria-live": "polite", text: "Checking delivery state…",
+  });
+  container.appendChild(pill);
+  (async () => {
+    try {
+      const kill = await api("/kill-switch");
+      const engaged = !!(kill && kill.engaged);
+      pill.className = `emergency-stop-pill ${engaged ? "down" : "ok"}`;
+      pill.textContent = engaged
+        ? `GLOBAL STOP ENGAGED · gen ${kill.generation ?? "?"}`
+        : `Delivery enabled · gen ${kill?.generation ?? 0}`;
+      container.appendChild(globalStopButton(engaged, { compact: true }));
+    } catch {
+      pill.className = "emergency-stop-pill";
+      pill.textContent = "Emergency-stop state unavailable";
+    }
+  })();
+  return container;
+}
 
 /* ---------- shell ---------- */
 const NAV = [
@@ -884,6 +1094,12 @@ function visibleNavigation() {
 
 function canNavigateTo(viewId) {
   if (!NAV.some(([id]) => id === viewId)) return false;
+  // ARC-002 Item 1: when the in-operator-API Azure deploy connector is turned
+  // off, the server emits deploy_connector_enabled=false from /console/auth-mode
+  // and the console hides the "Azure deployment" nav item. This is presentation
+  // only — the connector routes are already gated server-side; hiding the entry
+  // point just stops offering an action the server would refuse.
+  if (viewId === "azure-deployment" && !deployConnectorEnabled) return false;
   const required = NAV_CAPABILITIES[viewId];
   return !required || hasAnyCapability(...required);
 }
@@ -902,11 +1118,29 @@ function shell() {
   for (const [id, label] of visible) {
     nav.appendChild(el("button", {
       type: "button",
+      "data-nav": id,
       class: id === active ? "active" : "",
       "aria-current": id === active ? "page" : null,
       text: label,
       onclick: () => navigateTo(id),
     }));
+  }
+  // UX-011 §5: a "needs my decision" count badge on Campaigns, visible from
+  // every screen. Best-effort and read-only; it never gates anything.
+  if (hasAnyCapability(CAPABILITY.APPROVE_SECURITY, CAPABILITY.APPROVE_PRIVACY)
+    && visible.some(([id]) => id === "campaigns")) {
+    (async () => {
+      try {
+        const queue = await api("/campaigns/needs-my-decision");
+        const count = Array.isArray(queue) ? queue.length : 0;
+        const button = nav.querySelector('[data-nav="campaigns"]');
+        if (count && button && button.isConnected) {
+          button.appendChild(el("span", {
+            class: "nav-badge", "aria-label": `${count} awaiting your decision`, text: String(count),
+          }));
+        }
+      } catch { /* The badge is a hint; its absence never blocks navigation. */ }
+    })();
   }
   const content = el("div", {
     id: "console-view", class: "content", role: "region", tabindex: "-1", "aria-label": `${activeLabel} view`,
@@ -920,6 +1154,7 @@ function shell() {
       ]),
       nav,
       el("div", { class: "footer" }, [
+        sidebarEmergencyStop(),
         el("div", { text: info?.authMode === "dev" ? "Signed in as development operator" : "Signed in with OIDC" }),
         el("div", { id: "last-updated", class: "last-updated", role: "status", "aria-live": "polite" }),
         el("button", { type: "button", text: "Refresh current view", onclick: async () => {
@@ -944,7 +1179,7 @@ function shell() {
             toast("Local session cleared, but server sign-out could not be confirmed. Close the browser tab on a shared device.", "error");
           }
         } }),
-      ]),
+      ].filter(Boolean)),
     ]),
     content,
   ]);
@@ -1967,18 +2202,56 @@ views.dashboard = async (root) => {
   if (!requireAnyCapability(root, CAPABILITY.VIEW_AGGREGATE, CAPABILITY.VIEW_AUDIT)) return;
   const canViewAggregate = hasCapability(CAPABILITY.VIEW_AGGREGATE);
   const canViewAudit = hasCapability(CAPABILITY.VIEW_AUDIT);
+  const isApprover = hasAnyCapability(CAPABILITY.APPROVE_SECURITY, CAPABILITY.APPROVE_PRIVACY);
   root.appendChild(el("h2", { text: "Dashboard" }));
   root.appendChild(el("p", { class: "sub", text: "System health and recent campaign activity." }));
-  let status, campaigns, audit;
+  let status, campaigns, audit, needsDecision;
   try {
-    [status, campaigns, audit] = await Promise.all([
+    [status, campaigns, audit, needsDecision] = await Promise.all([
       canViewAggregate ? api("/console/status") : Promise.resolve(null),
       canViewAggregate ? boundedCollection("/campaigns") : Promise.resolve([]),
       canViewAudit ? api("/audit/verify", { method: "POST" }) : Promise.resolve(null),
+      // UX-011 §5: campaigns awaiting THIS principal's approval, computed and
+      // filtered server-side (AUT-002-aware). Never shows a lane this principal
+      // already decided or submitted.
+      isApprover ? api("/campaigns/needs-my-decision") : Promise.resolve([]),
     ]);
   } catch (e) {
     root.appendChild(collectionLoadError(`Failed to load dashboard: ${e.message}`, () => render()));
     return;
+  }
+  if (isApprover) {
+    const queue = Array.isArray(needsDecision) ? needsDecision : [];
+    const card = el("div", { class: "card", role: "region", "aria-label": "Campaigns needing my decision" }, [
+      el("h3", { text: `Needs my decision (${queue.length})` }),
+    ]);
+    if (!queue.length) {
+      card.appendChild(el("p", { class: "empty", text: "No campaigns are waiting on your approval." }));
+    } else {
+      card.appendChild(el("table", { "aria-label": "Campaigns awaiting my approval" }, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", { text: "Campaign" }), el("th", { text: "Open lane(s)" }),
+          el("th", { text: "Window" }), el("th", { text: "Action" }),
+        ])]),
+        el("tbody", {}, queue.map((row) => {
+          const lanes = [
+            row.can_approve_security ? "Security" : null,
+            row.can_approve_privacy ? "Privacy" : null,
+          ].filter(Boolean).join(", ");
+          return el("tr", {}, [
+            el("td", { text: row.title }),
+            el("td", { text: lanes || "—" }),
+            el("td", { class: "mono", text: `${formatInstant(row.schedule_start)} → ${formatInstant(row.schedule_end)}` }),
+            el("td", {}, [el("button", {
+              class: "btn small", type: "button", text: "Review in Campaigns",
+              "aria-label": `Review ${row.title} in the Campaigns view`,
+              onclick: () => navigateTo("campaigns"),
+            })]),
+          ]);
+        })),
+      ]));
+    }
+    root.appendChild(card);
   }
   if (status) root.appendChild(statusPills(status));
   if (status && runtimeCapabilities(status).managed && status.status_message) {
@@ -2555,7 +2828,7 @@ views.campaigns = async (root) => {
       memberSelect.appendChild(el("option", {
         value: recipient.recipient_id,
         selected: existingIds.has(recipient.recipient_id),
-        text: `${recipient.department || "No department"} · ${recipient.recipient_id.slice(0, 8)} · ${recipient.status}`,
+        text: recipientPickerLabel(recipient),
       }));
     }
     memberSelect.disabled = !namedRecipientSelectionComplete;
@@ -2614,7 +2887,7 @@ views.campaigns = async (root) => {
     const departmentSelect = makeMulti(departments.map((d) => ({ value: d, label: d })), current.departments);
     const recipientOptions = recipients.map((r) => ({
       value: r.recipient_id,
-      label: `${r.department || "No department"} · ${r.recipient_id.slice(0, 8)} · ${r.status}`,
+      label: recipientPickerLabel(r),
     }));
     const includeSelect = makeMulti(recipientOptions, current.include_recipient_ids, 8);
     const excludeSelect = makeMulti(recipientOptions, current.exclude_recipient_ids, 8);
@@ -2959,6 +3232,17 @@ views.campaigns = async (root) => {
           class: "btn small", type: "button", text: "Review campaign",
           "aria-label": `Review campaign ${c.title}`,
           onclick: () => openCampaignReview(c),
+        }));
+        // UX-011 §4: "Clone as new draft" prefills the create form only. The
+        // new campaign is created through POST /campaigns like any other, so it
+        // starts as an unapproved DRAFT with NO carried-over approvals and NO
+        // RoE — audience must be reconfigured and frozen, and the launch review
+        // rebuilt, exactly as for a hand-typed campaign. Nothing about the
+        // approval/RoE gates is bypassed; this only saves retyping.
+        if (canCreateCampaign) actions.push(el("button", {
+          class: "btn small", type: "button", text: "Clone as new draft",
+          "aria-label": `Start a new draft campaign prefilled from ${c.title}`,
+          onclick: () => cloneCampaignIntoForm(c),
         }));
         // Emergency stop, reports and owner-scoped alert subscriptions use
         // separate server controls and are intentionally not campaign flags.
@@ -3505,18 +3789,27 @@ views.sending = async (root) => {
     } catch (err) { toast(err.message, "error"); }
   }
 
-  async function signRoe() {
+  async function signRoe(prefill = {}) {
+    // UX-011 §4: "Re-sign for a new window" prefills party/terms/domains from an
+    // existing RoE and leaves the window blank. The result is always a brand new
+    // signature (v2 binds terms hash, party, domains, the full window, signer and
+    // time); the source RoE is untouched unless the operator revokes it
+    // separately. Re-signing still requires SIGN_ROE and DNS-verified domains —
+    // no authorization boundary changes.
+    const prefillDomains = Array.isArray(prefill.target_domains) && prefill.target_domains.length
+      ? prefill.target_domains.join(", ")
+      : verifiedDomains.join(", ");
     const values = await promptDialog({
-      title: "Sign a Rules-of-Engagement",
+      title: prefill.roe_id ? "Re-sign a Rules-of-Engagement for a new window" : "Sign a Rules-of-Engagement",
       description: "The signature binds terms + signer + timestamp under the shared RoE key. Every target domain must already be DNS-verified, and the window must cover the campaigns it authorizes.",
       fields: [
-        { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp" },
-        { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training." },
+        { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp", value: prefill.authorizing_party || "" },
+        { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training.", value: prefill.terms || "" },
         { name: "window_start", label: "Window start (your local time)", type: "datetime-local", required: true },
         { name: "window_end", label: "Window end (your local time)", type: "datetime-local", required: true },
-        { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: verifiedDomains.join(", ") },
+        { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: prefillDomains },
       ],
-      submitLabel: "Sign RoE",
+      submitLabel: prefill.roe_id ? "Sign new RoE" : "Sign RoE",
     });
     if (!values) return;
     try {
@@ -3605,7 +3898,20 @@ views.sending = async (root) => {
     el("td", { class: "mono", text: `${formatInstant(roe.window_start)} → ${formatInstant(roe.window_end)}` }),
     el("td", { text: (roe.target_domains || []).join(", ") }),
     el("td", {}, [el("span", { class: `pill ${roe.revoked_at ? "down" : (roeActive(roe) ? "ok" : "down")}`, text: roe.revoked_at ? "revoked" : (roeActive(roe) ? "active" : "window passed") })]),
-    el("td", {}, roe.revoked_at ? [el("span", { class: "empty", text: formatInstant(roe.revoked_at) })] : [el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeRoe(roe) })]),
+    el("td", {}, [
+      canSignRoe ? el("button", {
+        class: "btn small", type: "button", text: "Re-sign for a new window",
+        "aria-label": `Sign a new Rules-of-Engagement for a new window based on the one for ${roe.authorizing_party}`,
+        onclick: () => signRoe({
+          roe_id: roe.roe_id,
+          authorizing_party: roe.authorizing_party,
+          target_domains: roe.target_domains || [],
+        }),
+      }) : null,
+      roe.revoked_at
+        ? el("span", { class: "empty", text: formatInstant(roe.revoked_at) })
+        : el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeRoe(roe) }),
+    ].filter(Boolean)),
   ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 6, text: "No Rules-of-Engagement signed yet. Delivery is blocked until one covers a campaign." })])];
   if (canSignRoe) root.appendChild(el("div", { class: "card" }, [
     el("div", { class: "card-head" }, [
@@ -4088,6 +4394,10 @@ views.trends = async (root) => {
       const page = await api("/recipients?limit=500&offset=0").then((payload) => boundedRecipientPage(payload, 500));
       if (!page.truncated) {
         for (const recipient of page.items) {
+          // The pseudonymous ledger drill-down must never render an identity or
+          // pseudonym (privacy contract), so it keeps the truncated reference
+          // even for VIEW_NAMED_RESULTS holders — the masked label is used only
+          // in the campaign-outcome and recipient-management contexts.
           recipientSelect.appendChild(el("option", {
             value: recipient.recipient_id,
             text: `${recipient.department || "No department"} · ${recipient.recipient_id.slice(0, 8)} · ${recipient.status}`,
@@ -4152,6 +4462,43 @@ async function showTemplatePreview(draft, trigger) {
   showRenderedTemplatePreview(rendered);
 }
 
+// UX-011 §4: client-side clone. Prefills the create form with the fields the
+// campaigns list exposes and leaves the window blank (the API rejects a past
+// window, so a copied one would only mislead). It creates nothing by itself —
+// the operator still creates a fresh DRAFT, so approvals and RoE cannot carry
+// over. The toast makes the required re-work explicit.
+function cloneCampaignIntoForm(campaign) {
+  const setValue = (id, value) => {
+    const field = document.getElementById(id);
+    if (field && value !== null && value !== undefined) field.value = value;
+  };
+  setValue("c-title", `${campaign.title || "Campaign"} (copy)`);
+  setValue("c-sender", campaign.sender_mailbox || "");
+  setValue("c-sender-display", campaign.sender_display_name || "");
+  const anchor = document.getElementById("c-title");
+  if (anchor) {
+    anchor.scrollIntoView({ behavior: "smooth", block: "center" });
+    anchor.focus();
+  }
+  toast(
+    "Prefilled a new draft from this campaign. Choose the pattern, template and lesson, set the window, then configure and freeze the audience. Approvals and Rules of Engagement do not carry over.",
+    "success",
+  );
+}
+
+// UX-011 §2a: read every href out of the sanitized HTML by PARSING it, never
+// by executing it. DOMParser builds an inert document — no scripts run, no
+// resources load — so the approver reads the real destinations without hovering.
+function extractPreviewLinks(html) {
+  try {
+    const doc = new DOMParser().parseFromString(html || "", "text/html");
+    return Array.from(doc.querySelectorAll("a[href]")).slice(0, 200).map((anchor) => ({
+      text: (anchor.textContent || "").trim().slice(0, 200),
+      href: anchor.getAttribute("href") || "",
+    }));
+  } catch { return []; }
+}
+
 function showRenderedTemplatePreview(rendered) {
   const { dlg, form } = dialogShell(
     `Preview: ${rendered.subject || "(no subject)"}`,
@@ -4163,8 +4510,42 @@ function showRenderedTemplatePreview(rendered) {
   const controls = el("div", { class: "btn-row", role: "group", "aria-label": "Preview format" });
   const buttons = new Map();
 
+  const hasHtml = Boolean(rendered.safe_html);
+
   const draw = (mode) => {
     for (const [name, button] of buttons) button.setAttribute("aria-pressed", String(name === mode));
+    if (mode === "html") {
+      // The srcdoc document is opaque-origin (sandbox="" grants nothing: no
+      // scripts, no same-origin, no forms, no popups) and inherits the console
+      // CSP, so inline script and remote images are blocked — no tracking
+      // beacon can fire from a preview. Fidelity is "structure, text, links",
+      // which is exactly what S9 needs. The safe_html is the server's already
+      // sanitized output; nothing here re-renders or relaxes it.
+      status.textContent = "Sandboxed HTML preview. Scripts, forms, and remote images are blocked by the console content-security policy; this shows structure, text, and links only.";
+      const frame = el("iframe", {
+        class: "preview-frame html",
+        sandbox: "",
+        referrerpolicy: "no-referrer",
+        title: "Sandboxed HTML message preview",
+        srcdoc: rendered.safe_html || "",
+      });
+      const links = extractPreviewLinks(rendered.safe_html);
+      const linkTable = links.length
+        ? el("table", { class: "report-table", "aria-label": "Links in the message" }, [
+          el("thead", {}, [el("tr", {}, [el("th", { text: "Link text" }), el("th", { text: "Destination" })])]),
+          el("tbody", {}, links.map((link) => el("tr", {}, [
+            el("td", { text: link.text || "(no link text)" }),
+            el("td", { class: "mono", text: link.href }),
+          ]))),
+        ])
+        : el("p", { class: "empty", text: "No links are present in this message." });
+      stage.replaceChildren(el("div", {}, [
+        frame,
+        el("h4", { class: "modal-section", text: "Links in this message" }),
+        linkTable,
+      ]));
+      return;
+    }
     if (mode === "plain") {
       status.textContent = "Plain-text alternative as delivered to clients that do not render HTML.";
       stage.replaceChildren(el("pre", {
@@ -4193,7 +4574,10 @@ function showRenderedTemplatePreview(rendered) {
     stage.replaceChildren(message);
   };
 
-  for (const [mode, label] of [["desktop", "Desktop"], ["mobile", "Mobile"], ["plain", "Plain text"]]) {
+  const modes = [];
+  if (hasHtml) modes.push(["html", "HTML"]);
+  modes.push(["desktop", "Desktop"], ["mobile", "Mobile"], ["plain", "Plain text"]);
+  for (const [mode, label] of modes) {
     const button = el("button", {
       class: "btn small", type: "button", text: label, "aria-pressed": "false", onclick: () => draw(mode),
     });
@@ -4202,10 +4586,15 @@ function showRenderedTemplatePreview(rendered) {
   }
   form.appendChild(controls);
   form.appendChild(status);
-  if (rendered.safe_html || rendered.safe_html_present) {
+  if (hasHtml) {
     form.appendChild(el("p", {
       class: "modal-help",
-      text: "A sanitized HTML alternative exists but is deliberately not executed in the operator console. Use the plain-text fallback below for safe review.",
+      text: "The sanitized HTML is shown in a sandboxed frame (no scripts, no remote images, no forms). The link table lists every destination the message links to.",
+    }));
+  } else if (rendered.safe_html_present) {
+    form.appendChild(el("p", {
+      class: "modal-help",
+      text: "A sanitized HTML alternative exists but was not included in this contract. Use the plain-text fallback below for safe review.",
     }));
   } else {
     form.appendChild(el("p", {
@@ -4217,7 +4606,7 @@ function showRenderedTemplatePreview(rendered) {
   form.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "btn primary", type: "button", text: "Close preview", onclick: () => dlg.close() }),
   ]));
-  draw("desktop");
+  draw(hasHtml ? "html" : "desktop");
   openDialog(dlg);
 }
 
@@ -5374,7 +5763,7 @@ views.recipients = async (root) => {
       el("th", { text: "Action" }),
     ])]),
     el("tbody", {}, recipients.length ? recipients.map((r) => el("tr", {}, [
-      el("td", { class: "mono", text: String(r.recipient_id || "").slice(0, 8) }),
+      el("td", { text: recipientReference(r) }),
       el("td", { text: r.department || "No department" }),
       el("td", { text: r.status }),
       el("td", { text: r.is_test_account ? "Server-designated test account" : "Standard recipient" }),
@@ -6641,37 +7030,9 @@ views.audit = async (root) => {
       } catch (err) { toast(err.message, "error"); }
       finally { e.target.disabled = false; }
     } }),
-    canUseKillSwitch ? el("button", { class: `btn ${engaged ? "primary" : "danger"}`, text: engaged ? "Reset global stop" : "Engage global stop",
-      onclick: async (e) => {
-      const values = await promptDialog({
-        title: engaged ? "Why is the global stop safe to reset?" : "Why is the global stop required?",
-        description: engaged
-          ? "Resetting reopens future scheduling and delivery. Cancelled assignments and revoked links stay cancelled."
-          : "The reason is retained with the persistent safety-state audit trail.",
-        fields: [{ name: "reason", label: "Operator reason", type: "textarea", required: true }],
-        submitLabel: "Continue",
-      });
-      if (!values) return;
-      const ok = await confirmDialog({
-        title: engaged ? "Reset the GLOBAL emergency stop?" : "Engage the GLOBAL emergency stop?",
-        message: engaged
-          ? "Future campaigns may schedule and deliver again. Previously cancelled work is not restored."
-          : "This persistently blocks scheduling and delivery across every replica and restart, cancels queued delivery, and revokes active tracking links.",
-        detail: { Reason: values.reason },
-        confirmLabel: engaged ? "Reset global stop" : "Engage global stop", danger: true,
-      });
-      if (!ok) return;
-      e.target.disabled = true;
-      try {
-        const path = engaged ? "/kill-switch/reset" : "/kill-switch";
-        const res = await api(path, { method: "POST", body: JSON.stringify({ confirm: true, reason: values.reason }) });
-        toast(engaged
-          ? "Global emergency stop reset; future delivery is enabled"
-          : `Global stop engaged: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
-        location.reload();
-      } catch (err) { toast(err.message, "error"); }
-      finally { e.target.disabled = false; }
-    } }) : null,
+    // UX-011 §3: the same shared control the sidebar uses, not a second
+    // implementation. Identical endpoint, capability, confirm+reason flow.
+    canUseKillSwitch ? globalStopButton(engaged) : null,
   ].filter(Boolean)));
   if (!canUseKillSwitch) {
     root.appendChild(el("p", { class: "field-help", text: "Emergency-stop state and controls require the kill-switch capability." }));
@@ -6835,6 +7196,7 @@ async function render() {
     } catch { /* Render login below. */ }
   }
   if (!token() && !sessionInfo()) { views.login(document.getElementById("app")); return; }
+  await ensureDeployConnectorState();
   if (!onboardingChecked) {
     onboardingChecked = true;
     if (hasCapability(CAPABILITY.MANAGE_ROLES)) {

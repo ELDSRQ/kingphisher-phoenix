@@ -91,12 +91,20 @@ def _recipient(index: int) -> Any:
         department=f"Department {index % 7}",
         status=dm.RecipientStatus.ACTIVE,
         is_test_account=False,
+        display_name=f"Person {index}",
+        mailbox=f"person{index}@corp.example",
+        mailbox_sha256=f"{index:064x}",
     )
+
+
+_ANON_PRINCIPAL = SimpleNamespace(can=lambda _capability: False)
 
 
 def test_global_recipient_query_and_envelope_are_bounded_beyond_one_page() -> None:
     session = _GlobalSession([_recipient(index) for index in range(501)])
-    page = list_recipients(limit=500, offset=0, session=session, _principal=object())  # type: ignore[arg-type]
+    page = list_recipients(
+        limit=500, offset=0, mailbox=None, session=session, settings=object(), principal=_ANON_PRINCIPAL  # type: ignore[arg-type]
+    )
 
     assert len(page["items"]) == 500
     assert {key: page[key] for key in ("total", "limit", "offset", "truncated")} == {
@@ -110,7 +118,9 @@ def test_global_recipient_query_and_envelope_are_bounded_beyond_one_page() -> No
     assert "LIMIT" in str(session.page_statement)
     assert "OFFSET" in str(session.page_statement)
 
-    final_page = list_recipients(limit=500, offset=500, session=session, _principal=object())  # type: ignore[arg-type]
+    final_page = list_recipients(
+        limit=500, offset=500, mailbox=None, session=session, settings=object(), principal=_ANON_PRINCIPAL  # type: ignore[arg-type]
+    )
     assert len(final_page["items"]) == 1
     assert final_page["truncated"] is False
 
@@ -193,6 +203,11 @@ def test_campaign_recipient_results_expose_explicit_close_disposition() -> None:
     )
 
     active, quiet = page["items"]
+    # UX-011 §1: VIEW_NAMED_RESULTS-gated outcomes carry a masked identification
+    # label (display name + masked mailbox), never the raw mailbox.
+    assert active["display_name"] == "Person 0"
+    assert active["masked_mailbox"] == "p***@corp.example"
+    assert "person0@corp.example" not in str(active)
     assert active["confirmed_interaction"] is True
     assert active["close_disposition"] == "activity_at_close"
     assert quiet["confirmed_interaction"] is False

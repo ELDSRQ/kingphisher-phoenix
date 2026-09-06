@@ -13,9 +13,11 @@ import csv
 import hashlib
 import hmac
 import io
+import json
 import re
 import secrets
 import uuid
+import zipfile
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -31,6 +33,7 @@ from kp_database.campaign_service import (
     MAX_AUDIENCE_RECIPIENTS,
     AudienceDefinition,
     AudiencePreview,
+    _masked_mailbox,
     audience_definition,
     audience_matches_preview,
     bind_campaign_launch_review,
@@ -1262,6 +1265,17 @@ def _campaign_action_flags(
     approved_types = {
         approval.approval_type for approval in current_approvals if approval.decision == dm.ApprovalDecision.APPROVED
     }
+    # AUT-002 (already enforced server-side in ``approve_campaign``): two-person
+    # review means two DISTINCT people. A principal who already approved a facet
+    # of this launch manifest, or who submitted it for review, cannot approve any
+    # remaining lane. Reflect that here so the "needs my decision" queue and the
+    # per-row buttons never surface a decision the server will reject. This only
+    # narrows a UI flag to match the existing gate; it changes no authorization.
+    approved_by_me = any(
+        approval.decision == dm.ApprovalDecision.APPROVED and approval.approver_id == principal_id
+        for approval in current_approvals
+    )
+    submitted_by_me = launch_gate is not None and launch_gate.submitted_by == principal_id
 
     def can_review(approval_type: dm.ApprovalType, capability: Capability) -> bool:
         return not (
@@ -1270,6 +1284,8 @@ def _campaign_action_flags(
             or not training_ready
             or not launch_ready
             or is_creator
+            or approved_by_me
+            or submitted_by_me
             or not principal.can(capability)
             or approval_type in decided_types
         )
@@ -2096,6 +2112,112 @@ def list_campaigns(
     ]
 
 
+@router.get("/campaigns/needs-my-decision")
+def campaigns_needing_my_decision(
+    limit: int = Query(default=100, ge=1, le=_GUI_COLLECTION_MAX_LIMIT),
+    offset: int = Query(default=0, ge=0, le=_GUI_COLLECTION_MAX_OFFSET),
+    session: Session = Depends(get_session),
+    settings: OperatorApiSettings = Depends(get_settings),
+    principal: Principal = Depends(
+        require_any_capability(Capability.APPROVE_SECURITY, Capability.APPROVE_PRIVACY)
+    ),
+) -> list[dict[str, Any]]:
+    """Campaigns awaiting THIS principal's approval decision.
+
+    A read-only projection of the same ``_campaign_action_flags`` the campaigns
+    table already computes: a campaign appears only when a security or privacy
+    lane is open *for this principal*. It therefore honours the AUT-002
+    two-distinct-approver rule by construction — the flags exclude the campaign
+    creator, the submitter for review, any lane already decided, and any lane
+    this principal would be barred from because they already approved another
+    facet. No campaign this principal already approved or submitted is shown.
+
+    Enforces no gate of its own: ``approve_campaign`` re-checks state, frozen
+    audience, the launch gate, self-approval and distinct approvers at decision
+    time exactly as before.
+    """
+    rows = (
+        session.execute(
+            select(Campaign)
+            .where(Campaign.state == dm.CampaignState.PENDING_APPROVAL)
+            .order_by(Campaign.campaign_id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return []
+    campaign_ids = [campaign.campaign_id for campaign in rows]
+    audiences = {
+        item.campaign_id: item
+        for item in session.scalars(select(CampaignAudience).where(CampaignAudience.campaign_id.in_(campaign_ids)))
+    }
+    launch_gates = {
+        item.campaign_id: item
+        for item in session.scalars(select(CampaignLaunchGate).where(CampaignLaunchGate.campaign_id.in_(campaign_ids)))
+    }
+    resource_ids = {campaign.training_resource_id for campaign in rows if campaign.training_resource_id is not None}
+    training_resources = {
+        resource.training_resource_id: resource
+        for resource in (
+            session.scalars(select(TrainingResource).where(TrainingResource.training_resource_id.in_(resource_ids)))
+            if resource_ids
+            else []
+        )
+    }
+    template_ids = {campaign.current_template_id for campaign in rows if campaign.current_template_id is not None}
+    templates = {
+        template.template_version_id: template
+        for template in (
+            session.scalars(select(TemplateVersion).where(TemplateVersion.template_version_id.in_(template_ids)))
+            if template_ids
+            else []
+        )
+    }
+    approvals: dict[uuid.UUID, list[CampaignApproval]] = {}
+    for approval in session.scalars(select(CampaignApproval).where(CampaignApproval.campaign_id.in_(campaign_ids))):
+        approvals.setdefault(approval.campaign_id, []).append(approval)
+
+    queue: list[dict[str, Any]] = []
+    for c in rows:
+        flags = _campaign_action_flags(
+            c,
+            audiences.get(c.campaign_id),
+            approvals.get(c.campaign_id, []),
+            principal,
+            settings.approval_policy,
+            training_ready=training_binding_error(c, training_resources.get(c.training_resource_id)) is None,
+            launch_gate=launch_gates.get(c.campaign_id),
+            launch_ready=campaign_launch_gate_error(
+                c,
+                audiences.get(c.campaign_id),
+                templates.get(c.current_template_id),
+                launch_gates.get(c.campaign_id),
+            )
+            is None,
+        )
+        if not (flags["can_approve_security"] or flags["can_approve_privacy"]):
+            continue
+        gate = launch_gates.get(c.campaign_id)
+        audience = audiences.get(c.campaign_id)
+        queue.append(
+            {
+                "campaign_id": str(c.campaign_id),
+                "title": c.title,
+                "state": c.state.value,
+                "schedule_start": c.schedule_start,
+                "schedule_end": c.schedule_end,
+                "submitted_by": str(gate.submitted_by) if gate is not None and gate.submitted_by is not None else None,
+                "audience_version": audience.version if audience is not None else None,
+                "can_approve_security": flags["can_approve_security"],
+                "can_approve_privacy": flags["can_approve_privacy"],
+            }
+        )
+    return queue
+
+
 def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
     assignments = list(
         session.scalars(select(RecipientAssignment).where(RecipientAssignment.campaign_id == campaign.campaign_id))
@@ -2265,10 +2387,13 @@ def campaign_recipient_results(
 ) -> dict[str, Any]:
     """Per-recipient outcomes for one campaign.
 
-    Deliberately does not return mailboxes, matching `list_recipients`: an
-    operator needs to know *which assignments* failed and why, not who clicked
-    what. Identifying a specific person's behaviour is a different decision with
-    different consequences, and the aggregate report covers the normal case.
+    Returns a masked display label (display name + masked mailbox) alongside the
+    outcome for callers holding ``VIEW_NAMED_RESULTS`` — the capability whose
+    literal purpose is identifying a specific person's behaviour. Raw mailboxes
+    are never returned: the mailbox is masked with the same ``_masked_mailbox``
+    primitive the audience preview already uses (``j***@corp.example``), so a
+    reader learns no more than the audience preview already reveals to the same
+    capability. This does not widen any authorization boundary.
     """
     campaign = _get_campaign(session, campaign_id)
     total = int(
@@ -2347,6 +2472,8 @@ def campaign_recipient_results(
         results.append(
             {
                 "recipient_id": str(recipient.recipient_id),
+                "display_name": recipient.display_name,
+                "masked_mailbox": _masked_mailbox(recipient.mailbox),
                 "department": recipient.department,
                 "send_state": assignment.send_state.value,
                 "failure_reason": assignment.failure_reason,
@@ -2402,6 +2529,112 @@ def campaign_report_csv(
         output.getvalue(),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="campaign-{campaign_id}-report.csv"'},
+    )
+
+
+def _evidence_json(payload: Any) -> bytes:
+    """Stable, human-diffable JSON for an evidence-bundle member."""
+    return json.dumps(payload, indent=2, sort_keys=True, default=str).encode("utf-8")
+
+
+@router.get("/campaigns/{campaign_id}/evidence.zip")
+def campaign_evidence_bundle(
+    campaign_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(require_capability(Capability.EXPORT_BULK)),
+) -> Response:
+    """Read-only approval/authorization evidence for one campaign, as a zip.
+
+    A single artefact answering "who approved this, under which RoE, against
+    which launch manifest and canary evidence". Every member is a projection of
+    rows that already exist behind the capabilities that already guard them;
+    nothing is computed or mutated. It never contains mailboxes or display
+    names — recipients appear in the audience manifest only as their hash, which
+    is what the frozen manifest already stores.
+    """
+    campaign = _get_campaign(session, campaign_id)
+    gate = session.get(CampaignLaunchGate, campaign.campaign_id)
+    approvals = list(
+        session.scalars(
+            select(CampaignApproval)
+            .where(CampaignApproval.campaign_id == campaign.campaign_id)
+            .order_by(CampaignApproval.decided_at)
+        )
+    )
+    roe = session.get(RulesOfEngagement, campaign.roe_id) if campaign.roe_id is not None else None
+
+    campaign_doc = {
+        "campaign_id": str(campaign.campaign_id),
+        "title": campaign.title,
+        "state": campaign.state.value,
+        "schedule_start": campaign.schedule_start,
+        "schedule_end": campaign.schedule_end,
+        "sender_mailbox": campaign.sender_mailbox,
+        "sender_display_name": campaign.sender_display_name,
+        "content_manifest_hash": campaign.manifest_hash,
+        "training_resource_id": str(campaign.training_resource_id) if campaign.training_resource_id else None,
+        "training_resource_version": campaign.training_resource_version,
+        "training_resource_digest": campaign.training_resource_digest,
+        "roe_id": str(campaign.roe_id) if campaign.roe_id else None,
+        "launch_gate": None
+        if gate is None
+        else {
+            "state": gate.state,
+            "review_manifest_hash": gate.review_manifest_hash,
+            "content_manifest_hash": gate.content_manifest_hash,
+            "template_approval_hash": gate.template_approval_hash,
+            "audience_manifest_hash": gate.audience_manifest_hash,
+            "canary_manifest_hash": gate.canary_manifest_hash,
+            "canary_evidence_hash": gate.canary_evidence_hash,
+            "provider": gate.provider,
+            "provider_config_hash": gate.provider_config_hash,
+            "submitted_by": str(gate.submitted_by) if gate.submitted_by else None,
+        },
+    }
+    approvals_doc = [
+        {
+            "approval_type": approval.approval_type.value,
+            "approver_id": str(approval.approver_id),
+            "decision": approval.decision.value,
+            "rationale": approval.rationale,
+            "decided_at": approval.decided_at,
+            "launch_manifest_hash": approval.launch_manifest_hash,
+        }
+        for approval in approvals
+    ]
+    roe_doc = None
+    if roe is not None:
+        roe_doc = {
+            "roe_id": str(roe.roe_id),
+            "signer": roe.signer,
+            "authorizing_party": roe.authorizing_party,
+            "terms_hash": roe.terms_hash,
+            "signature_version": roe.signature_version,
+            "signed_at": roe.signed_at,
+            "window_start": roe.window_start,
+            "window_end": roe.window_end,
+            "target_domains": list(roe.target_domains or []),
+            "revoked_at": roe.revoked_at,
+        }
+
+    members = {
+        "campaign.json": _evidence_json(campaign_doc),
+        "approvals.json": _evidence_json(approvals_doc),
+        "roe.json": _evidence_json(roe_doc),
+    }
+    manifest_lines = "".join(
+        f"{hashlib.sha256(body).hexdigest()}  {name}\n" for name, body in sorted(members.items())
+    )
+    members["manifest.sha256"] = manifest_lines.encode("utf-8")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, body in sorted(members.items()):
+            archive.writestr(name, body)
+    return Response(
+        buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="campaign-{campaign_id}-evidence.zip"'},
     )
 
 
@@ -2789,28 +3022,50 @@ def ingest_source_now(
 def list_recipients(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    mailbox: str | None = Query(default=None, max_length=320),
     session: Session = Depends(get_session),
-    _principal: Principal = Depends(
+    settings: OperatorApiSettings = Depends(get_settings),
+    principal: Principal = Depends(
         require_any_capability(Capability.VIEW_NAMED_RESULTS, Capability.MANAGE_RECIPIENTS)
     ),
 ) -> dict[str, Any]:
-    total = int(session.scalar(select(func.count()).select_from(Recipient)) or 0)
-    rows = list(session.scalars(select(Recipient).order_by(Recipient.recipient_id).offset(offset).limit(limit)))
-    items = [
-        {
+    # Names appear ONLY for the capability literally named ``view_named:results``.
+    # A ``manage:recipients`` holder (the campaign operator) sees the unchanged
+    # department/uuid/status shape it was always meant to see. The mailbox is
+    # never returned raw — only the same masked form the audience preview uses.
+    can_view_named = principal.can(Capability.VIEW_NAMED_RESULTS)
+
+    if mailbox is not None:
+        # Exact-address lookup: hash the full address with the deployment salt
+        # and match the indexed digest. No wildcard, no prefix, no LIKE — a
+        # reader can only confirm an address they already typed in full.
+        digest = hash_mailbox(_normalize_mailbox(mailbox, max_length=320), settings.require_recipient_hash_salt())
+        rows = list(session.scalars(select(Recipient).where(Recipient.mailbox_sha256 == digest).limit(1)))
+        total = len(rows)
+        truncated = False
+    else:
+        total = int(session.scalar(select(func.count()).select_from(Recipient)) or 0)
+        rows = list(session.scalars(select(Recipient).order_by(Recipient.recipient_id).offset(offset).limit(limit)))
+        truncated = offset + len(rows) < total
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        item: dict[str, Any] = {
             "recipient_id": str(r.recipient_id),
             "department": r.department,
             "status": r.status.value,
             "is_test_account": r.is_test_account,
         }
-        for r in rows
-    ]
+        if can_view_named:
+            item["display_name"] = r.display_name
+            item["masked_mailbox"] = _masked_mailbox(r.mailbox)
+        items.append(item)
     return {
         "items": items,
         "total": total,
         "limit": limit,
         "offset": offset,
-        "truncated": offset + len(items) < total,
+        "truncated": truncated,
     }
 
 

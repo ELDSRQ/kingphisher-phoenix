@@ -86,7 +86,9 @@ def test_combined_views_do_not_fetch_or_offer_the_other_capability() -> None:
     assert "requireAnyCapability(root, CAPABILITY.VIEW_NAMED_RESULTS, CAPABILITY.MANAGE_RECIPIENTS)" in recipients
     assert 'canManageRecipients ? [el("button"' in recipients
     assert 'canUseKillSwitch ? api("/kill-switch") : Promise.resolve(null)' in audit
-    assert 'canUseKillSwitch ? el("button"' in audit
+    # UX-011 §3: the audit view offers the same shared global-stop control the
+    # sidebar uses (a single implementation), still gated on USE_KILL_SWITCH.
+    assert "canUseKillSwitch ? globalStopButton(engaged) : null" in audit
 
 
 def test_capability_identifiers_are_non_secret_stable_rbac_names() -> None:

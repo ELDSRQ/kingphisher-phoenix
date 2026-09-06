@@ -85,7 +85,10 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
     ),
     (
         frozenset({"approve_privacy:campaign", "approve_security:campaign"}),
-        _routes("POST /api/v1/campaigns/{campaign_id}/approvals/{approval_type}"),
+        _routes(
+            "POST /api/v1/campaigns/{campaign_id}/approvals/{approval_type}",
+            "GET /api/v1/campaigns/needs-my-decision",
+        ),
     ),
     (
         frozenset({"schedule:campaign"}),
@@ -114,6 +117,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
         frozenset({"export_bulk:results"}),
         _routes(
             "GET /api/v1/campaigns/{campaign_id}/report.csv",
+            "GET /api/v1/campaigns/{campaign_id}/evidence.zip",
             "GET /api/v1/analytics/campaigns/trend.csv",
             "GET /api/v1/analytics/campaigns/{campaign_id}/funnel.csv",
             "GET /api/v1/analytics/ledger/trend.csv",

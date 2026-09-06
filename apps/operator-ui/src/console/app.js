@@ -221,6 +221,19 @@
     }
     return csvText;
   }
+  function recipientReference(recipient) {
+    if (recipient && recipient.display_name && recipient.masked_mailbox) {
+      return `${recipient.display_name} \xB7 ${recipient.masked_mailbox}`;
+    }
+    if (recipient && recipient.masked_mailbox) return recipient.masked_mailbox;
+    return String(recipient && recipient.recipient_id || "").slice(0, 8);
+  }
+  function recipientPickerLabel(recipient) {
+    const reference = recipientReference(recipient);
+    const department = recipient && recipient.department || "No department";
+    const status = recipient && recipient.status;
+    return status ? `${department} \xB7 ${reference} \xB7 ${status}` : `${department} \xB7 ${reference}`;
+  }
   async function boundedCsvBlob(response) {
     const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
     if (contentType !== "text/csv") throw new Error("Export returned an unexpected content type");
@@ -245,6 +258,59 @@
       chunks.push(value);
     }
     return new Blob(chunks, { type: "text/csv" });
+  }
+  async function boundedDownloadBlob(response, expectedType) {
+    const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
+    if (contentType !== expectedType) throw new Error("Export returned an unexpected content type");
+    const declared = response.headers.get("content-length");
+    if (declared !== null) {
+      if (!/^\d{1,10}$/.test(declared) || Number(declared) > MAX_CSV_DOWNLOAD_BYTES) {
+        throw new Error("Export exceeded the 5 MB download limit");
+      }
+    }
+    if (!response.body) throw new Error("Export returned no downloadable content");
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > MAX_CSV_DOWNLOAD_BYTES) {
+        await reader.cancel();
+        throw new Error("Export exceeded the 5 MB download limit");
+      }
+      chunks.push(value);
+    }
+    return new Blob(chunks, { type: expectedType });
+  }
+  var CAMPAIGN_EXPORT_PATH = /^\/campaigns\/[0-9a-fA-F-]{36}\/(?:report\.csv|evidence\.zip)$/;
+  async function downloadCampaignExport(path, filename, expectedType) {
+    if (!CAMPAIGN_EXPORT_PATH.test(path) || path.includes("://") || /[\r\n]/.test(path)) {
+      throw new Error("Export path is not allowed");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,126}\.(?:csv|zip)$/.test(filename)) {
+      throw new Error("Export filename is not allowed");
+    }
+    const headers = { Accept: expectedType };
+    if (token()) headers.Authorization = `Bearer ${token()}`;
+    const response = await fetch(`${API}${path}`, { headers, credentials: "same-origin", cache: "no-store" });
+    if (response.status === 401) {
+      clearToken();
+      render();
+      throw new Error("Session expired");
+    }
+    if (!response.ok) throw new Error(`Export failed (${response.status})`);
+    const blob = await boundedDownloadBlob(response, expectedType);
+    const url = URL.createObjectURL(blob);
+    try {
+      const link = el("a", { href: url, download: filename });
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
   async function downloadApiCsv(path, filename) {
     if (!path.startsWith("/analytics/") || !path.includes(".csv") || path.includes("://") || /[\r\n]/.test(path)) {
@@ -275,7 +341,21 @@
   }
   var onboardingChecked = false;
   var lastRenderedView = null;
+  var deployConnectorEnabled = true;
+  var deployConnectorChecked = false;
   var views = {};
+  async function ensureDeployConnectorState() {
+    if (deployConnectorChecked) return;
+    deployConnectorChecked = true;
+    try {
+      const resp = await fetch(`${API}/console/auth-mode`);
+      if (resp.ok) {
+        const payload = await resp.json();
+        deployConnectorEnabled = payload.deploy_connector_enabled !== false;
+      }
+    } catch {
+    }
+  }
   function toast(message, type = "") {
     const notice = document.createElement("div");
     notice.className = `toast ${type}`;
@@ -710,7 +790,7 @@
           el("th", { text: "Training" })
         ])]),
         el("tbody", {}, visibleResults.length ? visibleResults.map((result) => el("tr", {}, [
-          el("td", { class: "mono", text: String(result.recipient_id || "").slice(0, 8) }),
+          el("td", { text: recipientReference(result) }),
           el("td", { text: result.department || "No department" }),
           el("td", { text: result.send_state }),
           el("td", { text: result.failure_reason || "None" }),
@@ -745,6 +825,38 @@
         event.target.disabled = true;
         try {
           await downloadAnalyticsCsv(campaign.campaign_id, start.value.trim(), end.value.trim());
+        } catch (err) {
+          toast(err.message, "error");
+        } finally {
+          event.target.disabled = false;
+        }
+      } })
+    );
+    if (hasCapability(CAPABILITY.EXPORT_BULK)) actions.push(
+      el("button", { class: "btn", type: "button", text: "Download report CSV", onclick: async (event) => {
+        event.target.disabled = true;
+        try {
+          await downloadCampaignExport(
+            `/campaigns/${campaign.campaign_id}/report.csv`,
+            `campaign-${campaign.campaign_id}-report.csv`,
+            "text/csv"
+          );
+        } catch (err) {
+          toast(err.message, "error");
+        } finally {
+          event.target.disabled = false;
+        }
+      } })
+    );
+    if (hasCapability(CAPABILITY.EXPORT_BULK)) actions.push(
+      el("button", { class: "btn", type: "button", text: "Download evidence bundle", onclick: async (event) => {
+        event.target.disabled = true;
+        try {
+          await downloadCampaignExport(
+            `/campaigns/${campaign.campaign_id}/evidence.zip`,
+            `campaign-${campaign.campaign_id}-evidence.zip`,
+            "application/zip"
+          );
         } catch (err) {
           toast(err.message, "error");
         } finally {
@@ -877,7 +989,10 @@
     try {
       const resp = await fetch(`${API}/console/auth-mode`);
       if (!resp.ok) throw new Error("Authentication mode is unavailable");
-      authMode = (await resp.json()).auth_mode;
+      const authModePayload = await resp.json();
+      authMode = authModePayload.auth_mode;
+      deployConnectorEnabled = authModePayload.deploy_connector_enabled !== false;
+      deployConnectorChecked = true;
       if (!(/* @__PURE__ */ new Set(["dev", "oidc"])).has(authMode)) throw new Error("Authentication mode is invalid");
     } catch {
       root.replaceChildren(el("div", { class: "login-wrap" }, [
@@ -916,6 +1031,67 @@
       ])
     ]));
   };
+  async function toggleGlobalStop(engaged, targetEl) {
+    const values = await promptDialog({
+      title: engaged ? "Why is the global stop safe to reset?" : "Why is the global stop required?",
+      description: engaged ? "Resetting reopens future scheduling and delivery. Cancelled assignments and revoked links stay cancelled." : "The reason is retained with the persistent safety-state audit trail.",
+      fields: [{ name: "reason", label: "Operator reason", type: "textarea", required: true }],
+      submitLabel: "Continue"
+    });
+    if (!values) return;
+    const ok = await confirmDialog({
+      title: engaged ? "Reset the GLOBAL emergency stop?" : "Engage the GLOBAL emergency stop?",
+      message: engaged ? "Future campaigns may schedule and deliver again. Previously cancelled work is not restored." : "This persistently blocks scheduling and delivery across every replica and restart, cancels queued delivery, and revokes active tracking links.",
+      detail: { Reason: values.reason },
+      confirmLabel: engaged ? "Reset global stop" : "Engage global stop",
+      danger: true
+    });
+    if (!ok) return;
+    if (targetEl) targetEl.disabled = true;
+    try {
+      const path = engaged ? "/kill-switch/reset" : "/kill-switch";
+      const res = await api(path, { method: "POST", body: JSON.stringify({ confirm: true, reason: values.reason }) });
+      toast(engaged ? "Global emergency stop reset; future delivery is enabled" : `Global stop engaged: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
+      location.reload();
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      if (targetEl) targetEl.disabled = false;
+    }
+  }
+  function globalStopButton(engaged, { compact = false } = {}) {
+    return el("button", {
+      class: `btn ${engaged ? "primary" : "danger"}${compact ? " small" : ""}`,
+      type: "button",
+      text: engaged ? "Reset global stop" : compact ? "STOP all delivery" : "Engage global stop",
+      "aria-label": engaged ? "Reset the global emergency stop" : "Engage the global emergency stop",
+      onclick: (event) => toggleGlobalStop(engaged, event.target)
+    });
+  }
+  function sidebarEmergencyStop() {
+    if (!hasCapability(CAPABILITY.USE_KILL_SWITCH)) return null;
+    const container = el("div", { class: "emergency-stop", role: "group", "aria-label": "Emergency stop" });
+    const pill = el("div", {
+      class: "emergency-stop-pill",
+      role: "status",
+      "aria-live": "polite",
+      text: "Checking delivery state\u2026"
+    });
+    container.appendChild(pill);
+    (async () => {
+      try {
+        const kill = await api("/kill-switch");
+        const engaged = !!(kill && kill.engaged);
+        pill.className = `emergency-stop-pill ${engaged ? "down" : "ok"}`;
+        pill.textContent = engaged ? `GLOBAL STOP ENGAGED \xB7 gen ${kill.generation ?? "?"}` : `Delivery enabled \xB7 gen ${kill?.generation ?? 0}`;
+        container.appendChild(globalStopButton(engaged, { compact: true }));
+      } catch {
+        pill.className = "emergency-stop-pill";
+        pill.textContent = "Emergency-stop state unavailable";
+      }
+    })();
+    return container;
+  }
   var NAV = [
     ["onboarding", "Setup wizard"],
     ["azure-deployment", "Azure deployment"],
@@ -959,6 +1135,7 @@
   }
   function canNavigateTo(viewId) {
     if (!NAV.some(([id]) => id === viewId)) return false;
+    if (viewId === "azure-deployment" && !deployConnectorEnabled) return false;
     const required = NAV_CAPABILITIES[viewId];
     return !required || hasAnyCapability(...required);
   }
@@ -974,11 +1151,29 @@
     for (const [id, label] of visible) {
       nav.appendChild(el("button", {
         type: "button",
+        "data-nav": id,
         class: id === active ? "active" : "",
         "aria-current": id === active ? "page" : null,
         text: label,
         onclick: () => navigateTo(id)
       }));
+    }
+    if (hasAnyCapability(CAPABILITY.APPROVE_SECURITY, CAPABILITY.APPROVE_PRIVACY) && visible.some(([id]) => id === "campaigns")) {
+      (async () => {
+        try {
+          const queue = await api("/campaigns/needs-my-decision");
+          const count = Array.isArray(queue) ? queue.length : 0;
+          const button = nav.querySelector('[data-nav="campaigns"]');
+          if (count && button && button.isConnected) {
+            button.appendChild(el("span", {
+              class: "nav-badge",
+              "aria-label": `${count} awaiting your decision`,
+              text: String(count)
+            }));
+          }
+        } catch {
+        }
+      })();
     }
     const content = el("div", {
       id: "console-view",
@@ -997,6 +1192,7 @@
         ]),
         nav,
         el("div", { class: "footer" }, [
+          sidebarEmergencyStop(),
           el("div", { text: info?.authMode === "dev" ? "Signed in as development operator" : "Signed in with OIDC" }),
           el("div", { id: "last-updated", class: "last-updated", role: "status", "aria-live": "polite" }),
           el("button", { type: "button", text: "Refresh current view", onclick: async () => {
@@ -1022,7 +1218,7 @@
               toast("Local session cleared, but server sign-out could not be confirmed. Close the browser tab on a shared device.", "error");
             }
           } })
-        ])
+        ].filter(Boolean))
       ]),
       content
     ]);
@@ -2029,18 +2225,60 @@
     if (!requireAnyCapability(root, CAPABILITY.VIEW_AGGREGATE, CAPABILITY.VIEW_AUDIT)) return;
     const canViewAggregate = hasCapability(CAPABILITY.VIEW_AGGREGATE);
     const canViewAudit = hasCapability(CAPABILITY.VIEW_AUDIT);
+    const isApprover = hasAnyCapability(CAPABILITY.APPROVE_SECURITY, CAPABILITY.APPROVE_PRIVACY);
     root.appendChild(el("h2", { text: "Dashboard" }));
     root.appendChild(el("p", { class: "sub", text: "System health and recent campaign activity." }));
-    let status, campaigns, audit;
+    let status, campaigns, audit, needsDecision;
     try {
-      [status, campaigns, audit] = await Promise.all([
+      [status, campaigns, audit, needsDecision] = await Promise.all([
         canViewAggregate ? api("/console/status") : Promise.resolve(null),
         canViewAggregate ? boundedCollection("/campaigns") : Promise.resolve([]),
-        canViewAudit ? api("/audit/verify", { method: "POST" }) : Promise.resolve(null)
+        canViewAudit ? api("/audit/verify", { method: "POST" }) : Promise.resolve(null),
+        // UX-011 §5: campaigns awaiting THIS principal's approval, computed and
+        // filtered server-side (AUT-002-aware). Never shows a lane this principal
+        // already decided or submitted.
+        isApprover ? api("/campaigns/needs-my-decision") : Promise.resolve([])
       ]);
     } catch (e) {
       root.appendChild(collectionLoadError(`Failed to load dashboard: ${e.message}`, () => render()));
       return;
+    }
+    if (isApprover) {
+      const queue = Array.isArray(needsDecision) ? needsDecision : [];
+      const card = el("div", { class: "card", role: "region", "aria-label": "Campaigns needing my decision" }, [
+        el("h3", { text: `Needs my decision (${queue.length})` })
+      ]);
+      if (!queue.length) {
+        card.appendChild(el("p", { class: "empty", text: "No campaigns are waiting on your approval." }));
+      } else {
+        card.appendChild(el("table", { "aria-label": "Campaigns awaiting my approval" }, [
+          el("thead", {}, [el("tr", {}, [
+            el("th", { text: "Campaign" }),
+            el("th", { text: "Open lane(s)" }),
+            el("th", { text: "Window" }),
+            el("th", { text: "Action" })
+          ])]),
+          el("tbody", {}, queue.map((row) => {
+            const lanes = [
+              row.can_approve_security ? "Security" : null,
+              row.can_approve_privacy ? "Privacy" : null
+            ].filter(Boolean).join(", ");
+            return el("tr", {}, [
+              el("td", { text: row.title }),
+              el("td", { text: lanes || "\u2014" }),
+              el("td", { class: "mono", text: `${formatInstant(row.schedule_start)} \u2192 ${formatInstant(row.schedule_end)}` }),
+              el("td", {}, [el("button", {
+                class: "btn small",
+                type: "button",
+                text: "Review in Campaigns",
+                "aria-label": `Review ${row.title} in the Campaigns view`,
+                onclick: () => navigateTo("campaigns")
+              })])
+            ]);
+          }))
+        ]));
+      }
+      root.appendChild(card);
     }
     if (status) root.appendChild(statusPills(status));
     if (status && runtimeCapabilities(status).managed && status.status_message) {
@@ -2615,7 +2853,7 @@
         memberSelect.appendChild(el("option", {
           value: recipient.recipient_id,
           selected: existingIds.has(recipient.recipient_id),
-          text: `${recipient.department || "No department"} \xB7 ${recipient.recipient_id.slice(0, 8)} \xB7 ${recipient.status}`
+          text: recipientPickerLabel(recipient)
         }));
       }
       memberSelect.disabled = !namedRecipientSelectionComplete;
@@ -2682,7 +2920,7 @@
       const departmentSelect = makeMulti(departments.map((d) => ({ value: d, label: d })), current.departments);
       const recipientOptions = recipients.map((r) => ({
         value: r.recipient_id,
-        label: `${r.department || "No department"} \xB7 ${r.recipient_id.slice(0, 8)} \xB7 ${r.status}`
+        label: recipientPickerLabel(r)
       }));
       const includeSelect = makeMulti(recipientOptions, current.include_recipient_ids, 8);
       const excludeSelect = makeMulti(recipientOptions, current.exclude_recipient_ids, 8);
@@ -3083,6 +3321,13 @@
               text: "Review campaign",
               "aria-label": `Review campaign ${c.title}`,
               onclick: () => openCampaignReview(c)
+            }));
+            if (canCreateCampaign) actions.push(el("button", {
+              class: "btn small",
+              type: "button",
+              text: "Clone as new draft",
+              "aria-label": `Start a new draft campaign prefilled from ${c.title}`,
+              onclick: () => cloneCampaignIntoForm(c)
             }));
             if (["scheduled", "sending", "active"].includes(c.state) && hasCapability(CAPABILITY.USE_KILL_SWITCH)) actions.push(el("button", { class: "btn small danger", type: "button", text: "Kill switch", "aria-label": `Engage kill switch for ${c.title}`, onclick: async (e) => {
               const ok = await confirmDialog({
@@ -3663,18 +3908,19 @@
         toast(err.message, "error");
       }
     }
-    async function signRoe() {
+    async function signRoe(prefill = {}) {
+      const prefillDomains = Array.isArray(prefill.target_domains) && prefill.target_domains.length ? prefill.target_domains.join(", ") : verifiedDomains.join(", ");
       const values = await promptDialog({
-        title: "Sign a Rules-of-Engagement",
+        title: prefill.roe_id ? "Re-sign a Rules-of-Engagement for a new window" : "Sign a Rules-of-Engagement",
         description: "The signature binds terms + signer + timestamp under the shared RoE key. Every target domain must already be DNS-verified, and the window must cover the campaigns it authorizes.",
         fields: [
-          { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp" },
-          { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training." },
+          { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp", value: prefill.authorizing_party || "" },
+          { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training.", value: prefill.terms || "" },
           { name: "window_start", label: "Window start (your local time)", type: "datetime-local", required: true },
           { name: "window_end", label: "Window end (your local time)", type: "datetime-local", required: true },
-          { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: verifiedDomains.join(", ") }
+          { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: prefillDomains }
         ],
-        submitLabel: "Sign RoE"
+        submitLabel: prefill.roe_id ? "Sign new RoE" : "Sign RoE"
       });
       if (!values) return;
       try {
@@ -3764,7 +4010,20 @@
       el("td", { class: "mono", text: `${formatInstant(roe.window_start)} \u2192 ${formatInstant(roe.window_end)}` }),
       el("td", { text: (roe.target_domains || []).join(", ") }),
       el("td", {}, [el("span", { class: `pill ${roe.revoked_at ? "down" : roeActive(roe) ? "ok" : "down"}`, text: roe.revoked_at ? "revoked" : roeActive(roe) ? "active" : "window passed" })]),
-      el("td", {}, roe.revoked_at ? [el("span", { class: "empty", text: formatInstant(roe.revoked_at) })] : [el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeRoe(roe) })])
+      el("td", {}, [
+        canSignRoe ? el("button", {
+          class: "btn small",
+          type: "button",
+          text: "Re-sign for a new window",
+          "aria-label": `Sign a new Rules-of-Engagement for a new window based on the one for ${roe.authorizing_party}`,
+          onclick: () => signRoe({
+            roe_id: roe.roe_id,
+            authorizing_party: roe.authorizing_party,
+            target_domains: roe.target_domains || []
+          })
+        }) : null,
+        roe.revoked_at ? el("span", { class: "empty", text: formatInstant(roe.revoked_at) }) : el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeRoe(roe) })
+      ].filter(Boolean))
     ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 6, text: "No Rules-of-Engagement signed yet. Delivery is blocked until one covers a campaign." })])];
     if (canSignRoe) root.appendChild(el("div", { class: "card" }, [
       el("div", { class: "card-head" }, [
@@ -4367,6 +4626,35 @@
     trigger.disabled = false;
     showRenderedTemplatePreview(rendered);
   }
+  function cloneCampaignIntoForm(campaign) {
+    const setValue = (id, value) => {
+      const field = document.getElementById(id);
+      if (field && value !== null && value !== void 0) field.value = value;
+    };
+    setValue("c-title", `${campaign.title || "Campaign"} (copy)`);
+    setValue("c-sender", campaign.sender_mailbox || "");
+    setValue("c-sender-display", campaign.sender_display_name || "");
+    const anchor = document.getElementById("c-title");
+    if (anchor) {
+      anchor.scrollIntoView({ behavior: "smooth", block: "center" });
+      anchor.focus();
+    }
+    toast(
+      "Prefilled a new draft from this campaign. Choose the pattern, template and lesson, set the window, then configure and freeze the audience. Approvals and Rules of Engagement do not carry over.",
+      "success"
+    );
+  }
+  function extractPreviewLinks(html) {
+    try {
+      const doc = new DOMParser().parseFromString(html || "", "text/html");
+      return Array.from(doc.querySelectorAll("a[href]")).slice(0, 200).map((anchor) => ({
+        text: (anchor.textContent || "").trim().slice(0, 200),
+        href: anchor.getAttribute("href") || ""
+      }));
+    } catch {
+      return [];
+    }
+  }
   function showRenderedTemplatePreview(rendered) {
     const { dlg, form } = dialogShell(
       `Preview: ${rendered.subject || "(no subject)"}`,
@@ -4377,8 +4665,33 @@
     const stage = el("div", { "aria-label": "Rendered message preview" });
     const controls = el("div", { class: "btn-row", role: "group", "aria-label": "Preview format" });
     const buttons = /* @__PURE__ */ new Map();
+    const hasHtml = Boolean(rendered.safe_html);
     const draw = (mode) => {
       for (const [name, button] of buttons) button.setAttribute("aria-pressed", String(name === mode));
+      if (mode === "html") {
+        status.textContent = "Sandboxed HTML preview. Scripts, forms, and remote images are blocked by the console content-security policy; this shows structure, text, and links only.";
+        const frame = el("iframe", {
+          class: "preview-frame html",
+          sandbox: "",
+          referrerpolicy: "no-referrer",
+          title: "Sandboxed HTML message preview",
+          srcdoc: rendered.safe_html || ""
+        });
+        const links = extractPreviewLinks(rendered.safe_html);
+        const linkTable = links.length ? el("table", { class: "report-table", "aria-label": "Links in the message" }, [
+          el("thead", {}, [el("tr", {}, [el("th", { text: "Link text" }), el("th", { text: "Destination" })])]),
+          el("tbody", {}, links.map((link) => el("tr", {}, [
+            el("td", { text: link.text || "(no link text)" }),
+            el("td", { class: "mono", text: link.href })
+          ])))
+        ]) : el("p", { class: "empty", text: "No links are present in this message." });
+        stage.replaceChildren(el("div", {}, [
+          frame,
+          el("h4", { class: "modal-section", text: "Links in this message" }),
+          linkTable
+        ]));
+        return;
+      }
       if (mode === "plain") {
         status.textContent = "Plain-text alternative as delivered to clients that do not render HTML.";
         stage.replaceChildren(el("pre", {
@@ -4410,7 +4723,10 @@
       ]);
       stage.replaceChildren(message);
     };
-    for (const [mode, label] of [["desktop", "Desktop"], ["mobile", "Mobile"], ["plain", "Plain text"]]) {
+    const modes = [];
+    if (hasHtml) modes.push(["html", "HTML"]);
+    modes.push(["desktop", "Desktop"], ["mobile", "Mobile"], ["plain", "Plain text"]);
+    for (const [mode, label] of modes) {
       const button = el("button", {
         class: "btn small",
         type: "button",
@@ -4423,10 +4739,15 @@
     }
     form.appendChild(controls);
     form.appendChild(status);
-    if (rendered.safe_html || rendered.safe_html_present) {
+    if (hasHtml) {
       form.appendChild(el("p", {
         class: "modal-help",
-        text: "A sanitized HTML alternative exists but is deliberately not executed in the operator console. Use the plain-text fallback below for safe review."
+        text: "The sanitized HTML is shown in a sandboxed frame (no scripts, no remote images, no forms). The link table lists every destination the message links to."
+      }));
+    } else if (rendered.safe_html_present) {
+      form.appendChild(el("p", {
+        class: "modal-help",
+        text: "A sanitized HTML alternative exists but was not included in this contract. Use the plain-text fallback below for safe review."
       }));
     } else {
       form.appendChild(el("p", {
@@ -4438,7 +4759,7 @@
     form.appendChild(el("div", { class: "modal-actions" }, [
       el("button", { class: "btn primary", type: "button", text: "Close preview", onclick: () => dlg.close() })
     ]));
-    draw("desktop");
+    draw(hasHtml ? "html" : "desktop");
     openDialog(dlg);
   }
   async function showLibraryTemplatePreview(template, trigger) {
@@ -5675,7 +5996,7 @@
         el("th", { text: "Action" })
       ])]),
       el("tbody", {}, recipients.length ? recipients.map((r) => el("tr", {}, [
-        el("td", { class: "mono", text: String(r.recipient_id || "").slice(0, 8) }),
+        el("td", { text: recipientReference(r) }),
         el("td", { text: r.department || "No department" }),
         el("td", { text: r.status }),
         el("td", { text: r.is_test_account ? "Server-designated test account" : "Standard recipient" }),
@@ -7004,38 +7325,9 @@
           e.target.disabled = false;
         }
       } }),
-      canUseKillSwitch ? el("button", {
-        class: `btn ${engaged ? "primary" : "danger"}`,
-        text: engaged ? "Reset global stop" : "Engage global stop",
-        onclick: async (e) => {
-          const values = await promptDialog({
-            title: engaged ? "Why is the global stop safe to reset?" : "Why is the global stop required?",
-            description: engaged ? "Resetting reopens future scheduling and delivery. Cancelled assignments and revoked links stay cancelled." : "The reason is retained with the persistent safety-state audit trail.",
-            fields: [{ name: "reason", label: "Operator reason", type: "textarea", required: true }],
-            submitLabel: "Continue"
-          });
-          if (!values) return;
-          const ok = await confirmDialog({
-            title: engaged ? "Reset the GLOBAL emergency stop?" : "Engage the GLOBAL emergency stop?",
-            message: engaged ? "Future campaigns may schedule and deliver again. Previously cancelled work is not restored." : "This persistently blocks scheduling and delivery across every replica and restart, cancels queued delivery, and revokes active tracking links.",
-            detail: { Reason: values.reason },
-            confirmLabel: engaged ? "Reset global stop" : "Engage global stop",
-            danger: true
-          });
-          if (!ok) return;
-          e.target.disabled = true;
-          try {
-            const path = engaged ? "/kill-switch/reset" : "/kill-switch";
-            const res = await api(path, { method: "POST", body: JSON.stringify({ confirm: true, reason: values.reason }) });
-            toast(engaged ? "Global emergency stop reset; future delivery is enabled" : `Global stop engaged: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
-            location.reload();
-          } catch (err) {
-            toast(err.message, "error");
-          } finally {
-            e.target.disabled = false;
-          }
-        }
-      }) : null
+      // UX-011 §3: the same shared control the sidebar uses, not a second
+      // implementation. Identical endpoint, capability, confirm+reason flow.
+      canUseKillSwitch ? globalStopButton(engaged) : null
     ].filter(Boolean)));
     if (!canUseKillSwitch) {
       root.appendChild(el("p", { class: "field-help", text: "Emergency-stop state and controls require the kill-switch capability." }));
@@ -7204,6 +7496,7 @@
       views.login(document.getElementById("app"));
       return;
     }
+    await ensureDeployConnectorState();
     if (!onboardingChecked) {
       onboardingChecked = true;
       if (hasCapability(CAPABILITY.MANAGE_ROLES)) {

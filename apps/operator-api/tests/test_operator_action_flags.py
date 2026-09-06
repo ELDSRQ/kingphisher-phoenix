@@ -111,7 +111,12 @@ def test_campaign_flags_canonicalize_uuid_and_block_creator_review() -> None:
     assert flags["can_schedule"] is False
 
 
-def test_campaign_flags_allow_one_independent_reviewer_to_complete_both_facets() -> None:
+def test_campaign_flags_bar_a_reviewer_from_completing_both_facets() -> None:
+    # AUT-002 (enforced in ``approve_campaign``): two-person review means two
+    # DISTINCT people. A reviewer who already approved one facet must not be
+    # shown the remaining lane, because the server would reject their second
+    # approval. UX-011 §5 narrows the flag to match that gate — it does not
+    # change any authorization decision.
     creator_id = uuid4()
     reviewer_id = uuid4()
     campaign = _campaign(state=dm.CampaignState.PENDING_APPROVAL, creator_id=creator_id)
@@ -126,10 +131,12 @@ def test_campaign_flags_allow_one_independent_reviewer_to_complete_both_facets()
         ApprovalPolicy.ENFORCE,
         launch_gate=_launch_gate(campaign),
     )
-    assert one_lane["can_approve_security"] is False
-    assert one_lane["can_approve_privacy"] is True
+    assert one_lane["can_approve_security"] is False  # lane already decided
+    assert one_lane["can_approve_privacy"] is False  # barred: already approved a facet
 
-    privacy = _approval(campaign, dm.ApprovalType.PRIVACY, reviewer_id)
+    # Two DISTINCT approvers complete the review; the campaign reaches APPROVED
+    # and can be scheduled by a schedule-capable operator.
+    privacy = _approval(campaign, dm.ApprovalType.PRIVACY, uuid4())
     campaign.state = dm.CampaignState.APPROVED
     complete = _campaign_action_flags(
         campaign,
