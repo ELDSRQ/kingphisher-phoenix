@@ -10,6 +10,7 @@ import pytest
 from kp_database.models import RetentionPolicy
 from kp_database.training import TrainingBearerPurpose, training_bearer, training_bearer_verifier
 from kp_domain_models import models as dm
+from kp_domain_models.policy import ApprovalPolicy
 from kp_telemetry.errors import SafetyRejectionError
 from kp_workers.config import WorkerSettings
 from kp_workers.jobs import (
@@ -522,6 +523,46 @@ def test_reminder_job_skips_recipient_outside_the_allowlist(monkeypatch: pytest.
         tracking_base_url="http://localhost:8001",
         allowed_recipient_domains="allowed.example.net",
     )
+    context = WorkerContext(settings, factory, audit, SimpleNamespace())  # type: ignore[arg-type]
+
+    process_reminder(context, {"payload": {}})
+
+    assert assignment.followup_sent_at is not None
+    assert audit.records[-1]["detail"] == {"sent": 0, "skipped": 1}
+
+
+def test_reminder_job_fails_closed_on_empty_allowlist_under_enforce_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # TST-002 coverage gap: an EMPTY recipient allowlist is allow-all ONLY for the
+    # marked single-admin offline stack (unrestricted = not allowlist and
+    # approval_policy is SINGLE_ADMIN, followup_jobs.py). Under the hardened
+    # default (PLT-002 made ENFORCE the default, and no KP_DEV_STACK marker here),
+    # an unset allowlist must fail CLOSED for reminders just as it does for
+    # delivery — a reminder is a real outbound message.
+    session = _Session()
+    assignment = _add_due_assignment(session, mailbox="learner@example.com")
+    session.scalar_results = [assignment, None]
+    monkeypatch.setattr("kp_workers.followup_jobs._excluded_recipient_ids", lambda *_a, **_k: set())
+    monkeypatch.setattr(
+        "kp_workers.jobs._reminder_sender",
+        lambda _: (_ for _ in ()).throw(AssertionError("no reminder under a fail-closed empty allowlist")),
+    )
+
+    @contextmanager
+    def factory() -> Any:
+        yield session
+
+    audit = _Audit()
+    # No allowed_recipient_domains, no approval_policy override, no dev_stack:
+    # the default ENFORCE posture with an empty allowlist must not allow-all.
+    settings = WorkerSettings(
+        _env_file=None,
+        reported_mailbox_url="http://localhost:8025",
+        training_token_hmac_key=("33" * 32),
+        tracking_base_url="http://localhost:8001",
+    )
+    assert settings.approval_policy is ApprovalPolicy.ENFORCE
     context = WorkerContext(settings, factory, audit, SimpleNamespace())  # type: ignore[arg-type]
 
     process_reminder(context, {"payload": {}})
