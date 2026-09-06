@@ -18,20 +18,26 @@ UNSET_ALLOWLIST_MESSAGE = (
 def resolve_recipient_policy(settings: OperatorApiSettings) -> tuple[frozenset[str], bool]:
     """Return ``(allowlist, unrestricted)`` for recipient admission.
 
-    An unconfigured allowlist means different things by auth mode:
+    An unconfigured allowlist means different things by posture:
 
-    * **OIDC / production** — fail closed. Refusing the import costs an
-      operator one configuration step; getting it wrong mails a simulation to
-      an unintended domain.
-    * **dev-auth** — allow all, so the offline demo stack still works. The
-      caller is expected to audit that it happened.
+    * **OIDC / production / any un-marked stack** — fail closed. Refusing the
+      import costs an operator one configuration step; getting it wrong mails a
+      simulation to an unintended domain.
+    * **explicitly-marked dev stack** (dev-auth + ``KP_DEV_STACK=1``) — allow
+      all, so the offline demo stack still works. The caller is expected to
+      audit that it happened.
+
+    PLT-002: allow-all now requires the explicit ``KP_DEV_STACK`` marker in
+    addition to dev-auth, so an unset allowlist can never mean allow-all by
+    default or via a single accidental env flip.
 
     Raises:
-        ValidationError_: 422, when the allowlist is unset outside dev-auth.
+        ValidationError_: 422, when the allowlist is unset outside the marked
+        dev stack.
     """
     allowlist = settings.recipient_domain_allowlist()
     if allowlist:
         return allowlist, False
-    if not settings.dev_auth_mode:
+    if not settings.dev_relaxations_allowed:
         raise ValidationError_(UNSET_ALLOWLIST_MESSAGE)
     return allowlist, True

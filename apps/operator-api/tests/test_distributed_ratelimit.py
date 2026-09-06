@@ -43,6 +43,13 @@ def _settings(tmp_path, **overrides: object) -> OperatorApiSettings:
         "redis_url": "rediss://redis.example:10000/0",
     }
     values.update(overrides)
+    # PLT-002: a managed (hardened) posture now REQUIRES real OIDC, and the ACS
+    # receipt-ingress hardening is gated on the receipts provider. These
+    # rate-limit tests exercise the managed hosting path only, so default to
+    # OIDC with no ACS receipts unless a case overrides it.
+    if values.get("config_store") == "managed":
+        values.setdefault("oidc_mode", "oidc")
+        values.setdefault("receipts_provider", "none")
     return OperatorApiSettings(**values)  # type: ignore[arg-type]
 
 

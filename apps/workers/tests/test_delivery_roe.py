@@ -211,7 +211,17 @@ def _run(
         yield session
 
     audit = _Audit()
-    settings = WorkerSettings(_env_file=None, roe_signing_key=roe_key)
+    # PLT-002: the default approval policy is now ENFORCE, which activates the
+    # two-person approval lookup in the delivery path (jobs.py). These tests
+    # isolate the RoE authorization boundary, so keep the historical single-admin
+    # path (a marked dev stack) that skips that separate approval query.
+    settings = WorkerSettings(
+        _env_file=None,
+        roe_signing_key=roe_key,
+        runtime_mode="development",
+        approval_policy="single-admin",
+        dev_stack=True,
+    )
     context = WorkerContext(settings, factory, audit, SimpleNamespace())  # type: ignore[arg-type]
     sent: list[bool] = []
     monkeypatch.setattr(

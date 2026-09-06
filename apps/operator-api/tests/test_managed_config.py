@@ -14,6 +14,7 @@ import uuid
 import jwt
 import pytest
 from fastapi.testclient import TestClient
+from kp_operator_api.auth import DevIdP
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import create_app
 from pydantic import ValidationError
@@ -36,6 +37,23 @@ def _settings(**overrides: object) -> OperatorApiSettings:
     return OperatorApiSettings(**base)  # type: ignore[arg-type]
 
 
+def _managed_settings(**overrides: object) -> OperatorApiSettings:
+    # PLT-002: managed now REQUIRES real OIDC (managed+dev is refused), and the
+    # ACS receipt-ingress block is gated on receipts_provider, so a managed
+    # deployment that does not use ACS receipts needs no Event Grid config.
+    return _settings(config_store="managed", oidc_mode="oidc", receipts_provider="none", **overrides)
+
+
+def _managed_app(settings: OperatorApiSettings):
+    # Under oidc_mode="oidc" the app selects the JWKS-backed IdP; swap in the
+    # dev HS256 verifier so the test's console token authenticates without a
+    # live identity provider. This isolates the config_store (hosting) behavior
+    # under test from the identity backend.
+    app = create_app(settings)
+    app.state.idp = DevIdP(settings.oidc_issuer, settings.oidc_audience, settings.console_jwt_secret)
+    return app
+
+
 def _token(settings: OperatorApiSettings) -> str:
     claims = {
         "sub": str(uuid.uuid4()),
@@ -55,7 +73,23 @@ def test_config_store_defaults_to_env_file() -> None:
 
 
 def test_managed_flag_follows_the_setting() -> None:
-    assert _settings(config_store="managed").config_is_managed is True
+    assert _managed_settings().config_is_managed is True
+
+
+def test_managed_requires_oidc_and_refuses_dev_auth() -> None:
+    # PLT-002 core safety guard: a managed (hardened) posture must run real
+    # OIDC; managed+dev-auth used to silently skip every managed check.
+    with pytest.raises(ValidationError, match="requires OPERATOR_API_OIDC_MODE=oidc"):
+        _settings(config_store="managed", oidc_mode="dev")
+
+
+def test_managed_without_acs_receipts_needs_no_event_grid() -> None:
+    # PLT-002 seam: identity/hosting posture is decoupled from the mail/receipts
+    # provider. A managed deployment with receipts_provider="none" constructs
+    # with no ACS or Event Grid configuration at all.
+    settings = _managed_settings()
+    assert settings.config_is_managed is True
+    assert settings.receipts_provider == "none"
 
 
 @pytest.mark.parametrize(
@@ -67,8 +101,8 @@ def test_managed_flag_follows_the_setting() -> None:
     ],
 )
 def test_managed_deployment_refuses_local_mutations(method: str, path: str, body: dict[str, object]) -> None:
-    settings = _settings(config_store="managed")
-    app = create_app(settings)
+    settings = _managed_settings()
+    app = _managed_app(settings)
     with TestClient(app) as client:
         resp = getattr(client, method)(path, json=body, headers={"Authorization": f"Bearer {_token(settings)}"})
     assert resp.status_code == 409, resp.text

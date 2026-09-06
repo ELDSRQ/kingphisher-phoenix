@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from kp_domain_models.policy import ApprovalPolicy
 from kp_workers.config import WorkerSettings
 from pydantic import ValidationError
 
@@ -95,6 +96,39 @@ def test_every_worker_role_accepts_its_valid_managed_configuration(worker_name: 
 
     assert settings.worker_name == worker_name
     assert settings.runtime_mode == runtime_mode
+
+
+# --- PLT-002 send-safety posture -------------------------------------------------
+
+
+def test_default_approval_policy_is_enforce() -> None:
+    # PLT-002: the safe two-person default, not SINGLE_ADMIN.
+    assert _settings().approval_policy is ApprovalPolicy.ENFORCE
+    assert _settings(runtime_mode="managed", worker_name="ingestion").approval_policy is ApprovalPolicy.ENFORCE
+
+
+def test_single_admin_requires_the_marked_development_stack() -> None:
+    # SINGLE_ADMIN is also what unlocks empty-allowlist allow-all at delivery
+    # (jobs.py), so it must be explicitly opted into on a marked dev stack.
+    settings = _settings(runtime_mode="development", approval_policy="single-admin", dev_stack=True)
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+
+
+def test_single_admin_rejected_in_development_without_the_marker() -> None:
+    with pytest.raises(ValidationError, match="single-admin is not permitted"):
+        _settings(runtime_mode="development", approval_policy="single-admin")
+
+
+@pytest.mark.parametrize("runtime_mode", ["managed", "production"])
+def test_single_admin_rejected_in_managed_and_production(runtime_mode: str) -> None:
+    # Even with the dev marker set, a hardened worker must never run SINGLE_ADMIN.
+    with pytest.raises(ValidationError, match="single-admin is not permitted"):
+        _settings(
+            worker_name="ingestion",
+            runtime_mode=runtime_mode,
+            approval_policy="single-admin",
+            dev_stack=True,
+        )
 
 
 @pytest.mark.parametrize("worker_name", ["ingestion", "alert"])

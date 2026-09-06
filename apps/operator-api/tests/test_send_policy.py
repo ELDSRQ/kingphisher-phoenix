@@ -51,13 +51,44 @@ def test_enforce_policy_is_allowed_under_oidc() -> None:
     assert _settings(oidc_mode="oidc", approval_policy="enforce").approval_policy is ApprovalPolicy.ENFORCE
 
 
-def test_single_admin_policy_is_allowed_in_dev_auth() -> None:
-    # The offline demo stack stays usable for one operator.
-    assert _settings(oidc_mode="dev", approval_policy="single-admin").approval_policy is ApprovalPolicy.SINGLE_ADMIN
+def test_single_admin_policy_is_allowed_only_in_marked_dev_stack() -> None:
+    # PLT-002: the offline demo stack stays usable for one operator, but ONLY
+    # when it is explicitly marked as a throwaway dev stack (KP_DEV_STACK=1).
+    settings = _settings(oidc_mode="dev", approval_policy="single-admin", dev_stack=True)
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
 
 
-def test_default_policy_is_single_admin_for_the_dev_stack() -> None:
-    assert _settings().approval_policy is ApprovalPolicy.SINGLE_ADMIN
+def test_single_admin_policy_is_rejected_in_dev_auth_without_the_marker() -> None:
+    # PLT-002: dev-auth alone is no longer enough; without KP_DEV_STACK a stray
+    # single-admin cannot silently switch off separation-of-duties.
+    with pytest.raises(ValidationError, match="single-admin is not permitted"):
+        _settings(oidc_mode="dev", approval_policy="single-admin")
+
+
+def test_default_policy_is_enforce() -> None:
+    # PLT-002: the safe two-person default, regardless of auth mode.
+    assert _settings().approval_policy is ApprovalPolicy.ENFORCE
+    assert _settings(oidc_mode="dev", dev_stack=True).approval_policy is ApprovalPolicy.ENFORCE
+
+
+def test_managed_config_refuses_dev_auth() -> None:
+    # PLT-002: a managed (hardened) posture must run real OIDC; managed+dev-auth
+    # used to silently skip every managed check, now it refuses to start.
+    with pytest.raises(ValidationError, match="requires OPERATOR_API_OIDC_MODE=oidc"):
+        _settings(config_store="managed", oidc_mode="dev", approval_policy="enforce")
+
+
+def test_env_file_dev_stack_still_starts() -> None:
+    # The running .105 stack: config_store=env_file + oidc_mode=dev must NOT be
+    # refused by the managed guard, and stays usable with the dev marker.
+    settings = _settings(
+        config_store="env_file",
+        oidc_mode="dev",
+        approval_policy="single-admin",
+        dev_stack=True,
+    )
+    assert settings.config_is_managed is False
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
 
 
 # --- recipient domain allowlist ----------------------------------------------------
@@ -85,12 +116,22 @@ def test_import_policy_returns_configured_allowlist() -> None:
     assert unrestricted is False
 
 
-def test_import_policy_allows_all_only_in_dev_auth() -> None:
+def test_import_policy_allows_all_only_in_marked_dev_stack() -> None:
     # The offline stack must stay usable, but the caller audits that this
-    # import ran with no domain restriction at all.
-    allowlist, unrestricted = resolve_recipient_policy(_settings(oidc_mode="dev", allowed_recipient_domains=""))
+    # import ran with no domain restriction at all. PLT-002: allow-all now also
+    # requires the explicit KP_DEV_STACK marker, not just dev-auth.
+    allowlist, unrestricted = resolve_recipient_policy(
+        _settings(oidc_mode="dev", dev_stack=True, allowed_recipient_domains="")
+    )
     assert allowlist == frozenset()
     assert unrestricted is True
+
+
+def test_import_policy_fails_closed_in_dev_auth_without_the_marker() -> None:
+    # PLT-002: dev-auth without KP_DEV_STACK must NOT silently allow-all.
+    settings = _settings(oidc_mode="dev", allowed_recipient_domains="")
+    with pytest.raises(ValidationError_):
+        resolve_recipient_policy(settings)
 
 
 # --- policy visibility for the console -------------------------------------------
@@ -103,7 +144,8 @@ def test_session_reports_the_active_approval_policy(tmp_path: Path, policy: str)
     # rejects with a 409 they cannot act on.
     env_file = tmp_path / ".env"
     env_file.write_text("KP_CONSOLE_PASSWORD=correct-horse-battery-staple\n", encoding="utf-8")
-    settings = _settings(oidc_mode="dev", approval_policy=policy, env_file=str(env_file))
+    # single-admin requires the explicit dev-stack marker under dev-auth (PLT-002).
+    settings = _settings(oidc_mode="dev", approval_policy=policy, dev_stack=True, env_file=str(env_file))
 
     app = create_app(settings)
     with TestClient(app) as client:

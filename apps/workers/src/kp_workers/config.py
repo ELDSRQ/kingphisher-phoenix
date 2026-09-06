@@ -284,9 +284,22 @@ class WorkerSettings(BaseSettings):
     training_domains: str = "example.com,127.0.0.1"
 
     # --- send-safety policy (T-06); mirrors the operator API ---
+    # PLT-002 SAFETY CHANGE: default is ENFORCE (two-person), not SINGLE_ADMIN.
+    # SINGLE_ADMIN is also the switch that unlocks the empty-allowlist allow-all
+    # path at delivery (jobs.py: `unrestricted = not allowlist and approval_policy
+    # is SINGLE_ADMIN`), so gating it behind an explicit dev marker closes both
+    # relaxations at once. See validate_send_safety_posture.
     approval_policy: ApprovalPolicy = Field(
-        default=ApprovalPolicy.SINGLE_ADMIN,
+        default=ApprovalPolicy.ENFORCE,
         validation_alias=AliasChoices("KP_WORKER_APPROVAL_POLICY", "OPERATOR_APPROVAL_POLICY"),
+    )
+    #: Explicit "this is a throwaway local dev stack" marker (shared, unprefixed
+    #: KP_DEV_STACK, mirrors the operator API). Required — together with the
+    #: development runtime — to unlock SINGLE_ADMIN / allow-all. Off in every
+    #: managed or production worker.
+    dev_stack: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("KP_DEV_STACK", "KP_WORKER_DEV_STACK"),
     )
     allowed_recipient_domains: str = Field(
         default="",
@@ -364,6 +377,30 @@ class WorkerSettings(BaseSettings):
             self.require_local_audit_anchor_dir()
         if self.runtime_mode in _MANAGED_RUNTIME_MODES:
             self._validate_managed_role_providers()
+        return self
+
+    @property
+    def dev_relaxations_allowed(self) -> bool:
+        """True only for an explicitly-marked disposable development worker.
+
+        Mirrors the operator API. Requires the development runtime AND the
+        explicit KP_DEV_STACK marker, so SINGLE_ADMIN (and the empty-allowlist
+        allow-all it unlocks) can never be reached by default, by a single env
+        flip, or in a managed/production worker.
+        """
+        return self.runtime_mode == "development" and self.dev_stack
+
+    @model_validator(mode="after")
+    def validate_send_safety_posture(self) -> "WorkerSettings":
+        # SINGLE_ADMIN is the disposable-dev relaxation; it is also what turns
+        # an empty allowlist into allow-all at delivery (jobs.py:1447). Refuse it
+        # unless the worker is explicitly marked as a dev stack.
+        if self.approval_policy is ApprovalPolicy.SINGLE_ADMIN and not self.dev_relaxations_allowed:
+            raise ValueError(
+                "KP_WORKER_APPROVAL_POLICY=single-admin is not permitted here; it requires the development "
+                "runtime explicitly marked with KP_DEV_STACK=1. Use 'enforce' (two-person approval) in "
+                "managed and production runtime modes"
+            )
         return self
 
     def _validate_managed_role_providers(self) -> None:

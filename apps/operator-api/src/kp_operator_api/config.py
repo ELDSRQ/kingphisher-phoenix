@@ -126,10 +126,31 @@ class OperatorApiSettings(BaseSettings):
     # --- send-safety policy (T-06) ---
     # Both accept a shared, unprefixed env var so an operator sets one value
     # for the API and the workers instead of two that can silently diverge.
+    #
+    # PLT-002 SAFETY CHANGE: the default is ENFORCE (two-person), not
+    # SINGLE_ADMIN. SINGLE_ADMIN is a disposable-dev relaxation and is now
+    # refused unless the operator explicitly marks the stack with KP_DEV_STACK=1
+    # AND runs dev-auth (see validate_approval_policy). This stops one env flip
+    # from collapsing separation-of-duties.
     approval_policy: ApprovalPolicy = Field(
-        default=ApprovalPolicy.SINGLE_ADMIN,
+        default=ApprovalPolicy.ENFORCE,
         validation_alias=AliasChoices("OPERATOR_API_APPROVAL_POLICY", "OPERATOR_APPROVAL_POLICY"),
     )
+    #: Explicit "this is a throwaway local dev stack" marker (shared, unprefixed
+    #: KP_DEV_STACK). Required to unlock the unsafe dev relaxations — SINGLE_ADMIN
+    #: approvals and empty-allowlist allow-all — so those can never be reached by
+    #: default or by a single accidental env flip. Off in every hardened/managed
+    #: deployment.
+    dev_stack: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("KP_DEV_STACK", "OPERATOR_API_DEV_STACK"),
+    )
+    #: Which receipts (delivery-event ingress) backend this deployment uses.
+    #: PLT-002 seam: the ACS/Event-Grid ingress hardening below keys on THIS,
+    #: not on "managed", so identity/hosting posture is decoupled from the mail
+    #: provider. Defaults to "acs_eventgrid" to preserve prior managed behavior.
+    #: A hardened non-ACS deployment sets "none" and is not asked for Event Grid.
+    receipts_provider: Literal["none", "acs_eventgrid"] = "acs_eventgrid"
     allowed_recipient_domains: str = Field(
         default="",
         validation_alias=AliasChoices(
@@ -187,16 +208,41 @@ class OperatorApiSettings(BaseSettings):
 
         return parse_domain_allowlist(self.alert_webhook_domains)
 
+    @property
+    def dev_relaxations_allowed(self) -> bool:
+        """True only for an explicitly-marked disposable dev-auth stack.
+
+        Gate for the unsafe relaxations (SINGLE_ADMIN approvals; empty-allowlist
+        allow-all). Requires BOTH dev-auth AND the explicit KP_DEV_STACK marker,
+        so neither the default nor a single accidental env flip can reach them.
+        """
+        return self.dev_auth_mode and self.dev_stack
+
     @model_validator(mode="after")
     def validate_approval_policy(self) -> OperatorApiSettings:
-        # Under real OIDC the two-person rule is not optional: relaxing it there
-        # would let one authenticated admin send to real mailboxes unreviewed.
-        if not self.dev_auth_mode and self.approval_policy is ApprovalPolicy.SINGLE_ADMIN:
+        # SINGLE_ADMIN is a disposable-dev relaxation. It is refused unless the
+        # stack is explicitly marked dev (KP_DEV_STACK=1) AND runs dev-auth. The
+        # message keeps the historical "is not permitted" prefix so existing
+        # operators/tests still recognize it.
+        if self.approval_policy is ApprovalPolicy.SINGLE_ADMIN and not self.dev_relaxations_allowed:
             raise ValueError(
-                "OPERATOR_API_APPROVAL_POLICY=single-admin is not permitted when OIDC is enabled; "
-                "use 'enforce' (two-person approval) outside the dev-auth stack"
+                "OPERATOR_API_APPROVAL_POLICY=single-admin is not permitted here; it requires the dev-auth "
+                "stack explicitly marked with KP_DEV_STACK=1. Use 'enforce' (two-person approval) otherwise"
             )
-        if self.config_is_managed and not self.dev_auth_mode:
+        # PLT-002: a managed (hardened) posture must run real OIDC. Previously
+        # managed+dev-auth silently skipped every managed check below; now it is
+        # refused outright. Only managed+dev is refused — env_file+dev (the
+        # disposable local stack, incl. .105) is unaffected.
+        if self.config_is_managed and self.dev_auth_mode:
+            raise ValueError(
+                "OPERATOR_API_CONFIG_STORE=managed requires OPERATOR_API_OIDC_MODE=oidc; "
+                "dev-auth is refused under the managed posture"
+            )
+        # PLT-002 seam: ACS/Event-Grid receipt-ingress hardening keys on the
+        # receipts provider, not on "managed" alone, so a hardened non-ACS
+        # deployment (receipts_provider=none) is not forced to configure Event
+        # Grid. Managed here always implies OIDC (guarded above).
+        if self.config_is_managed and self.receipts_provider == "acs_eventgrid":
             try:
                 self.require_acs_receipt_signing_key()
                 uuid.UUID(self.event_grid_tenant_id)
