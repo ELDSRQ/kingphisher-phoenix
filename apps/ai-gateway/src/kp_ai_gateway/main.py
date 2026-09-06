@@ -49,13 +49,22 @@ def require_caller(authorization: str | None = Header(default=None)) -> None:
     """Authenticate the caller against the configured shared bearer secret.
 
     When ``settings.api_key`` is unset the gateway allows the request (local
-    dev) but logs once that it is running unauthenticated. When it is set, the
-    request must carry ``Authorization: Bearer <key>`` and the key is compared
-    in constant time; a missing, malformed, or wrong value is rejected 401.
+    dev) but logs once that it is running unauthenticated — unless
+    ``settings.require_auth`` is set, in which case a missing key is a
+    fail-closed misconfiguration and every request is rejected. When the key is
+    set, the request must carry ``Authorization: Bearer <key>`` and the key is
+    compared in constant time; a missing, malformed, or wrong value is rejected
+    401.
     """
 
     expected = settings.api_key
     if not expected:
+        if settings.require_auth:
+            # Fail closed: authentication is required but no secret is
+            # configured. Never serve an unauthenticated request in this
+            # posture (the config validator normally prevents boot in this
+            # state; this is the request-time backstop).
+            raise HTTPException(status_code=503, detail="authentication is required but not configured")
         global _UNAUTH_LOGGED
         if not _UNAUTH_LOGGED:
             logger.warning(

@@ -339,6 +339,56 @@ def test_ai_call_accepts_normal_contract_and_redacts_schema_errors(
     assert provider_secret not in str(caught.value)
 
 
+def test_ai_call_sends_the_configured_bearer_to_the_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AI-016: the worker authenticates to the hardened gateway.
+
+    The gateway rejects unauthenticated ``/propose`` when a key is configured,
+    so the worker must present ``Authorization: Bearer <ai_bearer_token>`` on
+    the call. Capture the outbound headers and assert the bearer is there.
+    """
+
+    from kp_workers import jobs
+
+    settings = SimpleNamespace(
+        effective_ai_base_url="https://ai.example",
+        ai_bearer_token="worker-shared-secret",
+        ai_api_key="",
+        ai_model_id="normal-model",
+        provider_timeout_seconds=2.0,
+    )
+    request = _build(_Pattern())
+    captured: dict[str, Any] = {}
+    response = _streaming_response(json.dumps(_generation_response().model_dump(mode="json")).encode())
+
+    @contextmanager
+    def stream(*_args: object, **kwargs: object) -> Iterator[httpx.Response]:
+        captured.update(kwargs)
+        yield response
+
+    monkeypatch.setattr(httpx, "stream", stream)
+    assert jobs._call_ai(SimpleNamespace(settings=settings), request) == _generation_response()
+    assert captured["headers"]["Authorization"] == "Bearer worker-shared-secret"
+
+
+def test_ai_call_sends_no_bearer_when_unconfigured_local_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The local stack runs with no shared secret; the worker sends no bearer."""
+
+    from kp_workers import jobs
+
+    request = _build(_Pattern())
+    captured: dict[str, Any] = {}
+    response = _streaming_response(json.dumps(_generation_response().model_dump(mode="json")).encode())
+
+    @contextmanager
+    def stream(*_args: object, **kwargs: object) -> Iterator[httpx.Response]:
+        captured.update(kwargs)
+        yield response
+
+    monkeypatch.setattr(httpx, "stream", stream)
+    assert jobs._call_ai(_Ctx(), request) == _generation_response()  # _Settings.ai_bearer_token == ""
+    assert "Authorization" not in captured["headers"]
+
+
 def test_ai_call_rejects_response_from_an_unpinned_model(monkeypatch: pytest.MonkeyPatch) -> None:
     """AI-010: a generation worker only accepts the pinned model identity.
 

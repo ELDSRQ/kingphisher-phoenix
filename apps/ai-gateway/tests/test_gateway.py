@@ -283,9 +283,74 @@ def test_setup_assist_401_when_key_set_and_no_bearer(monkeypatch) -> None:
 def test_propose_allows_unauthenticated_when_key_unset(monkeypatch) -> None:
     # Default (dev) posture: no key configured -> request is allowed.
     monkeypatch.setattr(gateway_main.settings, "api_key", None)
+    monkeypatch.setattr(gateway_main.settings, "require_auth", False)
     _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
     resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
     assert resp.status_code == 200, resp.text
+
+
+# --- AI-016: fail-closed posture (require_auth) ------------------------------
+
+def test_propose_fails_closed_when_auth_required_but_key_unset(monkeypatch) -> None:
+    # Managed misconfiguration: auth is required but no secret is configured.
+    # The gateway must NOT silently serve unauthenticated -> reject 503.
+    monkeypatch.setattr(gateway_main.settings, "api_key", None)
+    monkeypatch.setattr(gateway_main.settings, "require_auth", True)
+    _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 503
+
+
+def test_propose_401_when_auth_required_key_set_and_no_bearer(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "api_key", "s3cret")
+    monkeypatch.setattr(gateway_main.settings, "require_auth", True)
+    _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 401
+
+
+def test_propose_200_when_auth_required_and_correct_bearer(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "api_key", "s3cret")
+    monkeypatch.setattr(gateway_main.settings, "require_auth", True)
+    _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post(
+        "/propose", json=VALID_REQUEST, headers={"Authorization": "Bearer s3cret"}
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _clear_gateway_env(monkeypatch) -> None:
+    for name in ("KP_AI_GATEWAY_API_KEY", "KP_AI_GATEWAY_REQUIRE_AUTH"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_settings_reject_require_auth_without_key(monkeypatch) -> None:
+    # Fail closed at construction: managed cannot boot requiring auth with no key.
+    import pytest
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    with pytest.raises(ValueError, match="authentication is required"):
+        GatewaySettings(require_auth=True, api_key=None)
+
+
+def test_settings_accept_require_auth_with_key(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    settings = GatewaySettings(require_auth=True, api_key="s3cret")
+    assert settings.require_auth is True
+    assert settings.api_key == "s3cret"
+
+
+def test_settings_default_posture_allows_local_stack_without_key(monkeypatch) -> None:
+    # The flexibility invariant: the local llama.cpp path boots with no secret.
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    settings = GatewaySettings()
+    assert settings.require_auth is False
+    assert settings.api_key is None
 
 
 # --- AI-016: training_url is HTML-escaped before reaching safe_html ---------

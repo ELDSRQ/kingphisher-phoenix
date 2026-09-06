@@ -8,6 +8,9 @@ than trusting the model's self-report (see docs/ai010-worker-parity.md #3).
 
 from __future__ import annotations
 
+from typing import Self
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,3 +42,32 @@ class GatewaySettings(BaseSettings):
     #: is disabled to preserve local dev, and the gateway logs once that it is
     #: running unauthenticated. Compared in constant time.
     api_key: str | None = None
+
+    #: Fail-closed switch for managed deployments. When ``True`` the gateway
+    #: REQUIRES ``api_key`` to be set and rejects any request that does not
+    #: present the matching bearer — a missing ``api_key`` in this posture is a
+    #: misconfiguration, not an invitation to serve unauthenticated (that is the
+    #: silent-open hole this flag exists to close). When ``False`` (the default)
+    #: the local llama.cpp stack keeps working with no secret configured: dev is
+    #: satisfiable by a local shared secret or by nothing at all, never by an
+    #: Azure-only dependency. Managed sets ``KP_AI_GATEWAY_REQUIRE_AUTH=true``
+    #: alongside ``KP_AI_GATEWAY_API_KEY``.
+    require_auth: bool = False
+
+    @model_validator(mode="after")
+    def _auth_config_is_coherent(self) -> Self:
+        """Fail closed at construction when auth is required but no key is set.
+
+        In a managed deployment this raises before the app can serve, so a pod
+        that forgot to inject the secret never comes up accepting unauthenticated
+        ``/propose`` calls. The default posture (``require_auth`` False) is
+        untouched, so the local stack still boots with no secret.
+        """
+
+        if self.require_auth and not self.api_key:
+            raise ValueError(
+                "KP_AI_GATEWAY_REQUIRE_AUTH is set but KP_AI_GATEWAY_API_KEY is empty; "
+                "authentication is required and cannot be satisfied. Set the shared bearer "
+                "secret or disable REQUIRE_AUTH for local development."
+            )
+        return self
