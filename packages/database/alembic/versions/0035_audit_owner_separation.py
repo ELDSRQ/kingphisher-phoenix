@@ -48,8 +48,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0034_audit_owner_separation"
-down_revision = "0033_training_knowledge_check"
+revision = "0035_audit_owner_separation"
+down_revision = "0034_reporting_filter_indexes"
 branch_labels = None
 depends_on = None
 
