@@ -31,3 +31,11 @@ class GatewaySettings(BaseSettings):
 
     #: Sampling temperature. Zero for reproducible, review-stable drafts.
     temperature: float = 0.0
+
+    #: Shared secret a caller must present as ``Authorization: Bearer <key>`` on
+    #: ``/propose`` and ``/setup-assist``. The generation worker already sends
+    #: this value as its ``ai_bearer_token`` (jobs.py:2088), so the same secret
+    #: is configured on both sides. When ``None`` (the default) authentication
+    #: is disabled to preserve local dev, and the gateway logs once that it is
+    #: running unauthenticated. Compared in constant time.
+    api_key: str | None = None
