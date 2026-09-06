@@ -1,4 +1,4 @@
-# RESUME HERE — 2026-09-05 (Azure real-send drive; head `8e8eb1b`, pushed)
+# RESUME HERE — 2026-09-05 (Azure IDLED; full app + Qwen now run LOCAL on .105; head `a57345d`)
 
 > **Full copy/paste resume prompt: [`docs/NEXT-SESSION-PROMPT.md`](docs/NEXT-SESSION-PROMPT.md).**
 > The section below is the current state; older history follows further down.
@@ -10,14 +10,51 @@
 > DR archive on Alice. (2026-09-05: repo pushed to `8e8eb1b`; nothing else engineering-wise
 > changed this session — KP-008 stays RESOLVED, next step is still the console send flow.)
 
-> **COST — AZURE IDLED; BUILD/TEST IS LOCAL (2026-09-05):** Azure was ~$800/mo, so the
-> expensive tier is idled (Container Apps min‑0, Postgres STOPPED, CI VM deallocated; only
-> ACS/domain/DNS/Entra kept). The Azure console is OFFLINE until you resume — expected.
-> **Build + test run fully local, zero Azure (verified)** — do not restart Azure to work;
-> run `make bootstrap` → `scripts/run_console.sh` + `make test*` on the .105/.140 Docker host.
-> Qwen runs local via llama.cpp. Full plan: [`docs/LOCAL-FIRST-MIGRATION-PLAN.md`]; cost tiers +
-> `azure-idle.sh` stop/start + `idle.tfvars`: [`docs/HYBRID-AZURE-LOCAL-PLAN.md`]. Resume Azure
-> for a real send only: `scripts/operator/azure-idle.sh start`.
+> **COST — AZURE IDLED; FULL APP + QWEN + BUILD/TEST NOW RUN LOCAL ON .105 (2026-09-05):**
+> Azure was ~$800/mo, so the expensive tier is idled (reversible via `az`): all 4 Container
+> Apps at min-replicas 0, Postgres STOPPED (retains data, ~7-day auto-restart), CI runner VM
+> deallocated. Only the cheap **real-send slice** stays up — ACS + email domain + DNS + Event
+> Grid + Entra. The Azure console is OFFLINE until you resume — expected, not broken.
+> **The full app is RUNNING locally on the .105 WSL Docker host** (repo `/root/kingphisher-phoenix`):
+> supervisor with operator-api :8000 + tracking-api :8001 (both `/readyz` 200) and all 8 workers
+> (ingestion/generation/delivery/retention/mailbox/reminder/alert/directory); infra+mocks up;
+> audit root bootstrapped; demo seeded. **Qwen is LOCAL and PROVEN**: llama.cpp `kp-llama` :18081
+> (AI-010-validated GGUF, sha256 matches the ai-llama Dockerfile pins) + ai-gateway :8090,
+> ~12 tok/s (`--threads 8`); worker-generation wired via
+> `KP_WORKER_AI_BASE_URL=http://127.0.0.1:8090`; app→Qwen `/propose` generation VERIFIED
+> (schema-valid, simulation-framed); `deploy_ai_gateway=false` (Qwen no longer needs Azure).
+> Build + test are fully local, zero Azure (subagent-verified). Dev auth mode
+> (`OPERATOR_API_OIDC_MODE=dev`) — no Entra needed locally. **Reach the console from the Mac:**
+> `ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105` then
+> http://localhost:8000/console. Plans: [`docs/LOCAL-FIRST-MIGRATION-PLAN.md`] (per-dependency
+> local mapping + the verified local-Qwen bring-up runbook) and [`docs/HYBRID-AZURE-LOCAL-PLAN.md`]
+> (cost tiers, Path B). Cost controls (committed this session): Path B `deploy_data_plane`
+> Terraform flag (gates ACR + Redis; default true; Postgres/audit-storage intentionally NOT
+> gated), `infrastructure/terraform/environments/idle.tfvars` (idle overlay — apply via DIRECT
+> `terraform apply`; the CI workflow hardcodes `deploy_workloads=true` which outranks tfvars),
+> and `scripts/operator/azure-idle.sh {status|stop|start}`. **New identity option (IAM-003):**
+> operator login can drop Entra/O365 via a config-only OIDC issuer swap to a self-hosted
+> Keycloak (local user DB) — `docs/design/INTERNAL-IDP-KEYCLOAK.md` + task IAM-003 in
+> `docs/WAVE-BUILD-PLAN.md`; dev-mode already works locally with no Entra (caveat: OIDC egress
+> only trusts public-HTTPS issuers, so a private-LAN Keycloak needs a public HTTPS endpoint or a
+> small address-policy change). Resume Azure for a **real send only**:
+> `scripts/operator/azure-idle.sh start`, then `... stop` to re-idle.
+>
+> **Asset reallocation — Azure vs local (2026-09-05):**
+>
+> | Component | Where now | State | Notes |
+> |---|---|---|---|
+> | operator-api + console | LOCAL .105 | RUNNING :8000, `/readyz` 200 | supervisor process |
+> | tracking-api | LOCAL .105 | RUNNING :8001, `/readyz` 200 | supervisor process |
+> | 8 workers (ingestion/generation/delivery/retention/mailbox/reminder/alert/directory) | LOCAL .105 | RUNNING | audit-anchor not in the local roster |
+> | infra + mocks (postgres/redis/mailpit/otel/mock-idp/mock-graph/mock-ai) | LOCAL .105 | UP | audit root bootstrapped, demo seeded |
+> | Qwen2.5-7B AI content | LOCAL .105 | llama.cpp `kp-llama` :18081 + ai-gateway :8090, ~12 tok/s | app→Qwen `/propose` VERIFIED; `deploy_ai_gateway=false` |
+> | build + test | LOCAL .105 | zero-Azure (verified) | `make bootstrap` / `test` / `test-postgres` / `test-redis` / `test-e2e` |
+> | operator / tracking / worker Container Apps | AZURE | IDLED (min-replicas 0) | reversible |
+> | ai-gateway Container App | AZURE | IDLED (min-replicas 0) | Qwen now runs local |
+> | PostgreSQL Flexible Server | AZURE | STOPPED | retains data; ~7-day auto-restart |
+> | CI runner VM | AZURE | DEALLOCATED | |
+> | ACS + email domain + DNS + Event Grid + Entra | AZURE | KEPT UP | cheap real-send slice; needed for the real send |
 
 **Goal:** send ONE real phishing-sim email to erik.dierks@gmail.com via the Azure operator
 console. AI content (ai-gateway + Qwen) and ACS delivery are DEPLOYED; we are driving the

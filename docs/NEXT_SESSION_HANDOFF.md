@@ -1,28 +1,63 @@
 # Next-session handoff
 
-## Addendum 2026-09-05 (d) — Azure cost idled; build/test is fully local
+## Addendum 2026-09-05 (d) — Azure IDLED; full app + Qwen now RUN LOCAL on .105
 
-**Azure was ~$800/mo; the expensive tier is now IDLED** (reversible): all 4 Container Apps
-at min-replicas 0, Postgres **stopped** (retains data; auto-starts in ~7 days), CI VM
-deallocated. Only the cheap real-send slice (ACS/domain/DNS/Entra) stays up. The Azure
-console is OFFLINE until resumed — expected.
+**Head `a57345d`.** Azure was ~$800/mo; the expensive tier is now IDLED (reversible via `az`):
+all 4 Container Apps at min-replicas 0, Postgres **stopped** (retains data; auto-starts in
+~7 days), CI runner VM deallocated. Only the cheap real-send slice — **ACS + email domain +
+DNS + Event Grid + Entra** — stays up. The Azure console is OFFLINE until resumed — expected.
+**KP-008 stays RESOLVED and the real-send goal is unchanged** (resume Azure only for that).
 
+- **The FULL APP is now RUNNING locally on the .105 WSL Docker host** (repo
+  `/root/kingphisher-phoenix`), not merely "can run": the `scripts/supervisor.py` stack is up
+  with operator-api :8000 (`/readyz` 200), tracking-api :8001 (`/readyz` 200), and all 8
+  workers (ingestion/generation/delivery/retention/mailbox/reminder/alert/directory); infra +
+  mocks (postgres/redis/mailpit/otel/mock-idp/mock-graph/mock-ai) up; audit root bootstrapped;
+  demo seeded. **Reach the console from the Mac:**
+  `ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105` → http://localhost:8000/console.
 - **Build + test run fully local with ZERO Azure (verified by subagent review).** Do NOT
   restart Azure to work. The `docker-compose.yml` stack is infra+mocks only; the app tier
   (operator-api/tracking-api/8 workers) runs as local processes via `scripts/supervisor.py`.
-  Run on the .105/.140 Docker host: `make bootstrap` → `scripts/run_console.sh`; tests via
-  `make test` / `test-postgres` / `test-redis` / `test-e2e`. Full per-dependency mapping +
+  Run on the .105 Docker host: `make bootstrap` → `scripts/run_console.sh`; tests via
+  `make test` / `test-postgres` / `test-redis` / `test-e2e`. Dev auth mode
+  (`OPERATOR_API_OIDC_MODE=dev`) — no Entra needed locally. Full per-dependency mapping +
   commands: **`docs/LOCAL-FIRST-MIGRATION-PLAN.md`**.
-- **Qwen runs LOCAL** via llama.cpp (validated GGUF staged on the Docker host at
-  `infrastructure/containers/ai-llama/models/`, sha256 matches the ai-llama Dockerfile pin);
-  it does not need Azure (`deploy_ai_gateway=false`).
-- **Cost controls:** Path B `deploy_data_plane` flag gates ACR+Redis;
-  `infrastructure/terraform/environments/idle.tfvars` is the reproducible idle overlay
-  (apply via DIRECT `terraform apply` — the CI workflow hardcodes `deploy_workloads=true`
-  which outranks tfvars); `scripts/operator/azure-idle.sh {status|stop|start}` wraps the
-  idle/resume cycle. Tiers + details: **`docs/HYBRID-AZURE-LOCAL-PLAN.md`**.
+- **Qwen is now LOCAL and PROVEN.** llama.cpp `kp-llama` on :18081 serves the AI-010-validated
+  GGUF (sha256 matches the ai-llama Dockerfile pins), ~12 tok/s with `--threads 8`; ai-gateway
+  on :8090; worker-generation wired via `KP_WORKER_AI_BASE_URL=http://127.0.0.1:8090`. E2E
+  app→Qwen generation VERIFIED via `POST /propose` (returned schema-valid, simulation-framed
+  content). Qwen no longer needs Azure (`deploy_ai_gateway=false`). Bring-up runbook is in
+  **`docs/LOCAL-FIRST-MIGRATION-PLAN.md`**.
+- **Cost controls (committed this session):** Path B `deploy_data_plane` flag gates ACR+Redis
+  (default true = no change; `moved{}` blocks; Postgres/audit-storage intentionally NOT gated —
+  `prevent_destroy`/locked WORM); `infrastructure/terraform/environments/idle.tfvars` is the
+  reproducible idle overlay (apply via DIRECT `terraform apply` — the CI workflow hardcodes
+  `deploy_workloads=true` which outranks tfvars); `scripts/operator/azure-idle.sh
+  {status|stop|start}` wraps the idle/resume cycle (Postgres stop/start + plan/confirm apply +
+  OIDC re-patch). Tiers + details: **`docs/HYBRID-AZURE-LOCAL-PLAN.md`**.
+- **New identity option (IAM-003):** operator login can drop Entra/O365 via a config-only OIDC
+  issuer swap to a self-hosted Keycloak (local user DB) — see task IAM-003 in
+  `docs/WAVE-BUILD-PLAN.md` + design `docs/design/INTERNAL-IDP-KEYCLOAK.md`. Dev-mode already
+  works locally with no Entra. Caveat: OIDC egress only trusts public-HTTPS issuers, so a
+  private-LAN Keycloak needs a public HTTPS endpoint or a small address-policy change.
 - **Resume Azure ONLY for a real send:** `scripts/operator/azure-idle.sh start`
   (starts Postgres, re-applies the plane, re-patches OIDC), then `... stop` to re-idle.
+
+**Asset reallocation — Azure vs local (2026-09-05):**
+
+| Component | Where now | State | Notes |
+|---|---|---|---|
+| operator-api + console | LOCAL .105 | RUNNING :8000, `/readyz` 200 | supervisor process |
+| tracking-api | LOCAL .105 | RUNNING :8001, `/readyz` 200 | supervisor process |
+| 8 workers (ingestion/generation/delivery/retention/mailbox/reminder/alert/directory) | LOCAL .105 | RUNNING | audit-anchor not in the local roster |
+| infra + mocks (postgres/redis/mailpit/otel/mock-idp/mock-graph/mock-ai) | LOCAL .105 | UP | audit root bootstrapped, demo seeded |
+| Qwen2.5-7B AI content | LOCAL .105 | llama.cpp `kp-llama` :18081 + ai-gateway :8090, ~12 tok/s | app→Qwen `/propose` VERIFIED; `deploy_ai_gateway=false` |
+| build + test | LOCAL .105 | zero-Azure (verified) | `make bootstrap` / `test` / `test-postgres` / `test-redis` / `test-e2e` |
+| operator / tracking / worker Container Apps | AZURE | IDLED (min-replicas 0) | reversible |
+| ai-gateway Container App | AZURE | IDLED (min-replicas 0) | Qwen now runs local |
+| PostgreSQL Flexible Server | AZURE | STOPPED | retains data; ~7-day auto-restart |
+| CI runner VM | AZURE | DEALLOCATED | |
+| ACS + email domain + DNS + Event Grid + Entra | AZURE | KEPT UP | cheap real-send slice; needed for the real send |
 
 ## Addendum 2026-09-05 (c) — repo pushed + scope boundary (no engineering change)
 

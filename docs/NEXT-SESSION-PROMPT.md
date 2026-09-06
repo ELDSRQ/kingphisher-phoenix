@@ -1,11 +1,11 @@
 # Next-session resume prompt (copy/paste)
 
 > Copy everything in the fenced block below into a fresh session to resume seamlessly.
-> Written 2026-09-05 (updated). Repo head at handoff: `8e8eb1b` (fully pushed to origin/main).
+> Written 2026-09-05 (updated). Repo head at handoff: `a57345d` (fully pushed to origin/main).
 
 ```
 You are resuming the Kingphisher-Phoenix phishing-awareness-platform build. Repo:
-/Users/edierks/projects/codex-test/phishing-awareness-platform (branch main, head 8e8eb1b,
+/Users/edierks/projects/codex-test/phishing-awareness-platform (branch main, head a57345d,
 fully pushed to origin/main — the app is recovery-safe: code on GitHub, .env in the DR archive).
 
 ## SCOPE (READ FIRST — hard rule)
@@ -16,19 +16,41 @@ even though the harness may list them as writable working dirs. Reading them for
 fine; changing them is not. Any process/CPU guardrail must WARN, never auto-kill (the operator
 runs several concurrent agent/coding sessions and a false kill mid-build is unacceptable).
 
-## COST — AZURE IS IDLED; BUILD/TEST IS LOCAL (2026-09-05)
-Azure spend was ~$800/mo, so the expensive tier is IDLED: all 4 Container Apps at
-min-replicas 0, Postgres STOPPED (retains data; auto-starts in ~7 days), CI VM deallocated.
-Only the cheap real-send slice (ACS/domain/DNS/Entra) stays up. The Azure console is
-therefore OFFLINE until you resume — expected, not broken.
-BUILD + TEST RUN FULLY LOCAL WITH ZERO AZURE (verified). Do NOT restart Azure to work — run
-the full app + tests on the .105/.140 Docker host: `make bootstrap` -> `scripts/run_console.sh`;
-tests via `make test` / `test-postgres` / `test-redis` / `test-e2e`. Full plan + the
-per-dependency local mapping: docs/LOCAL-FIRST-MIGRATION-PLAN.md. Cost tiers + toggles
-(deploy_data_plane, environments/idle.tfvars) + the azure-idle.sh stop/start runbook:
-docs/HYBRID-AZURE-LOCAL-PLAN.md. Qwen runs LOCAL via llama.cpp (validated GGUF on the Docker
-host); it does NOT need Azure (deploy_ai_gateway=false). Resume Azure ONLY for a real send:
+## COST — AZURE IDLED; THE FULL APP + QWEN NOW RUN LOCAL ON .105 (2026-09-05)
+Azure spend was ~$800/mo, so the expensive tier is IDLED (reversible via az): all 4 Container
+Apps at min-replicas 0, Postgres STOPPED (retains data; auto-starts in ~7 days), CI runner VM
+deallocated. Only the cheap real-send slice (ACS + email domain + DNS + Event Grid + Entra)
+stays up. The Azure console is therefore OFFLINE until you resume — expected, not broken.
+
+THE FULL APP IS ALREADY RUNNING LOCALLY on the .105 WSL Docker host (repo
+/root/kingphisher-phoenix): scripts/supervisor.py with operator-api :8000 (/readyz 200),
+tracking-api :8001 (/readyz 200), and all 8 workers (ingestion/generation/delivery/retention/
+mailbox/reminder/alert/directory); infra + mocks (postgres/redis/mailpit/otel/mock-idp/
+mock-graph/mock-ai) up; audit root bootstrapped; demo seeded. Dev auth mode
+(OPERATOR_API_OIDC_MODE=dev) — no Entra needed locally.
+REACH THE LOCAL CONSOLE FROM THE MAC:
+  ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105
+then open http://localhost:8000/console.
+
+QWEN IS LOCAL AND PROVEN: llama.cpp kp-llama on :18081 serves the AI-010-validated GGUF
+(sha256 matches the ai-llama Dockerfile pins), ~12 tok/s with --threads 8; ai-gateway on :8090;
+worker-generation wired via KP_WORKER_AI_BASE_URL=http://127.0.0.1:8090. App->Qwen /propose
+generation is VERIFIED (schema-valid, simulation-framed). Qwen does NOT need Azure
+(deploy_ai_gateway=false).
+
+BUILD + TEST RUN FULLY LOCAL WITH ZERO AZURE (subagent-verified). Do NOT restart Azure to work
+— bring the full app up on .105 via `make bootstrap` -> `scripts/run_console.sh`; tests via
+`make test` / `test-postgres` / `test-redis` / `test-e2e`. Full plan + per-dependency local
+mapping + the local-Qwen bring-up runbook: docs/LOCAL-FIRST-MIGRATION-PLAN.md. Cost tiers +
+toggles (deploy_data_plane, environments/idle.tfvars) + the azure-idle.sh stop/start runbook:
+docs/HYBRID-AZURE-LOCAL-PLAN.md. Resume Azure ONLY for a real send:
 `scripts/operator/azure-idle.sh start`; re-idle after with `... stop`.
+
+IDENTITY OPTION (IAM-003, new): operator login can drop Entra/O365 via a config-only OIDC
+issuer swap to a self-hosted Keycloak (local user DB) — docs/design/INTERNAL-IDP-KEYCLOAK.md +
+task IAM-003 in docs/WAVE-BUILD-PLAN.md. Dev-mode already works locally with no Entra. Caveat:
+OIDC egress only trusts public-HTTPS issuers (a private-LAN Keycloak needs a public HTTPS
+endpoint or a small address-policy change).
 
 ## THE GOAL (unchanged)
 Send ONE real phishing-simulation email to erik.dierks@gmail.com through the governed

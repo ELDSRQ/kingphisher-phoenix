@@ -1,12 +1,27 @@
 # AI Handoff
 
-## Addendum 2026-09-05 — see the current resume prompt
+## Addendum 2026-09-05 — Azure IDLED; full app + Qwen now run LOCAL on .105
 
-**Current state, active blocker (KP-008), Azure architecture, deploy procedure, OIDC notes,
-the .140->.105 retirement, and the content-authoring->real-send flow are all captured in
+**Head at handoff: `a57345d`.** Cost move this session: Azure (~$800/mo) is IDLED — the 4
+Container Apps at min-replicas 0, Postgres STOPPED, CI runner VM deallocated; only the cheap
+real-send slice (ACS + email domain + DNS + Event Grid + Entra) stays up. **The full app now
+RUNS locally on the .105 WSL Docker host** (operator-api :8000 + tracking-api :8001, both
+`/readyz` 200, all 8 workers, infra+mocks, audit root bootstrapped, demo seeded), **Qwen runs
+LOCAL and is PROVEN** (llama.cpp `kp-llama` :18081 + ai-gateway :8090; app→Qwen `/propose`
+verified; `deploy_ai_gateway=false`), and **build + test are fully local, zero Azure**. Reach
+the local console from the Mac via
+`ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105` → http://localhost:8000/console.
+A config-only OIDC issuer swap to a self-hosted Keycloak (task **IAM-003**) can drop the
+Entra/O365 login dependency entirely (`docs/design/INTERNAL-IDP-KEYCLOAK.md`).
+
+**Current state, active blocker (KP-008 — still RESOLVED), the unchanged real-send goal, the
+Azure↔local asset reallocation table, Azure architecture, deploy procedure, OIDC notes, the
+.140->.105 retirement, and the content-authoring->real-send flow are all captured in
 [`docs/NEXT-SESSION-PROMPT.md`](NEXT-SESSION-PROMPT.md) (copy/paste) and summarized at the top
 of [`RESUME-HERE.md`](../RESUME-HERE.md) and [`docs/NEXT_SESSION_HANDOFF.md`](NEXT_SESSION_HANDOFF.md).**
-Head at handoff: `e370679`. The section below is retained for historical context.
+Cost/local-first detail: [`docs/LOCAL-FIRST-MIGRATION-PLAN.md`](LOCAL-FIRST-MIGRATION-PLAN.md)
+and [`docs/HYBRID-AZURE-LOCAL-PLAN.md`](HYBRID-AZURE-LOCAL-PLAN.md). The section below is
+retained for historical context.
 
 ---
 
