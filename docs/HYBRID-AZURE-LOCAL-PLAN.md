@@ -75,6 +75,42 @@ retains data, saves compute, ~7-day auto-restart), and the audit storage is reta
    auto-restart). Tier 1 (ACS/domain/DNS) stays up at ~$0; the next send skips all ACS
    re-verification, and starting Postgres + re-applying the flags brings the rest back.
 
+## Cost-idle deploy (one reproducible apply)
+
+The idle posture is captured as a committed override var-file,
+`infrastructure/terraform/environments/idle.tfvars`, so cost cannot creep back on the next
+apply. It sets `deploy_workloads=false`, `deploy_data_plane=false`, `deploy_ai_gateway=false`,
+`deploy_ci_runner=false` and leaves Tier 1 (ACS/domain/DNS/Entra) untouched.
+
+**Precedence caveat:** the GitHub Actions `workloads` phase hardcodes CLI
+`-var="deploy_workloads=true"`, and a CLI `-var` outranks any `-var-file` — so `idle.tfvars`
+takes effect only through a **direct** `terraform apply`, never by dispatching the workloads
+workflow.
+
+**Idle (Tier 2 → ~$0, Tier 1 stays up):**
+```bash
+cd infrastructure/terraform
+terraform apply \
+  -var-file="environments/staging.tfvars" \
+  -var-file="environments/idle.tfvars"
+# then stop Postgres (prevent_destroy, not flag-gated — retains data, ~7-day auto-restart):
+az postgres flexible-server stop -g rg-kp-staging -n <server>
+```
+Layer whatever supplies the no-default vars (`subscription_id`, `operator_fqdn`,
+`tracking_fqdn`, `entra_*`, `acs_*`) — e.g. the reviewed `.auto.tfvars.json` or `TF_VAR_*`.
+Review the plan: it must destroy **only** Container Apps + ACR + Redis (+ their PEs/role/secret)
+and show no Postgres/Storage destroy. `scripts/operator/azure-idle.sh stop` wraps both steps.
+
+**Resume (Tier 2 back on):** drop `idle.tfvars` and re-apply with `staging.tfvars` only, then
+start Postgres:
+```bash
+cd infrastructure/terraform
+terraform apply -var-file="environments/staging.tfvars"   # (+ the no-default var source)
+az postgres flexible-server start -g rg-kp-staging -n <server>
+```
+Re-patch the operator OIDC env after the apply (it reverts on every deploy);
+`scripts/operator/azure-idle.sh start` does the start + apply + OIDC re-patch in one step.
+
 ## Cost levers, ranked
 1. `deploy_workloads=false` — drops the always-on Container Apps replicas (operator/
    tracking never scale to zero).
