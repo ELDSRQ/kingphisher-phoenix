@@ -175,6 +175,24 @@ MANAGED_PROCESS_MESSAGE = (
 )
 
 
+def _require_deploy_connector_enabled(request: Request) -> None:
+    """Gate the in-operator-API Azure deploy connector on ``deploy_connector_enabled``.
+
+    ARC-002 Item 1 Phase 1. When the flag is on (the default) this is a no-op and
+    the Azure deployment routes behave byte-identically to before the flag
+    existed. When an operator opts a local-only install out by turning it off,
+    the whole Azure-deploy route surface responds 404 as if it were not mounted,
+    so a two-operator local install never sees it. The routes stay registered
+    (the OpenAPI/route inventory is unchanged) so flipping the flag back on fully
+    restores the connector with no redeploy of the surface itself.
+    """
+    if not request.app.state.settings.deploy_connector_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="the Azure deployment connector is disabled on this deployment",
+        )
+
+
 def _reject_if_managed(request: Request, message: str) -> None:
     """Refuse local-only console actions when configuration is externally managed.
 
@@ -564,12 +582,24 @@ class OidcStartResponse(BaseModel):
 
 
 @router.get("/auth-mode")
-def auth_mode(request: Request) -> dict[str, str]:
-    """Public, non-sensitive hint used to choose the console login screen."""
-    return {
-        "auth_mode": request.app.state.settings.oidc_mode,
-        "deployment_mode": request.app.state.settings.deployment_mode,
+def auth_mode(request: Request) -> dict[str, object]:
+    """Public, non-sensitive hint used to choose the console login screen.
+
+    ARC-002 Item 1 Phase 1: this is also the hint the console reads to decide
+    whether to show the Azure "Deployment" nav item. The ``deploy_connector_enabled``
+    key is emitted ONLY when the connector is turned off, so with the connector on
+    (the default) the response is byte-identical to before the flag existed and
+    the nav shows exactly as today; when off the key appears as ``false`` and the
+    console hides the nav. Flipping the flag back on restores both.
+    """
+    settings = request.app.state.settings
+    payload: dict[str, object] = {
+        "auth_mode": settings.oidc_mode,
+        "deployment_mode": settings.deployment_mode,
     }
+    if not settings.deploy_connector_enabled:
+        payload["deploy_connector_enabled"] = False
+    return payload
 
 
 def _b64url(value: bytes) -> str:
@@ -1845,6 +1875,7 @@ def _azure_deployment_schema() -> dict[str, Any]:
 
 @router.get("/azure-deployment", response_model=dict[str, Any])
 def get_azure_deployment(
+    _connector: None = Depends(_require_deploy_connector_enabled),
     _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     return _azure_deployment_schema()
@@ -1853,6 +1884,7 @@ def get_azure_deployment(
 @router.post("/azure-deployment/validate", response_model=dict[str, Any])
 def validate_azure_deployment(
     body: AzureDeploymentValidationRequest,
+    _connector: None = Depends(_require_deploy_connector_enabled),
     _principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     allowed = {field[0] for step in _AZURE_DEPLOYMENT_STEPS for field in step["fields"]}
@@ -2137,9 +2169,10 @@ def _deployment_orchestrator(request: Request) -> DeploymentOrchestrator:
 def plan_azure_deployment(
     body: AzureDeploymentValidationRequest,
     request: Request,
+    _connector: None = Depends(_require_deploy_connector_enabled),
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
-    validation = validate_azure_deployment(body, principal)
+    validation = validate_azure_deployment(body, _principal=principal)
     if not validation["ok"]:
         return validation
     values = {key: value.strip() for key, value in body.values.items()}
@@ -2181,6 +2214,7 @@ def plan_azure_deployment(
 def get_latest_azure_deployment_plan(
     request: Request,
     environment: str = "staging",
+    _connector: None = Depends(_require_deploy_connector_enabled),
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     try:
@@ -2194,6 +2228,7 @@ def get_latest_azure_deployment_plan(
 def get_azure_deployment_plan(
     plan_id: str,
     request: Request,
+    _connector: None = Depends(_require_deploy_connector_enabled),
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     try:
@@ -2242,6 +2277,7 @@ def apply_azure_deployment_plan(
     plan_id: str,
     body: AzureDeploymentConfirmationRequest,
     request: Request,
+    _connector: None = Depends(_require_deploy_connector_enabled),
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     return _submit_azure_deployment_plan(plan_id, body, request, principal, retry=False)
@@ -2252,6 +2288,7 @@ def retry_azure_deployment_plan(
     plan_id: str,
     body: AzureDeploymentConfirmationRequest,
     request: Request,
+    _connector: None = Depends(_require_deploy_connector_enabled),
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     return _submit_azure_deployment_plan(plan_id, body, request, principal, retry=True)
@@ -2262,6 +2299,7 @@ def advance_azure_deployment_plan(
     plan_id: str,
     body: AzureDeploymentAdvanceRequest,
     request: Request,
+    _connector: None = Depends(_require_deploy_connector_enabled),
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     if not body.confirm:

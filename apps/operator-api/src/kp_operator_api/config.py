@@ -181,6 +181,17 @@ class OperatorApiSettings(BaseSettings):
     #: Recipients per delivery message; bounds the 1MiB queue payload cap.
     delivery_batch_size: int = Field(default=200, ge=1, le=2000)
 
+    #: Master switch for the in-operator-API Azure deploy / GitHub-dispatch
+    #: connector (the /azure-deployment routes and the console Deployment nav).
+    #: ARC-002 Item 1 Phase 1: this is purely additive and reversible. The
+    #: default is ON, so behavior is byte-identical to before this flag existed;
+    #: a locally-run, two-operator install may set it OFF (the whole Azure-deploy
+    #: surface then 404s and the nav hint is withdrawn) and back ON at any time.
+    #: It only gates visibility/activation — no Azure capability is removed, so
+    #: the ability to flip between a local-only and an Azure deployment is
+    #: preserved.
+    deploy_connector_enabled: bool = True
+
     #: Where runtime configuration actually lives.
     #:
     #: "env_file"  - the disposable local stack: the console may edit .env and
