@@ -17,13 +17,17 @@ BEGIN
   END IF;
 END
 \$\$;
--- CRIT-06 separation, consistent with alembic migration
--- 0010_audit_ownership_separation: the audit role owns the audit tables and
--- the application role holds no DML on them. On first boot the tables do not
--- exist yet (alembic creates them and migration 0010 transfers ownership in
--- the same transaction), so the guarded block below is a no-op then; it
--- converges an already-migrated database to the same hardened state if this
--- script is ever re-run manually. Skipping via NOTICE, never failing.
+-- CRIT-06 separation, consistent with alembic migrations
+-- 0010_audit_ownership_separation and 0034_audit_owner_separation (AUD-002):
+-- the audit evidence tables are owned by the NOLOGIN audit_owner (a role no
+-- session can log in as), NOT the LOGIN audit_writer — an owner keeps implicit
+-- UPDATE/DELETE/TRUNCATE regardless of REVOKE, so a LOGIN owner could tamper
+-- with the append-only chain. audit_writer retains only its explicit
+-- SELECT/INSERT (+UPDATE on audit_chain_head) grants. On first boot the tables
+-- do not exist yet (alembic creates them and 0034 transfers ownership), so the
+-- guarded block below is a no-op then; it converges an already-migrated
+-- database to the same hardened state if this script is ever re-run manually.
+-- Skipping via NOTICE, never failing.
 GRANT USAGE ON SCHEMA public TO audit_writer;
 DO \$\$
 DECLARE
@@ -33,15 +37,22 @@ BEGIN
     RAISE NOTICE 'role audit_writer does not exist, skipping audit ownership hardening';
     RETURN;
   END IF;
+  -- Ensure the NOLOGIN owner exists so re-runs converge to audit_owner, not
+  -- back to the LOGIN audit_writer (which would reintroduce the owner bypass).
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'audit_owner') THEN
+    CREATE ROLE audit_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+      NOINHERIT NOREPLICATION NOBYPASSRLS;
+  END IF;
   FOREACH target IN ARRAY ARRAY['audit_events', 'audit_chain_head'] LOOP
     IF to_regclass(format('public.%I', target)) IS NULL THEN
       CONTINUE;
     END IF;
-    EXECUTE format('ALTER TABLE public.%I OWNER TO audit_writer', target);
+    EXECUTE format('ALTER TABLE public.%I OWNER TO audit_owner', target);
     EXECUTE format(
       'REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON public.%I FROM ${POSTGRES_USER}',
       target
     );
+    EXECUTE format('REVOKE DELETE, TRUNCATE ON public.%I FROM audit_writer', target);
   END LOOP;
 END
 \$\$;

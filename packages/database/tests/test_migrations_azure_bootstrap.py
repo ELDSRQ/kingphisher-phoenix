@@ -8,6 +8,8 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from kp_database import grants
+from sqlalchemy.engine import make_url
 
 SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "azure_migrate.py"
 POSTGRES_INIT_PATH = (
@@ -82,6 +84,10 @@ class _Connection:
         self.raw_statements: list[object] = []
         self.existing_roles = existing_roles or set()
         self.installed_audit_root = installed_audit_root
+        # Which PostgreSQL role the current (fresh-login) probe engine connects
+        # as; set by the create_engine factory from the DSN username. None means
+        # the admin/migration session.
+        self.current_role: str | None = None
         self.connection = SimpleNamespace(driver_connection=SimpleNamespace(execute=self.raw_statements.append))
 
     # Model whether a fresh runtime session can enqueue. Default True is the
@@ -108,10 +114,42 @@ class _Connection:
         text_sql = str(statement)
         self.statements.append(text_sql)
         if "current_user" in text_sql:
-            return _Result("kp_operator")
+            # A fresh-login probe reports the role it connected as.
+            return _Result(self.current_role or "kpadmin")
+        if "has_table_privilege" in text_sql:
+            return _Result(self._model_table_privilege(parameters or {}))
+        if "has_column_privilege" in text_sql:
+            return _Result(self._model_column_privilege(parameters or {}))
         if "INSERT INTO transactional_outbox" in text_sql and not self.probe_enqueue_ok:
             raise RuntimeError("permission denied for table transactional_outbox")
         return _Result(None)
+
+    # The probe compares live PostgreSQL against the kp_database.grants oracle;
+    # this fast harness answers has_*_privilege straight from that same oracle,
+    # so the healthy path passes by construction and only injected failures
+    # (probe_enqueue_ok=False) trip the KP-008 gate.
+    def _model_table_privilege(self, parameters: dict[str, object]) -> bool:
+        if self.current_role is None:
+            return False
+        try:
+            workload = grants.workload_for_role(self.current_role)
+        except KeyError:
+            return False
+        table = str(parameters.get("t", "")).removeprefix("public.")
+        verb = str(parameters.get("v", ""))
+        return grants.expected_table_privilege(workload, table, verb)
+
+    def _model_column_privilege(self, parameters: dict[str, object]) -> bool:
+        if self.current_role is None:
+            return False
+        try:
+            workload = grants.workload_for_role(self.current_role)
+        except KeyError:
+            return False
+        table = str(parameters.get("t", "")).removeprefix("public.")
+        column = str(parameters.get("c", ""))
+        verb = str(parameters.get("v", ""))
+        return grants.expected_column_privilege(workload, table, column, verb)
 
     def begin(self) -> _Transaction:
         return _Transaction()
@@ -142,6 +180,25 @@ class _Engine:
         return None
 
 
+def _engine_factory(engine: _Engine):
+    """Return a create_engine stand-in that records the connecting role.
+
+    The bootstrap builds one admin engine (no DSN username) and then one
+    fresh-login engine per runtime role for the probe; this factory routes them
+    all to the single shared connection while stamping the role so the probe's
+    has_*_privilege checks are answered as that role.
+    """
+
+    def factory(url: object, *_args: object, **_kwargs: object) -> _Engine:
+        try:
+            engine.connection.current_role = make_url(str(url)).username
+        except Exception:
+            engine.connection.current_role = None
+        return engine
+
+    return factory
+
+
 def test_bootstrap_grants_only_the_real_audit_tables(monkeypatch: pytest.MonkeyPatch) -> None:
     script = _load_script()
     engine = _Engine()
@@ -151,7 +208,7 @@ def test_bootstrap_grants_only_the_real_audit_tables(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("AUDIT_ROOT_KEY", "01" * 32)
     for workload in script.REQUIRED_WORKLOADS:
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
-    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script, "create_engine", _engine_factory(engine))
     monkeypatch.setattr(script.command, "upgrade", lambda config, target: upgrades.append((config, target)))
 
     script.main()
@@ -215,11 +272,11 @@ def test_runtime_grant_map_excludes_audit_tables_and_schema_ownership() -> None:
         "alert",
         "audit-anchor",
     } == script.REQUIRED_WORKLOADS
-    for workload, grants in script.TABLE_GRANTS.items():
-        granted_tables = {table for tables in grants.values() for table in tables}
+    for workload, grant_map in script.TABLE_GRANTS.items():
+        granted_tables = {table for tables in grant_map.values() for table in tables}
         assert "audit_events" not in granted_tables, workload
         assert "audit_chain_head" not in granted_tables, workload
-        assert all("ALL" not in privileges for privileges in grants), workload
+        assert all("ALL" not in privileges for privileges in grant_map), workload
 
 
 def test_awareness_ledger_grants_are_retention_only_and_survive_privilege_reset() -> None:
@@ -254,7 +311,7 @@ def test_managed_migration_revokes_legacy_monolithic_ledger_access(
     monkeypatch.setenv("AUDIT_ROOT_KEY", "01" * 32)
     for workload in script.REQUIRED_WORKLOADS:
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
-    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script, "create_engine", _engine_factory(engine))
     monkeypatch.setattr(script.command, "upgrade", lambda *_args, **_kwargs: None)
 
     script.main()
@@ -272,7 +329,7 @@ def test_audit_anchor_primary_role_has_no_business_or_outbox_grants(monkeypatch:
     monkeypatch.setenv("AUDIT_ROOT_KEY", "01" * 32)
     for workload in script.REQUIRED_WORKLOADS:
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
-    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script, "create_engine", _engine_factory(engine))
     monkeypatch.setattr(script.command, "upgrade", lambda *_args, **_kwargs: None)
 
     script.main()
@@ -417,7 +474,7 @@ def test_enabled_microsoft365_roles_emit_scoped_grants(monkeypatch: pytest.Monke
     monkeypatch.setenv("AUDIT_ROOT_KEY", "01" * 32)
     for workload in script.REQUIRED_WORKLOADS | {"directory", "mailbox"}:
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
-    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script, "create_engine", _engine_factory(engine))
     monkeypatch.setattr(script.command, "upgrade", lambda *_args, **_kwargs: None)
 
     script.main()
@@ -445,7 +502,7 @@ def test_delivery_role_emits_scoped_acs_receipt_and_pacing_grants(monkeypatch: p
     monkeypatch.setenv("AUDIT_ROOT_KEY", "01" * 32)
     for workload in script.REQUIRED_WORKLOADS:
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
-    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script, "create_engine", _engine_factory(engine))
     monkeypatch.setattr(script.command, "upgrade", lambda *_args, **_kwargs: None)
 
     script.main()
@@ -470,7 +527,7 @@ def test_unconfigured_optional_worker_role_is_preserved_without_implicit_retirem
     for workload in script.REQUIRED_WORKLOADS:
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
     monkeypatch.delenv(script._password_env("generation"), raising=False)
-    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script, "create_engine", _engine_factory(engine))
     monkeypatch.setattr(script.command, "upgrade", lambda *_args, **_kwargs: None)
 
     script.main()
@@ -494,7 +551,7 @@ def test_existing_audit_root_mismatch_fails_before_any_role_or_migration_change(
     monkeypatch.setenv("AUDIT_ROOT_KEY", "01" * 32)
     for workload in script.REQUIRED_WORKLOADS:
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
-    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script, "create_engine", _engine_factory(engine))
     monkeypatch.setattr(script.command, "upgrade", lambda config, target: upgrades.append((config, target)))
 
     with pytest.raises(RuntimeError, match="automatic rotation is refused"):
@@ -512,7 +569,7 @@ def _run_bootstrap(script: ModuleType, engine: _Engine, monkeypatch: pytest.Monk
     monkeypatch.setenv("AUDIT_ROOT_KEY", "01" * 32)
     for workload in script.REQUIRED_WORKLOADS:
         monkeypatch.setenv(script._password_env(workload), f"test-only-{workload}")
-    monkeypatch.setattr(script, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(script, "create_engine", _engine_factory(engine))
     monkeypatch.setattr(script.command, "upgrade", lambda config, target: upgrades.append((config, target)))
     return upgrades
 

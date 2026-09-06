@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from kp_database import grants
+
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = (ROOT / "packages/database/alembic/versions/0020_transactional_audit_outbox.py").read_text()
 BOOTSTRAP = (ROOT / "scripts/azure_migrate.py").read_text()
@@ -35,8 +37,25 @@ def test_privileged_bootstrap_does_not_rely_on_optimization_removable_asserts() 
 
 
 def test_runtime_roles_can_stage_only_caller_controlled_intent_columns() -> None:
-    expected = "GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at)"
-    assert expected in BOOTSTRAP
+    # AUD-002: the intent-column allowlist now lives in the single source of
+    # truth (kp_database.grants). The adversarial guarantee is unchanged — only
+    # caller-controlled columns are grantable; origin_role and status (the
+    # provenance/dispatch fields) are NEVER in the INSERT allowlist.
+    assert grants.OUTBOX_INSERT_COLUMNS == (
+        "outbox_id",
+        "kind",
+        "topic",
+        "payload",
+        "idempotency_key",
+        "available_at",
+    )
+    assert "origin_role" not in grants.OUTBOX_INSERT_COLUMNS
+    assert "status" not in grants.OUTBOX_INSERT_COLUMNS
+    # ...and the bootstrap must emit exactly that allowlist verbatim (identical
+    # to the historical literal), assembled from the shared constant.
+    expected = "GRANT INSERT (" + ", ".join(grants.OUTBOX_INSERT_COLUMNS) + ")"
+    assert expected == "GRANT INSERT (outbox_id, kind, topic, payload, idempotency_key, available_at)"
+    assert "OUTBOX_INSERT_COLUMNS" in BOOTSTRAP  # bootstrap consumes the shared allowlist
     assert "GRANT UPDATE ON TABLE audit_events" not in BOOTSTRAP
     assert "GRANT DELETE ON TABLE audit_events" not in BOOTSTRAP
     assert "GRANT TRUNCATE ON TABLE audit_events" not in BOOTSTRAP
