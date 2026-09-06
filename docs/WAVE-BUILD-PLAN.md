@@ -561,6 +561,42 @@ Before an internal RSA staff pilot, the GUI must prove: Entra role separation; e
 | UX-011 | Console usability for a security-analyst operator | Operator UI/API (no safety gate touched); `docs/design/REVIEW-FINDINGS-2026-09.md` | Recipient pickers show masked display names (e.g. "Jane in Finance"), not 8-char UUIDs; rendered HTML preview + send-to-self before approval; emergency stop is reachable for the operator role (not buried under Audit); clone-campaign with re-sign-RoE; an approver "needs my decision" queue; send-time spread/scheduling; `report.csv` + evidence-bundle export wired from the GUI; no capability gate, approval, or kill-switch behavior changed | UX-001, OPS-001, ANA-001 | CAMPAIGN-UX | P1 | **Landed** 93695b4 (masked recipient names, needs-my-decision queue, emergency-stop nav, clone→re-sign-RoE, report.csv+evidence.zip export, ARC-002 nav-hide). No gate/approval/RoE/kill-switch behavior changed. DEFERRED (out-of-allowlist follow-ups): §2a HTML preview reverted for the no-live-HTML safety invariant → needs a SERVER-side HTML-structure summary; §2b proof send-to-self (worker jobs.py); send-time spread (models.py+Alembic+worker) |
 | TST-002 | Test-effect uplift | Postgres/Redis/browser test fixtures; `docs/design/REVIEW-FINDINGS-2026-09.md` | Postgres tests run against the migrated schema (not `drop_all`/`create_all`); the queue Lua runs against live Redis; regex-over-source UI assertions are replaced by a Playwright smoke test; the gates run in CI (OPS-002) and prove effect, not text | TST-001, REL-001 | TEST-INFRA | P2 | **Landed** d192516 (postgres fixtures build from real migrations; effect-level RED-batch coverage confirmed; Playwright smoke scaffolded operator-run) |
 
+### Follow-ups from the 2026-09 wave build (state as of head `e47570f`)
+
+All 11 REVIEW-FINDINGS-2026-09 tasks above are **landed**. The follow-ups those
+tasks recorded were then triaged:
+
+**Landed follow-ups**
+- **AI-016 managed auth engaged** — `9a74195`: the managed Terraform manifest now
+  generates a shared gateway-auth secret (Key Vault), sets `KP_AI_GATEWAY_REQUIRE_AUTH=true`
+  + `KP_AI_GATEWAY_API_KEY` on the ai-gateway, and injects the same secret as
+  `KP_WORKER_AI_BEARER_TOKEN` on the generation worker. LOCAL/dev stays auth-off
+  (compose + gateway default unchanged). `terraform validate` + 51 contract tests green.
+- **TST-002 reminder fail-close test** — `1473300`: proves the ENFORCE default does
+  not treat an empty allowlist as allow-all for reminders.
+- **UX-011 §2a safe replacement** — `e47570f`: server-computed HTML **structure
+  summary** (`html_summary`: bounded link/heading/tag counts + link table) on
+  `/templates/preview`, shown in the console as escaped DATA. No HTML is rendered
+  (`.srcdoc`/`.innerHTML` stay absent); sanitizer/renderer/CSP untouched.
+
+**Deferred follow-ups (reason → owner action for a future session)**
+- **TST-002 postgres fixture conversions** (`test_audit_store`, `test_campaign_program_service`)
+  — DEFERRED: cannot be validated without Docker/Postgres (never runs on the Mac
+  controller), and `test_audit_store` is grant-sensitive (audit_writer loses DELETE,
+  audit_owner owns the evidence tables); `test_campaign_program_service` needs the
+  isolated-*database* pattern, not just fixture plumbing. Do on a Docker/Linux host.
+- **UX-011 §2b proof send-to-self** — DEFERRED: touches the delivery worker
+  (`jobs.py`) + the server-designated test-account send path; must not bypass any
+  send gate. Wants a focused, reviewed RED-lane change.
+- **UX-011 send-time spread/scheduling** — DEFERRED: needs `models.py` + an Alembic
+  migration + `campaign_service.py` + worker scheduler behavior; a real data+behavior
+  change, not GUI wiring.
+- **ARC-002 Items 2 & 3** — DEFERRED per `docs/design/SIMPLIFICATION-ARC-002.md`:
+  Item 2 = split the `routers.py`/`console.py`/`process_delivery` god-modules
+  (large, behavior-preserving, high-collision — needs a dedicated wave); Item 3 =
+  evaluate/prototype a Postgres-only queue (drop Redis) behind a flag — an
+  evaluation, not an implement-now.
+
 ### Wave 19–29 qualification matrix
 
 These execution tasks refine the product matrix above; they do not create a second readiness decision.

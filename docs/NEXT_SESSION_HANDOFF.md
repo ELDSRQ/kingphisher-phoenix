@@ -1,5 +1,41 @@
 # Next-session handoff
 
+## Addendum 2026-09-06 — Four-perspective REVIEW-FINDINGS wave LANDED (head `e47570f`)
+
+The architect/senior-dev/security/portability review (`docs/design/REVIEW-FINDINGS-2026-09.md`)
+became 11 tracked tasks; **all 11 landed this session**, plus follow-ups. Per-task commits,
+status, and the deferred-follow-up list are in `docs/WAVE-BUILD-PLAN.md` (section "Follow-ups
+from the 2026-09 wave build"). Gate baseline: `make test` = **2882 passed**; the only 12
+failures are the retired macOS-only `.140` remote-checkpoint tests (they DESELECT on the Linux
+CI; they only run on the Mac because `macos_only` isn't filtered there) — not a regression.
+
+**Operational changes that affect the local bring-up and the real-send flow:**
+- **PLT-002 — ENFORCE is now the default approval posture.** SINGLE_ADMIN (relaxed two-person
+  approval) and the empty-allowlist allow-all now require an explicit **`KP_DEV_STACK=1`** marker
+  + development runtime; without it, startup refuses the relaxations and delivery/reminders fail
+  CLOSED on an empty allowlist. `.env.example` ships `KP_DEV_STACK=1` so the local demo keeps
+  single-admin + solo-canary. **If the .105 stack refuses to start or the solo canary is blocked,
+  set `KP_DEV_STACK=1` (+ worker runtime_mode=development / operator oidc_mode=dev).** Managed
+  config now REQUIRES oidc_mode=oidc (managed+dev refused).
+- **AUT-002 — two-person approval requires two DISTINCT people** (self-approval + same-person-
+  both-facets rejected, API + delivery-worker re-check). Migration head is `0036_launch_gate_submitted_by`.
+- **AUD-002/AUD-003** audit hardening (one drift-gated grant matrix; audit_writer no longer owns
+  audit tables locally; read-back/chain-verified anchors + local WORM; anchor-age gate is
+  fail-OPEN on absence so it never bricks a fresh local stack).
+- **AI-016** ai-gateway auth (bearer + fail-closed `require_auth`; managed terraform wires a
+  shared secret gateway↔generation-worker). **Local/dev stays auth-OFF** — no .105 change.
+- **UX-011** console usability; the console NEVER renders/executes template HTML (no
+  srcdoc/innerHTML) — a SAFE server-computed structure summary replaced the reverted live preview.
+- **CNT-002** Jinja sandbox enforced; **OPS-002** CI on PR+push:main; **TST-002** postgres
+  fixtures build from real migrations; **ARC-002 Ph1** Azure deploy connector flag-gated
+  (`deploy_connector_enabled`, default on, reversible).
+
+**Deferred (reasons in WAVE-BUILD-PLAN.md, none block the real-send goal):** two Docker-only
+postgres fixture conversions; UX-011 §2b proof send-to-self; UX-011 send-time spread (needs a
+migration + worker); ARC-002 Items 2/3 (god-module split; Postgres-only-queue evaluation).
+
+Everything below (Azure-idled / .105-local / KP-008 / real-send flow) still holds.
+
 ## Addendum 2026-09-05 (d) — Azure IDLED; full app + Qwen now RUN LOCAL on .105
 
 **Head `a57345d`.** Azure was ~$800/mo; the expensive tier is now IDLED (reversible via `az`):

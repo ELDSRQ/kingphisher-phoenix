@@ -1,12 +1,53 @@
 # Next-session resume prompt (copy/paste)
 
 > Copy everything in the fenced block below into a fresh session to resume seamlessly.
-> Written 2026-09-05 (updated). Repo head at handoff: `a57345d` (fully pushed to origin/main).
+> Written 2026-09-05, updated 2026-09-06. Repo head at handoff: `e47570f` (fully pushed to origin/main).
 
 ```
 You are resuming the Kingphisher-Phoenix phishing-awareness-platform build. Repo:
-/Users/edierks/projects/codex-test/phishing-awareness-platform (branch main, head a57345d,
+/Users/edierks/projects/codex-test/phishing-awareness-platform (branch main, head e47570f,
 fully pushed to origin/main — the app is recovery-safe: code on GitHub, .env in the DR archive).
+
+## 2026-09-06 — FOUR-PERSPECTIVE REVIEW-FINDINGS WAVE LANDED (read before the local bring-up)
+A full architect/senior-dev/security/portability review (docs/design/REVIEW-FINDINGS-2026-09.md)
+was turned into 11 tracked tasks and ALL 11 landed this session, plus follow-ups. Status +
+per-task commits + the deferred-follow-up list live in docs/WAVE-BUILD-PLAN.md (section
+"Follow-ups from the 2026-09 wave build"). What changed that AFFECTS HOW YOU OPERATE:
+
+- **PLT-002 — the default approval posture is now ENFORCE, not SINGLE_ADMIN.** SINGLE_ADMIN
+  (two-person approval relaxed) AND the empty-allowlist allow-all now require an explicit
+  `KP_DEV_STACK=1` marker together with development runtime; without it, startup REFUSES the
+  relaxations and delivery/reminders fail CLOSED on an empty allowlist. `.env.example` ships
+  `KP_DEV_STACK=1`, so a fresh local demo keeps the single-admin + solo-canary path. **If the
+  .105 local stack refuses to start, or the solo CANARY send is blocked, confirm the local
+  .env has `KP_DEV_STACK=1` and (worker) runtime_mode=development / (operator) oidc_mode=dev.**
+  Managed (`config_store=managed`) now REQUIRES oidc_mode=oidc (managed+dev is refused).
+- **AUT-002 — two-person approval now requires two DISTINCT people.** Self-approval and one
+  dual-capability admin approving both facets are rejected, at the API AND re-checked in the
+  delivery worker (canary included). Migration head is now `0036_launch_gate_submitted_by`.
+- **AUD-002/AUD-003 — audit hardening.** One grant matrix (drift-gated); audit_writer is no
+  longer OWNER of the audit tables on local installs; audit anchors are read-back/chain-verified
+  with a local WORM provider; a stale/mismatched anchor disables privileged mutations (fail-open
+  on absence so it never bricks a fresh local stack).
+- **AI-016 — ai-gateway hardened.** Bearer required + fail-CLOSED `require_auth` (managed
+  terraform now wires a shared secret across gateway + generation worker). LOCAL/dev is auth-OFF
+  by default — no change to the .105 bring-up.
+- **UX-011 console usability** (masked recipient names, "needs my decision" approver queue,
+  emergency-stop in the sidebar, clone→re-sign-RoE, report.csv + evidence.zip export, a SAFE
+  server-computed HTML structure summary in the template preview). SAFETY NOTE: the operator
+  console NEVER renders/executes template HTML (no srcdoc/innerHTML) — do not reintroduce that.
+- **CNT-002** Jinja sandbox enforced; **OPS-002** CI on PR+push:main; **TST-002** postgres
+  test fixtures now build from real migrations; **ARC-002 Ph1** the Azure deploy connector is
+  flag-gated (deploy_connector_enabled, default on).
+
+STILL OPEN (deferred, reasons in WAVE-BUILD-PLAN.md): the two Docker-only postgres fixture
+conversions (test_audit_store, test_campaign_program_service), UX-011 §2b proof send-to-self,
+UX-011 send-time spread (needs a migration + worker), and ARC-002 Items 2/3 (god-module split;
+Postgres-only-queue evaluation). None block the real-send goal below.
+
+The gate baseline is green: `make test` = 2882 passed; the ONLY failures (12) are the retired
+macOS-only .140 remote-checkpoint contract tests, which DESELECT on the Linux CI (they run on
+the Mac because macos_only isn't filtered there). Not a regression — expected.
 
 ## SCOPE (READ FIRST — hard rule)
 Work ONLY inside this repo (phishing-awareness-platform). NEVER modify any other project.
@@ -200,10 +241,13 @@ grantor and Postgres ignores grantor in privilege checks; (2) the ownership-flip
   rollback (flip KP_DOCKER_WORKER=edierks@192.168.1.140 / set KP_ALLOW_LEGACY_MAC140=1).
   test-docker-worker.sh passes and asserts the new .105 default.
 
-## KEY COMMITS THIS SESSION
+## KEY COMMITS (2026-09-05 KP-008 / .105 session — historical; the 2026-09-06 wave is summarized at the top)
 - e370679 fix(db): KP-008 outbox grant verify + ownership-flip fallback (+ mock test).
 - fff07ce worker: retire .140, default remote worker -> erikd@192.168.1.105.
 - 1322f37 (superseded by e370679) earlier broken DIAG-print version of the migration.
+- (2026-09-06 wave, all pushed) be5df96 RED batch DEL-002/AUT-002/PLT-002; daff209 AUD-003;
+  d192516 TST-002; d254e9c AI-016+ARC-002-Ph1; 93695b4 UX-011 (+§2a srcdoc revert);
+  e47570f AI-016 managed auth + UX-011 §2a safe summary. See docs/WAVE-BUILD-PLAN.md.
 
 ## OPERATING NOTES
 - Operator instructions must be LITERAL: exact paths/hosts/URLs/commands; commands go in

@@ -1,5 +1,20 @@
 # AI Handoff
 
+## Addendum 2026-09-06 — REVIEW-FINDINGS wave LANDED (head `e47570f`, all pushed)
+
+All 11 tasks from the four-perspective review (`docs/design/REVIEW-FINDINGS-2026-09.md`) landed
+this session, plus follow-ups; full status + commits + deferrals in `docs/WAVE-BUILD-PLAN.md`.
+`make test` = 2882 passed (the only 12 failures are the retired macOS-only `.140` remote-checkpoint
+tests, which deselect on the Linux CI — not a regression). Behavior changes that matter next time:
+**PLT-002** made ENFORCE the default posture — the local single-admin / solo-canary path now needs
+**`KP_DEV_STACK=1`** (+ dev runtime); `.env.example` ships it, so set it if the .105 stack refuses
+to start or the canary is blocked. **AUT-002** requires two DISTINCT approvers (migration head
+`0036`). **AI-016** added fail-closed gateway auth (managed only; local stays auth-off). **UX-011**
+console never renders template HTML (no srcdoc/innerHTML — a SAFE server structure summary
+replaced the reverted live preview). Deferred (non-blocking): Docker-only postgres fixture
+conversions, UX-011 §2b send-to-self + send-time spread, ARC-002 god-module split / PG-only-queue
+eval. Everything below still holds.
+
 ## Addendum 2026-09-05 — Azure IDLED; full app + Qwen now run LOCAL on .105
 
 **Head at handoff: `a57345d`.** Cost move this session: Azure (~$800/mo) is IDLED — the 4
