@@ -4486,6 +4486,59 @@ function cloneCampaignIntoForm(campaign) {
   );
 }
 
+// UX-011 §2a (safe replacement for the reverted rendered-HTML preview): the
+// server computes a bounded structural summary of the already-sanitized
+// safe_html and returns it as plain strings. This shows it as DATA only — a
+// counts line, a links table (text | href) and a headings list — built with the
+// safe el() helper and text/textContent. The HTML is never rendered or executed
+// here; every value is escaped by textContent.
+function renderHtmlStructureSummary(summary) {
+  const section = el("section", { class: "card", "aria-label": "HTML structure summary (not rendered)" });
+  section.appendChild(el("h4", { text: "HTML structure summary" }));
+  section.appendChild(el("p", {
+    class: "modal-help",
+    text: "Server-computed structure of the sanitized HTML. Shown as data so it can be vetted without the HTML ever being rendered or executed.",
+  }));
+
+  const counts = [
+    ["Links", summary.link_count],
+    ["Images", summary.image_count],
+    ["Forms", summary.form_count],
+  ];
+  section.appendChild(el("dl", { class: "modal-detail" }, counts.flatMap(([label, value]) => [
+    el("dt", { text: label }),
+    el("dd", { text: String(Number.isFinite(value) ? value : 0) }),
+  ])));
+
+  const topTags = Array.isArray(summary.top_level_tags) ? summary.top_level_tags : [];
+  section.appendChild(el("p", {
+    class: "field-help",
+    text: `Top-level tags: ${topTags.length ? topTags.join(", ") : "(none)"}`,
+  }));
+
+  const links = Array.isArray(summary.links) ? summary.links : [];
+  if (links.length) {
+    const rows = links.map((link) => el("tr", {}, [
+      el("td", { text: link && link.text ? link.text : "(no link text)" }),
+      el("td", {}, [el("code", { text: link && link.href ? link.href : "(no href)" })]),
+    ]));
+    section.appendChild(el("table", { class: "data-table", "aria-label": "Links found in the sanitized HTML" }, [
+      el("thead", {}, [el("tr", {}, [el("th", { text: "Link text" }), el("th", { text: "Destination (href)" })])]),
+      el("tbody", {}, rows),
+    ]));
+  } else {
+    section.appendChild(el("p", { class: "field-help", text: "No links in the sanitized HTML." }));
+  }
+
+  const headings = Array.isArray(summary.headings) ? summary.headings : [];
+  if (headings.length) {
+    section.appendChild(el("h5", { text: "Headings" }));
+    section.appendChild(el("ul", { "aria-label": "Headings found in the sanitized HTML" },
+      headings.map((heading) => el("li", { text: heading }))));
+  }
+  return section;
+}
+
 function showRenderedTemplatePreview(rendered) {
   const { dlg, form } = dialogShell(
     `Preview: ${rendered.subject || "(no subject)"}`,
@@ -4541,6 +4594,9 @@ function showRenderedTemplatePreview(rendered) {
       class: "modal-help",
       text: "A sanitized HTML alternative exists but is deliberately not executed in the operator console. Use the plain-text fallback below for safe review.",
     }));
+    if (rendered.html_summary) {
+      form.appendChild(renderHtmlStructureSummary(rendered.html_summary));
+    }
   } else {
     form.appendChild(el("p", {
       class: "modal-help",

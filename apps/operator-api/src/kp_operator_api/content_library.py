@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from html.parser import HTMLParser
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -44,6 +45,146 @@ _SAFETY_REASON_CODES: tuple[tuple[str, str], ...] = (
     ("QR code content", "qr_code"),
     ("disallowed attachment:", "unsafe_attachment"),
 )
+
+
+# --- Safe, server-computed HTML *structure summary* (UX-011 §2a follow-up) ---
+#
+# The operator console must NEVER execute or render template HTML (no .srcdoc,
+# no .innerHTML). To let an approver still vet the structure of the already
+# sanitized ``safe_html``, the server parses it with the stdlib
+# ``html.parser.HTMLParser`` (no new dependency, no rendering) and returns a
+# bounded, plain-string DATA summary. The client displays it as escaped text /
+# tables — it is never injected into an executable document. Every count is
+# capped and every text/href value is length-bounded so a hostile-but-sanitized
+# template cannot inflate the response or smuggle a huge string to the console.
+_HTML_SUMMARY_MAX_LINKS = 50
+_HTML_SUMMARY_MAX_HEADINGS = 30
+_HTML_SUMMARY_MAX_TOP_TAGS = 40
+_HTML_SUMMARY_MAX_TEXT = 120
+_HTML_SUMMARY_MAX_HREF = 256
+_HTML_SUMMARY_MAX_COUNT = 9_999
+
+_VOID_ELEMENTS = frozenset(
+    {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+)
+_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+def _clean_summary_text(value: str, limit: int) -> str:
+    """Collapse whitespace and bound length; always a plain, escape-ready string."""
+
+    return " ".join(value.split())[:limit]
+
+
+class _StructureSummaryParser(HTMLParser):
+    """Extract a bounded structural summary. Parses only; never re-emits HTML."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.link_count = 0
+        self.image_count = 0
+        self.form_count = 0
+        self.links: list[dict[str, str]] = []
+        self.headings: list[str] = []
+        self.top_level_tags: list[str] = []
+        self._depth = 0
+        self._heading_buffer: list[str] | None = None
+        self._link_buffer: list[str] | None = None
+        self._link_href = ""
+
+    def _note_element(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._depth == 0 and len(self.top_level_tags) < _HTML_SUMMARY_MAX_TOP_TAGS:
+            self.top_level_tags.append(tag)
+        if tag == "a" and self.link_count < _HTML_SUMMARY_MAX_COUNT:
+            self.link_count += 1
+        elif tag == "img" and self.image_count < _HTML_SUMMARY_MAX_COUNT:
+            self.image_count += 1
+        elif tag == "form" and self.form_count < _HTML_SUMMARY_MAX_COUNT:
+            self.form_count += 1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._note_element(tag, attrs)
+        if tag == "a" and self._link_buffer is None and len(self.links) < _HTML_SUMMARY_MAX_LINKS:
+            href = ""
+            for name, value in attrs:
+                if name == "href" and value:
+                    href = value
+                    break
+            self._link_buffer = []
+            self._link_href = href
+        elif tag in _HEADING_TAGS and self._heading_buffer is None and len(self.headings) < _HTML_SUMMARY_MAX_HEADINGS:
+            self._heading_buffer = []
+        if tag not in _VOID_ELEMENTS:
+            self._depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # Self-closing (<img/>, <a/>): count/record it, but it opens no content
+        # buffer and does not nest, so depth is unchanged.
+        self._note_element(tag, attrs)
+        if tag == "a" and len(self.links) < _HTML_SUMMARY_MAX_LINKS:
+            href = ""
+            for name, value in attrs:
+                if name == "href" and value:
+                    href = value
+                    break
+            self.links.append({"text": "", "href": href[:_HTML_SUMMARY_MAX_HREF]})
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _HEADING_TAGS and self._heading_buffer is not None:
+            text = _clean_summary_text("".join(self._heading_buffer), _HTML_SUMMARY_MAX_TEXT)
+            if text and len(self.headings) < _HTML_SUMMARY_MAX_HEADINGS:
+                self.headings.append(text)
+            self._heading_buffer = None
+        if tag == "a" and self._link_buffer is not None:
+            if len(self.links) < _HTML_SUMMARY_MAX_LINKS:
+                self.links.append(
+                    {
+                        "text": _clean_summary_text("".join(self._link_buffer), _HTML_SUMMARY_MAX_TEXT),
+                        "href": self._link_href[:_HTML_SUMMARY_MAX_HREF],
+                    }
+                )
+            self._link_buffer = None
+        if tag not in _VOID_ELEMENTS and self._depth > 0:
+            self._depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._heading_buffer is not None:
+            self._heading_buffer.append(data)
+        if self._link_buffer is not None:
+            self._link_buffer.append(data)
+
+
+def _summarize_safe_html(html: str) -> dict[str, Any]:
+    """Compute a bounded structural summary of already-sanitized ``safe_html``.
+
+    Read-only: it parses with the stdlib HTML parser and returns plain strings.
+    No HTML is rendered, executed, or reflected back verbatim; the client
+    escapes every value it displays.
+    """
+
+    parser = _StructureSummaryParser()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # noqa: BLE001 - parser must never break the preview response
+        # Degrade to an empty-but-well-formed summary rather than surfacing
+        # parser internals or template content in an error.
+        return {
+            "link_count": 0,
+            "image_count": 0,
+            "form_count": 0,
+            "headings": [],
+            "links": [],
+            "top_level_tags": [],
+        }
+    return {
+        "link_count": parser.link_count,
+        "image_count": parser.image_count,
+        "form_count": parser.form_count,
+        "headings": parser.headings[:_HTML_SUMMARY_MAX_HEADINGS],
+        "links": parser.links[:_HTML_SUMMARY_MAX_LINKS],
+        "top_level_tags": parser.top_level_tags[:_HTML_SUMMARY_MAX_TOP_TAGS],
+    }
 
 
 class TemplatePreview(BaseModel):
@@ -168,13 +309,18 @@ def _render_template_preview(body: TemplatePreview, request: Request) -> dict[st
             status_code=422,
             detail="template contains unsupported or malformed rendering syntax",
         ) from exc
-    return {
+    response: dict[str, Any] = {
         "subject": subject,
         "plain_text": plain_text,
         "safe_html": rendered_html,
         "safe_html_present": bool(rendered_html),
         "html_execution": False,
     }
+    if rendered_html:
+        # Server-computed, bounded DATA view of the sanitized HTML structure so
+        # an approver can vet it WITHOUT the console ever rendering the HTML.
+        response["html_summary"] = _summarize_safe_html(rendered_html)
+    return response
 
 
 def preview_template(

@@ -127,6 +127,107 @@ def test_preview_requires_auth() -> None:
     assert resp.status_code == 401
 
 
+def test_preview_returns_bounded_html_structure_summary() -> None:
+    settings = _make_settings()
+    app = create_app(settings)
+    safe_html = (
+        "<h1>Security Notice</h1>"
+        '<p>Hello <a href="https://training.local/review">Review your account</a></p>'
+        "<h2>What to do</h2>"
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/templates/preview",
+            headers={"Authorization": f"Bearer {_token(settings)}"},
+            json={"subject": "Review", "plain_text": "See {{ tracking.click_url }}", "safe_html": safe_html},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    summary = body["html_summary"]
+    # Counts.
+    assert summary["link_count"] == 1
+    assert summary["image_count"] == 0
+    assert summary["form_count"] == 0
+    # Heading text extracted as plain strings (client escapes them).
+    assert summary["headings"] == ["Security Notice", "What to do"]
+    # Link text + href, both plain strings.
+    assert len(summary["links"]) == 1
+    assert summary["links"][0]["text"] == "Review your account"
+    assert summary["links"][0]["href"] == "https://training.local/review"
+    # Top-level structure of the fragment.
+    assert summary["top_level_tags"] == ["h1", "p", "h2"]
+
+
+def test_preview_without_safe_html_has_no_summary() -> None:
+    settings = _make_settings()
+    app = create_app(settings)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/templates/preview",
+            headers={"Authorization": f"Bearer {_token(settings)}"},
+            json={"subject": "Review", "plain_text": "See {{ tracking.click_url }}", "safe_html": ""},
+        )
+    assert resp.status_code == 200, resp.text
+    assert "html_summary" not in resp.json()
+
+
+def test_html_summary_extracts_structure_and_counts() -> None:
+    summary = content_library_module._summarize_safe_html(
+        "<div><h1>Title</h1><p>Body <a href='https://train.local/a'>Click</a> and "
+        "<a href='https://train.local/b'>Again</a></p><img src='x'><form></form></div>"
+    )
+    assert summary["link_count"] == 2
+    assert summary["image_count"] == 1
+    assert summary["form_count"] == 1
+    assert summary["headings"] == ["Title"]
+    assert summary["links"] == [
+        {"text": "Click", "href": "https://train.local/a"},
+        {"text": "Again", "href": "https://train.local/b"},
+    ]
+    # A single top-level <div> wraps the fragment.
+    assert summary["top_level_tags"] == ["div"]
+
+
+def test_html_summary_caps_text_and_href_length() -> None:
+    long_text = "T" * 500
+    long_href = "https://train.local/" + ("q" * 500)
+    summary = content_library_module._summarize_safe_html(
+        f'<a href="{long_href}">{long_text}</a><h1>{long_text}</h1>'
+    )
+    assert len(summary["links"][0]["text"]) == content_library_module._HTML_SUMMARY_MAX_TEXT
+    assert len(summary["links"][0]["href"]) == content_library_module._HTML_SUMMARY_MAX_HREF
+    assert len(summary["headings"][0]) == content_library_module._HTML_SUMMARY_MAX_TEXT
+
+
+def test_html_summary_caps_list_lengths_and_counts() -> None:
+    link_total = content_library_module._HTML_SUMMARY_MAX_LINKS + 40
+    image_total = content_library_module._HTML_SUMMARY_MAX_COUNT + 25
+    tag_total = content_library_module._HTML_SUMMARY_MAX_TOP_TAGS + 30
+    many_links = "".join(f'<a href="https://train.local/{i}">L{i}</a>' for i in range(link_total))
+    many_images = "<img src='x'>" * image_total
+    many_divs = "<div></div>" * tag_total
+    summary = content_library_module._summarize_safe_html(many_links + many_images + many_divs)
+    # Returned lists are truncated to their caps regardless of input size...
+    assert len(summary["links"]) == content_library_module._HTML_SUMMARY_MAX_LINKS
+    assert len(summary["top_level_tags"]) == content_library_module._HTML_SUMMARY_MAX_TOP_TAGS
+    # ...the link count reflects the (bounded) true total when under the ceiling...
+    assert summary["link_count"] == link_total
+    # ...and a count is capped so a hostile-but-sanitized template cannot inflate it.
+    assert summary["image_count"] == content_library_module._HTML_SUMMARY_MAX_COUNT
+    assert image_total > content_library_module._HTML_SUMMARY_MAX_COUNT
+
+
+def test_html_summary_returns_plain_strings_never_markup() -> None:
+    summary = content_library_module._summarize_safe_html(
+        '<h1>A &amp; B</h1><a href="https://train.local/x">go &lt;here&gt;</a>'
+    )
+    # Char refs are decoded to plain text; the client escapes on display. No raw
+    # tags/markup are re-emitted by the summary.
+    assert summary["headings"] == ["A & B"]
+    assert summary["links"][0]["text"] == "go <here>"
+    assert "<" not in "".join(summary["top_level_tags"])
+
+
 def test_template_approver_can_render_preview_but_cannot_clone() -> None:
     settings = _make_settings()
     app = create_app(settings)
