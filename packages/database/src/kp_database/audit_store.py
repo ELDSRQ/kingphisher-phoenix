@@ -16,7 +16,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
-from kp_database.outbox import OutboxDispatcher, dispatch_after_commit, enqueue_audit
+from kp_database.outbox import OutboxDispatcher, _sqlstate_class, dispatch_after_commit, enqueue_audit
 
 
 @dataclass(frozen=True)
@@ -103,18 +103,19 @@ class AuditStore:
             self.dispatch_pending_audit()
             return self._record_for_outbox(outbox_id) or receipt
         except Exception as exc:
-            # TEMP DIAGNOSTIC (staging KP-008): the mapped 503 handler does not
-            # log the chained cause, so surface a bounded DB error string here to
-            # pin the audit-intent write failure. Remove after diagnosis.
+            # The mapped 503 handler does not log the chained cause. Surface only
+            # the stable PostgreSQL SQLSTATE *class* (never raw DBAPI text, which
+            # can carry credentials or recipient data — see AI_HANDOFF.md and
+            # outbox._sqlstate_class) so the failure stays diagnosable in logs.
             try:
                 from kp_telemetry.logging import get_logger
 
                 get_logger("kp_database.audit").error(
-                    "audit_intent_write_failed_detail",
+                    "audit_intent_write_failed",
                     error_type=type(exc).__name__[:64],
-                    error_detail=str(exc)[:400],
+                    sqlstate_class=_sqlstate_class(exc),
                 )
-            except Exception:  # noqa: S110 - diagnostic logging must never mask the real error
+            except Exception:  # noqa: S110 - logging must never mask the real error
                 pass
             raise AuditFailureError("audit intent write failed") from exc
 
