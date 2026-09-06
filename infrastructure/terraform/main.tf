@@ -141,6 +141,10 @@ locals {
   starter_network   = var.network_mode == "starter"
   private_network   = !local.starter_network
   public_data_plane = local.starter_network
+  # Gates the freely-destroyable expensive data-plane infra (ACR + managed Redis).
+  # Postgres/audit-storage are NOT gated (prevent_destroy / locked WORM) — idle those
+  # via `az postgres flexible-server stop`. See docs/HYBRID-AZURE-LOCAL-PLAN.md.
+  data_plane = var.deploy_data_plane
 }
 
 # A starter-mode production environment would put real recipient data behind
@@ -590,7 +594,14 @@ resource "azurerm_dns_cname_record" "acs_verification" {
   tags                = local.tags
 }
 
+# Gated by data_plane. `moved` migrates existing state to the [0] index so enabling
+# the count never proposes a destroy/recreate of an already-applied registry.
+moved {
+  from = azurerm_container_registry.main
+  to   = azurerm_container_registry.main[0]
+}
 resource "azurerm_container_registry" "main" {
+  count                         = local.data_plane ? 1 : 0
   name                          = replace("acr${local.suffix}", "-", "")
   resource_group_name           = azurerm_resource_group.main.name
   location                      = azurerm_resource_group.main.location
@@ -611,8 +622,8 @@ resource "azurerm_user_assigned_identity" "workload" {
 }
 
 resource "azurerm_role_assignment" "acr_pull" {
-  for_each             = local.image_pull_identities
-  scope                = azurerm_container_registry.main.id
+  for_each             = local.data_plane ? local.image_pull_identities : toset([])
+  scope                = azurerm_container_registry.main[0].id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_user_assigned_identity.workload[each.key].principal_id
 }
@@ -736,7 +747,12 @@ resource "azurerm_postgresql_flexible_server_configuration" "extensions" {
   value     = "PGCRYPTO"
 }
 
+moved {
+  from = azurerm_managed_redis.main
+  to   = azurerm_managed_redis.main[0]
+}
 resource "azurerm_managed_redis" "main" {
+  count                     = local.data_plane ? 1 : 0
   name                      = "redis-${local.suffix}-${random_string.unique.result}"
   resource_group_name       = azurerm_resource_group.main.name
   location                  = azurerm_resource_group.main.location
@@ -897,14 +913,14 @@ resource "azurerm_private_endpoint" "postgres" {
 }
 
 resource "azurerm_private_endpoint" "redis" {
-  count               = local.private_network ? 1 : 0
+  count               = local.private_network && local.data_plane ? 1 : 0
   name                = "pep-${local.suffix}-redis"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   subnet_id           = azurerm_subnet.private_endpoints.id
   private_service_connection {
     name                           = "redis"
-    private_connection_resource_id = azurerm_managed_redis.main.id
+    private_connection_resource_id = azurerm_managed_redis.main[0].id
     subresource_names              = ["redisEnterprise"]
     is_manual_connection           = false
   }
@@ -935,14 +951,14 @@ resource "azurerm_private_endpoint" "vault" {
 }
 
 resource "azurerm_private_endpoint" "acr" {
-  count               = local.private_network ? 1 : 0
+  count               = local.private_network && local.data_plane ? 1 : 0
   name                = "pep-${local.suffix}-acr"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   subnet_id           = azurerm_subnet.private_endpoints.id
   private_service_connection {
     name                           = "acr"
-    private_connection_resource_id = azurerm_container_registry.main.id
+    private_connection_resource_id = azurerm_container_registry.main[0].id
     subresource_names              = ["registry"]
     is_manual_connection           = false
   }
@@ -979,11 +995,10 @@ locals {
     for workload, role_name in local.runtime_database_roles : workload =>
     "postgresql+psycopg://${role_name}:${urlencode(random_password.runtime_database[workload].result)}@${azurerm_postgresql_flexible_server.main.fqdn}:5432/kingphisher?sslmode=require"
   }
-  redis_url = "rediss://default:${urlencode(azurerm_managed_redis.main.default_database[0].primary_access_key)}@${azurerm_managed_redis.main.hostname}:10000/0"
+  redis_url = local.data_plane ? "rediss://default:${urlencode(azurerm_managed_redis.main[0].default_database[0].primary_access_key)}@${azurerm_managed_redis.main[0].hostname}:10000/0" : ""
   secret_values = merge({
     migration-database-url  = local.migration_database_url
     audit-database-url      = local.audit_database_url
-    redis-url               = local.redis_url
     audit-password          = random_password.audit.result
     audit-hmac              = random_id.audit_hmac.hex
     ciphertext-kek          = random_id.ciphertext_kek.hex
@@ -997,6 +1012,8 @@ locals {
     acs-receipt-signing-key = random_id.acs_receipt_signing.hex
     awareness-pseudonym-key = random_id.awareness_pseudonym.hex
     },
+    # redis-url only exists when the data plane (Redis) is deployed.
+    local.data_plane ? { redis-url = local.redis_url } : {},
     {
       for workload, secret_name in local.runtime_database_secret_names :
       secret_name => local.runtime_database_urls[workload]
@@ -1135,7 +1152,7 @@ resource "azurerm_container_app" "ai_gateway" {
     identity_ids = [azurerm_user_assigned_identity.workload["ai-gateway"].id]
   }
   registry {
-    server   = azurerm_container_registry.main.login_server
+    server   = azurerm_container_registry.main[0].login_server
     identity = azurerm_user_assigned_identity.workload["ai-gateway"].id
   }
   # Internal only: reached in-cluster by the worker (/propose) and operator-api
@@ -1242,7 +1259,7 @@ resource "azurerm_container_app" "operator" {
     identity_ids = [azurerm_user_assigned_identity.workload["operator"].id]
   }
   registry {
-    server   = azurerm_container_registry.main.login_server
+    server   = azurerm_container_registry.main[0].login_server
     identity = azurerm_user_assigned_identity.workload["operator"].id
   }
   dynamic "secret" {
@@ -1390,7 +1407,7 @@ resource "azurerm_container_app" "tracking" {
     identity_ids = [azurerm_user_assigned_identity.workload["tracking"].id]
   }
   registry {
-    server   = azurerm_container_registry.main.login_server
+    server   = azurerm_container_registry.main[0].login_server
     identity = azurerm_user_assigned_identity.workload["tracking"].id
   }
   dynamic "secret" {
@@ -1478,7 +1495,7 @@ resource "azurerm_container_app" "worker" {
     )
   }
   registry {
-    server   = azurerm_container_registry.main.login_server
+    server   = azurerm_container_registry.main[0].login_server
     identity = azurerm_user_assigned_identity.workload[each.key].id
   }
   dynamic "secret" {
@@ -1812,7 +1829,7 @@ resource "azurerm_container_app_job" "migration" {
     identity_ids = [azurerm_user_assigned_identity.workload["migration"].id]
   }
   registry {
-    server   = azurerm_container_registry.main.login_server
+    server   = azurerm_container_registry.main[0].login_server
     identity = azurerm_user_assigned_identity.workload["migration"].id
   }
   dynamic "secret" {

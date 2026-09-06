@@ -141,6 +141,26 @@ variable "deploy_workloads" {
   default     = true
 }
 
+variable "deploy_data_plane" {
+  description = <<-EOT
+    Create the freely-destroyable expensive data-plane infra (container registry +
+    managed Redis). Set false to idle those to ~$0 when running local-only or between
+    real sends (see docs/HYBRID-AZURE-LOCAL-PLAN.md). Default true = current behavior.
+
+    NOTE: PostgreSQL is intentionally NOT gated by this flag — it carries
+    prevent_destroy to protect data, so idle it with `az postgres flexible-server stop`
+    (retains data), not by destroying it. The audit-anchor storage is likewise retained
+    (locked WORM immutability). Workloads require the data plane, so deploy_workloads=true
+    forces deploy_data_plane=true.
+  EOT
+  type        = bool
+  default     = true
+  validation {
+    condition     = var.deploy_data_plane || !var.deploy_workloads
+    error_message = "deploy_workloads=true requires deploy_data_plane=true (workloads need the registry and Redis)."
+  }
+}
+
 variable "enable_acs_event_subscription" {
   description = "Activate the ACS Event Grid webhook only after migrations and operator audit readiness have passed."
   type        = bool
