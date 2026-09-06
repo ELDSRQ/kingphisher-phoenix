@@ -4486,19 +4486,6 @@ function cloneCampaignIntoForm(campaign) {
   );
 }
 
-// UX-011 §2a: read every href out of the sanitized HTML by PARSING it, never
-// by executing it. DOMParser builds an inert document — no scripts run, no
-// resources load — so the approver reads the real destinations without hovering.
-function extractPreviewLinks(html) {
-  try {
-    const doc = new DOMParser().parseFromString(html || "", "text/html");
-    return Array.from(doc.querySelectorAll("a[href]")).slice(0, 200).map((anchor) => ({
-      text: (anchor.textContent || "").trim().slice(0, 200),
-      href: anchor.getAttribute("href") || "",
-    }));
-  } catch { return []; }
-}
-
 function showRenderedTemplatePreview(rendered) {
   const { dlg, form } = dialogShell(
     `Preview: ${rendered.subject || "(no subject)"}`,
@@ -4510,42 +4497,8 @@ function showRenderedTemplatePreview(rendered) {
   const controls = el("div", { class: "btn-row", role: "group", "aria-label": "Preview format" });
   const buttons = new Map();
 
-  const hasHtml = Boolean(rendered.safe_html);
-
   const draw = (mode) => {
     for (const [name, button] of buttons) button.setAttribute("aria-pressed", String(name === mode));
-    if (mode === "html") {
-      // The srcdoc document is opaque-origin (sandbox="" grants nothing: no
-      // scripts, no same-origin, no forms, no popups) and inherits the console
-      // CSP, so inline script and remote images are blocked — no tracking
-      // beacon can fire from a preview. Fidelity is "structure, text, links",
-      // which is exactly what S9 needs. The safe_html is the server's already
-      // sanitized output; nothing here re-renders or relaxes it.
-      status.textContent = "Sandboxed HTML preview. Scripts, forms, and remote images are blocked by the console content-security policy; this shows structure, text, and links only.";
-      const frame = el("iframe", {
-        class: "preview-frame html",
-        sandbox: "",
-        referrerpolicy: "no-referrer",
-        title: "Sandboxed HTML message preview",
-        srcdoc: rendered.safe_html || "",
-      });
-      const links = extractPreviewLinks(rendered.safe_html);
-      const linkTable = links.length
-        ? el("table", { class: "report-table", "aria-label": "Links in the message" }, [
-          el("thead", {}, [el("tr", {}, [el("th", { text: "Link text" }), el("th", { text: "Destination" })])]),
-          el("tbody", {}, links.map((link) => el("tr", {}, [
-            el("td", { text: link.text || "(no link text)" }),
-            el("td", { class: "mono", text: link.href }),
-          ]))),
-        ])
-        : el("p", { class: "empty", text: "No links are present in this message." });
-      stage.replaceChildren(el("div", {}, [
-        frame,
-        el("h4", { class: "modal-section", text: "Links in this message" }),
-        linkTable,
-      ]));
-      return;
-    }
     if (mode === "plain") {
       status.textContent = "Plain-text alternative as delivered to clients that do not render HTML.";
       stage.replaceChildren(el("pre", {
@@ -4574,10 +4527,7 @@ function showRenderedTemplatePreview(rendered) {
     stage.replaceChildren(message);
   };
 
-  const modes = [];
-  if (hasHtml) modes.push(["html", "HTML"]);
-  modes.push(["desktop", "Desktop"], ["mobile", "Mobile"], ["plain", "Plain text"]);
-  for (const [mode, label] of modes) {
+  for (const [mode, label] of [["desktop", "Desktop"], ["mobile", "Mobile"], ["plain", "Plain text"]]) {
     const button = el("button", {
       class: "btn small", type: "button", text: label, "aria-pressed": "false", onclick: () => draw(mode),
     });
@@ -4586,15 +4536,10 @@ function showRenderedTemplatePreview(rendered) {
   }
   form.appendChild(controls);
   form.appendChild(status);
-  if (hasHtml) {
+  if (rendered.safe_html || rendered.safe_html_present) {
     form.appendChild(el("p", {
       class: "modal-help",
-      text: "The sanitized HTML is shown in a sandboxed frame (no scripts, no remote images, no forms). The link table lists every destination the message links to.",
-    }));
-  } else if (rendered.safe_html_present) {
-    form.appendChild(el("p", {
-      class: "modal-help",
-      text: "A sanitized HTML alternative exists but was not included in this contract. Use the plain-text fallback below for safe review.",
+      text: "A sanitized HTML alternative exists but is deliberately not executed in the operator console. Use the plain-text fallback below for safe review.",
     }));
   } else {
     form.appendChild(el("p", {
@@ -4606,10 +4551,9 @@ function showRenderedTemplatePreview(rendered) {
   form.appendChild(el("div", { class: "modal-actions" }, [
     el("button", { class: "btn primary", type: "button", text: "Close preview", onclick: () => dlg.close() }),
   ]));
-  draw(hasHtml ? "html" : "desktop");
+  draw("desktop");
   openDialog(dlg);
 }
-
 async function showLibraryTemplatePreview(template, trigger) {
   trigger.disabled = true;
   try {

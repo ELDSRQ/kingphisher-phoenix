@@ -26,11 +26,15 @@ change is usability/visibility only:
   `can_approve_*` in `_campaign_action_flags` so the "needs my decision" queue and
   the per-row buttons stop offering a decision the server would reject. This is a
   fail-closed UI change, not a gate change.
-- The rendered-HTML preview reuses the server's already-sanitized `safe_html` in a
-  fully sandboxed `srcdoc` iframe (`sandbox=""` — no scripts, same-origin, forms
-  or popups; inherits the console CSP so inline script and remote images are
-  blocked). Links are read by **parsing** (`DOMParser`), never by executing. The
-  server renderer is untouched; `_CONSOLE_CSP` is untouched.
+- The rendered-HTML preview (§2a) was **reverted during integration**: rendering the
+  sanitized `safe_html` in a sandboxed `srcdoc` iframe conflicts with the console's
+  standing safety invariant — template HTML is *deliberately not executed in the
+  operator console* (`test_operator_ui_campaign_readiness`, which forbids `.srcdoc`
+  and `.innerHTML` in the console entirely). Even an opaque-origin `sandbox=""`
+  frame is a live-render path the invariant does not permit. The preview therefore
+  keeps the pre-existing safe behavior: desktop/mobile/plain frames show only the
+  approved **plain-text body**, and the HTML alternative is disclosed but never
+  rendered. The server renderer and `_CONSOLE_CSP` are untouched.
 - Clone re-enters the front of the pipeline: it only prefills the create form, so
   the new campaign is a fresh unapproved `DRAFT` with no approvals and no RoE by
   construction. Re-signing an RoE always produces a new signature; the source RoE
@@ -41,7 +45,7 @@ change is usability/visibility only:
 | # | Deliverable | Status | Notes |
 |---|---|---|---|
 | 1 | Masked recipient display names | **DONE** | `list_recipients` and `campaign_recipient_results` add `display_name` + `masked_mailbox` for `view_named:results` holders only (reusing `_masked_mailbox`); `?mailbox=` exact salted-digest lookup added. Console `recipientReference()`/`recipientPickerLabel()` replace `.slice(0,8)` in the outcomes table, recipients table and audience pickers. The pseudonymous **ledger drill-down is intentionally NOT masked-labelled** (privacy contract `test_..._never_renders_identity_or_pseudonym`). |
-| 2 | Rendered-HTML preview + send-to-self | **PARTIAL** | **2a rendered HTML preview: DONE** (sandboxed `srcdoc` + link table in `showRenderedTemplatePreview`). **2b proof send-to-self: DEFERRED** — requires a worker job (`apps/workers/.../jobs.py`) and the server-designated test-account send path, both outside the write allowlist. See "Out-of-allowlist follow-ups". |
+| 2 | Rendered-HTML preview + send-to-self | **DEFERRED** | **2a rendered HTML preview: REVERTED for safety** — a sandboxed `srcdoc` preview violates the console's no-live-HTML invariant (`.srcdoc`/`.innerHTML` forbidden); the preview keeps the safe plain-text-only frames. A safe HTML-structure view would need a *server-side* structural summary, not client rendering — recorded as a follow-up. **2b proof send-to-self: DEFERRED** — requires a worker job (`apps/workers/.../jobs.py`) and the server-designated test-account send path, both outside the write allowlist. See "Out-of-allowlist follow-ups". |
 | 3 | Emergency stop in primary nav | **DONE** | Sidebar footer control for `use:kill_switch` holders; shared `globalStopButton`/`toggleGlobalStop` reused by Audit. Visibility only. |
 | 4 | Clone campaign forcing re-sign RoE | **DONE (Phase 1, client-side)** | "Clone as new draft" prefills the create form; "Re-sign for a new window" prefills `signRoe`. Both start fresh; no approvals/RoE carried over. Optional Phase 2 server `POST /campaigns/{id}/clone` audit line not added (not required by the invariant). |
 | 5 | Approver "needs my decision" queue | **DONE** | New `GET /campaigns/needs-my-decision` server endpoint (AUT-002-aware via the tightened flags) + dashboard card + sidebar badge. |
@@ -69,11 +73,11 @@ not by this agent. Please verify in a real browser:
 1. The sidebar **Emergency stop** control shows for a `campaign_operator` session
    and is **absent** for `security_approver` / `privacy_approver`; engaging and
    resetting behaves exactly as the Audit control did.
-2. The **sandboxed HTML preview** renders structure/text/links and a remote
-   `<img src="https://…">` inside it does **not** load (CSP `img-src 'self'`),
-   and no inline script runs. If a browser blocks the `srcdoc` navigation itself,
-   the documented fallback is adding `frame-src 'self'` to `_CONSOLE_CSP`
-   (out of this allowlist — see below); the CSP contract tolerates that addition.
+2. The **template preview** offers Desktop / Mobile / Plain-text frames, each
+   showing the approved **plain-text body only** — no HTML is executed or rendered
+   in the console (the §2a `srcdoc` approach was reverted for the no-live-HTML
+   safety invariant). The "sanitized HTML alternative exists but is deliberately
+   not executed" notice is shown when a `safe_html` is present.
 3. "Azure deployment" disappears from the nav when the deploy connector is off.
 4. The **"Needs my decision"** card count equals the number of campaigns with an
    open lane for the signed-in approver, and the Campaigns nav badge matches.

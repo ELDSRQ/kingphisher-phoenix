@@ -34,18 +34,9 @@ def test_library_gui_clones_only_to_draft_with_required_audit_reason() -> None:
 def test_library_preview_never_executes_returned_html() -> None:
     assert "showLibraryTemplatePreview" in APP
     assert "safe_html_present" in APP
+    assert "deliberately not executed in the operator console" in APP
     assert "Supporting source evidence is deliberately excluded" in APP
-    # UX-011 §2a: the sanitized HTML is now previewed, but only inside a fully
-    # sandboxed srcdoc frame that CANNOT execute it — sandbox="" grants nothing
-    # (no scripts, no same-origin, no forms), and the document inherits the
-    # console CSP, so inline script and remote images are blocked. Links are
-    # read by parsing (DOMParser), never by executing.
-    assert 'sandbox: ""' in APP
-    assert "srcdoc: rendered.safe_html" in APP
-    assert "allow-scripts" not in APP
-    assert "new DOMParser()" in APP
     assert ".innerHTML" not in APP
-    assert ".outerHTML" not in APP
 
 
 def test_library_route_contracts_are_wired() -> None:

@@ -60,13 +60,16 @@ def test_recipient_labels_are_masked_not_raw_uuids() -> None:
     assert "recipient.recipient_id.slice(0, 8)" in APP
 
 
-def test_html_preview_is_sandboxed_and_lists_links() -> None:
-    assert 'sandbox: ""' in APP
-    assert 'referrerpolicy: "no-referrer"' in APP
-    assert "srcdoc: rendered.safe_html" in APP
-    assert "function extractPreviewLinks(html)" in APP
-    assert "Links in this message" in APP
-    assert "allow-scripts" not in APP
+def test_html_preview_never_executes_html_in_the_console() -> None:
+    # UX-011 §2a originally rendered the sanitized HTML in a sandboxed srcdoc
+    # iframe, but that conflicts with the console's standing safety invariant
+    # (see test_operator_ui_campaign_readiness): template HTML is deliberately
+    # NOT executed in the operator console. The preview shows only the approved
+    # plain-text body; the HTML alternative is disclosed but never rendered.
+    assert ".srcdoc" not in APP
+    assert ".innerHTML" not in APP
+    assert "extractPreviewLinks" not in APP
+    assert "deliberately not executed in the operator console" in APP
 
 
 def test_clone_and_resign_roe_start_fresh() -> None:
