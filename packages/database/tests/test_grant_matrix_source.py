@@ -17,7 +17,7 @@ from kp_database import grants
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = _REPO_ROOT / "scripts" / "azure_migrate.py"
-MIGRATION_0034 = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0034_audit_owner_separation.py"
+MIGRATION_0034 = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0035_audit_owner_separation.py"
 POSTGRES_INIT_PATH = _REPO_ROOT / "infrastructure" / "containers" / "postgres-init" / "001-roles.sh"
 
 
@@ -82,7 +82,7 @@ def test_sensitive_tables_are_denied_to_every_workload() -> None:
 def test_point4_audit_owner_migration_is_in_the_chain() -> None:
     assert MIGRATION_0034.exists(), "0034_audit_owner_separation migration is missing"
     source = MIGRATION_0034.read_text(encoding="utf-8")
-    assert 'down_revision = "0033_training_knowledge_check"' in source
+    assert 'down_revision = "0034_reporting_filter_indexes"' in source
     assert "OWNER TO audit_owner" in source
     assert "NOLOGIN" in source
     # Scoped to the two evidence tables only (see migration design note): the
