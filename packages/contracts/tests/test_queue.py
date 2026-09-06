@@ -13,11 +13,12 @@ import os
 import time
 import uuid
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 import redis
-from kp_contracts.queue import JobQueue
+from kp_contracts.queue import AUDIT_ANCHOR_HEARTBEAT_KEY, JobQueue
 
 
 def _key(topic: str, suffix: str = "") -> str:
@@ -181,6 +182,69 @@ def queue() -> JobQueue:
     q._client = _MemoryClient()
     yield q
     q.close()
+
+
+class _StringClient:
+    """Minimal string-only Redis stand-in for the AUD-003 heartbeat."""
+
+    def __init__(self) -> None:
+        self.strings: dict[str, str] = {}
+        self.raise_on_get = False
+
+    def set(self, key: str, value: str) -> None:
+        self.strings[key] = value
+
+    def get(self, key: str) -> str | None:
+        if self.raise_on_get:
+            raise redis.RedisError("unreachable")
+        return self.strings.get(key)
+
+    def close(self) -> None:
+        return None
+
+
+def _heartbeat_queue() -> JobQueue:
+    q = JobQueue("redis://localhost:6379/0")
+    q._client = _StringClient()  # type: ignore[assignment]
+    return q
+
+
+def test_audit_anchor_heartbeat_round_trips_as_utc_iso8601() -> None:
+    q = _heartbeat_queue()
+    when = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+
+    q.record_audit_anchor_heartbeat(when)
+
+    assert q._client.strings[AUDIT_ANCHOR_HEARTBEAT_KEY] == "2026-09-06T12:00:00+00:00"  # type: ignore[attr-defined]
+    assert q.read_audit_anchor_heartbeat() == when
+
+
+def test_record_heartbeat_normalizes_non_utc_offsets() -> None:
+    q = _heartbeat_queue()
+    when = datetime(2026, 9, 6, 14, 0, tzinfo=timezone(timedelta(hours=2)))
+
+    q.record_audit_anchor_heartbeat(when)
+
+    assert q._client.strings[AUDIT_ANCHOR_HEARTBEAT_KEY] == "2026-09-06T12:00:00+00:00"  # type: ignore[attr-defined]
+
+
+def test_read_heartbeat_is_none_when_absent() -> None:
+    assert _heartbeat_queue().read_audit_anchor_heartbeat() is None
+
+
+def test_read_heartbeat_is_none_for_naive_or_garbage_values() -> None:
+    q = _heartbeat_queue()
+    q._client.strings[AUDIT_ANCHOR_HEARTBEAT_KEY] = "2026-09-06T12:00:00"  # type: ignore[attr-defined]  # naive
+    assert q.read_audit_anchor_heartbeat() is None
+    q._client.strings[AUDIT_ANCHOR_HEARTBEAT_KEY] = "not-a-timestamp"  # type: ignore[attr-defined]
+    assert q.read_audit_anchor_heartbeat() is None
+
+
+def test_read_heartbeat_propagates_redis_errors_for_fail_open_handling() -> None:
+    q = _heartbeat_queue()
+    q._client.raise_on_get = True  # type: ignore[attr-defined]
+    with pytest.raises(redis.RedisError):
+        q.read_audit_anchor_heartbeat()
 
 
 def test_pop_treats_redis_blocking_timeout_as_idle(queue: JobQueue) -> None:

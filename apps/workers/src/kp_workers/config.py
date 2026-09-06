@@ -196,7 +196,12 @@ class WorkerSettings(BaseSettings):
     visibility_seconds: int = 60
     recovery_every_polls: int = 12
     retention_interval_seconds: int = 86400
-    audit_anchor_interval_seconds: int = Field(default=3600, ge=60, le=86400)
+    audit_anchor_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        validation_alias=AliasChoices("KP_WORKER_AUDIT_ANCHOR_INTERVAL_SECONDS", "AUDIT_ANCHOR_INTERVAL_SECONDS"),
+    )
     #: Which backend witnesses verified audit heads. ``azure_blob`` is the
     #: managed default (immutable/locked container); ``local_worm`` writes
     #: create-only files under a dedicated volume (weaker unless that volume is

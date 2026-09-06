@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from kp_database.audit_store import AuditHeadSnapshot
@@ -152,7 +152,23 @@ def anchor_verified_head(ctx: WorkerContext, provider: _AnchorProvider) -> str:
     )
     result = provider.publish(anchor)
     logger.info("audit_anchor_published", outcome=result)
+    # Witness-freshness heartbeat (AUD-003). Written for both provider backends
+    # via this shared path, on both "created" and "exists" (an unchanged head is
+    # still a successful verified anchoring pass). Best-effort: the durable
+    # witness is already published, so a Redis blip must never fail the job.
+    if result in ("created", "exists"):
+        _record_anchor_heartbeat(ctx)
     return result
+
+
+def _record_anchor_heartbeat(ctx: WorkerContext) -> None:
+    record = getattr(ctx.queue, "record_audit_anchor_heartbeat", None)
+    if record is None:
+        return
+    try:
+        record(datetime.now(UTC))
+    except Exception:  # noqa: BLE001 - heartbeat is advisory; never fail a published anchor
+        logger.warning("audit_anchor_heartbeat_write_failed")
 
 
 def _select_anchor_provider(ctx: WorkerContext) -> _AnchorProvider:

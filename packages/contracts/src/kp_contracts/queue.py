@@ -20,6 +20,7 @@ import json
 import logging
 import time
 import uuid
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import redis
@@ -131,6 +132,11 @@ DEFAULT_QUEUE_TOPICS = (
     "alert",
     "directory",
 )
+
+#: Fixed Redis key holding the ISO-8601 UTC time of the last successful audit
+#: anchor. Deliberately outside the ``kp:queue:`` namespace: it is a witness
+#: freshness heartbeat, not a queue topic (AUD-003).
+AUDIT_ANCHOR_HEARTBEAT_KEY = "kp:audit:last_successful_anchor_at"
 
 
 class JobQueue:
@@ -418,6 +424,36 @@ class JobQueue:
             "dead_letter": dead_letter,
             "oldest_ready_age_seconds": oldest_age,
         }
+
+    def record_audit_anchor_heartbeat(self, when: datetime) -> None:
+        """Record the wall-clock time of the most recent successful audit anchor.
+
+        This is a freshness signal only — the durable, tamper-evident witness is
+        the anchor object itself (Azure Blob or local WORM). It lets the operator
+        API detect a *stalled* anchor worker without any new Azure access: the
+        anchor worker (SELECT-only on the audit DB) and the operator API already
+        share Redis. Stored on a fixed, non-topic key as an ISO-8601 UTC string.
+        """
+        self._client.set(AUDIT_ANCHOR_HEARTBEAT_KEY, when.astimezone(UTC).isoformat())
+
+    def read_audit_anchor_heartbeat(self) -> datetime | None:
+        """Return the last successful anchor time, or ``None`` when never recorded.
+
+        Returns ``None`` for an absent or unparseable/naive value (callers fail
+        OPEN on absence — a fresh or just-restarted stack must not be blocked).
+        Redis connectivity errors propagate so callers can distinguish a blip
+        (fail open) from a genuinely stale timestamp (fail closed).
+        """
+        raw = self._client.get(AUDIT_ANCHOR_HEARTBEAT_KEY)
+        if raw is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(self._as_str(raw))
+        except (ValueError, TypeError):
+            return None
+        if parsed.tzinfo is None:
+            return None
+        return parsed
 
     def close(self) -> None:
         self._client.close()

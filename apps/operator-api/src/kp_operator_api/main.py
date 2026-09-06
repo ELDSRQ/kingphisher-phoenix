@@ -225,9 +225,11 @@ def _audit_mutation_state_is_healthy(
 
     AUD-003: a stalled audit anchor means recent audit evidence is no longer
     being independently witnessed. When ``anchor_interval_seconds`` is provided
-    the gate additionally fails closed if the newest successful anchor is older
-    than two intervals (or if no anchor timestamp is available at all). Passing
-    ``anchor_interval_seconds=None`` keeps the anchor-age check disabled.
+    the gate ADDITIONALLY fails closed if a *present* heartbeat is older than two
+    intervals. It fails OPEN (does not trip) when ``last_successful_anchor_at``
+    is ``None`` — an absent heartbeat (fresh / just-restarted stack) or a Redis
+    blip must never 503 the console. This is an additive witness-freshness
+    check; the in-DB chain-verification and outbox gates above stay primary.
     """
     if verifier is None or getattr(verifier, "status", None) != "ok":
         return False
@@ -240,14 +242,45 @@ def _audit_mutation_state_is_healthy(
             return False
     except (KeyError, TypeError, ValueError, OSError, RuntimeError):
         return False
-    if anchor_interval_seconds is not None:
-        if last_successful_anchor_at is None or last_successful_anchor_at.tzinfo is None:
-            # No witnessed anchor (or an unusable naive timestamp) -> fail closed.
-            return False
+    if (
+        anchor_interval_seconds is not None
+        and last_successful_anchor_at is not None
+        and last_successful_anchor_at.tzinfo is not None
+    ):
         current = now or datetime.now(UTC)
         if current - last_successful_anchor_at > timedelta(seconds=2 * anchor_interval_seconds):
+            # A present but stale witness -> the anchor worker has stalled.
             return False
     return True
+
+
+def _make_anchor_heartbeat_reader(queue: Any, logger: Any) -> Callable[[], datetime | None]:
+    """Return a reader for the last-successful-anchor heartbeat (AUD-003).
+
+    Fails OPEN by returning ``None`` (which the gate treats as "do not trip")
+    when the heartbeat is absent or Redis is unreachable, so neither a fresh
+    stack nor a Redis blip can take the console down. Absence is warned once per
+    episode to stay visible without flooding the log on every request.
+    """
+    reader = getattr(queue, "read_audit_anchor_heartbeat", None)
+    warned = {"absent": False}
+
+    def read() -> datetime | None:
+        if reader is None:
+            return None
+        try:
+            when = reader()
+        except Exception:  # noqa: BLE001 - a Redis blip must not gate the console
+            return None
+        if when is None:
+            if not warned["absent"]:
+                logger.warning("audit_anchor_heartbeat_absent")
+                warned["absent"] = True
+            return None
+        warned["absent"] = False
+        return when
+
+    return read
 
 
 def _normalized_origin(value: str, *, configured_url: bool = False) -> str | None:
@@ -597,20 +630,18 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.audit_store = audit_store
     app.state.audit_verifier = audit_verifier
-    # AUD-003 DRAFT (anchor-age gate): the source of the last successful anchor
-    # timestamp is an OPEN QUESTION. The anchor worker is deliberately
-    # SELECT-only on the audit tables and cannot write a DB heartbeat, and the
-    # operator API has no Blob read path, so there is no first-party feed yet.
-    # Candidate feeds for review: (a) a Redis heartbeat the anchor worker writes
-    # on each successful publish (both processes already share redis_url), or
-    # (b) a dedicated, minimally-granted heartbeat row. Until one lands the age
-    # gate stays DISABLED (anchor_interval_seconds=None) so this change cannot
-    # brick mutations; flip it on by returning a real UTC datetime from
-    # last_successful_anchor_at and setting audit_anchor_gate_interval_seconds.
+    # AUD-003 anchor-age gate. FEED: the anchor worker writes a Redis heartbeat
+    # (kp:audit:last_successful_anchor_at) on every successful anchor via the
+    # JobQueue both processes already share — no new Azure/Blob/Entra access, so
+    # this works identically for the local WORM and Azure Blob providers. The
+    # gate reads that heartbeat here and trips only on a PRESENT-but-stale value
+    # (> 2x the interval); it fails OPEN on absence or a Redis blip. Default ON.
     # TODO(AUD-003): when the gate trips, also raise an Azure Monitor alert
     # (Terraform / out of scope for this draft) — wire the hook here.
-    app.state.last_successful_anchor_at = lambda: None
-    app.state.audit_anchor_gate_interval_seconds = None
+    app.state.last_successful_anchor_at = _make_anchor_heartbeat_reader(queue, get_logger("kp.audit.anchor_gate"))
+    app.state.audit_anchor_gate_interval_seconds = (
+        float(settings.audit_anchor_interval_seconds) if settings.audit_anchor_gate_enabled else None
+    )
     # Deliberate test seam: production uses the real chain/outbox state below;
     # focused unit tests may replace this zero-argument checker with a fake.
     app.state.audit_health_check = lambda: _audit_mutation_state_is_healthy(

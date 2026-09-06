@@ -17,13 +17,14 @@ from kp_workers.providers.audit_anchor import AuditAnchor
 
 
 class FakeProvider:
-    def __init__(self, recent: list[AuditAnchor] | None = None) -> None:
+    def __init__(self, recent: list[AuditAnchor] | None = None, *, result: str = "created") -> None:
         self.anchors: list[AuditAnchor] = []
         self._recent = recent or []
+        self._result = result
 
     def publish(self, anchor: AuditAnchor) -> str:
         self.anchors.append(anchor)
-        return "created"
+        return self._result
 
     def read_recent(self, limit: int) -> list[AuditAnchor]:
         return self._recent[:limit]
@@ -36,11 +37,18 @@ class FakeProvider:
 
 
 class FakeQueue:
-    def __init__(self) -> None:
+    def __init__(self, *, heartbeat_error: Exception | None = None) -> None:
         self.published: list[tuple[str, dict[str, Any], str]] = []
+        self.heartbeats: list[datetime] = []
+        self._heartbeat_error = heartbeat_error
 
     def publish(self, topic: str, payload: dict[str, Any], *, idempotency_key: str) -> None:
         self.published.append((topic, payload, idempotency_key))
+
+    def record_audit_anchor_heartbeat(self, when: datetime) -> None:
+        if self._heartbeat_error is not None:
+            raise self._heartbeat_error
+        self.heartbeats.append(when)
 
 
 def _ctx(
@@ -48,6 +56,7 @@ def _ctx(
     snapshots: tuple[AuditHeadSnapshot | None, ...] = (),
     chain_empty: bool = False,
     positions: dict[int, str | None] | None = None,
+    queue: FakeQueue | None = None,
 ) -> Any:
     values = iter(snapshots or (_head_snapshot(), _head_snapshot()))
     audit_store = SimpleNamespace(
@@ -57,7 +66,7 @@ def _ctx(
         hashes_by_sequence=lambda sequences: {s: (positions or {}).get(s) for s in sequences},
     )
     settings = SimpleNamespace(audit_anchor_interval_seconds=3600)
-    return SimpleNamespace(audit_store=audit_store, settings=settings, queue=FakeQueue())
+    return SimpleNamespace(audit_store=audit_store, settings=settings, queue=queue or FakeQueue())
 
 
 def _head(sequence: int = 3, event_hash: str = "ab" * 32) -> AuditAnchor:
@@ -173,15 +182,42 @@ def test_read_back_missing_sequence_blocks_publication() -> None:
 def test_broken_anchor_chain_blocks_publication() -> None:
     older = AuditAnchor(1, "cd" * 32, datetime(2026, 8, 27, 10, 0, tzinfo=UTC))
     # newer claims a predecessor digest that does not match `older`.
-    newer = AuditAnchor(
-        2, "cd" * 32, datetime(2026, 8, 27, 11, 0, tzinfo=UTC), previous_anchor_hash="ab" * 32
-    )
+    newer = AuditAnchor(2, "cd" * 32, datetime(2026, 8, 27, 11, 0, tzinfo=UTC), previous_anchor_hash="ab" * 32)
     ctx = _ctx(positions={1: "cd" * 32, 2: "cd" * 32})
     provider = FakeProvider(recent=[newer, older])
 
     with pytest.raises(AuditAnchorReadBackError):
         anchor_verified_head(ctx, provider)
     assert provider.anchors == []
+
+
+@pytest.mark.parametrize("provider_result", ["created", "exists"])
+def test_heartbeat_is_written_on_every_successful_anchor(provider_result: str) -> None:
+    # The heartbeat write lives in the shared anchor_verified_head path, so it
+    # fires identically for the Azure Blob and local WORM providers.
+    ctx = _ctx()
+    provider = FakeProvider(result=provider_result)
+
+    assert anchor_verified_head(ctx, provider) == provider_result
+    assert len(ctx.queue.heartbeats) == 1
+    assert ctx.queue.heartbeats[0].tzinfo is not None
+
+
+def test_no_heartbeat_when_the_chain_is_empty() -> None:
+    ctx = _ctx(snapshots=(None, None), chain_empty=True)
+    provider = FakeProvider()
+
+    assert anchor_verified_head(ctx, provider) == "empty"
+    assert ctx.queue.heartbeats == []
+
+
+def test_heartbeat_write_failure_does_not_fail_the_published_anchor() -> None:
+    # The durable witness is already published; a Redis blip must not fail the job.
+    ctx = _ctx(queue=FakeQueue(heartbeat_error=RuntimeError("redis down")))
+    provider = FakeProvider()
+
+    assert anchor_verified_head(ctx, provider) == "created"
+    assert provider.anchors  # the anchor was still published
 
 
 def test_interval_bucket_is_the_queue_idempotency_boundary() -> None:

@@ -105,6 +105,18 @@ class OperatorApiSettings(BaseSettings):
     rate_limit_ip_per_min: int = 600
     max_body_bytes: int = 1_000_000
     redis_url: str = "redis://localhost:6379/0"
+    # AUD-003 witness-freshness gate. Default ON, but fail-OPEN on an absent
+    # heartbeat or a Redis blip (see _audit_mutation_state_is_healthy), so it is
+    # safe on a fresh/just-restarted local stack and on Azure. The interval must
+    # match the anchor worker's; the shared unprefixed alias lets one value drive
+    # both the API and the workers (as with the T-06 policy vars).
+    audit_anchor_gate_enabled: bool = True
+    audit_anchor_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        validation_alias=AliasChoices("OPERATOR_API_AUDIT_ANCHOR_INTERVAL_SECONDS", "AUDIT_ANCHOR_INTERVAL_SECONDS"),
+    )
     tracking_base_url: str = "http://localhost:8001"
     training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
     training_domains: str = "example.com,127.0.0.1"
