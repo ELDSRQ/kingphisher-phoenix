@@ -738,7 +738,7 @@ class TrackingToken(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     token_prefix: Mapped[str] = mapped_column(String(6))
     campaign_id = mapped_column(
-        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="CASCADE"), nullable=False, index=True
     )
     recipient_assignment_id = mapped_column(UUID(as_uuid=True), nullable=False)
     pepper_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -778,7 +778,7 @@ class RecipientAssignment(Base):
 
     recipient_assignment_id = _pk()
     campaign_id = mapped_column(
-        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="CASCADE"), nullable=False, index=True
     )
     recipient_id = mapped_column(
         UUID(as_uuid=True), ForeignKey("recipients.recipient_id", ondelete="CASCADE"), nullable=False
@@ -1043,14 +1043,14 @@ class TrackingEvent(Base):
 
     event_id = _pk()
     event_type: Mapped[dm.EventType] = mapped_column(Enum(dm.EventType, name="event_type"))
-    token_id = mapped_column(UUID(as_uuid=True), nullable=True)
+    token_id = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     recipient_assignment_id = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("recipient_assignments.recipient_assignment_id", ondelete="SET NULL"),
         nullable=True,
     )
     recipient_id = mapped_column(UUID(as_uuid=True), nullable=True)
-    campaign_id = mapped_column(UUID(as_uuid=True), nullable=True)
+    campaign_id = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     confidence: Mapped[dm.Confidence] = mapped_column(Enum(dm.Confidence, name="confidence"), default=dm.Confidence.LOW)
     occurred_at = mapped_column(DateTime(timezone=True), nullable=False)
     client_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
@@ -1249,7 +1249,7 @@ class TrainingAssignment(Base):
     resource_id = mapped_column(
         UUID(as_uuid=True), ForeignKey("training_resources.training_resource_id", ondelete="CASCADE"), nullable=False
     )
-    campaign_id = mapped_column(UUID(as_uuid=True), nullable=True)
+    campaign_id = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     assigned_at = mapped_column(DateTime(timezone=True), nullable=False)
     opened_at = mapped_column(DateTime(timezone=True), nullable=True)
     due_at = mapped_column(DateTime(timezone=True), nullable=False)
