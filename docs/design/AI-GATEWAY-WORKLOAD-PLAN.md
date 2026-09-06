@@ -55,13 +55,34 @@ the terraform very differently:
   operator-run/managed llama.cpp URL via `var.ai_gateway_llama_base_url`. Least
   new infra, but no in-Azure inference — defers the actual serving.
 
+- **Path D — Azure AI Foundry Serverless backend (production, preferred per
+  D-0001).** The gateway points at a Foundry Serverless (pay-per-token)
+  OpenAI-compatible model endpoint instead of a `llama.cpp` server. No model
+  weights, no inference container, no GPU/CPU compute — **zero idle cost**; the
+  bill scales with actual drafting volume. Requires teaching the gateway an
+  authenticated backend mode (Foundry API key or Entra bearer + the deployed
+  model name; llama.cpp needs neither) and confirming the chosen Foundry model
+  honors the `/propose` json-schema structured output
+  (`apps/ai-gateway/src/kp_ai_gateway/main.py:152-156`). The gateway governance
+  layer is unchanged. Tracked as `AI-015`.
+
 ## Recommendation
 
-Path A. It matches the established digest-pinned/attested posture, keeps the
-model immutable, and needs no new stateful storage. The cost is a large image
-and a memory-heavy always-on (or scale-to-zero) container app — a real but
-understood tradeoff, and the RUNBOOK already frames CPU-first llama.cpp as the
-target with scale-to-zero GPU as a later, measurement-gated option.
+**Superseded for production by decision `D-0001` (`docs/DECISIONS.md`,
+2026-09-05): production Azure AI uses Path D (Foundry Serverless, pay-per-token,
+zero idle cost).** Production therefore runs only the lightweight ai-gateway
+(`deploy_ai_gateway=true`) with a Foundry backend — **no ai-llama sidecar, no
+weights-in-blob, no GPU/model-storage.** Local development and qualification
+keep the self-hosted Qwen (Path A/C on the operator's own hardware — free), so
+the seam serves both: local → `llama.cpp`, production → Foundry, changing only
+the gateway's backend config.
+
+The Path A analysis below is retained as the documented **fallback** if Foundry
+cost, quality, or json-schema support proves unacceptable. It matched the
+established digest-pinned/attested posture and needed no new stateful storage,
+but its cost — a large image and a memory-heavy always-on (or scale-to-zero)
+container app billed at idle — is exactly what `D-0001` avoids for a bursty,
+occasional drafting workload.
 
 ## Phasing once the backend is chosen
 

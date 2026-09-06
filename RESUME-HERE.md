@@ -160,15 +160,31 @@ and evidence export should become GUI-driven.
 
 AI may advise and draft. Deterministic code must enforce identity, authorization, recipient scope, RoE, approvals, content safety, delivery controls, and audit. AI must never apply infrastructure, grant consent, save secrets, choose audiences, approve campaigns, or send mail.
 
-The supported AI direction is internal-model-first. Benchmark two or three
-small permissively licensed instruction models on the fixed sanitized
-evaluation set, then digest-pin the selected weights, license, runtime, prompt,
-and result. Prefer a pinned `llama.cpp` role/job in the existing worker image,
-CPU first; use scale-to-zero serverless GPU only when measurement requires it.
-Foundry serverless/token inference is an optional measured fallback. Foundry
-managed compute and always-on GPU capacity are out of scope. The `.140` worker
-is development/qualification infrastructure only, never a production Azure
-dependency.
+The supported AI direction is **hybrid: local self-hosted, production Foundry
+Serverless** (decision `D-0001`, `docs/DECISIONS.md`, 2026-09-05).
+
+- **Local dev/qualification = self-hosted.** Benchmark two or three small
+  permissively licensed instruction models on the fixed sanitized evaluation
+  set, then digest-pin the selected weights, license, runtime, prompt, and
+  result, and run a pinned `llama.cpp` role behind the ai-gateway on the
+  operator's own hardware (free). The `.140`/`.105` worker is
+  development/qualification infrastructure only, never a production Azure
+  dependency.
+- **Production Azure = Foundry Serverless (preferred).** Production AI is a
+  pay-per-token Azure AI Foundry Serverless model behind the ai-gateway — zero
+  idle cost, no always-on inference container, no weights-in-blob, no
+  GPU/model-storage. This sharpens the earlier "Foundry serverless/token
+  inference as a measured fallback" clause into the preferred production path.
+  Self-hosting the model in Azure (a pinned `llama.cpp` sidecar, CPU-first with
+  scale-to-zero GPU) is retained only as a documented fallback if Foundry cost,
+  quality, or json-schema support proves unacceptable.
+
+The switch is app-transparent: the ai-gateway already decouples the worker
+(`POST /propose`) from the model backend (`llama_base_url + /chat/completions`),
+so only the gateway's backend config changes (local llama vs authenticated
+Foundry endpoint/key/model). Foundry managed compute, an always-on GPU, and a
+general multi-provider AI framework remain out of scope. Implementation is
+tracked as `AI-015`.
 
 Deferred means retain and support useful existing behavior but do not expand it
 or give it an implementation slot. Never delete a potentially valuable feature
