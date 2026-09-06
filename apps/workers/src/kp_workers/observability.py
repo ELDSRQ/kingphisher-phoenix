@@ -21,7 +21,7 @@ ROLES = frozenset(
 )
 PROVIDERS = frozenset({"acs", "ai", "feed", "graph", "mailpit", "ntfy", "smtp", "webhook"})
 OPERATIONS = frozenset({"fetch", "generate", "poll", "send"})
-OUTCOMES = frozenset({"success", "error", "rejected", "indeterminate"})
+OUTCOMES = frozenset({"success", "error", "rejected", "permanent_failure", "indeterminate"})
 QUEUE_STATES = frozenset({"ready", "processing", "delayed", "dead_letter"})
 _TRACE_ID_RE = re.compile(r"[0-9a-f]{32}\Z")
 

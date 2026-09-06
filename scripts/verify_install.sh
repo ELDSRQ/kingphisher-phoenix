@@ -97,6 +97,7 @@ local_supervisor_worker_children=(
   worker-reminder
   worker-alert
   worker-directory
+  worker-audit-anchor
 )
 
 pid_is_live() {

@@ -78,6 +78,9 @@ class FakeLogger:
     def error(self, event: str, **values: Any) -> None:
         self.events.append((event, values))
 
+    def critical(self, event: str, **values: Any) -> None:
+        self.events.append((event, values))
+
 
 def _spec(name: str, topic: str, queue: FakeQueue, process: Any, *, audit_fail: bool = False) -> RoleSpec:
     settings = SimpleNamespace(
