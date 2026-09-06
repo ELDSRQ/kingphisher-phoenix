@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import kp_operator_api.main as main_module
 import pytest
@@ -193,6 +195,58 @@ def test_audit_health_is_fail_closed_for_unknown_and_unhealthy_state() -> None:
     assert not _audit_mutation_state_is_healthy(
         SimpleNamespace(status="ok"),
         SimpleNamespace(outbox_health=lambda: {"failed": 0}),
+    )
+
+
+def _healthy_store() -> Any:
+    return SimpleNamespace(
+        outbox_health=lambda: {"overdue_pending": 0, "failed": 0, "dispatching_stale": 0}
+    )
+
+
+def test_anchor_age_gate_is_disabled_when_no_interval_is_given() -> None:
+    # Backward compatible: without an interval the anchor-age check is skipped.
+    assert _audit_mutation_state_is_healthy(SimpleNamespace(status="ok"), _healthy_store())
+
+
+def test_fresh_anchor_passes_the_age_gate() -> None:
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+    assert _audit_mutation_state_is_healthy(
+        SimpleNamespace(status="ok"),
+        _healthy_store(),
+        last_successful_anchor_at=now - timedelta(seconds=3600),
+        anchor_interval_seconds=3600,
+        now=now,
+    )
+
+
+def test_stalled_anchor_fails_closed() -> None:
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+    # Older than 2x the interval -> unwitnessed -> disable mutations.
+    assert not _audit_mutation_state_is_healthy(
+        SimpleNamespace(status="ok"),
+        _healthy_store(),
+        last_successful_anchor_at=now - timedelta(seconds=3 * 3600),
+        anchor_interval_seconds=3600,
+        now=now,
+    )
+
+
+def test_missing_or_naive_anchor_timestamp_fails_closed_when_gate_enabled() -> None:
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
+    assert not _audit_mutation_state_is_healthy(
+        SimpleNamespace(status="ok"),
+        _healthy_store(),
+        last_successful_anchor_at=None,
+        anchor_interval_seconds=3600,
+        now=now,
+    )
+    assert not _audit_mutation_state_is_healthy(
+        SimpleNamespace(status="ok"),
+        _healthy_store(),
+        last_successful_anchor_at=datetime(2026, 9, 6, 11, 59),  # naive
+        anchor_interval_seconds=3600,
+        now=now,
     )
 
 

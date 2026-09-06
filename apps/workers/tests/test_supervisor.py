@@ -91,6 +91,7 @@ def _spec(name: str, topic: str, queue: FakeQueue, process: Any, *, audit_fail: 
             "https://auditaccount.blob.core.windows.net/audit-head-anchors",
             "55555555-5555-4555-8555-555555555555",
         ),
+        require_audit_anchor_provider_ready=lambda: None,
     )
     context = SimpleNamespace(settings=settings, queue=queue, audit_store=FakeAuditStore(fail=audit_fail))
     return RoleSpec(name=name, topic=topic, process=process, context=context)
@@ -203,6 +204,61 @@ def test_failed_safety_rejection_keeps_role_unready_and_logs_only_fixed_codes() 
     assert "provider.invalid" not in rendered
     assert "private/key.pem" not in rendered
     assert "SecretInExceptionType" not in rendered
+
+
+class _RejectRecordingQueue(FakeQueue):
+    """FakeQueue that records the max_retries passed to reject (AUD-003)."""
+
+    def __init__(self, messages: dict[str, list[dict[str, Any]]] | None = None) -> None:
+        super().__init__(messages)
+        self.reject_max_retries: list[int] = []
+
+    def reject(self, topic: str, message: dict[str, Any], *, max_retries: int) -> None:
+        self.reject_max_retries.append(max_retries)
+        self.rejected.append((topic, message["id"]))
+
+
+class _NonRetryableFailure(RuntimeError):
+    retryable = False
+
+
+def test_non_retryable_failure_dead_letters_immediately_and_drops_readiness() -> None:
+    # A non-retryable integrity failure (retryable=False) such as an audit-anchor
+    # read-back mismatch. Uses the delivery topic so the assertion focuses on the
+    # generic non-retryable routing, not anchor-specific preflight.
+    queue = _RejectRecordingQueue({"deliver": [_message("d1")]})
+
+    def fail(_ctx: object, _message: dict[str, Any]) -> None:
+        raise _NonRetryableFailure("published anchor no longer matches the chain")
+
+    supervisor = WorkerSupervisor(
+        {"delivery": _spec("delivery", "deliver", queue, fail)},
+        logger=FakeLogger(),
+    )
+
+    assert supervisor.run_cycle() is True
+
+    # Rejected straight to the DLQ (max_retries=1 forces immediate dead-letter),
+    # readiness fails closed, and it is NOT a transient backoff failure.
+    assert queue.reject_max_retries == [1]
+    assert queue.rejected == [("deliver", "d1")]
+    assert supervisor.readiness()["delivery"] == {"ready": False, "reason": "integrity_failure"}
+
+
+def test_retryable_failure_still_uses_the_configured_retry_budget() -> None:
+    queue = _RejectRecordingQueue({"deliver": [_message("d1")]})
+
+    def fail(_ctx: object, _message: dict[str, Any]) -> None:
+        raise RuntimeError("transient")
+
+    supervisor = WorkerSupervisor(
+        {"delivery": _spec("delivery", "deliver", queue, fail)},
+        logger=FakeLogger(),
+    )
+
+    assert supervisor.run_cycle() is True
+    assert queue.reject_max_retries == [3]
+    assert supervisor.readiness()["delivery"] == {"ready": False, "reason": "processing_failed"}
 
 
 def test_startup_lease_recovery_and_readiness_are_per_role() -> None:

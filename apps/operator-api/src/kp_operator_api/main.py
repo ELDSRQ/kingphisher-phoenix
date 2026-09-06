@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -211,8 +212,23 @@ def _requires_healthy_audit(method: str, path: str) -> bool:
     )
 
 
-def _audit_mutation_state_is_healthy(verifier: Any, audit_store: Any) -> bool:
-    """Fail closed unless both chain verification and outbox health are known-good."""
+def _audit_mutation_state_is_healthy(
+    verifier: Any,
+    audit_store: Any,
+    *,
+    last_successful_anchor_at: datetime | None = None,
+    anchor_interval_seconds: float | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Fail closed unless chain verification, outbox health, and (when enabled)
+    audit-anchor freshness are all known-good.
+
+    AUD-003: a stalled audit anchor means recent audit evidence is no longer
+    being independently witnessed. When ``anchor_interval_seconds`` is provided
+    the gate additionally fails closed if the newest successful anchor is older
+    than two intervals (or if no anchor timestamp is available at all). Passing
+    ``anchor_interval_seconds=None`` keeps the anchor-age check disabled.
+    """
     if verifier is None or getattr(verifier, "status", None) != "ok":
         return False
     outbox_health = getattr(audit_store, "outbox_health", None)
@@ -220,9 +236,18 @@ def _audit_mutation_state_is_healthy(verifier: Any, audit_store: Any) -> bool:
         return False
     try:
         state = outbox_health()
-        return all(int(state[name]) == 0 for name in ("overdue_pending", "failed", "dispatching_stale"))
+        if not all(int(state[name]) == 0 for name in ("overdue_pending", "failed", "dispatching_stale")):
+            return False
     except (KeyError, TypeError, ValueError, OSError, RuntimeError):
         return False
+    if anchor_interval_seconds is not None:
+        if last_successful_anchor_at is None or last_successful_anchor_at.tzinfo is None:
+            # No witnessed anchor (or an unusable naive timestamp) -> fail closed.
+            return False
+        current = now or datetime.now(UTC)
+        if current - last_successful_anchor_at > timedelta(seconds=2 * anchor_interval_seconds):
+            return False
+    return True
 
 
 def _normalized_origin(value: str, *, configured_url: bool = False) -> str | None:
@@ -572,11 +597,27 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.audit_store = audit_store
     app.state.audit_verifier = audit_verifier
+    # AUD-003 DRAFT (anchor-age gate): the source of the last successful anchor
+    # timestamp is an OPEN QUESTION. The anchor worker is deliberately
+    # SELECT-only on the audit tables and cannot write a DB heartbeat, and the
+    # operator API has no Blob read path, so there is no first-party feed yet.
+    # Candidate feeds for review: (a) a Redis heartbeat the anchor worker writes
+    # on each successful publish (both processes already share redis_url), or
+    # (b) a dedicated, minimally-granted heartbeat row. Until one lands the age
+    # gate stays DISABLED (anchor_interval_seconds=None) so this change cannot
+    # brick mutations; flip it on by returning a real UTC datetime from
+    # last_successful_anchor_at and setting audit_anchor_gate_interval_seconds.
+    # TODO(AUD-003): when the gate trips, also raise an Azure Monitor alert
+    # (Terraform / out of scope for this draft) — wire the hook here.
+    app.state.last_successful_anchor_at = lambda: None
+    app.state.audit_anchor_gate_interval_seconds = None
     # Deliberate test seam: production uses the real chain/outbox state below;
     # focused unit tests may replace this zero-argument checker with a fake.
     app.state.audit_health_check = lambda: _audit_mutation_state_is_healthy(
         app.state.audit_verifier,
         app.state.audit_store,
+        last_successful_anchor_at=app.state.last_successful_anchor_at(),
+        anchor_interval_seconds=app.state.audit_anchor_gate_interval_seconds,
     )
     app.state.queue = queue
     app.state.event_grid_token_verifier = event_grid_token_verifier

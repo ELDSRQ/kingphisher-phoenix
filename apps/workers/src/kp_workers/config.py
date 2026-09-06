@@ -61,6 +61,17 @@ class EmailProviderKind(StrEnum):
         return "acs" if self.is_acs else "smtp"
 
 
+class AuditAnchorProviderKind(StrEnum):
+    """Where verified audit-chain heads are witnessed.
+
+    Code must branch on this enum, never on the raw string, so a new backend or
+    a typo cannot silently fork the anchor worker (the F-1 lesson).
+    """
+
+    AZURE_BLOB = "azure_blob"
+    LOCAL_WORM = "local_worm"
+
+
 def _is_local_provider_host(hostname: str | None) -> bool:
     if not hostname:
         return False
@@ -186,8 +197,16 @@ class WorkerSettings(BaseSettings):
     recovery_every_polls: int = 12
     retention_interval_seconds: int = 86400
     audit_anchor_interval_seconds: int = Field(default=3600, ge=60, le=86400)
+    #: Which backend witnesses verified audit heads. ``azure_blob`` is the
+    #: managed default (immutable/locked container); ``local_worm`` writes
+    #: create-only files under a dedicated volume (weaker unless that volume is
+    #: genuinely separate and immutable — see LocalWormAuditAnchorProvider).
+    audit_anchor_provider: AuditAnchorProviderKind = AuditAnchorProviderKind.AZURE_BLOB
     audit_anchor_container_url: str | None = None
     audit_anchor_client_id: str | None = None
+    #: Root directory for the local WORM anchor provider (a ``v1/`` subdir is
+    #: created under it). Required only when the provider is ``local_worm``.
+    audit_anchor_local_dir: str | None = None
     log_level: str = "info"
     mock_graph_url: str = "http://localhost:8181"
     mock_ai_url: str = "http://localhost:8282"
@@ -336,13 +355,15 @@ class WorkerSettings(BaseSettings):
         _validate_provider_url("training base URL", self.training_base_url)
         if self.audit_anchor_container_url:
             self._validate_audit_anchor_container_url()
+        if self.audit_anchor_provider_kind is AuditAnchorProviderKind.LOCAL_WORM and self.audit_anchor_local_dir:
+            self.require_local_audit_anchor_dir()
         if self.runtime_mode in _MANAGED_RUNTIME_MODES:
             self._validate_managed_role_providers()
         return self
 
     def _validate_managed_role_providers(self) -> None:
         if self.worker_name == "audit-anchor":
-            self.require_audit_anchor_configured()
+            self.require_audit_anchor_provider_ready()
         elif self.worker_name == "directory":
             _require_managed_provider_url("Graph base URL", self.graph_base_url)
             _require_uuid("Microsoft tenant ID", self.microsoft_tenant_id)
@@ -448,6 +469,12 @@ class WorkerSettings(BaseSettings):
             raise ValueError("audit anchor container URL must identify one Azure Blob container over HTTPS")
         return value.rstrip("/")
 
+    @property
+    def audit_anchor_provider_kind(self) -> AuditAnchorProviderKind:
+        """Resolved anchor backend; never branch on the raw string."""
+
+        return AuditAnchorProviderKind(self.audit_anchor_provider)
+
     def require_audit_anchor_configured(self) -> tuple[str, str]:
         container_url = self._validate_audit_anchor_container_url()
         client_id = self.audit_anchor_client_id
@@ -458,6 +485,27 @@ class WorkerSettings(BaseSettings):
         if client_id is None:
             raise ValueError("audit anchor managed identity client ID must be a complete UUID")
         return container_url, client_id.strip()
+
+    def require_local_audit_anchor_dir(self) -> str:
+        """Validate the local WORM anchor directory and return it.
+
+        Only shape is checked here (non-empty, no NUL/newline). The security
+        property — that the volume is separate and immutable — cannot be
+        asserted from config and is the operator's responsibility.
+        """
+
+        value = (self.audit_anchor_local_dir or "").strip()
+        if not value or any(character in value for character in ("\x00", "\r", "\n")):
+            raise ValueError("audit anchor local directory must be a non-empty filesystem path")
+        return value
+
+    def require_audit_anchor_provider_ready(self) -> None:
+        """Validate whichever anchor backend is selected."""
+
+        if self.audit_anchor_provider_kind is AuditAnchorProviderKind.LOCAL_WORM:
+            self.require_local_audit_anchor_dir()
+        else:
+            self.require_audit_anchor_configured()
 
     def recipient_domain_allowlist(self) -> frozenset[str]:
         return parse_domain_allowlist(self.allowed_recipient_domains)
