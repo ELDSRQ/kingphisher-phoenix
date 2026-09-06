@@ -17,6 +17,43 @@ a *real* send. Written 2026-09-05.
 > ⚠️ These `az` changes are **undone by any `terraform apply` / redeploy**. To make them
 > stick, use the deploy toggles in each priority below (the *permanent* line).
 
+## Keep building/testing locally — VERIFIED zero-Azure (2026-09-05)
+
+**You do NOT restart Azure to build/test.** A subagent review confirmed the full
+build/test loop runs on local Docker with **zero Azure dependency** — you restart the
+*local* Postgres + local app, never the Azure ones, and Azure billing stays off. Azure is
+reached only by two explicit opt-in targets (`make test-live-azure`, the e2e live send),
+never by routine build/test.
+
+How the local stack is shaped: `docker-compose.yml` provides **infra + mocks only**
+(postgres, redis, mailpit, otel, mock-idp/graph/ai). The **app tier (operator-api,
+tracking-api, 8 workers) runs as local `uv`/uvicorn processes** via `scripts/supervisor.py`
+/ `make dev` — not containers. So the full testable app = local Postgres up **plus** the
+supervisor (the mocks-only subset seen running on .105 is not the whole app).
+
+```bash
+# Full local app (runs on the .105/.140 Docker host):
+make bootstrap        # uv sync + compose up postgres/redis/otel/mocks/mailpit + db-init
+make seed             # optional demo data
+bash scripts/run_console.sh    # supervisor: operator-api + tracking-api + all 8 workers
+
+# Lighter dev loop (APIs only, no workers): make dev
+
+# Tests (all local, zero Azure):
+make test             # hermetic (marker filter: not postgres and not redis and not e2e and not azure_live)
+make test-postgres    # needs local Postgres + *_TEST env vars
+make test-redis       # needs local Redis (reserved db 15)
+make test-e2e         # local campaign lifecycle (KP_E2E_PASSWORD, KP_E2E_LIFECYCLE=1)
+make lint typecheck security-scan
+```
+
+Every external dependency is satisfied locally: DB/cache → local postgres/redis containers
+(own volumes); email → Mailpit (SMTP default); identity/directory/AI → mock-idp/mock-graph/
+mock-ai (or local llama.cpp); secrets → `.env`; audit chain → Postgres (the Azure Blob
+audit-anchor worker is not in the local roster, so it's never invoked). Only validating the
+*genuine* Azure integrations (real ACS/Entra/Blob) needs Azure — the final live validation,
+not routine build/test.
+
 ## Priority 1 — Qwen / ai-gateway → LOCAL (biggest cost)
 **Why it's here:** a 7B model held always-on in a Container App is the single biggest line
 item, and it is **not needed in Azure** — Qwen2.5-7B runs locally via llama.cpp (that's how

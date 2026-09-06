@@ -1,5 +1,29 @@
 # Next-session handoff
 
+## Addendum 2026-09-05 (d) — Azure cost idled; build/test is fully local
+
+**Azure was ~$800/mo; the expensive tier is now IDLED** (reversible): all 4 Container Apps
+at min-replicas 0, Postgres **stopped** (retains data; auto-starts in ~7 days), CI VM
+deallocated. Only the cheap real-send slice (ACS/domain/DNS/Entra) stays up. The Azure
+console is OFFLINE until resumed — expected.
+
+- **Build + test run fully local with ZERO Azure (verified by subagent review).** Do NOT
+  restart Azure to work. The `docker-compose.yml` stack is infra+mocks only; the app tier
+  (operator-api/tracking-api/8 workers) runs as local processes via `scripts/supervisor.py`.
+  Run on the .105/.140 Docker host: `make bootstrap` → `scripts/run_console.sh`; tests via
+  `make test` / `test-postgres` / `test-redis` / `test-e2e`. Full per-dependency mapping +
+  commands: **`docs/LOCAL-FIRST-MIGRATION-PLAN.md`**.
+- **Qwen runs LOCAL** via llama.cpp (validated GGUF staged on the Docker host at
+  `infrastructure/containers/ai-llama/models/`, sha256 matches the ai-llama Dockerfile pin);
+  it does not need Azure (`deploy_ai_gateway=false`).
+- **Cost controls:** Path B `deploy_data_plane` flag gates ACR+Redis;
+  `infrastructure/terraform/environments/idle.tfvars` is the reproducible idle overlay
+  (apply via DIRECT `terraform apply` — the CI workflow hardcodes `deploy_workloads=true`
+  which outranks tfvars); `scripts/operator/azure-idle.sh {status|stop|start}` wraps the
+  idle/resume cycle. Tiers + details: **`docs/HYBRID-AZURE-LOCAL-PLAN.md`**.
+- **Resume Azure ONLY for a real send:** `scripts/operator/azure-idle.sh start`
+  (starts Postgres, re-applies the plane, re-patches OIDC), then `... stop` to re-idle.
+
 ## Addendum 2026-09-05 (c) — repo pushed + scope boundary (no engineering change)
 
 **Head `8e8eb1b` (fully pushed to origin/main).** This session made no change to the

@@ -16,6 +16,20 @@ even though the harness may list them as writable working dirs. Reading them for
 fine; changing them is not. Any process/CPU guardrail must WARN, never auto-kill (the operator
 runs several concurrent agent/coding sessions and a false kill mid-build is unacceptable).
 
+## COST — AZURE IS IDLED; BUILD/TEST IS LOCAL (2026-09-05)
+Azure spend was ~$800/mo, so the expensive tier is IDLED: all 4 Container Apps at
+min-replicas 0, Postgres STOPPED (retains data; auto-starts in ~7 days), CI VM deallocated.
+Only the cheap real-send slice (ACS/domain/DNS/Entra) stays up. The Azure console is
+therefore OFFLINE until you resume — expected, not broken.
+BUILD + TEST RUN FULLY LOCAL WITH ZERO AZURE (verified). Do NOT restart Azure to work — run
+the full app + tests on the .105/.140 Docker host: `make bootstrap` -> `scripts/run_console.sh`;
+tests via `make test` / `test-postgres` / `test-redis` / `test-e2e`. Full plan + the
+per-dependency local mapping: docs/LOCAL-FIRST-MIGRATION-PLAN.md. Cost tiers + toggles
+(deploy_data_plane, environments/idle.tfvars) + the azure-idle.sh stop/start runbook:
+docs/HYBRID-AZURE-LOCAL-PLAN.md. Qwen runs LOCAL via llama.cpp (validated GGUF on the Docker
+host); it does NOT need Azure (deploy_ai_gateway=false). Resume Azure ONLY for a real send:
+`scripts/operator/azure-idle.sh start`; re-idle after with `... stop`.
+
 ## THE GOAL (unchanged)
 Send ONE real phishing-simulation email to erik.dierks@gmail.com through the governed
 Azure operator console workflow. "Fully built" = realistic AI content (ai-gateway +

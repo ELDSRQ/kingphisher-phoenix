@@ -10,6 +10,15 @@
 > DR archive on Alice. (2026-09-05: repo pushed to `8e8eb1b`; nothing else engineering-wise
 > changed this session — KP-008 stays RESOLVED, next step is still the console send flow.)
 
+> **COST — AZURE IDLED; BUILD/TEST IS LOCAL (2026-09-05):** Azure was ~$800/mo, so the
+> expensive tier is idled (Container Apps min‑0, Postgres STOPPED, CI VM deallocated; only
+> ACS/domain/DNS/Entra kept). The Azure console is OFFLINE until you resume — expected.
+> **Build + test run fully local, zero Azure (verified)** — do not restart Azure to work;
+> run `make bootstrap` → `scripts/run_console.sh` + `make test*` on the .105/.140 Docker host.
+> Qwen runs local via llama.cpp. Full plan: [`docs/LOCAL-FIRST-MIGRATION-PLAN.md`]; cost tiers +
+> `azure-idle.sh` stop/start + `idle.tfvars`: [`docs/HYBRID-AZURE-LOCAL-PLAN.md`]. Resume Azure
+> for a real send only: `scripts/operator/azure-idle.sh start`.
+
 **Goal:** send ONE real phishing-sim email to erik.dierks@gmail.com via the Azure operator
 console. AI content (ai-gateway + Qwen) and ACS delivery are DEPLOYED; we are driving the
 first end-to-end send through the console.
