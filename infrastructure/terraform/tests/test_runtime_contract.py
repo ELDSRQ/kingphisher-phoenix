@@ -575,8 +575,20 @@ def test_ai_gateway_workload_is_internal_two_container_and_opt_in() -> None:
     assert "http://localhost:18081/v1" in gateway
     assert "/livez" in gateway and "/readyz" in gateway
     assert "18081" in gateway
-    # The gateway holds no stored secrets.
-    assert "key_vault_secret_id" not in gateway
+    # AI-016 fail-closed auth: the managed gateway's ONLY stored secret is the
+    # shared bearer key, resolved by the gateway's own workload identity.
+    assert gateway.count("key_vault_secret_id") == 1
+    assert 'name                = "ai-gateway-auth-key"' in gateway
+    assert (
+        'key_vault_secret_id = azurerm_key_vault_secret.runtime["ai-gateway-auth-key"].versionless_id'
+        in gateway
+    )
+    # REQUIRE_AUTH is hard-on and the key is injected via a secret reference,
+    # never a plaintext value.
+    assert 'name  = "KP_AI_GATEWAY_REQUIRE_AUTH"' in gateway
+    assert 'value = "true"' in gateway
+    assert 'name        = "KP_AI_GATEWAY_API_KEY"' in gateway
+    assert 'secret_name = "ai-gateway-auth-key"' in gateway
     # Opt-in requires real, published images (no bootstrap.invalid placeholders).
     assert "deploy_ai_gateway=true requires immutable, published ai_gateway_image and ai_llama_image" in MAIN
     # Uses its own workload identity, mirroring operator/tracking.
@@ -589,3 +601,62 @@ def test_deploy_ai_gateway_defaults_off() -> None:
     block = VARIABLES.split('variable "deploy_ai_gateway"', maxsplit=1)[1].split("\n}\n", maxsplit=1)[0]
     assert "default     = false" in block
     assert "type        = bool" in block
+
+
+def test_ai_gateway_fail_closed_auth_is_shared_and_gated_to_managed() -> None:
+    # AI-016 follow-up: the managed gateway must run fail-closed. A single shared
+    # secret is generated only when the gateway is actually deployed.
+    assert (
+        'resource "random_password" "ai_gateway_auth" {\n'
+        "  count   = var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0"
+    ) in MAIN
+    # The shared secret lands in Key Vault under the same runtime pattern, gated
+    # on the gateway being deployed (mirrors the redis-url conditional).
+    assert (
+        "(var.deploy_workloads && var.deploy_ai_gateway) ? {\n"
+        "      ai-gateway-auth-key = random_password.ai_gateway_auth[0].result\n"
+        "    } : {}"
+    ) in MAIN
+    # The gateway identity reads the shared key.
+    secret_access = MAIN.split("locals {\n  workload_secret_names", maxsplit=1)[1].split(
+        'resource "azurerm_role_assignment" "workload_secret"', maxsplit=1
+    )[0]
+    assert (
+        "(var.deploy_workloads && var.deploy_ai_gateway) ? {\n"
+        "      ai-gateway = toset([\"ai-gateway-auth-key\"])\n"
+        "    } : {}"
+    ) in secret_access
+    # The generation worker deployment also reads it, gated identically.
+    assert (
+        '(var.deploy_ai_gateway && contains(roles, "generation")) ? toset(["ai-gateway-auth-key"]) : toset([])'
+        in secret_access
+    )
+    # The worker container presents the SAME secret as its AI bearer, scoped to
+    # the deployment that holds the generation role and only when the gateway is
+    # deployed.
+    worker = MAIN.split('resource "azurerm_container_app" "worker"', maxsplit=1)[1].split(
+        'resource "azurerm_role_assignment" "communication_sender"', maxsplit=1
+    )[0]
+    assert (
+        'for_each = (var.deploy_ai_gateway && contains(local.worker_deployment_roles[each.key], "generation")) ? [1] : []'
+        in worker
+    )
+    assert 'name        = "KP_WORKER_AI_BEARER_TOKEN"' in worker
+    assert worker.count('secret_name = "ai-gateway-auth-key"') == 1
+    assert worker.count('name                = "ai-gateway-auth-key"') == 1
+
+
+def test_ai_gateway_auth_default_is_off_for_local_dev() -> None:
+    # The switch lives ONLY in the managed terraform manifest. The gateway config
+    # default (require_auth False) and the local compose snippet must stay open,
+    # so REQUIRE_AUTH=true appears in the terraform manifest but not in any dev
+    # default.
+    gateway_config = (PROJECT_ROOT / "apps" / "ai-gateway" / "src" / "kp_ai_gateway" / "config.py").read_text(
+        encoding="utf-8"
+    )
+    assert "require_auth: bool = False" in gateway_config
+    compose = (
+        PROJECT_ROOT / "infrastructure" / "containers" / "ai-gateway-compose.snippet.yml"
+    ).read_text(encoding="utf-8")
+    assert "KP_AI_GATEWAY_REQUIRE_AUTH" not in compose
+    assert "KP_AI_GATEWAY_API_KEY" not in compose

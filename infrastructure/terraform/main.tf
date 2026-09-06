@@ -668,6 +668,16 @@ resource "random_password" "console" {
   length  = 40
   special = false
 }
+# AI-016 fail-closed gateway auth. Shared bearer/API key the managed ai-gateway
+# REQUIRES (KP_AI_GATEWAY_REQUIRE_AUTH=true + KP_AI_GATEWAY_API_KEY) and the
+# generation worker presents on every /propose call (KP_WORKER_AI_BEARER_TOKEN).
+# Only generated when the gateway is actually deployed; the local/dev stack runs
+# the gateway with auth OFF and never sees this secret.
+resource "random_password" "ai_gateway_auth" {
+  count   = var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0
+  length  = 48
+  special = false
+}
 resource "random_id" "audit_hmac" { byte_length = 32 }
 resource "random_id" "ciphertext_kek" {
   byte_length = 32
@@ -1014,6 +1024,11 @@ locals {
     },
     # redis-url only exists when the data plane (Redis) is deployed.
     local.data_plane ? { redis-url = local.redis_url } : {},
+    # ai-gateway-auth-key only exists when the managed ai-gateway is deployed;
+    # it backs the AI-016 fail-closed bearer shared by the gateway and worker.
+    (var.deploy_workloads && var.deploy_ai_gateway) ? {
+      ai-gateway-auth-key = random_password.ai_gateway_auth[0].result
+    } : {},
     {
       for workload, secret_name in local.runtime_database_secret_names :
       secret_name => local.runtime_database_urls[workload]
@@ -1061,6 +1076,12 @@ locals {
         [for workload in keys(local.runtime_database_roles) : "db-password-${workload}"],
       ))
     },
+    # AI-016: the ai-gateway identity reads the shared auth key so the gateway
+    # can enforce KP_AI_GATEWAY_REQUIRE_AUTH. Scoped to the gateway workload and
+    # only when the gateway is deployed.
+    (var.deploy_workloads && var.deploy_ai_gateway) ? {
+      ai-gateway = toset(["ai-gateway-auth-key"])
+    } : {},
     {
       for deployment, roles in local.worker_deployment_roles : deployment => setunion(
         toset([
@@ -1073,6 +1094,8 @@ locals {
         contains(roles, "delivery") ? toset(["roe-signing-key", "acs-receipt-signing-key"]) : toset([]),
         contains(roles, "reminder") ? toset(["training-token-hmac"]) : toset([]),
         contains(roles, "retention") ? toset(["awareness-pseudonym-key"]) : toset([]),
+        # AI-016: the generation worker presents this bearer on every /propose.
+        (var.deploy_ai_gateway && contains(roles, "generation")) ? toset(["ai-gateway-auth-key"]) : toset([]),
       )
     },
   )
@@ -1155,9 +1178,19 @@ resource "azurerm_container_app" "ai_gateway" {
     server   = azurerm_container_registry.main[0].login_server
     identity = azurerm_user_assigned_identity.workload["ai-gateway"].id
   }
+  # AI-016 fail-closed auth: the managed gateway REQUIRES a bearer. The shared
+  # key is resolved from Key Vault by the gateway's own workload identity. This
+  # resource only exists when the gateway is deployed, so the secret always
+  # exists here; the local/dev stack runs the gateway with auth OFF instead.
+  secret {
+    name                = "ai-gateway-auth-key"
+    key_vault_secret_id = azurerm_key_vault_secret.runtime["ai-gateway-auth-key"].versionless_id
+    identity            = azurerm_user_assigned_identity.workload["ai-gateway"].id
+  }
   # Internal only: reached in-cluster by the worker (/propose) and operator-api
-  # (/setup-assist). No external ingress and no stored secrets (the gateway
-  # holds none; the model is baked into the ai-llama sidecar image).
+  # (/setup-assist). No external ingress. The gateway's only stored secret is
+  # the AI-016 fail-closed auth key above; the model is baked into the ai-llama
+  # sidecar image.
   ingress {
     external_enabled = false
     target_port      = 8090
@@ -1225,6 +1258,16 @@ resource "azurerm_container_app" "ai_gateway" {
       env {
         name  = "KP_AI_GATEWAY_LLAMA_BASE_URL"
         value = "http://localhost:18081/v1"
+      }
+      # AI-016 fail-closed: the managed gateway rejects any unauthenticated
+      # /propose. REQUIRE_AUTH is hard-on here and the key comes from Key Vault.
+      env {
+        name  = "KP_AI_GATEWAY_REQUIRE_AUTH"
+        value = "true"
+      }
+      env {
+        name        = "KP_AI_GATEWAY_API_KEY"
+        secret_name = "ai-gateway-auth-key"
       }
       env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
@@ -1551,6 +1594,18 @@ resource "azurerm_container_app" "worker" {
       identity            = azurerm_user_assigned_identity.workload[each.key].id
     }
   }
+  # AI-016 fail-closed auth: the generation worker presents this shared bearer on
+  # every /propose call to the managed gateway (which now requires it). Only the
+  # deployment holding the generation role, and only when the gateway is
+  # deployed. Local/dev keeps auth OFF and never carries this secret.
+  dynamic "secret" {
+    for_each = (var.deploy_ai_gateway && contains(local.worker_deployment_roles[each.key], "generation")) ? [1] : []
+    content {
+      name                = "ai-gateway-auth-key"
+      key_vault_secret_id = azurerm_key_vault_secret.runtime["ai-gateway-auth-key"].versionless_id
+      identity            = azurerm_user_assigned_identity.workload[each.key].id
+    }
+  }
   template {
     min_replicas = 1
     max_replicas = each.key == "delivery" ? (local.production ? 5 : 2) : 1
@@ -1745,6 +1800,16 @@ resource "azurerm_container_app" "worker" {
         content {
           name  = env.key
           value = env.value
+        }
+      }
+      # AI-016 fail-closed auth: the generation worker carries the shared bearer
+      # the managed gateway now requires. Only injected for the deployment that
+      # holds the generation role and only when the gateway is deployed.
+      dynamic "env" {
+        for_each = (var.deploy_ai_gateway && contains(local.worker_deployment_roles[each.key], "generation")) ? [1] : []
+        content {
+          name        = "KP_WORKER_AI_BEARER_TOKEN"
+          secret_name = "ai-gateway-auth-key"
         }
       }
       env {
