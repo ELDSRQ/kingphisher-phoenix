@@ -15,7 +15,7 @@ import re
 import secrets
 import smtplib
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
@@ -1273,6 +1273,24 @@ def _campaign_state_allows_delivery(state: dm.CampaignState, *, test_send: bool)
     return state in allowed_states
 
 
+def _two_person_approval_reason(approvals: Sequence[CampaignApproval]) -> str | None:
+    """Why the covering approvals fail the two-person rule, or ``None`` if valid.
+
+    Two-person, not two-lane: the APPROVED approvals covering this review must
+    span both the SECURITY and PRIVACY facets AND carry at least two DISTINCT
+    approver identities. A single ADMINISTRATOR holding both APPROVE_SECURITY
+    and APPROVE_PRIVACY therefore cannot satisfy the rule on their own. The
+    caller fails closed (refuses launch) on any returned reason.
+    """
+
+    granted = {row.approval_type for row in approvals}
+    if not {dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY} <= granted:
+        return "missing_approvals"
+    if len({row.approver_id for row in approvals}) < 2:
+        return "insufficient_distinct_approvers"
+    return None
+
+
 def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
     payload = message["payload"]
     if payload.get("job_type") == "acs_delivery_receipt":
@@ -1351,28 +1369,32 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # cohort receives real messages; scheduling already required these
         # approvals against the same review manifest, so the re-check passes for
         # a legitimately reviewed canary and blocks one whose approvals lapsed.
+        # AUT-002: the rule is now two DISTINCT approvers, not two approval
+        # lanes — enforced here by _two_person_approval_reason.
         if ctx.settings.approval_policy is ApprovalPolicy.ENFORCE:
-            granted = {
-                row.approval_type
-                for row in session.scalars(
-                    select(CampaignApproval).where(
-                        CampaignApproval.campaign_id == campaign.campaign_id,
-                        CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
-                        CampaignApproval.launch_manifest_hash == payload.get("launch_manifest_hash"),
-                    )
-                ).all()
-            }
-            if not {dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY} <= granted:
+            covering_approvals = session.scalars(
+                select(CampaignApproval).where(
+                    CampaignApproval.campaign_id == campaign.campaign_id,
+                    CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+                    CampaignApproval.launch_manifest_hash == payload.get("launch_manifest_hash"),
+                )
+            ).all()
+            reason = _two_person_approval_reason(covering_approvals)
+            if reason is not None:
                 ctx.audit_store.record(
                     session=session,
                     actor="worker:delivery",
                     action="campaign.deliver.blocked",
                     object_type="campaign",
                     object_id=campaign_id,
-                    detail={"reason": "missing_approvals"},
+                    detail={"reason": reason},
                 )
                 session.commit()
-                logger.error("campaign %s lacks required approvals; refusing to deliver", campaign_id)
+                logger.error(
+                    "campaign %s fails the two-person approval rule (%s); refusing to deliver",
+                    campaign_id,
+                    reason,
+                )
                 return
         # Signed Rules-of-Engagement gate. Delivery is impossible without an
         # active, validly-signed RoE attached at scheduling: the RoE names the

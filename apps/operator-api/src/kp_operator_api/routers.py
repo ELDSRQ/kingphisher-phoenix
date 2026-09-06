@@ -1141,7 +1141,9 @@ def submit_campaign(
     template = session.get(TemplateVersion, campaign.current_template_id, with_for_update=True)
     if template is None:
         raise ConflictError("campaign requires an approved template before review")
-    launch_gate = bind_campaign_launch_review(session, campaign, template)
+    launch_gate = bind_campaign_launch_review(
+        session, campaign, template, submitted_by=_principal_uuid(principal)
+    )
     campaign.state = (
         dm.CampaignState.PENDING_APPROVAL
         if request.app.state.settings.approval_policy is ApprovalPolicy.ENFORCE
@@ -1504,6 +1506,13 @@ def approve_campaign(
     principal_id = _principal_uuid(principal)
     if campaign.created_by == principal_id:
         raise PermissionDeniedError("self-approval of your own campaign is prohibited")
+    # Two-person review means two DISTINCT people, not two lanes held by one
+    # operator. The operator who submitted this campaign for review advanced it
+    # toward launch and is treated as an author for approval purposes even if a
+    # later editor changed the content: the submitter's identity is durably
+    # recorded on the launch gate so the block survives edits by others.
+    if launch_gate.submitted_by is not None and launch_gate.submitted_by == principal_id:
+        raise PermissionDeniedError("the operator who submitted this campaign for review cannot approve it")
 
     existing_lane = session.scalar(
         select(CampaignApproval).where(
@@ -1514,6 +1523,31 @@ def approve_campaign(
     )
     if existing_lane is not None:
         raise ConflictError("the requested campaign review lane has already been decided")
+
+    # Approvals already recorded against this exact review manifest. Fetched
+    # once so both the self-double-approve guard and the completion check see
+    # the same set, before this decision is added.
+    approved_rows = (
+        session.execute(
+            select(CampaignApproval).where(
+                CampaignApproval.campaign_id == campaign.campaign_id,
+                CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+                CampaignApproval.launch_manifest_hash == launch_gate.review_manifest_hash,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # One operator must not satisfy both facets: reject a second APPROVED
+    # decision from anyone who has already approved a facet of this review, even
+    # across a different lane. This closes the single-ADMINISTRATOR path where
+    # one principal holds both APPROVE_SECURITY and APPROVE_PRIVACY.
+    if body.decision == dm.ApprovalDecision.APPROVED and any(
+        row.approver_id == principal_id for row in approved_rows
+    ):
+        raise PermissionDeniedError(
+            "you have already approved a facet of this review; an independent approver is required"
+        )
 
     approval = CampaignApproval(
         campaign_approval_id=uuid.uuid4(),
@@ -1529,20 +1563,14 @@ def approve_campaign(
     session.add(approval)
 
     if body.decision == dm.ApprovalDecision.APPROVED:
-        existing = (
-            session.execute(
-                select(CampaignApproval).where(
-                    CampaignApproval.campaign_id == campaign.campaign_id,
-                    CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
-                    CampaignApproval.launch_manifest_hash == launch_gate.review_manifest_hash,
-                )
-            )
-            .scalars()
-            .all()
-        )
-        types_approved = {a.approval_type for a in existing}
+        types_approved = {a.approval_type for a in approved_rows}
         types_approved.add(approval_type)
-        if types_approved >= {dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY}:
+        approvers = {a.approver_id for a in approved_rows}
+        approvers.add(principal_id)
+        # Require both facets AND two distinct human approvers. The distinct
+        # count is redundant given the guards above but keeps the completion
+        # rule fail-closed on its own terms.
+        if types_approved >= {dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY} and len(approvers) >= 2:
             campaign.state = dm.CampaignState.APPROVED
     else:
         campaign.state = dm.CampaignState.REJECTED

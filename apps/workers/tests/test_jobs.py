@@ -10,7 +10,14 @@ from uuid import UUID, uuid4
 
 import pytest
 from kp_database.base import Base
-from kp_database.models import Campaign, CampaignPattern, CipherText, Recipient, RecipientAssignment
+from kp_database.models import (
+    Campaign,
+    CampaignApproval,
+    CampaignPattern,
+    CipherText,
+    Recipient,
+    RecipientAssignment,
+)
 from kp_database.session import create_db_engine, make_session_factory
 from kp_domain_models import models as dm
 from kp_workers.jobs import (
@@ -20,6 +27,7 @@ from kp_workers.jobs import (
     _campaign_state_allows_delivery,
     _claim_delivery,
     _delivery_tracking_bearer,
+    _two_person_approval_reason,
     reconcile_campaign_lifecycle,
 )
 from sqlalchemy import text
@@ -86,6 +94,39 @@ def test_delivery_state_fence_preserves_review_test_sends_and_regular_launch_sta
     assert review_states | launch_states == _TEST_SEND_CAMPAIGN_STATES
     assert launch_states == _DELIVERABLE_CAMPAIGN_STATES
     assert frozenset(dm.CampaignState) == _TEST_SEND_CAMPAIGN_STATES | _TERMINAL_CAMPAIGN_STATES
+
+
+def _approval(approval_type: dm.ApprovalType, approver_id: UUID) -> CampaignApproval:
+    return CampaignApproval(approval_type=approval_type, approver_id=approver_id)
+
+
+def test_worker_rejects_both_facets_from_one_approver() -> None:
+    # S1: the worker re-check must be two-person, not two-lane. One approver
+    # covering both SECURITY and PRIVACY fails closed even though both facets
+    # are present.
+    solo = uuid4()
+    approvals = [
+        _approval(dm.ApprovalType.SECURITY, solo),
+        _approval(dm.ApprovalType.PRIVACY, solo),
+    ]
+    assert _two_person_approval_reason(approvals) == "insufficient_distinct_approvers"
+
+
+def test_worker_rejects_missing_facet() -> None:
+    approvals = [
+        _approval(dm.ApprovalType.SECURITY, uuid4()),
+        _approval(dm.ApprovalType.SECURITY, uuid4()),
+    ]
+    assert _two_person_approval_reason(approvals) == "missing_approvals"
+    assert _two_person_approval_reason([]) == "missing_approvals"
+
+
+def test_worker_accepts_two_distinct_approvers_covering_both_facets() -> None:
+    approvals = [
+        _approval(dm.ApprovalType.SECURITY, uuid4()),
+        _approval(dm.ApprovalType.PRIVACY, uuid4()),
+    ]
+    assert _two_person_approval_reason(approvals) is None
 
 
 def test_delivery_bearer_is_bound_to_assignment_verifier_and_checksum() -> None:

@@ -302,8 +302,16 @@ def bind_campaign_launch_review(
     session: Session,
     campaign: Campaign,
     template: TemplateVersion,
+    *,
+    submitted_by: uuid.UUID | None = None,
 ) -> CampaignLaunchGate:
-    """Lock a campaign's full review manifest and explicit canary cohort."""
+    """Lock a campaign's full review manifest and explicit canary cohort.
+
+    ``submitted_by`` records the operator advancing this review toward launch.
+    The approval endpoint bars that operator from also approving, so the
+    two-person rule holds even when the submitter is not the campaign's
+    original ``created_by`` (e.g. a later editor resubmits someone's draft).
+    """
 
     audience = session.get(CampaignAudience, campaign.campaign_id, with_for_update=True)
     if (
@@ -353,6 +361,11 @@ def bind_campaign_launch_review(
 
     existing = session.get(CampaignLaunchGate, campaign.campaign_id, with_for_update=True)
     if existing is not None and existing.review_manifest_hash == review_hash and existing.state == "reviewed":
+        # Re-submitting the identical review reuses the gate but refreshes the
+        # recorded submitter so the approval block always reflects the operator
+        # who most recently advanced this campaign.
+        if submitted_by is not None:
+            existing.submitted_by = submitted_by
         return existing
     if existing is not None:
         session.execute(
@@ -368,6 +381,7 @@ def bind_campaign_launch_review(
         audience_manifest_hash=audience.manifest_hash,
         canary_manifest_hash=canary_hash,
         roe_id=campaign.roe_id,
+        submitted_by=submitted_by,
         state="reviewed",
     )
     session.add(gate)

@@ -102,7 +102,7 @@ def _campaign(creator_id: UUID) -> Campaign:
     )
 
 
-def _launch_gate(campaign: Campaign) -> CampaignLaunchGate:
+def _launch_gate(campaign: Campaign, *, submitted_by: UUID | None = None) -> CampaignLaunchGate:
     return CampaignLaunchGate(
         campaign_id=campaign.campaign_id,
         review_manifest_hash="c" * 64,
@@ -110,6 +110,7 @@ def _launch_gate(campaign: Campaign) -> CampaignLaunchGate:
         template_approval_hash="e" * 64,
         audience_manifest_hash="f" * 64,
         canary_manifest_hash="1" * 64,
+        submitted_by=submitted_by,
         state="reviewed",
     )
 
@@ -160,7 +161,10 @@ def test_creator_cannot_approve_either_facet(
     assert session.commits == 0
 
 
-def test_one_independent_operator_can_complete_both_facets(approval_dependencies: None) -> None:
+def test_one_operator_cannot_complete_both_facets(approval_dependencies: None) -> None:
+    # S1: a single ADMINISTRATOR holds both APPROVE_SECURITY and APPROVE_PRIVACY.
+    # Two-person review means two DISTINCT people, so the second facet must be
+    # refused even though the operator carries both capabilities.
     campaign = _campaign(uuid4())
     session = _ApprovalSession(campaign, _launch_gate(campaign))
     audit = _Audit()
@@ -171,17 +175,30 @@ def test_one_independent_operator_can_complete_both_facets(approval_dependencies
     assert routers._require_campaign_approval_capability(dm.ApprovalType.PRIVACY, reviewer) is reviewer
 
     security = _approve(session, audit, campaign, dm.ApprovalType.SECURITY, reviewer)
-    privacy = _approve(session, audit, campaign, dm.ApprovalType.PRIVACY, reviewer)
-
     assert security["state"] == dm.CampaignState.PENDING_APPROVAL.value
-    assert privacy["state"] == dm.CampaignState.APPROVED.value
-    assert [approval.approval_type for approval in session.approvals] == [
-        dm.ApprovalType.SECURITY,
-        dm.ApprovalType.PRIVACY,
-    ]
-    assert {approval.approver_id for approval in session.approvals} == {reviewer_id}
-    assert {approval.launch_manifest_hash for approval in session.approvals} == {"c" * 64}
-    assert audit.actions == ["campaign.approve.security", "campaign.approve.privacy"]
+
+    with pytest.raises(PermissionDeniedError, match="already approved a facet"):
+        _approve(session, audit, campaign, dm.ApprovalType.PRIVACY, reviewer)
+
+    # Only the first facet was ever recorded; the campaign never reaches APPROVED.
+    assert [approval.approval_type for approval in session.approvals] == [dm.ApprovalType.SECURITY]
+    assert campaign.state == dm.CampaignState.PENDING_APPROVAL
+    assert audit.actions == ["campaign.approve.security"]
+
+
+def test_submitter_cannot_approve_even_when_not_the_creator(approval_dependencies: None) -> None:
+    # The last-mutator who submitted the review is recorded on the launch gate
+    # and is barred from approving, independently of the campaign's created_by.
+    submitter_id = uuid4()
+    campaign = _campaign(uuid4())  # created_by is a different, unrelated operator
+    session = _ApprovalSession(campaign, _launch_gate(campaign, submitted_by=submitter_id))
+    submitter = Principal(str(submitter_id), {Role.SECURITY_APPROVER, Role.PRIVACY_APPROVER})
+
+    with pytest.raises(PermissionDeniedError, match="submitted this campaign for review"):
+        _approve(session, _Audit(), campaign, dm.ApprovalType.SECURITY, submitter)
+
+    assert session.approvals == []
+    assert session.commits == 0
 
 
 def test_a_third_person_may_complete_the_other_facet(approval_dependencies: None) -> None:

@@ -527,6 +527,11 @@ class CampaignLaunchGate(Base):
         ForeignKey("rules_of_engagement.roe_id", ondelete="RESTRICT"),
         nullable=False,
     )
+    #: Operator who last submitted this campaign for review. Recorded so the
+    #: two-person rule can bar the submitter/last-mutator from also approving,
+    #: independently of the campaign's original ``created_by``. Nullable for
+    #: gates written before this column existed.
+    submitted_by = mapped_column(UUID(as_uuid=True), nullable=True)
     state: Mapped[str] = mapped_column(String(32), default="reviewed", server_default="reviewed")
     canary_queued_at = mapped_column(DateTime(timezone=True), nullable=True)
     canary_expires_at = mapped_column(DateTime(timezone=True), nullable=True)
