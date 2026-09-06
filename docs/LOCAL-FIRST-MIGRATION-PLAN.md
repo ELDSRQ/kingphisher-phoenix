@@ -69,6 +69,60 @@ the AI-010 bake-off measured it on .105/.140 CPU), and the compose stack already
 - **Build/functionality impact:** none — hermetic tests already mock AI; real generation is
   served by the local ai-gateway.
 
+### Local Qwen bring-up — WORKING runbook (verified end-to-end 2026-09-05 on .105/WSL)
+
+Runs on the WSL Docker host (`ssh erikd@192.168.1.105`, then `wsl`). Repo at
+`/root/kingphisher-phoenix`. Verified: real `/propose` generation returned schema-valid,
+simulation-framed content in ~15s at ~12 tok/s.
+
+1. **Stage the validated GGUF shards** at `infrastructure/containers/ai-llama/models/`
+   (`qwen2.5-7b-instruct-q4_k_m-00001/00002-of-00002.gguf`). Get them from Qwen's official
+   HF repo `Qwen/Qwen2.5-7B-Instruct-GGUF` OR copy the operator's staged Mac weights.
+   **Verify sha256 == the digests pinned in `infrastructure/containers/ai-llama/Dockerfile`**
+   (the HF `00001` shard has drifted; the Mac copy matches — use the matching one).
+
+2. **Run llama.cpp serving Qwen** (note `--threads` — the default is far slower: 1.3 → 12 tok/s):
+   ```bash
+   D=/root/kingphisher-phoenix/infrastructure/containers/ai-llama/models
+   docker run -d --name kp-llama --restart unless-stopped -p 18081:18081 -v "$D":/models:ro \
+     ghcr.io/ggml-org/llama.cpp:server \
+     --model /models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf \
+     --host 0.0.0.0 --port 18081 --temp 0 --ctx-size 8192 --parallel 1 --threads 8
+   # sanity: curl -s http://127.0.0.1:18081/health   # -> {"status":"ok"} once loaded (~9s)
+   ```
+
+3. **Start the ai-gateway** (compose, `ai` profile):
+   ```bash
+   cd /root/kingphisher-phoenix && export PATH=/root/.local/bin:$PATH
+   docker compose --profile ai up -d --build ai-gateway
+   ```
+
+4. **WSL NETWORKING FIX (required):** `host.docker.internal` does NOT reach the host's
+   published port from a container on this WSL Docker setup, so the gateway's default
+   `KP_AI_GATEWAY_LLAMA_BASE_URL=http://host.docker.internal:18081/v1` yields
+   `/readyz` = 503 "backend unreachable". Put llama.cpp on the compose network and address
+   it by container name instead:
+   ```bash
+   docker network connect phishing-awareness-platform_default kp-llama
+   # in .env: KP_AI_GATEWAY_LLAMA_BASE_URL=http://kp-llama:18081/v1
+   docker compose --profile ai up -d --force-recreate ai-gateway
+   ```
+
+5. **Point the app at local Qwen:** set `KP_WORKER_AI_BASE_URL=http://127.0.0.1:8090` in
+   `.env` (blank = fast `mock-ai`; set = real Qwen). The worker calls
+   `POST {KP_WORKER_AI_BASE_URL}/propose`.
+
+6. **Verify e2e:**
+   ```bash
+   curl -s http://127.0.0.1:8090/readyz            # -> {"status":"ready"}
+   curl -s http://127.0.0.1:8090/propose -H 'Content-Type: application/json' \
+     -d '{"pattern":{"pattern_id":"t1","lure_category":"credential-harvest","requested_action":"verify your password","delivery_method":"email","emotional_triggers":["urgency"],"source_excerpts":["urgent password reset email"]},"training_url":"https://awareness.example.com/learn"}'
+   # -> {"subject":"Phishing Simulation: ...","plain_text":"...","safe_html":"...","model_id":"llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"}
+   ```
+
+Both containers are `restart: unless-stopped`. To revert to fast mock-ai: blank
+`KP_WORKER_AI_BASE_URL` in `.env`. `.env` backups: `.env.bak-qwen-*`, `.env.bak-llamaurl-*`.
+
 ## Priority 2 — App tier + Postgres + Redis → LOCAL
 **Already local:** `docker-compose.yml` runs `postgres:16`, `redis:7`, and the four app
 images with mocks; this is the working build/test environment.
