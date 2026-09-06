@@ -62,11 +62,18 @@ def _context(session: _Session) -> tuple[WorkerContext, _Audit]:
         yield session
 
     audit = _Audit()
+    # PLT-002 made ENFORCE the default approval policy, which also fail-closes the
+    # empty-allowlist reminder path (followup_jobs.py: unrestricted requires
+    # SINGLE_ADMIN). These provider-job tests exercise the historical single-admin
+    # offline send behavior, so keep that posture behind the explicit dev marker.
     settings = WorkerSettings(
         _env_file=None,
         reported_mailbox_url="http://localhost:8025",
         training_token_hmac_key=("33" * 32),
         tracking_base_url="http://localhost:8001",
+        runtime_mode="development",
+        approval_policy="single-admin",
+        dev_stack=True,
     )
     context = WorkerContext(settings, factory, audit, SimpleNamespace())  # type: ignore[arg-type]
     return context, audit
