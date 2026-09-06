@@ -9,7 +9,14 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 from kp_database.base import Base
-from kp_database.models import Campaign, CampaignPattern, Recipient, RecipientExclusion, TransactionalOutbox
+from kp_database.models import (
+    Campaign,
+    CampaignPattern,
+    Recipient,
+    RecipientAssignment,
+    RecipientExclusion,
+    TransactionalOutbox,
+)
 from kp_database.privacy import hash_mailbox
 from kp_database.session import create_db_engine, make_session_factory
 from kp_domain_models import models as dm
@@ -134,6 +141,54 @@ def _seed_campaign() -> UUID:
         )
         session.commit()
     return campaign_id
+
+
+def _seed_assignment(campaign_id: UUID, recipient_id: UUID, send_state: dm.SendState) -> UUID:
+    assignment_id = uuid4()
+    with _TEST_SESSIONS() as session:
+        session.add(
+            RecipientAssignment(
+                recipient_assignment_id=assignment_id,
+                campaign_id=campaign_id,
+                recipient_id=recipient_id,
+                send_state=send_state,
+                idempotency_key=f"{campaign_id}:{recipient_id}:{assignment_id}",
+            )
+        )
+        session.commit()
+    return assignment_id
+
+
+@requires_db
+def test_adding_exclusion_expires_queued_assignments_but_not_inflight(client: TestClient) -> None:
+    # An exclusion added after publication must retire the recipient's still-
+    # QUEUED assignments so nothing is sent, while leaving a claimed (SENDING)
+    # attempt and other campaigns untouched for a campaign-specific exclusion.
+    recipient_id = _seed_recipient()
+    campaign_id = _seed_campaign()
+    other_campaign_id = _seed_campaign()
+    queued = _seed_assignment(campaign_id, recipient_id, dm.SendState.QUEUED)
+    inflight = _seed_assignment(campaign_id, recipient_id, dm.SendState.SENDING)
+    other = _seed_assignment(other_campaign_id, recipient_id, dm.SendState.QUEUED)
+
+    response = client.post(
+        f"/api/v1/recipients/{recipient_id}/exclusions",
+        headers=_headers("privacy_approver"),
+        json={
+            "exclusion_type": "campaign_specific",
+            "campaign_id": str(campaign_id),
+            "reason": "documented conflict",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    with _TEST_SESSIONS() as session:
+        expired = session.get(RecipientAssignment, queued)
+        assert expired is not None
+        assert expired.send_state == dm.SendState.EXPIRED
+        assert expired.failure_reason == "recipient_excluded"
+        assert session.get(RecipientAssignment, inflight).send_state == dm.SendState.SENDING
+        assert session.get(RecipientAssignment, other).send_state == dm.SendState.QUEUED
 
 
 @requires_db

@@ -2953,6 +2953,22 @@ def add_exclusion(
             expires_at=body.expires_at,
         )
         session.add(exclusion)
+    # Expire any still-QUEUED assignments for this recipient so an exclusion
+    # added after publication actually prevents the send. A campaign-specific
+    # exclusion only retires that campaign's queue; a global one retires every
+    # campaign's. Claimed (SENDING) or terminal assignments are left untouched:
+    # the delivery worker owns an in-flight attempt, and re-checks the active
+    # exclusion set itself before contacting the provider.
+    expiry_scope = [
+        RecipientAssignment.recipient_id == recipient.recipient_id,
+        RecipientAssignment.send_state == dm.SendState.QUEUED,
+    ]
+    if body.campaign_id is not None:
+        expiry_scope.append(RecipientAssignment.campaign_id == body.campaign_id)
+    expiring_assignments = list(session.scalars(select(RecipientAssignment).where(*expiry_scope)))
+    for expiring in expiring_assignments:
+        expiring.send_state = dm.SendState.EXPIRED
+        expiring.failure_reason = "recipient_excluded"
     audit.record(
         session=session,
         actor=principal.principal_id,
@@ -2963,6 +2979,7 @@ def add_exclusion(
             "exclusion_type": body.exclusion_type.value,
             "campaign_id": str(body.campaign_id) if body.campaign_id else None,
             "created": created,
+            "expired_queued": len(expiring_assignments),
         },
     )
     session.commit()

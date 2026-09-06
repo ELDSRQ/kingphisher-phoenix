@@ -154,7 +154,21 @@ def _add_due_assignment(session: _Session, *, mailbox: str) -> SimpleNamespace:
     )
     session.get_results[recipient_assignment_id] = SimpleNamespace(token_id=token_id)
     session.get_results[token_id] = SimpleNamespace(status=dm.TokenStatus.ACTIVE)
+    _seed_reminder_send_gate(session, assignment.campaign_id)
     return assignment
+
+
+def _seed_reminder_send_gate(session: _Session, campaign_id: uuid.UUID) -> None:
+    """Seed the safety state, campaign, and active RoE the reminder gate reads."""
+    now = datetime.now(UTC)
+    session.get_results[1] = SimpleNamespace(emergency_stop_engaged=False, generation=0)
+    roe_id = uuid.uuid4()
+    session.get_results[campaign_id] = SimpleNamespace(campaign_id=campaign_id, roe_id=roe_id)
+    session.get_results[roe_id] = SimpleNamespace(
+        revoked_at=None,
+        window_start=now - timedelta(days=1),
+        window_end=now + timedelta(days=30),
+    )
 
 
 def test_mailbox_job_delegates_to_durable_provider_flow(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,6 +264,7 @@ def test_reminder_job_sends_only_due_active_assignment(monkeypatch: pytest.Monke
         training_assignment_id=uuid.uuid4(),
         recipient_assignment_id=recipient_assignment_id,
         recipient_id=recipient_id,
+        campaign_id=uuid.uuid4(),
         status=dm.TrainingAssignmentStatus.ASSIGNED,
         assigned_at=assigned_at,
         due_at=assigned_at + timedelta(days=3),
@@ -289,6 +304,8 @@ def test_reminder_job_sends_only_due_active_assignment(monkeypatch: pytest.Monke
     )
     session.get_results[recipient_assignment_id] = SimpleNamespace(token_id=token_id)
     session.get_results[token_id] = SimpleNamespace(status=dm.TokenStatus.ACTIVE)
+    _seed_reminder_send_gate(session, assignment.campaign_id)
+    monkeypatch.setattr("kp_workers.followup_jobs._excluded_recipient_ids", lambda *_a, **_k: set())
     context, audit = _context(session)
     sent: list[Any] = []
 
@@ -341,6 +358,11 @@ def test_reminder_job_skips_completed_future_expired_and_revoked_assignments(
     token_id = uuid.uuid4()
     session.get_results[revoked.recipient_assignment_id] = SimpleNamespace(token_id=token_id)
     session.get_results[token_id] = SimpleNamespace(status=dm.TokenStatus.KILL_SWITCHED)
+    # The send gate must not fire before these rows are individually skipped, so
+    # seed a non-engaged safety state; the invalid rows are dropped upstream of
+    # the RoE/allowlist/exclusion checks anyway.
+    session.get_results[1] = SimpleNamespace(emergency_stop_engaged=False, generation=0)
+    monkeypatch.setattr("kp_workers.followup_jobs._excluded_recipient_ids", lambda *_a, **_k: set())
     context, audit = _context(session)
     monkeypatch.setattr(
         "kp_workers.jobs._reminder_sender",
@@ -361,6 +383,7 @@ def test_reminder_job_builds_a_fresh_single_use_transport_for_each_send(
         _add_due_assignment(session, mailbox="learner-1@example.com"),
     ]
     session.scalar_results = [*assignments, None]
+    monkeypatch.setattr("kp_workers.followup_jobs._excluded_recipient_ids", lambda *_a, **_k: set())
     context, audit = _context(session)
     senders_created = 0
     sent: list[Any] = []
@@ -388,6 +411,7 @@ def test_reminder_transport_construction_failure_releases_the_pre_submission_cla
     session = _Session()
     assignment = _add_due_assignment(session, mailbox="learner@example.com")
     session.scalar_results = [assignment]
+    monkeypatch.setattr("kp_workers.followup_jobs._excluded_recipient_ids", lambda *_a, **_k: set())
     context, audit = _context(session)
     monkeypatch.setattr(
         "kp_workers.jobs._reminder_sender",
@@ -400,3 +424,100 @@ def test_reminder_transport_construction_failure_releases_the_pre_submission_cla
     assert assignment.followup_sent_at is None
     assert session.commits == 2
     assert audit.records[0]["detail"] == {"outcome": "pre_submission_failure"}
+
+
+def test_reminder_job_halts_while_emergency_stop_is_engaged(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _Session()
+    assignment = _add_due_assignment(session, mailbox="learner@example.com")
+    session.scalar_results = [assignment, None]
+    # The reminder worker previously bypassed the send gate; the global stop
+    # must now halt reminders exactly as it halts campaign delivery.
+    session.get_results[1] = SimpleNamespace(emergency_stop_engaged=True, generation=1)
+    monkeypatch.setattr("kp_workers.followup_jobs._excluded_recipient_ids", lambda *_a, **_k: set())
+    monkeypatch.setattr(
+        "kp_workers.jobs._reminder_sender",
+        lambda _: (_ for _ in ()).throw(AssertionError("no reminder may be sent while stopped")),
+    )
+    context, audit = _context(session)
+
+    process_reminder(context, {"payload": {}})
+
+    # The follow-up is never claimed, so it remains eligible once the stop lifts.
+    assert assignment.followup_sent_at is None
+    blocked = [record for record in audit.records if record["action"] == "training.remind.blocked"]
+    assert blocked and blocked[0]["detail"] == {"reason": "global_emergency_stop"}
+
+
+def test_reminder_job_retires_follow_up_when_roe_is_inactive(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _Session()
+    assignment = _add_due_assignment(session, mailbox="learner@example.com")
+    campaign = session.get_results[assignment.campaign_id]
+    now = datetime.now(UTC)
+    session.get_results[campaign.roe_id] = SimpleNamespace(
+        revoked_at=now,
+        window_start=now - timedelta(days=1),
+        window_end=now + timedelta(days=30),
+    )
+    session.scalar_results = [assignment, None]
+    monkeypatch.setattr("kp_workers.followup_jobs._excluded_recipient_ids", lambda *_a, **_k: set())
+    monkeypatch.setattr(
+        "kp_workers.jobs._reminder_sender",
+        lambda _: (_ for _ in ()).throw(AssertionError("no reminder outside an active RoE window")),
+    )
+    context, audit = _context(session)
+
+    process_reminder(context, {"payload": {}})
+
+    assert assignment.followup_sent_at is not None
+    assert audit.records[-1]["detail"] == {"sent": 0, "skipped": 1}
+
+
+def test_reminder_job_skips_an_excluded_recipient(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _Session()
+    assignment = _add_due_assignment(session, mailbox="learner@example.com")
+    session.scalar_results = [assignment, None]
+    monkeypatch.setattr(
+        "kp_workers.followup_jobs._excluded_recipient_ids",
+        lambda *_a, **_k: {assignment.recipient_id},
+    )
+    monkeypatch.setattr(
+        "kp_workers.jobs._reminder_sender",
+        lambda _: (_ for _ in ()).throw(AssertionError("no reminder to an excluded recipient")),
+    )
+    context, audit = _context(session)
+
+    process_reminder(context, {"payload": {}})
+
+    assert assignment.followup_sent_at is not None
+    assert audit.records[-1]["detail"] == {"sent": 0, "skipped": 1}
+
+
+def test_reminder_job_skips_recipient_outside_the_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _Session()
+    assignment = _add_due_assignment(session, mailbox="learner@example.com")
+    session.scalar_results = [assignment, None]
+    monkeypatch.setattr("kp_workers.followup_jobs._excluded_recipient_ids", lambda *_a, **_k: set())
+    monkeypatch.setattr(
+        "kp_workers.jobs._reminder_sender",
+        lambda _: (_ for _ in ()).throw(AssertionError("no reminder outside the recipient allowlist")),
+    )
+
+    @contextmanager
+    def factory() -> Any:
+        yield session
+
+    audit = _Audit()
+    # A non-empty allowlist that excludes example.com makes the send fail closed.
+    settings = WorkerSettings(
+        _env_file=None,
+        reported_mailbox_url="http://localhost:8025",
+        training_token_hmac_key=("33" * 32),
+        tracking_base_url="http://localhost:8001",
+        allowed_recipient_domains="allowed.example.net",
+    )
+    context = WorkerContext(settings, factory, audit, SimpleNamespace())  # type: ignore[arg-type]
+
+    process_reminder(context, {"payload": {}})
+
+    assert assignment.followup_sent_at is not None
+    assert audit.records[-1]["detail"] == {"sent": 0, "skipped": 1}

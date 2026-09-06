@@ -9,6 +9,7 @@ about the gate, not the transport.
 from __future__ import annotations
 
 import hashlib
+import smtplib
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -30,6 +31,7 @@ from kp_database.models import (
 )
 from kp_domain_models import models as dm
 from kp_domain_models.roe import roe_signature_hex
+from kp_telemetry.errors import SafetyRejectionError
 from kp_workers.config import WorkerSettings
 from kp_workers.jobs import WorkerContext, process_delivery
 from kp_workers.providers.smtp import DeliveryReceipt
@@ -170,6 +172,8 @@ def _run(
     send_error: Exception | None = None,
     stop_engaged: bool = False,
     suppressed: bool = False,
+    excluded: set[uuid.UUID] | None = None,
+    test_send: bool = False,
 ) -> tuple[WorkerContext, _Audit, list[bool]]:
     session = _Session()
     session.get_results[(SystemSafetyState, 1)] = SimpleNamespace(
@@ -227,6 +231,8 @@ def _run(
     # durable canary gate, which has its own focused contract suite.
     monkeypatch.setattr("kp_workers.jobs._launch_delivery_gate_reason", lambda *_args, **_kwargs: (None, None))
     monkeypatch.setattr("kp_workers.jobs._refresh_canary_evidence", lambda *_args, **_kwargs: None)
+    excluded_ids = frozenset(excluded or set())
+    monkeypatch.setattr("kp_workers.jobs._excluded_recipient_ids", lambda *_args, **_kwargs: excluded_ids)
 
     def claim(_session: Any, assignment: RecipientAssignment, _campaign_id: uuid.UUID, *, claimed_at: datetime) -> Any:
         if assignment.send_state != dm.SendState.QUEUED or assignment.delivery_attempt_id is not None:
@@ -244,7 +250,7 @@ def _run(
         "campaign_id": str(campaign.campaign_id),
         "recipient_assignment_ids": [str(a.recipient_assignment_id) for a in assignments],
         "template_hash": campaign.manifest_hash,
-        "test_send": False,
+        "test_send": test_send,
         "tracking_bearers": {
             str(assignment.recipient_assignment_id): {
                 "bearer": "A" * 43,
@@ -540,3 +546,141 @@ def test_transport_error_is_indeterminate_instead_of_retryable_failure(monkeypat
     assert assignment.send_state == dm.SendState.INDETERMINATE
     assert assignment.failure_reason == "provider_result_unknown"
     assert audit.records[0]["detail"]["indeterminate"] == 1
+
+
+def test_permanent_5xx_refusal_is_a_definite_failure_not_indeterminate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A hard 5xx means the relay accepted nothing: filing it INDETERMINATE would
+    # strand the recipient forever (indeterminate is never retried).
+    roe = _make_roe(target_domains=["example.com"])
+    campaign = _make_campaign(roe=roe)
+    recipient = _make_recipient("user@example.com")
+    assignment = _make_assignment(campaign, recipient.recipient_id)
+
+    _, audit, sends = _run(
+        monkeypatch,
+        campaign=campaign,
+        roe=roe,
+        template=_make_template(),
+        assignments=[assignment],
+        recipients=[recipient],
+        send_error=smtplib.SMTPSenderRefused(550, b"sender rejected", "sender@example.com"),
+    )
+
+    assert sends == [True]
+    assert assignment.send_state == dm.SendState.FAILED
+    assert assignment.failure_reason == "provider_rejected"
+    assert audit.records[0]["detail"]["failed"] == 1
+    assert audit.records[0]["detail"]["indeterminate"] == 0
+
+
+def test_recipients_refused_is_a_definite_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    roe = _make_roe(target_domains=["example.com"])
+    campaign = _make_campaign(roe=roe)
+    recipient = _make_recipient("user@example.com")
+    assignment = _make_assignment(campaign, recipient.recipient_id)
+
+    _, _audit, sends = _run(
+        monkeypatch,
+        campaign=campaign,
+        roe=roe,
+        template=_make_template(),
+        assignments=[assignment],
+        recipients=[recipient],
+        send_error=smtplib.SMTPRecipientsRefused({"user@example.com": (550, b"no such user")}),
+    )
+
+    assert sends == [True]
+    assert assignment.send_state == dm.SendState.FAILED
+    assert assignment.failure_reason == "provider_rejected"
+
+
+def test_transient_4xx_response_stays_indeterminate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A 4xx is not a definite non-delivery, so the no-auto-retry indeterminate
+    # contract is preserved rather than declaring a false FAILED.
+    roe = _make_roe(target_domains=["example.com"])
+    campaign = _make_campaign(roe=roe)
+    recipient = _make_recipient("user@example.com")
+    assignment = _make_assignment(campaign, recipient.recipient_id)
+
+    _, _audit, sends = _run(
+        monkeypatch,
+        campaign=campaign,
+        roe=roe,
+        template=_make_template(),
+        assignments=[assignment],
+        recipients=[recipient],
+        send_error=smtplib.SMTPResponseException(451, b"temporary local problem"),
+    )
+
+    assert sends == [True]
+    assert assignment.send_state == dm.SendState.INDETERMINATE
+    assert assignment.failure_reason == "provider_result_unknown"
+
+
+def test_delivery_expires_a_freshly_excluded_recipient_before_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Exclusions are filtered at publish, but one added after the batch was
+    # queued must still stop the send: the worker re-reads the active set.
+    roe = _make_roe(target_domains=["example.com"])
+    campaign = _make_campaign(roe=roe)
+    recipient = _make_recipient("user@example.com")
+    assignment = _make_assignment(campaign, recipient.recipient_id)
+
+    _, audit, sends = _run(
+        monkeypatch,
+        campaign=campaign,
+        roe=roe,
+        template=_make_template(),
+        assignments=[assignment],
+        recipients=[recipient],
+        excluded={recipient.recipient_id},
+    )
+
+    assert sends == []
+    assert assignment.delivery_attempt_id is None
+    assert assignment.send_state == dm.SendState.EXPIRED
+    assert assignment.failure_reason == "recipient_excluded"
+    assert audit.records[0]["detail"]["blocked"] == 1
+
+
+def test_canary_test_send_still_requires_an_approved_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The canary (test_send=True) delivers to real reviewed mailboxes, so it may
+    # not bypass template approval; an unapproved template fails closed.
+    roe = _make_roe(target_domains=["example.com"])
+    campaign = _make_campaign(roe=roe)
+    recipient = _make_recipient("user@example.com")
+    assignment = _make_assignment(campaign, recipient.recipient_id)
+    template = _make_template()
+    template.approval_state = dm.TemplateApprovalState.DRAFT
+
+    with pytest.raises(SafetyRejectionError, match="approved template"):
+        _run(
+            monkeypatch,
+            campaign=campaign,
+            roe=roe,
+            template=template,
+            assignments=[assignment],
+            recipients=[recipient],
+            test_send=True,
+        )
+
+
+def test_canary_test_send_delivers_with_an_approved_template(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With approval intact, the canary still sends: removing the bypass does not
+    # break the legitimate reviewed-cohort path.
+    roe = _make_roe(target_domains=["example.com"])
+    campaign = _make_campaign(roe=roe)
+    recipient = _make_recipient("user@example.com")
+    assignment = _make_assignment(campaign, recipient.recipient_id)
+
+    _, _audit, sends = _run(
+        monkeypatch,
+        campaign=campaign,
+        roe=roe,
+        template=_make_template(),
+        assignments=[assignment],
+        recipients=[recipient],
+        test_send=True,
+    )
+
+    assert sends == [True]
+    assert assignment.send_state == dm.SendState.ACCEPTED

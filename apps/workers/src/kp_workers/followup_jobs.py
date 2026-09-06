@@ -14,15 +14,21 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from kp_database.campaign_service import _excluded_recipient_ids
 from kp_database.models import (
     AlertSubscription,
+    Campaign,
     Recipient,
     RecipientAssignment,
+    RulesOfEngagement,
+    SystemSafetyState,
     TrackingToken,
     TrainingAssignment,
 )
 from kp_database.training import TrainingBearerPurpose, training_bearer, training_bearer_verifier
 from kp_domain_models import models as dm
+from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
+from kp_domain_models.roe import roe_active_at
 from sqlalchemy import select
 
 from kp_workers.observability import provider_call
@@ -55,7 +61,29 @@ def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
         ]
         if campaign_id is not None:
             criteria.append(TrainingAssignment.campaign_id == campaign_id)
+        allowlist = ctx.settings.recipient_domain_allowlist()
+        # Mirror the delivery worker's recipient rule: an unset allowlist is
+        # allow-all only for the single-admin offline stack, and fail-closed
+        # under an enforced (OIDC-shaped) policy.
+        unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
         for _ in range(ctx.settings.reminder_batch_size):
+            # The global emergency stop halts every outbound send, reminders
+            # included. It is a singleton row; once engaged, no later row in this
+            # batch is eligible, so stop claiming them entirely.
+            safety_state = session.get(SystemSafetyState, 1)
+            if safety_state is None or safety_state.emergency_stop_engaged:
+                ctx.audit_store.record(
+                    session=session,
+                    actor="worker:reminder",
+                    action="training.remind.blocked",
+                    object_type="system",
+                    object_id="training",
+                    detail={
+                        "reason": ("safety_state_unavailable" if safety_state is None else "global_emergency_stop")
+                    },
+                )
+                session.commit()
+                break
             # Claim one row per transaction. Committing a whole preselected
             # batch would release locks on rows not yet sent and let another
             # replica deliver the same reminder concurrently.
@@ -92,6 +120,39 @@ def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
                 or token is None
                 or token.status != dm.TokenStatus.ACTIVE
             ):
+                skipped += 1
+                assignment.followup_sent_at = now
+                session.commit()
+                continue
+            # A reminder is a real outbound message, so it is held to the same
+            # send gate as delivery, which this worker previously bypassed: an
+            # active signed Rules-of-Engagement window, the recipient allowlist,
+            # and no active recipient exclusion. Fail closed on each.
+            campaign = session.get(Campaign, assignment.campaign_id) if assignment.campaign_id is not None else None
+            roe = (
+                session.get(RulesOfEngagement, campaign.roe_id)
+                if campaign is not None and campaign.roe_id is not None
+                else None
+            )
+            excluded = (
+                _excluded_recipient_ids(session, assignment.campaign_id)
+                if assignment.campaign_id is not None
+                else set()
+            )
+            if (
+                campaign is None
+                or roe is None
+                or not roe_active_at(
+                    revoked_at=roe.revoked_at,
+                    window_start=roe.window_start,
+                    window_end=roe.window_end,
+                    when=now,
+                )
+                or (not unrestricted and not is_recipient_allowed(recipient.mailbox or "", allowlist))
+                or assignment.recipient_id in excluded
+            ):
+                # Retire the follow-up rather than nudging a recipient outside
+                # the authorization boundary or one that has been excluded.
                 skipped += 1
                 assignment.followup_sent_at = now
                 session.commit()

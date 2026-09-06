@@ -16,6 +16,7 @@ from kp_workers.providers.smtp import (
     DeliveryCorrelation,
     DeliveryIndeterminateError,
     SmtpSender,
+    make_email_sender,
     new_report_verifier,
 )
 
@@ -87,7 +88,8 @@ def test_acs_sender_uses_managed_identity_and_preserves_content() -> None:
     assert payload["recipients"] == {"to": [{"address": "learner@example.com"}]}
     assert payload["content"]["subject"] == "Awareness"
     assert "Plain guidance" in payload["content"]["plainText"]
-    poller.result.assert_called_once_with()
+    # No timeout was configured on this sender, so the poll stays unbounded.
+    poller.result.assert_called_once_with(timeout=None)
     assert receipt.provider_id == "acs-operation-1"
     assert receipt.provider_status == "Succeeded"
 
@@ -324,3 +326,101 @@ def test_acs_sender_context_closes_client_and_owned_credential() -> None:
 
     client.close.assert_called_once_with()
     credential.return_value.close.assert_called_once_with()
+
+
+def test_acs_threads_transport_timeout_and_bounds_the_poll() -> None:
+    # A configured provider timeout must reach both the submission POST
+    # (connection/read timeout on the transport) and the blocking poll, so a
+    # stuck ACS operation cannot hold the delivery worker's locks and block the
+    # emergency stop from acquiring its conflicting lock.
+    client = MagicMock()
+    poller = MagicMock()
+    poller.result.return_value = {"id": "acs-op", "status": "Succeeded"}
+    poller.done.return_value = True
+    client.begin_send.return_value = poller
+    with (
+        patch("azure.identity.ManagedIdentityCredential"),
+        patch("azure.communication.email.EmailClient", return_value=client) as constructor,
+    ):
+        AzureCommunicationEmailSender(
+            "https://example.communication.azure.com",
+            managed_identity_client_id=ACS_CLIENT_ID,
+            timeout=5.0,
+        ).send(_message())
+
+    assert constructor.call_args.kwargs == {"connection_timeout": 5.0, "read_timeout": 5.0}
+    poller.result.assert_called_once_with(timeout=5.0)
+
+
+def test_acs_failed_poll_is_surfaced_as_indeterminate_not_an_unbounded_hang() -> None:
+    client = MagicMock()
+    poller = MagicMock()
+    poller.result.side_effect = TimeoutError("provider poll timed out")
+    client.begin_send.return_value = poller
+    with (
+        patch("azure.identity.ManagedIdentityCredential"),
+        patch("azure.communication.email.EmailClient", return_value=client),
+    ):
+        sender = AzureCommunicationEmailSender(
+            "https://example.communication.azure.com",
+            managed_identity_client_id=ACS_CLIENT_ID,
+            timeout=5.0,
+        )
+        with pytest.raises(DeliveryIndeterminateError):
+            sender.send(_message())
+
+
+def test_acs_poll_that_returns_before_completion_is_indeterminate() -> None:
+    # LROPoller.result(timeout=...) can return without raising even when the
+    # operation has not finished; an unfinished poll is an unknown result.
+    client = MagicMock()
+    poller = MagicMock()
+    poller.result.return_value = {"status": "Running"}
+    poller.done.return_value = False
+    client.begin_send.return_value = poller
+    with (
+        patch("azure.identity.ManagedIdentityCredential"),
+        patch("azure.communication.email.EmailClient", return_value=client),
+    ):
+        sender = AzureCommunicationEmailSender(
+            "https://example.communication.azure.com",
+            managed_identity_client_id=ACS_CLIENT_ID,
+            timeout=5.0,
+        )
+        with pytest.raises(DeliveryIndeterminateError):
+            sender.send(_message())
+
+
+def test_acs_rejects_non_positive_timeout() -> None:
+    with (
+        patch("azure.identity.ManagedIdentityCredential"),
+        patch("azure.communication.email.EmailClient"),
+        pytest.raises(ValueError, match="provider timeout must be positive"),
+    ):
+        AzureCommunicationEmailSender(
+            "https://example.communication.azure.com",
+            managed_identity_client_id=ACS_CLIENT_ID,
+            timeout=0.0,
+        )
+
+
+def test_make_email_sender_threads_timeout_into_the_acs_transport() -> None:
+    client = MagicMock()
+    with (
+        patch("azure.identity.ManagedIdentityCredential"),
+        patch("azure.communication.email.EmailClient", return_value=client) as constructor,
+    ):
+        make_email_sender(
+            provider="azure_communication_services",
+            smtp_address="unused:25",
+            smtp_username=None,
+            smtp_password=None,
+            smtp_starttls=False,
+            smtp_ssl=False,
+            acs_endpoint="https://example.communication.azure.com",
+            acs_connection_string=None,
+            acs_client_id=ACS_CLIENT_ID,
+            timeout=9.0,
+        )
+
+    assert constructor.call_args.kwargs == {"connection_timeout": 9.0, "read_timeout": 9.0}

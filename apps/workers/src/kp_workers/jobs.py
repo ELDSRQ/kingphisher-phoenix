@@ -13,6 +13,7 @@ import json
 import math
 import re
 import secrets
+import smtplib
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import nullcontext
@@ -49,6 +50,7 @@ from kp_database.awareness_ledger import (
     MAX_LEDGER_PROJECTION_BATCH,
 )
 from kp_database.campaign_service import (
+    _excluded_recipient_ids,
     campaign_canary_manifest_hash,
     campaign_launch_gate_error,
     training_binding_error,
@@ -1334,15 +1336,22 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         if template is None:
             logger.error("campaign %s has no approved template; refusing to deliver", campaign_id)
             return
-        if not test_send and template.approval_state != dm.TemplateApprovalState.APPROVED:
+        # Template approval is enforced for every real send, including the
+        # canary (test_send=True): a canary delivers to real reviewed mailboxes,
+        # so it must not bypass approval. The now-dead ad-hoc test-send endpoint
+        # was the only caller that legitimately needed this skip.
+        if template.approval_state != dm.TemplateApprovalState.APPROVED:
             raise SafetyRejectionError("delivery requires an approved template")
         if template_hash != campaign.manifest_hash:
             raise SafetyRejectionError("delivery manifest does not match the approved campaign")
         pattern = session.get(CampaignPattern, campaign.pattern_id) if campaign.pattern_id else None
         # Re-check the two-person rule here, not just at scheduling: a message
         # queued before the policy tightened must not still go out under the
-        # old rules.
-        if not test_send and ctx.settings.approval_policy is ApprovalPolicy.ENFORCE:
+        # old rules. This applies to the canary (test_send=True) too, whose
+        # cohort receives real messages; scheduling already required these
+        # approvals against the same review manifest, so the re-check passes for
+        # a legitimately reviewed canary and blocks one whose approvals lapsed.
+        if ctx.settings.approval_policy is ApprovalPolicy.ENFORCE:
             granted = {
                 row.approval_type
                 for row in session.scalars(
@@ -1503,6 +1512,10 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
         blocked = 0
         indeterminate = 0
         stop_observed = False
+        # Exclusions are enforced at publish, but an operator may exclude a
+        # recipient after the batch was queued. Re-read the active set here so a
+        # freshly excluded recipient still QUEUED is never contacted.
+        excluded_ids = _excluded_recipient_ids(session, campaign.campaign_id)
         sender = _make_batch_sender(ctx) if assignment_ids else None
         # One held SMTP/ACS connection for the whole batch (ARCH-1).
         with sender if sender is not None else nullcontext():
@@ -1524,6 +1537,15 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                     assignment.send_state = dm.SendState.FAILED
                     assignment.failure_reason = "recipient_unavailable"
                     failed += 1
+                    continue
+                if assignment.recipient_id in excluded_ids:
+                    # A campaign-scoped or global exclusion active now retires the
+                    # assignment before any transport attempt. Fail closed even
+                    # though the audience was filtered at publish.
+                    assignment.send_state = dm.SendState.EXPIRED
+                    assignment.failure_reason = "recipient_excluded"
+                    blocked += 1
+                    session.commit()
                     continue
                 suppression = session.get(RecipientDeliverySuppression, assignment.recipient_id)
                 if suppression is not None and suppression.active:
@@ -1667,6 +1689,7 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                         tracking_bearer=tracking_bearer,
                         sender=sender,
                         correlation=delivery_correlation,
+                        sender_address=sender_address,
                     )
                 except SafetyRejectionError as exc:
                     # Rendering and safety validation happen before the
@@ -1679,10 +1702,53 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                     assignment.send_state = dm.SendState.FAILED
                     assignment.failure_reason = "rendered_message_rejected"
                     failed += 1
+                except smtplib.SMTPRecipientsRefused as exc:
+                    # Every recipient of a single-recipient envelope was refused
+                    # before DATA: the relay definitively accepted nothing, so
+                    # this is a FAILED non-delivery, not an unknown result. It
+                    # must not be filed indeterminate (which is never retried)
+                    # nor blindly retried as a possible duplicate.
+                    logger.error(
+                        "delivery_rejected assignment_id=%s exception_type=%s",
+                        assignment.recipient_assignment_id,
+                        type(exc).__name__[:128],
+                    )
+                    assignment.send_state = dm.SendState.FAILED
+                    assignment.failure_reason = "provider_rejected"
+                    failed += 1
+                except smtplib.SMTPResponseException as exc:
+                    if exc.smtp_code is not None and exc.smtp_code >= 500:
+                        # A permanent 5xx (sender refused, data error, ...) is a
+                        # definite non-delivery: nothing was accepted.
+                        logger.error(
+                            "delivery_rejected assignment_id=%s smtp_code=%s exception_type=%s",
+                            assignment.recipient_assignment_id,
+                            exc.smtp_code,
+                            type(exc).__name__[:128],
+                        )
+                        assignment.send_state = dm.SendState.FAILED
+                        assignment.failure_reason = "provider_rejected"
+                        failed += 1
+                    else:
+                        # A transient/other response code (4xx, or an unknown
+                        # code): whether the message was accepted is uncertain,
+                        # so keep the indeterminate, no-auto-retry contract.
+                        logger.error(
+                            "delivery_outcome_unknown assignment_id=%s smtp_code=%s exception_type=%s",
+                            assignment.recipient_assignment_id,
+                            exc.smtp_code,
+                            type(exc).__name__[:128],
+                        )
+                        assignment.send_state = dm.SendState.INDETERMINATE
+                        assignment.failure_reason = "provider_result_unknown"
+                        indeterminate += 1
                 except Exception as exc:
                     # A timeout/disconnect may occur after provider acceptance.
                     # Retrying would risk a duplicate, so surface the unknown
-                    # result for operator reconciliation instead.
+                    # result for operator reconciliation instead. This remains a
+                    # deliberate fail-safe catch-all: an unexpected transport
+                    # error is treated as indeterminate rather than silently
+                    # dropped or blindly retried.
                     logger.error(
                         "delivery_outcome_unknown assignment_id=%s exception_type=%s",
                         assignment.recipient_assignment_id,
@@ -2146,6 +2212,7 @@ def _send_email(
     tracking_bearer: str,
     sender: EmailSender | None = None,
     correlation: DeliveryCorrelation | None = None,
+    sender_address: str | None = None,
 ) -> DeliveryReceipt:
     subject_source, plain_text_source, safe_html_source = _delivery_template_content(template)
     tracking_base = ctx.settings.tracking_base_url.rstrip("/")
@@ -2204,7 +2271,13 @@ def _send_email(
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    sender_address, _ = effective_sender_address(ctx, campaign)
+    # Reuse the sender resolved once at the start of the batch. Re-resolving
+    # here would re-run require_acs_delivery_ready() per recipient, and a mid-
+    # batch staleness ValueError would be a DEFINITE non-send miscategorized as
+    # an indeterminate result by the caller. Batch-start validation plus the
+    # bounded provider timeout already cover evidence freshness and hangs.
+    if sender_address is None:
+        sender_address, _ = effective_sender_address(ctx, campaign)
     if campaign.sender_display_name and ctx.settings.email_provider != "azure_communication_services":
         # The display name is the persona vector ("Account Security"); ACS is
         # excluded because it parses the From header as the bare senderAddress.

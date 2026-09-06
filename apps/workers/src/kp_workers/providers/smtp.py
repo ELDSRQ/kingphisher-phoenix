@@ -291,9 +291,12 @@ class AzureCommunicationEmailSender:
         connection_string: str | None = None,
         managed_identity_client_id: str | None = None,
         max_message_bytes: int = DEFAULT_MAX_PROVIDER_MESSAGE_BYTES,
+        timeout: float | None = None,
     ) -> None:
         if max_message_bytes <= 0:
             raise ValueError("maximum message size must be positive")
+        if timeout is not None and timeout <= 0:
+            raise ValueError("provider timeout must be positive")
         if not connection_string:
             error = "ACS email endpoint must use an approved HTTPS *.communication.azure.com endpoint on port 443"
             try:
@@ -318,16 +321,25 @@ class AzureCommunicationEmailSender:
         from azure.communication.email import EmailClient
 
         self._max_message_bytes = max_message_bytes
+        #: Bounds both the initial submission POST (connection/read timeout on
+        #: the transport) and the blocking poll below. A hung ACS call must not
+        #: keep the delivery worker parked on its held CampaignLaunchGate
+        #: (FOR UPDATE) and SystemSafetyState (FOR SHARE) locks, which would
+        #: block the emergency stop from ever acquiring its conflicting lock.
+        self._timeout = timeout
+        transport_timeouts: dict[str, float] = (
+            {"connection_timeout": timeout, "read_timeout": timeout} if timeout is not None else {}
+        )
         self._credential = None
         if connection_string:
-            self._client = EmailClient.from_connection_string(connection_string)
+            self._client = EmailClient.from_connection_string(connection_string, **transport_timeouts)
         else:
             if not managed_identity_client_id:
                 raise ValueError("ACS managed identity client ID is required")
             from azure.identity import ManagedIdentityCredential
 
             self._credential = ManagedIdentityCredential(client_id=managed_identity_client_id)
-            self._client = EmailClient(endpoint, self._credential)
+            self._client = EmailClient(endpoint, self._credential, **transport_timeouts)
 
     def send(self, message: EmailMessage, *, correlation: DeliveryCorrelation | None = None) -> DeliveryReceipt:
         message_id = _prepare_correlation(message, correlation)
@@ -372,10 +384,24 @@ class AzureCommunicationEmailSender:
         payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         _validate_size(len(payload_bytes), self._max_message_bytes)
 
-        if correlation is None:
-            result = self._client.begin_send(payload).result()
-        else:
-            result = self._client.begin_send(payload, operation_id=correlation.operation_id).result()
+        poller = (
+            self._client.begin_send(payload)
+            if correlation is None
+            else self._client.begin_send(payload, operation_id=correlation.operation_id)
+        )
+        try:
+            # A bounded wait so a stuck provider operation cannot hold the
+            # delivery locks indefinitely. ``timeout=None`` preserves the prior
+            # unbounded behavior when no provider timeout is configured.
+            result = poller.result(timeout=self._timeout)
+        except Exception as exc:
+            # The submission may already have been accepted before the poll
+            # timed out or failed, so this is an indeterminate result: never
+            # block the stop by waiting longer, and never blindly retry.
+            raise DeliveryIndeterminateError(message_id=message_id) from exc
+        done = getattr(poller, "done", None)
+        if self._timeout is not None and callable(done) and not done():
+            raise DeliveryIndeterminateError(message_id=message_id)
         if not isinstance(result, Mapping):
             raise RuntimeError("ACS response did not include a provider operation ID")
         provider_id = result.get("id")
@@ -406,6 +432,7 @@ def make_email_sender(
             acs_endpoint,
             connection_string=acs_connection_string,
             managed_identity_client_id=acs_client_id,
+            timeout=timeout,
         )
     return SmtpSender(
         smtp_address,
