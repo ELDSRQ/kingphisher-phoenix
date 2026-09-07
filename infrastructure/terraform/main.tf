@@ -1296,7 +1296,13 @@ resource "azurerm_container_app" "operator" {
   name                         = "ca-${local.suffix}-operator"
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
-  revision_mode                = "Multiple"
+  # Single, deliberately. Under "Multiple" every deploy leaves its revision ACTIVE,
+  # and each orphan keeps a replica pinned at the min_replicas it was born with —
+  # scaling the APP to 0 does not touch them. On 2026-09-07 that had accumulated 76
+  # wedged replicas across operator+tracking (~$889/mo) that read as "min-replicas 0"
+  # at the app level while billing continuously. See
+  # docs/design/AZURE-RESIDENCY-AUDIT-2026-09.md.
+  revision_mode = "Single"
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.workload["operator"].id]
@@ -1444,7 +1450,13 @@ resource "azurerm_container_app" "tracking" {
   name                         = "ca-${local.suffix}-tracking"
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
-  revision_mode                = "Multiple"
+  # Single, deliberately. Under "Multiple" every deploy leaves its revision ACTIVE,
+  # and each orphan keeps a replica pinned at the min_replicas it was born with —
+  # scaling the APP to 0 does not touch them. On 2026-09-07 that had accumulated 76
+  # wedged replicas across operator+tracking (~$889/mo) that read as "min-replicas 0"
+  # at the app level while billing continuously. See
+  # docs/design/AZURE-RESIDENCY-AUDIT-2026-09.md.
+  revision_mode = "Single"
   identity {
     type         = "UserAssigned"
     identity_ids = [azurerm_user_assigned_identity.workload["tracking"].id]

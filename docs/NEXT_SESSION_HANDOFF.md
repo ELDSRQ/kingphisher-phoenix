@@ -1,5 +1,17 @@
 # Next-session handoff
 
+## Addendum 2026-09-07 — AZURE WAS NOT ACTUALLY IDLE
+
+An audit on 2026-09-07 measured `rg-kp-staging` at **~$1,085/mo**, HIGHER than the
+"~$800/mo before idling" this handoff claimed to have escaped. Cause: operator and
+tracking ran `revision_mode = "Multiple"`, so every deploy left its revision active
+holding a replica pinned at its birth `min_replicas` — 76 wedged replicas (~$889/mo)
+that reported `min-replicas 0` at the app level. All deactivated 2026-09-07; both apps
+flipped to `Single`. Treat every "Azure is idled / ~$0" statement below as ASPIRATIONAL
+until re-measured. `idle.tfvars` has still never been applied (ACR Premium, Redis
+Enterprise and the worker app all still exist). Full evidence:
+`docs/design/AZURE-RESIDENCY-AUDIT-2026-09.md`.
+
 ## Addendum 2026-09-06 — Four-perspective REVIEW-FINDINGS wave LANDED (head `e47570f`)
 
 The architect/senior-dev/security/portability review (`docs/design/REVIEW-FINDINGS-2026-09.md`)

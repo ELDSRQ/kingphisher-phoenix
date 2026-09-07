@@ -303,6 +303,32 @@ while IFS=$'\t' read -r name minimum; do
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
       ;;
     0)
+      # "min-replicas 0" at the APP level does NOT mean nothing is billing. Under
+      # revision_mode=Multiple every past deploy leaves its revision ACTIVE, each
+      # pinned at the min_replicas it was born with, and scaling the app does not
+      # touch them. On 2026-09-07 operator+tracking were reporting 0 here while 75
+      # orphaned replicas billed continuously (~$889/mo). Report it loudly — this
+      # script deliberately does not deactivate revisions (that is a destructive,
+      # deploy-history-mutating action an unattended timer should not take), but it
+      # must never again say "already scaled down" while replicas are running.
+      # Count replicas held by active revisions OTHER than the current one. The
+      # live revision legitimately scaling up (a queue rule waking a worker) is not
+      # this bug and must not cry wolf every night; replicas pinned on SUPERSEDED
+      # revisions always are.
+      current_rev="$(az containerapp show --resource-group "$RESOURCE_GROUP" --name "$name" \
+        --query "properties.latestRevisionName" -o tsv 2>/dev/null)"
+      orphan_replicas="$(az containerapp revision list --resource-group "$RESOURCE_GROUP" \
+        --name "$name" --query \
+        "[?properties.active && name!='${current_rev}'].properties.replicas" -o tsv 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}')"
+      if [ "${orphan_replicas:-0}" -gt 0 ]; then
+        log "WARNING $name — ${orphan_replicas} replica(s) BILLING on superseded revisions"
+        log "         orphaned active revisions are holding them; see docs/design/AZURE-RESIDENCY-AUDIT-2026-09.md"
+        record containerapp "$name" none billing_replicas_remain \
+          "${orphan_replicas} replicas pinned on superseded revisions despite app min-replicas 0"
+        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        continue
+      fi
       log "SKIP $name — already at min-replicas 0"
       record containerapp "$name" none skipped "min-replicas is already 0"
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))

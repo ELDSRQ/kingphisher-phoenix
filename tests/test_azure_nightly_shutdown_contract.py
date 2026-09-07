@@ -128,6 +128,20 @@ if args[:3] == ["postgres", "flexible-server", "list"]:
 if args[:2] == ["containerapp", "list"]:
     print(json.dumps(inventory["containerapp"]))
     raise SystemExit(0)
+if args[:2] == ["containerapp", "show"]:
+    # the orphan probe asks which revision is current
+    wanted = args[args.index("--name") + 1] if "--name" in args else ""
+    print(f"{wanted}--current")
+    raise SystemExit(0)
+if args[:3] == ["containerapp", "revision", "list"]:
+    # replicas pinned on SUPERSEDED revisions; default inventory has none
+    wanted = args[args.index("--name") + 1] if "--name" in args else ""
+    for row in inventory["containerapp"]:
+        if row.get("name") == wanted:
+            for count in row.get("orphanReplicas", []):
+                print(count)
+            break
+    raise SystemExit(0)
 if args[:2] == ["vm", "list"]:
     # The script deliberately does NOT pass --show-details (that needs
     # Microsoft.Network reads the least-privilege role does not hold), so the
@@ -706,3 +720,39 @@ def test_the_pre_stop_backup_precedes_the_stop(tmp_path: Path) -> None:
     backup = next(i for i, c in enumerate(writes) if "backup create" in c)
     stop = next(i for i, c in enumerate(writes) if "flexible-server stop" in c)
     assert backup < stop, f"backup must precede stop, got {writes}"
+
+
+def test_orphaned_replicas_on_superseded_revisions_are_reported_not_silently_skipped(
+    tmp_path: Path,
+) -> None:
+    """`min-replicas 0` at the APP level does not mean nothing is billing.
+
+    Under revision_mode="Multiple" every past deploy leaves its revision ACTIVE,
+    each holding a replica pinned at the min_replicas it was born with; scaling the
+    app does not touch them. On 2026-09-07 operator+tracking reported "min-replicas
+    0" while 76 such replicas billed continuously (~$889/mo) and this script logged
+    "already scaled down". It must never do that again.
+    """
+    result, _ = _run_script(
+        tmp_path,
+        inventory={
+            "postgres": [],
+            "containerapp": [
+                {
+                    "name": "ca-kp-staging-operator",
+                    "minReplicas": 0,
+                    "application": PROJECT_TAG,
+                    "environment": "staging",
+                    # two superseded revisions still holding a replica each
+                    "orphanReplicas": [1, 1],
+                },
+            ],
+            "vm": [],
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "BILLING on superseded revisions" in result.stdout
+    assert "already at min-replicas 0" not in result.stdout, (
+        "it must not claim the app is scaled down while replicas are billing"
+    )

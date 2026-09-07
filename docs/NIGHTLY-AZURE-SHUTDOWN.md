@@ -40,6 +40,16 @@ next morning's test, which directly defeats "restart when needed for testing and
 pushing code", and an unattended `terraform apply` is precisely the thing that
 should never run on a timer.
 
+> **Correction (2026-09-07).** This document previously implied that
+> `--min-replicas 0` removes the always-on replica charge. That is FALSE when an app
+> runs `revision_mode = "Multiple"`: every past deploy leaves its revision ACTIVE,
+> each pinned at the `min_replicas` it was born with, and scaling the APP does not
+> touch them. operator+tracking had accumulated 76 such replicas (~$889/mo) while
+> reporting `min-replicas 0`. They have been deactivated, both apps are now
+> `revision_mode = "Single"`, and this script now WARNS when replicas remain pinned
+> on superseded revisions instead of reporting "already scaled down".
+> See `docs/design/AZURE-RESIDENCY-AUDIT-2026-09.md`.
+
 ## What the nightly job stops
 
 | Resource | Action | Why it is safe |
