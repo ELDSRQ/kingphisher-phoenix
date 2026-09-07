@@ -45,18 +45,24 @@ async function ensureAuthenticated(page) {
   // The SPA is mounted at /console/ — the root path 404s.
   await page.goto("/console/");
   const password = page.locator("#console-password");
+  const nav = page.locator('nav[aria-label="Operator sections"]');
+  // The console renders client-side, so goto() resolves BEFORE either the login
+  // form or the authenticated shell exists. Wait for whichever arrives first —
+  // a bare count()/isVisible() here races the render and silently reports "no
+  // login form", which then hangs on a nav that can never appear.
+  await expect(password.or(nav).first()).toBeVisible({ timeout: 15_000 });
   // With a pre-supplied storageState the login form never appears.
-  if (await password.count()) {
+  if (await password.isVisible()) {
     const secret = process.env.OPERATOR_CONSOLE_PASSWORD;
     test.skip(
       !secret,
       "Set OPERATOR_CONSOLE_PASSWORD (local-stack KP_CONSOLE_PASSWORD) or OPERATOR_CONSOLE_STORAGE_STATE to authenticate.",
     );
     await password.fill(secret);
-    await password.press("Enter");
+    await page.getByRole("button", { name: "Sign in" }).click();
   }
   // The operator sections nav only exists once authenticated.
-  await expect(page.locator('nav[aria-label="Operator sections"]')).toBeVisible();
+  await expect(nav).toBeVisible({ timeout: 15_000 });
 }
 
 test.describe("operator console navigation (real DOM effect)", () => {
