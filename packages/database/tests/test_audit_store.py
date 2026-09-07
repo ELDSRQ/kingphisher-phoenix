@@ -150,6 +150,18 @@ def _install_deploy_prerequisites(business_url: str) -> None:
                     "kp_verify_audit_head() TO audit_writer"
                 )
             )
+            # The evidence-table grants a deploy applies on top of the migrations.
+            # audit_writer must read back what it dispatched (AuditStore.record()
+            # re-selects the row) and append to the chain, but it is deliberately
+            # given NOTHING destructive: no DELETE, no TRUNCATE, and no UPDATE on
+            # audit_events — audit_owner (NOLOGIN) owns the evidence tables, which
+            # is what test_audit_writer_can_append_evidence_but_cannot_destroy_or_
+            # author_it asserts. UPDATE on audit_chain_head only, matching the
+            # explicit grant in migration 0002 (the head row advances in place).
+            connection.execute(
+                text("GRANT SELECT, INSERT ON audit_events, audit_chain_head TO audit_writer")
+            )
+            connection.execute(text("GRANT UPDATE ON audit_chain_head TO audit_writer"))
     finally:
         engine.dispose()
 
