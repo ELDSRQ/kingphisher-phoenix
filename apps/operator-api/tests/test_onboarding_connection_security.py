@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException, Request
+from kp_operator_api import connection_probes as connection_probes_module
 from kp_operator_api import console
 from kp_operator_api.console import onboarding as console_onboarding_module
 from kp_telemetry.errors import ConflictError
@@ -217,8 +218,11 @@ def test_smtp_probe_blocks_private_resolution_before_credentials(
         "getaddrinfo",
         lambda _host, port, **_kwargs: [_dns_answer("10.0.0.25", port)],
     )
+    # ``_probe_smtp`` constructs ``_PinnedSMTP`` from its own module globals -
+    # unlike ``_resolve_pinned_target`` / ``_connect_pinned`` it is not routed
+    # through the console facade - so the guard has to be planted here.
     monkeypatch.setattr(
-        console,
+        connection_probes_module,
         "_PinnedSMTP",
         lambda *_args, **_kwargs: pytest.fail("blocked SMTP must not receive credentials"),
     )
@@ -784,8 +788,10 @@ def test_acs_connection_test_enforces_exact_endpoint_before_probe(
             "KP_WORKER_ACS_EMAIL_ENDPOINT": "https://name.communication.azure.com.attacker.example",
         },
     )
+    # The route under test lives in console.onboarding and calls the
+    # ``_probe_http`` bound in that module, not the console re-export.
     monkeypatch.setattr(
-        console,
+        console_onboarding_module,
         "_probe_http",
         lambda *_args, **_kwargs: pytest.fail("an invalid ACS lookalike must not be contacted"),
     )

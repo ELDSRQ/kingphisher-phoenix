@@ -15,6 +15,7 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 from kp_authorization.rbac import Principal, Role
+from kp_operator_api import connection_probes as connection_probes_module
 from kp_operator_api import console as console_module
 from kp_operator_api.auth import OidcIdP
 from kp_operator_api.config import OperatorApiSettings
@@ -32,6 +33,10 @@ CONSOLE_PASSWORD = "correct-horse-battery-staple"
 
 
 def test_webhook_probe_fails_closed_if_validated_hostname_disappears(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ``_probe_webhook`` parses twice: once inside ``_safe_url`` for the safety
+    # check, once again to read the host it will dial. This models a hostname
+    # that passes validation and then disappears between the two - the probe
+    # must refuse, not fall through to the network.
     parsed = iter(
         (
             SimpleNamespace(
@@ -45,7 +50,18 @@ def test_webhook_probe_fails_closed_if_validated_hostname_disappears(monkeypatch
             SimpleNamespace(hostname=None),
         )
     )
-    monkeypatch.setattr(console_module, "urlparse", lambda _value: next(parsed))
+    parse_calls = 0
+
+    def fake_urlparse(_value: str) -> SimpleNamespace:
+        nonlocal parse_calls
+        parse_calls += 1
+        return next(parsed)
+
+    # Patch the module that actually resolves ``urlparse`` at call time. The
+    # probes live in kp_operator_api.connection_probes and read their own
+    # globals; patching the ``console`` re-export would be a silent no-op and
+    # would leave this test passing only because DNS happens to fail.
+    monkeypatch.setattr(connection_probes_module, "urlparse", fake_urlparse)
     monkeypatch.setattr(
         socket,
         "create_connection",
@@ -53,6 +69,9 @@ def test_webhook_probe_fails_closed_if_validated_hostname_disappears(monkeypatch
     )
 
     assert console_module._test_webhook("https://hooks.example.com") is False
+    # Fails loudly if a future extraction moves the symbol again and quietly
+    # turns this assertion back into a DNS-failure tautology.
+    assert parse_calls == 2
 
 
 def _acs_deployment_values() -> dict[str, str]:
