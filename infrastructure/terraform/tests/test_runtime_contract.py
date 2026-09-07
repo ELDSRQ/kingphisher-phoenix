@@ -637,10 +637,11 @@ def test_ai_gateway_fail_closed_auth_is_shared_and_gated_to_managed() -> None:
     worker = MAIN.split('resource "azurerm_container_app" "worker"', maxsplit=1)[1].split(
         'resource "azurerm_role_assignment" "communication_sender"', maxsplit=1
     )[0]
-    assert (
-        'for_each = (var.deploy_ai_gateway && contains(local.worker_deployment_roles[each.key], "generation")) ? [1] : []'
-        in worker
+    expected_worker_for_each = (
+        "for_each = (var.deploy_ai_gateway && "
+        'contains(local.worker_deployment_roles[each.key], "generation")) ? [1] : []'
     )
+    assert expected_worker_for_each in worker
     assert 'name        = "KP_WORKER_AI_BEARER_TOKEN"' in worker
     assert worker.count('secret_name = "ai-gateway-auth-key"') == 1
     assert worker.count('name                = "ai-gateway-auth-key"') == 1

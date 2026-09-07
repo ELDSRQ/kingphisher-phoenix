@@ -143,12 +143,15 @@ def _check_binop(operator: str, left: Any, right: Any) -> None:
                 )
     elif operator == "+":
         # sequence concatenation: len(left) + len(right)
-        if _sized_sequence(left) and _sized_sequence(right):
-            if len(left) + len(right) > _MAX_SEQUENCE_LEN:
-                raise TemplateRenderError(
-                    f"template concatenation would create a sequence of "
-                    f"{len(left) + len(right)} items (limit {_MAX_SEQUENCE_LEN})"
-                )
+        if (
+            _sized_sequence(left)
+            and _sized_sequence(right)
+            and len(left) + len(right) > _MAX_SEQUENCE_LEN
+        ):
+            raise TemplateRenderError(
+                f"template concatenation would create a sequence of "
+                f"{len(left) + len(right)} items (limit {_MAX_SEQUENCE_LEN})"
+            )
     # "-" (numeric subtraction) and "~" cannot cause an oversized allocation.
 
 
