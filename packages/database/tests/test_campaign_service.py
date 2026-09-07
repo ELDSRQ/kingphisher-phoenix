@@ -148,6 +148,17 @@ def _recipient(session, mailbox: str, *, is_test: bool = False) -> Recipient:
     if campaign is not None:
         audience = session.get(CampaignAudience, campaign.campaign_id)
         assert audience is not None
+        # The MIGRATED schema guards campaign_audience_manifest with the
+        # kp_guard_campaign_manifest_mutation trigger (migration 0021): a manifest
+        # row may only be written while the audience is UNFROZEN. Base.metadata
+        # .create_all() never created that trigger, so this helper used to insert
+        # a manifest row and freeze in a single flush, and to re-insert against an
+        # already-frozen audience on the 2nd/3rd call. Mirror the real
+        # invalidate -> extend -> refreeze cycle instead.
+        audience.frozen_at = None
+        audience.preview_hash = None
+        audience.manifest_hash = None
+        session.flush()
         ordinal = session.scalar(
             select(func.count())
             .select_from(CampaignAudienceManifest)
@@ -167,6 +178,9 @@ def _recipient(session, mailbox: str, *, is_test: bool = False) -> Recipient:
                 recipient_hash=recipient_hash,
             )
         )
+        # Land the manifest row BEFORE refreezing: the trigger reads
+        # campaign_audiences.frozen_at, so a same-flush freeze would reject it.
+        session.flush()
         audience.frozen_at = datetime.now(UTC)
         audience.preview_hash = "p" * 64
         audience.manifest_hash = "m" * 64

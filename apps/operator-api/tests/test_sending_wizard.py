@@ -87,6 +87,18 @@ def client() -> Iterator[TestClient]:
         tracking_base_url="http://track.local:8001",
         training_base_url="http://train.local:3000/training/awareness",
         training_domains="example.com,training.local",
+        # PLT-002 made an unset allowlist fail CLOSED (KP-001) instead of
+        # allow-all. Both domains are allowlisted on purpose: this suite proves
+        # the *RoE* excludes elsewhere.com from a frozen audience, so the
+        # allowlist must not be what filters it out.
+        allowed_recipient_domains="example.com,elsewhere.com",
+        # PLT-002 also made ENFORCE the default approval policy, which requires
+        # two DISTINCT approvers (AUT-002) before a canary may be queued. This
+        # suite isolates the RoE/audience boundary and never approves anything,
+        # so keep the historical single-admin path behind the explicit dev
+        # marker — the same pattern PLT-002 used for the delivery RoE tests.
+        approval_policy="single-admin",
+        dev_stack=True,
     )
     app = create_app(settings)
     # This suite rebuilds only ORM metadata and exercises the onboarding/RoE
