@@ -25,7 +25,7 @@ RUNS locally on the .105 WSL Docker host** (operator-api :8000 + tracking-api :8
 LOCAL and is PROVEN** (llama.cpp `kp-llama` :18081 + ai-gateway :8090; app→Qwen `/propose`
 verified; `deploy_ai_gateway=false`), and **build + test are fully local, zero Azure**. Reach
 the local console from the Mac via
-`ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105` → http://localhost:8000/console.
+`ssh -N -o ControlMaster=no -o ControlPath=none -L 8000:127.0.0.1:8000 -L 8001:127.0.0.1:8001 erikd@192.168.1.105` → http://localhost:8000/console.
 A config-only OIDC issuer swap to a self-hosted Keycloak (task **IAM-003**) can drop the
 Entra/O365 login dependency entirely (`docs/design/INTERNAL-IDP-KEYCLOAK.md`).
 

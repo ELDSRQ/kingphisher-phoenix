@@ -9,6 +9,19 @@ from the 2026-09 wave build"). Gate baseline: `make test` = **2882 passed**; the
 failures are the retired macOS-only `.140` remote-checkpoint tests (they DESELECT on the Linux
 CI; they only run on the Mac because `macos_only` isn't filtered there) — not a regression.
 
+**BUT GitHub Actions CI IS RED and has never passed.** OPS-002 added `.github/workflows/ci.yml`
+mid-session and switched on the postgres/redis integration gates that were previously
+manual-only; the waves were gated on `make test`, which runs neither `make lint` nor the postgres
+gate, so this went unnoticed. Lint is now fixed (`430787f`). The postgres gate still fails (~15
+tests in `packages/database` + `apps/operator-api/tests/test_sending_wizard.py`) — partly
+pre-existing conditions newly exposed, partly a TST-002 conversion bug:
+`rebuild_public_schema_via_migrations` dropped schema `public` without restoring
+`GRANT USAGE ON SCHEMA public TO PUBLIC`, so non-owner roles lose schema access for the rest of
+the run and failures cascade order-dependently. Fix pending on branch
+`worktree-agent-def1-pgfixtures`, to be validated against the real Postgres on `.105`
+(127.0.0.1:5432, disposable `kingphisher_test` DB — never point `DATABASE_URL_TEST` at the
+`kingphisher` app DB, the fixtures DROP SCHEMA). **Do not enable branch protection until green.**
+
 **Operational changes that affect the local bring-up and the real-send flow:**
 - **PLT-002 — ENFORCE is now the default approval posture.** SINGLE_ADMIN (relaxed two-person
   approval) and the empty-allowlist allow-all now require an explicit **`KP_DEV_STACK=1`** marker
@@ -50,7 +63,7 @@ DNS + Event Grid + Entra** — stays up. The Azure console is OFFLINE until resu
   workers (ingestion/generation/delivery/retention/mailbox/reminder/alert/directory); infra +
   mocks (postgres/redis/mailpit/otel/mock-idp/mock-graph/mock-ai) up; audit root bootstrapped;
   demo seeded. **Reach the console from the Mac:**
-  `ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105` → http://localhost:8000/console.
+  `ssh -N -o ControlMaster=no -o ControlPath=none -L 8000:127.0.0.1:8000 -L 8001:127.0.0.1:8001 erikd@192.168.1.105` → http://localhost:8000/console.
 - **Build + test run fully local with ZERO Azure (verified by subagent review).** Do NOT
   restart Azure to work. The `docker-compose.yml` stack is infra+mocks only; the app tier
   (operator-api/tracking-api/8 workers) runs as local processes via `scripts/supervisor.py`.

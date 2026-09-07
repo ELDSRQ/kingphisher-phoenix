@@ -28,7 +28,7 @@ so reach the console through an SSH tunnel rather than `localhost` directly:
 
 ```
 # 0. Tunnel the console from .105 to the Mac (leave this running in its own shell):
-ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105
+ssh -N -o ControlMaster=no -o ControlPath=none -L 8000:127.0.0.1:8000 -L 8001:127.0.0.1:8001 erikd@192.168.1.105
 
 # 1. In a second shell, point the suite at the tunnelled console and say how to
 #    authenticate:

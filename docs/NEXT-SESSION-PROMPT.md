@@ -45,9 +45,24 @@ conversions (test_audit_store, test_campaign_program_service), UX-011 §2b proof
 UX-011 send-time spread (needs a migration + worker), and ARC-002 Items 2/3 (god-module split;
 Postgres-only-queue evaluation). None block the real-send goal below.
 
-The gate baseline is green: `make test` = 2882 passed; the ONLY failures (12) are the retired
-macOS-only .140 remote-checkpoint contract tests, which DESELECT on the Linux CI (they run on
-the Mac because macos_only isn't filtered there). Not a regression — expected.
+GATE STATUS — READ THIS, IT IS NOT ALL GREEN:
+- `make test` (hermetic) = 2882 passed. Its only 12 failures are the retired macOS-only .140
+  remote-checkpoint contract tests, which DESELECT on the Linux CI (they run on the Mac because
+  macos_only isn't filtered there). Not a regression — expected.
+- **GitHub Actions CI (`.github/workflows/ci.yml`, added by OPS-002) has NEVER passed.** OPS-002
+  turned on the postgres/redis integration gates that were previously manual-only, and they fail:
+  ~15 failures in packages/database (test_audit_store, test_campaign_service, test_grant_matrix_effect,
+  test_outbox_postgres, test_migration_autogenerate_drift) + apps/operator-api test_sending_wizard.
+  Partly pre-existing conditions the new gate exposed for the first time, and partly a bug the
+  TST-002 fixture conversion introduced: `rebuild_public_schema_via_migrations` dropped schema
+  `public` without restoring `GRANT USAGE ON SCHEMA public TO PUBLIC`, so every non-owner role
+  (audit_writer, kp_operator, …) silently lost schema access for the rest of the run — which
+  cascades order-dependently across the whole postgres profile. A fix exists on branch
+  `worktree-agent-def1-pgfixtures` and needs validating against a real Postgres.
+- **Do NOT enable branch protection until CI is green** — it would block all merges.
+- You CAN run the postgres gate: the .105 stack has postgres on 127.0.0.1:5432 with the disposable
+  `kingphisher_test` DB and redis on 6379. Never point DATABASE_URL_TEST at `kingphisher` (the app
+  DB) — the fixtures DROP SCHEMA.
 
 ## SCOPE (READ FIRST — hard rule)
 Work ONLY inside this repo (phishing-awareness-platform). NEVER modify any other project.
@@ -70,7 +85,7 @@ mailbox/reminder/alert/directory); infra + mocks (postgres/redis/mailpit/otel/mo
 mock-graph/mock-ai) up; audit root bootstrapped; demo seeded. Dev auth mode
 (OPERATOR_API_OIDC_MODE=dev) — no Entra needed locally.
 REACH THE LOCAL CONSOLE FROM THE MAC:
-  ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105
+  ssh -N -o ControlMaster=no -o ControlPath=none -L 8000:127.0.0.1:8000 -L 8001:127.0.0.1:8001 erikd@192.168.1.105
 then open http://localhost:8000/console.
 
 QWEN IS LOCAL AND PROVEN: llama.cpp kp-llama on :18081 serves the AI-010-validated GGUF
