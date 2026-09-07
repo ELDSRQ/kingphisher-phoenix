@@ -585,9 +585,17 @@ tasks recorded were then triaged:
   controller), and `test_audit_store` is grant-sensitive (audit_writer loses DELETE,
   audit_owner owns the evidence tables); `test_campaign_program_service` needs the
   isolated-*database* pattern, not just fixture plumbing. Do on a Docker/Linux host.
-- **UX-011 §2b proof send-to-self** — DEFERRED: touches the delivery worker
-  (`jobs.py`) + the server-designated test-account send path; must not bypass any
-  send gate. Wants a focused, reviewed RED-lane change.
+- **UX-011 §2b proof send-to-self** — **LANDED** `ffb0a91` (2026-09-07). The
+  destination is SERVER-DERIVED (`Recipient.is_test_account`), never caller-supplied:
+  the request model carries no destination and `extra="forbid"` turns a smuggled
+  `mailbox`/`recipient_id` into a 422. The queue payload carries only a recipient id,
+  and the worker re-derives the mailbox and re-checks the designation before any
+  provider call. Emergency stop is checked at entry AND again under a shared lock
+  immediately before sending (same as `process_delivery`); allowlist + RoE +
+  "not already a campaign recipient" all enforced; throttled, audited, and no
+  campaign/recipient/token state is mutated. Template approval is intentionally NOT
+  required — previewing before approval is the point — which is safe only because the
+  destination cannot be influenced by the caller.
 - **UX-011 send-time spread/scheduling** — DEFERRED: needs `models.py` + an Alembic
   migration + `campaign_service.py` + worker scheduler behavior; a real data+behavior
   change, not GUI wiring.
