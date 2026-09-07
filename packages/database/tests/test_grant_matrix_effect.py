@@ -126,13 +126,28 @@ def _upgraded_database() -> Iterator[URL]:
             os.environ.pop("DATABASE_URL", None)
 
 
+def _suite_audit_writer_password() -> str:
+    """The audit_writer password the rest of the postgres profile authenticates with."""
+    configured = os.environ.get("AUDIT_DATABASE_URL_TEST", "")
+    password = make_url(configured).password if configured else None
+    return password or "audit_writer"
+
+
 def _bootstrap_via_azure_migrate(database_url: URL, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     """Run the real azure bootstrap (roles + migrations + grants + probe)."""
     script = _load_azure_migrate()
     rendered = database_url.render_as_string(hide_password=False)
     monkeypatch.setenv("DATABASE_URL", rendered)
     monkeypatch.setenv("KP_ALEMBIC_INI", str(ALEMBIC_INI))
-    monkeypatch.setenv("AUDIT_WRITER_PASSWORD", "effect-audit-writer")
+    # audit_writer is a CLUSTER-WIDE role shared with the rest of the postgres
+    # profile, and azure_migrate issues `ALTER ROLE audit_writer LOGIN PASSWORD`.
+    # A test-invented password therefore escapes this test's disposable database
+    # and breaks every later test that logs in as audit_writer — which is exactly
+    # how test_outbox_postgres failed in CI (pytest collects this file first
+    # alphabetically), and how a gate run against a shared server repointed a
+    # running application's credential. Reuse the password the suite already
+    # expects so the ALTER is a no-op instead of pollution.
+    monkeypatch.setenv("AUDIT_WRITER_PASSWORD", _suite_audit_writer_password())
     monkeypatch.setenv("AUDIT_ROOT_KEY", _AUDIT_ROOT_KEY)
     # Provision EVERY workload so the matrix-driven probe covers all roles.
     for workload in grants.RUNTIME_ROLES:
