@@ -260,25 +260,61 @@ def test_verify_detects_tampering_with_recorded_chain_material() -> None:
     Replaces the old ``test_verify_detects_tampered_detail``. On the migrated
     schema events are chain version 2, and a v2 event hashes the stored
     ``canonical_payload`` text -- which is where the recorded actor/action/detail
-    actually live. The tamper is therefore applied to that column.
+    actually live -- so the first tamper is applied to that column.
 
-    KNOWN GAP (not introduced here): ``AuditStore.verify`` re-hashes the *stored*
-    canonical text for v2 rows rather than rebuilding it from the columns, so an
-    UPDATE of the ``detail`` COLUMN alone is invisible to verification. That is
-    the AUD-003 open question already flagged in ``kp_database/audit_store.py``;
-    the old fixture only appeared to cover it because ``create_all()`` produced
-    chain-version-1 rows. See the TST-002 report.
+    AUD-003 (closed here): hashing the stored canonical text alone bound only
+    ``prev_hash``/``nonce``/``canonical_payload``. An UPDATE of the
+    ``actor``/``action``/``object_*``/``detail``/``occurred_at`` COLUMNS left the
+    stale canonical text -- and therefore the event hash -- intact, while
+    ``list_events()`` and every other reader served the rewritten columns: the
+    chain verified clean over evidence that no longer said what it said when it
+    was signed. ``verify()`` now rebuilds the canonical payload from the columns
+    with the writer's own expression and compares before hashing, so the
+    column-only rewrite below is reported too. The old fixture could not see any
+    of this because ``create_all()`` produced chain-version-1 rows.
     """
     with _migrated_audit_database() as (business_url, audit_url):
         business_engine = create_db_engine(business_url)
         audit_engine = create_db_engine(audit_url)
         try:
             audit = _bound_store(audit_engine, business_engine)
-            audit.record(actor="a", action="campaign.create", object_type="campaign", object_id="c1")
+            audit.record(
+                actor="a", action="campaign.create", object_type="campaign", object_id="c1", detail={"scope": "narrow"}
+            )
             assert audit.verify() == []
 
             # Only the migration principal can reach these rows: audit_owner is
             # NOLOGIN and migration 0035 makes the migration role a member of it.
+            # (1) Rewrite the columns and leave the recorded canonical evidence
+            # alone. The event hash still recomputes, so this is caught only by
+            # the column-to-canonical binding.
+            with business_engine.begin() as conn:
+                columns = conn.execute(
+                    text(
+                        "UPDATE audit_events SET actor = 'attacker', action = 'campaign.delete', "
+                        'detail = CAST(\'{"scope": "everything"}\' AS jsonb) '
+                        "WHERE actor = 'a' RETURNING actor, canonical_payload"
+                    )
+                ).one()
+            assert columns.actor == "attacker"
+            # The recorded evidence is untouched: the hash alone cannot see this.
+            assert "campaign.create" in columns.canonical_payload
+            assert '"scope": "narrow"' in columns.canonical_payload
+            assert audit.verify() != []
+            # ...and the rewritten columns are what a reader would have been served.
+            assert [event["actor"] for event in audit.list_events()] == ["attacker"]
+
+            with business_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE audit_events SET actor = 'a', action = 'campaign.create', "
+                        "detail = CAST('{\"scope\": \"narrow\"}' AS jsonb) WHERE actor = 'attacker'"
+                    )
+                )
+            assert audit.verify() == []
+
+            # (2) Rewrite the recorded canonical evidence instead. This breaks
+            # the event hash, and the columns no longer rebuild to it either.
             with business_engine.begin() as conn:
                 tampered = conn.execute(
                     text(

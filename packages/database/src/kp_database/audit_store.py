@@ -18,6 +18,51 @@ from sqlalchemy.orm import Session
 
 from kp_database.outbox import OutboxDispatcher, _sqlstate_class, dispatch_after_commit, enqueue_audit
 
+#: The ``to_char`` pattern ``kp_dispatch_audit_outbox`` stamps ``occurred_at``
+#: with when it builds a chain-v2 canonical payload.
+_V2_CANONICAL_TIME_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"'
+
+#: ``origin_role`` is the one canonical field a *column-scoped* evidence reader
+#: may not hold: ``AUDIT_ANCHOR_COLUMN_GRANTS`` (kp_database.grants) grants the
+#: audit-anchor role every other column of ``audit_events`` but not this one, and
+#: PostgreSQL checks column privileges for every referenced column, so naming it
+#: unconditionally would turn the anchor's ``verify()`` into a permission error.
+#: Readers that can see the column bind it like any other; readers that cannot
+#: take it from the recorded canonical text, which leaves that single column
+#: unbound for them (see docs/design/AUDIT-CHAIN-INTEGRITY-2026-09.md).
+_V2_ORIGIN_ROLE_FROM_COLUMN = "to_jsonb(origin_role)"
+_V2_ORIGIN_ROLE_FROM_PAYLOAD = "CAST(canonical_payload AS jsonb) -> 'origin_role'"
+
+
+def _v2_canonical_from_columns(origin_role_expression: str) -> str:
+    """Rebuild a chain-v2 canonical payload from the row's own columns.
+
+    The chain-v2 canonical payload is built *inside the database* by the SECURITY
+    DEFINER writer ``kp_dispatch_audit_outbox`` (migration
+    ``0020_transactional_audit_outbox``) as ``jsonb_build_object(...)::text``.
+    Verification rebuilds it with the *same* expression, evaluated by the same
+    server, rather than trying to re-emit PostgreSQL's ``jsonb`` text form from
+    Python: key ordering, number normalisation and escaping are ``jsonb``'s, not
+    ``json.dumps``'. Keep this byte-identical to the writer.
+
+    The timestamp format travels as a bind parameter because ``text()`` would
+    otherwise read ``:MI``/``:SS`` inside it as bind parameters.
+    """
+
+    return (
+        "jsonb_build_object("
+        "'action', action, 'actor', actor, 'detail', coalesce(detail, '{}'::jsonb), "
+        "'object_id', object_id, 'object_type', object_type, "
+        "'occurred_at', to_char(occurred_at AT TIME ZONE 'UTC', CAST(:canonical_time_format AS text)), "
+        f"'origin_role', {origin_role_expression}, 'version', chain_version"
+        ")::text"
+    )
+
+
+def _row_label(row: Any) -> str:
+    """Locate a row for an integrity report, in the shape callers already redact."""
+    return f"{row['occurred_at']} {row['actor']}:{row['action']}"
+
 
 @dataclass(frozen=True)
 class AuditHeadSnapshot:
@@ -317,12 +362,30 @@ class AuditStore:
         """Verify both chain generations and surface failed/stale intents."""
         problems: list[str] = []
         with self._engine.connect() as conn:
+            reads_origin_role = bool(
+                conn.scalar(
+                    text(
+                        "SELECT has_column_privilege(CAST('public.audit_events' AS text), "
+                        "CAST('origin_role' AS text), CAST('SELECT' AS text))"
+                    )
+                )
+            )
+            canonical_from_columns = _v2_canonical_from_columns(
+                _V2_ORIGIN_ROLE_FROM_COLUMN if reads_origin_role else _V2_ORIGIN_ROLE_FROM_PAYLOAD
+            )
             rows = (
                 conn.execute(
                     text(
-                        "SELECT actor, action, object_type, object_id, occurred_at, detail, prev_hash, "
-                        "event_hash, nonce, canonical_payload, chain_version FROM audit_events"
-                    )
+                        # noqa is safe here: the only interpolated fragment is one
+                        # of two module constants selected above by privilege, never
+                        # caller data. The single caller-supplied value in this
+                        # statement (the timestamp format) travels as a bind param.
+                        "SELECT actor, action, object_type, object_id, occurred_at, detail, prev_hash, "  # noqa: S608
+                        "event_hash, nonce, canonical_payload, chain_version, "
+                        f"canonical_payload IS NOT DISTINCT FROM {canonical_from_columns} "
+                        "AS canonical_binds_columns FROM audit_events"
+                    ),
+                    {"canonical_time_format": _V2_CANONICAL_TIME_FORMAT},
                 )
                 .mappings()
                 .all()
@@ -342,18 +405,21 @@ class AuditStore:
         for row in rows:
             by_prev.setdefault(row["prev_hash"], []).append(row)
             if row["chain_version"] == 2:
-                # AUD-003 OPEN QUESTION (deferred, needs human review): this
-                # re-hashes the STORED canonical_payload text. It therefore only
-                # detects tampering with prev_hash/nonce/canonical_payload — an
-                # UPDATE to the actor/action/object_*/detail COLUMNS is invisible
-                # because the stale canonical text is what gets re-hashed. To
-                # close that gap, v2 verification should REBUILD canonical from
-                # the columns (as the v1 branch below does) and compare it to the
-                # stored canonical_payload before hashing. Not changed here: the
-                # exact v2 canonical byte format must be confirmed to match the
-                # writer so this does not raise false integrity failures across
-                # the whole chain. See report.
+                # AUD-003 (closed). Hashing the stored canonical_payload alone
+                # only bound prev_hash/nonce/canonical_payload: an UPDATE of the
+                # actor/action/object_*/detail COLUMNS left the stale canonical
+                # text — and therefore the hash — intact, while list_events() and
+                # every other reader served the rewritten columns. The columns
+                # are now bound to the recorded canonical evidence by rebuilding
+                # it with the writer's own expression (see
+                # _v2_canonical_from_columns) and comparing before hashing, so a
+                # column-only rewrite is reported.
                 canonical = row["canonical_payload"]
+                if canonical is None:
+                    problems.append(f"missing canonical evidence at {_row_label(row)}")
+                    continue
+                if not row["canonical_binds_columns"]:
+                    problems.append(f"columns do not match recorded canonical evidence at {_row_label(row)}")
                 recomputed = hashlib.sha256((row["prev_hash"] + canonical + row["nonce"]).encode("utf-8")).hexdigest()
             else:
                 body = canonical_bytes(
