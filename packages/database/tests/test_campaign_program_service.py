@@ -1,12 +1,26 @@
+"""Campaign-program service integration tests against a MIGRATED Postgres.
+
+TST-002 (follow-up to the fixture uplift): this module used to isolate itself
+with a per-test ``search_path`` schema populated by ``Base.metadata.create_all()``.
+That could not be pointed at the real migration chain -- the migrations hardcode
+``public.`` (e.g. 0035's ``ALTER TABLE public.%I ...``), so ``upgrade head``
+never populates a custom schema. It now takes the isolated-**database** route
+instead: every test gets a disposable database migrated from base to head, which
+is the same pattern ``test_outbox_postgres`` / ``test_migrations_fresh_install``
+already use and is what keeps these tests honest about constraints, indexes and
+seed rows that only migrations apply.
+"""
+
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from kp_database.base import Base
+from _migrate_schema import isolated_migrated_database
 from kp_database.campaign_service import AudienceDefinition, audience_definition_hash, bind_campaign_training_resource
 from kp_database.models import (
     Campaign,
@@ -29,7 +43,7 @@ from kp_database.program_service import (
 from kp_database.session import create_db_engine, make_session_factory
 from kp_domain_models import models as dm
 from kp_telemetry.errors import ConflictError, ValidationError_
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.pool import NullPool
 
 pytestmark = pytest.mark.postgres
@@ -38,57 +52,65 @@ TEST_URL = os.environ.get(
     "DATABASE_URL_TEST",
     "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher_test",
 )
-TEST_SCHEMA = f"campaign_program_{uuid4().hex}"
+
+# Set for the duration of each test by the autouse fixture below. Threads spawned
+# by the concurrency test read it to build their own engines.
+_DATABASE_URL: str | None = None
 
 
 def _db_available() -> bool:
+    """Reachable Postgres that can also create the per-test disposable database."""
     if os.environ.get("KP_TEST_PROFILE") != "postgres":
         return False
     try:
         engine = create_db_engine(TEST_URL)
-        with engine.connect():
-            pass
-        engine.dispose()
-        return True
+        try:
+            with engine.connect() as connection:
+                return bool(
+                    connection.scalar(text("SELECT rolsuper OR rolcreatedb FROM pg_roles WHERE rolname = current_user"))
+                )
+        finally:
+            engine.dispose()
     except Exception:
         return False
 
 
-requires_db = pytest.mark.skipif(not _db_available(), reason="PostgreSQL integration database is not reachable")
+requires_db = pytest.mark.skipif(
+    not _db_available(),
+    reason="PostgreSQL integration database with isolated-database (CREATEDB) rights is not reachable",
+)
 
 
-def _setup() -> None:
-    admin_engine = create_db_engine(TEST_URL)
-    with admin_engine.begin() as connection:
-        connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{TEST_SCHEMA}" CASCADE')
-        connection.exec_driver_sql(f'CREATE SCHEMA "{TEST_SCHEMA}"')
-    admin_engine.dispose()
-    engine = _test_engine()
-    Base.metadata.create_all(bind=engine)
-    engine.dispose()
-    CipherText.configure_key(b"p" * 32)
+@pytest.fixture(autouse=True)
+def _migrated_database() -> Iterator[str]:
+    """Give each test its own database, built by the real Alembic chain.
+
+    Function scope is deliberate: several tests assert absolute row counts
+    (``count(CampaignProgram) == 0`` / ``== 1``), which only holds on a database
+    no other test has written to.
+    """
+    global _DATABASE_URL
+    with isolated_migrated_database(TEST_URL, prefix="kp_campaign_program") as database_url:
+        _DATABASE_URL = database_url
+        CipherText.configure_key(b"p" * 32)
+        try:
+            yield database_url
+        finally:
+            _DATABASE_URL = None
 
 
 def _test_engine():
+    assert _DATABASE_URL is not None, "the migrated-database fixture is not active"
     return create_engine(
-        TEST_URL,
+        _DATABASE_URL,
         pool_pre_ping=True,
         poolclass=NullPool,
-        connect_args={"connect_timeout": 5, "options": f"-csearch_path={TEST_SCHEMA}"},
+        connect_args={"connect_timeout": 5},
     )
 
 
 def _session():
     return make_session_factory(_test_engine())()
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _cleanup_isolated_schema():
-    yield
-    engine = create_db_engine(TEST_URL)
-    with engine.begin() as connection:
-        connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{TEST_SCHEMA}" CASCADE')
-    engine.dispose()
 
 
 def _source_campaign(session, *, starts_in_days: int = 2) -> Campaign:
@@ -196,7 +218,6 @@ def _source_campaign(session, *, starts_in_days: int = 2) -> Campaign:
 
 @requires_db
 def test_materialization_creates_finite_independent_drafts_without_evidence() -> None:
-    _setup()
     with _session() as session:
         source = _source_campaign(session)
         actor_id = uuid4()
@@ -249,7 +270,6 @@ def test_materialization_creates_finite_independent_drafts_without_evidence() ->
 
 @requires_db
 def test_materialization_is_idempotent_and_body_drift_fails_closed() -> None:
-    _setup()
     with _session() as session:
         source = _source_campaign(session)
         first = materialize_campaign_program(
@@ -295,7 +315,6 @@ def test_materialization_is_idempotent_and_body_drift_fails_closed() -> None:
 
 @requires_db
 def test_concurrent_materialization_produces_one_program() -> None:
-    _setup()
     with _session() as session:
         source_id = _source_campaign(session).campaign_id
 
@@ -322,7 +341,6 @@ def test_concurrent_materialization_produces_one_program() -> None:
 
 @requires_db
 def test_program_bounds_and_pause_guard_fail_closed_without_partial_rows() -> None:
-    _setup()
     with _session() as session:
         source = _source_campaign(session)
         with pytest.raises(ValidationError_, match="cadence_days"):

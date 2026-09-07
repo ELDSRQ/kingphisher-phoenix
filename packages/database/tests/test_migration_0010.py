@@ -13,15 +13,17 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+# Shared dev-database helpers: same TEST_URL and availability gate. The
+# teardown restores the shared database from the real migration chain (TST-002)
+# rather than from ORM metadata plus hand-written grants, so later suites
+# (e.g. operator-api test_privacy) see the schema a deploy actually produces.
+from _migrate_schema import rebuild_public_schema_via_migrations
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from kp_database.session import create_db_engine
 from sqlalchemy import text
-
-# Shared dev-database helpers: same TEST_URL, same availability gate, and the
-# table setup/teardown that later suites (e.g. operator-api test_privacy)
-# depend on being runnable in this order.
-from test_audit_store import TEST_URL, _create_tables, _drop_tables, requires_db
+from test_audit_store import TEST_URL, requires_db
 
 MIGRATION_PATH = Path(__file__).resolve().parents[1] / "alembic" / "versions" / "0010_audit_ownership_separation.py"
 
@@ -140,12 +142,9 @@ def test_upgrade_sql_hardens_live_database() -> None:
             assert owners == {"audit_events": "kingphisher", "audit_chain_head": "kingphisher"}
     finally:
         # The disposable test database is shared in run order with
-        # apps/operator-api/tests (test_privacy appends audit rows).
-        # audit_chain_head is not in Base metadata, so drop it explicitly or
-        # _create_tables' IF NOT EXISTS would keep this test's minimal stub
-        # and later suites would fail on the missing columns.
-        with engine.begin() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS audit_chain_head"))
+        # apps/operator-api/tests (test_privacy appends audit rows). This test
+        # leaves behind minimal stub audit tables, so rebuild the whole public
+        # schema from base to head; that also restores the real ownership and
+        # grant posture (0010/0035) this test deliberately perturbs.
         engine.dispose()
-        _drop_tables()
-        _create_tables()
+        rebuild_public_schema_via_migrations(TEST_URL)
