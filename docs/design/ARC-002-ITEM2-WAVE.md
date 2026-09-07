@@ -80,6 +80,52 @@ digest aggregate or an `EXISTS` against a stored hash column), or narrow the row
 rewrites of `_launch_delivery_gate_reason` rather than a move, so they belong to a separate,
 reviewed task — not to a decomposition wave.
 
+## The `_launch_delivery_gate_reason` cost — MEASURED, and deliberately NOT optimised (2026-09-07)
+
+The hoist was refused as unsafe (above). The follow-up was to push the work into SQL instead.
+That was implemented and run, and is **declined**. `jobs.py` is unchanged.
+
+**The cost is real and now measured**, per recipient per loop iteration against a 10k-row manifest:
+
+| | today |
+|---|---|
+| manifest rows read | 10,000 |
+| Python CPU | 11.4 ms (8.53 ms building a 1,080,028-byte canonical JSON; sha256 itself is 0.47 ms) |
+
+At `delivery_batch_size` 200 that is ~2,000,000 rows and ~2.3 s of Python per batch. A SQL
+digest would cut rows read ~5000× (to one aggregate row plus one membership count).
+
+**Why it is declined anyway:**
+
+1. **It would duplicate a security-critical hash in a second language.**
+   `gate.canary_manifest_hash` is
+   `sha256(json.dumps({...}, sort_keys=True, separators=(",",":"), ensure_ascii=True))`.
+   Reproducing that in PostgreSQL means reimplementing Python's canonical-JSON encoder:
+   `to_json` does not escape non-ASCII where `ensure_ascii=True` does, and
+   `json_build_array`/`jsonb` insert spaces and reorder keys. It happens to agree for today's
+   data, but equality would rest on a data assumption (the column only constrains
+   `length(recipient_hash) = 64`), not on the schema. That is precisely invariant 4 of this
+   document — the invariant that exists because drifted copies of a security helper already cost
+   this codebase a middleware.
+2. **Equivalence cannot be verified here.** The digest is inert under the hermetic stubs, and
+   `make test-postgres` needs Docker, which does not run on the controller. Landing it would mean
+   shipping an unverified rewrite of the launch gate.
+3. **The scale does not justify the risk.** The documented target is 125 recipients. Measurable,
+   not pathological.
+
+**What landed instead:** `apps/workers/tests/test_launch_gate_reason_golden.py` — 58 cases pinning
+every refusal branch behaviourally through the real entry point (exact reason string, gate state
+flip, `updated_at` touch, branch precedence), mutation-tested with five semantic mutants all
+killed. This filled a genuine gap: twelve of the sixteen reasons were previously asserted only by
+source-text grep. It is also the equivalence oracle any future SQL version must satisfy.
+
+**If this is ever revisited** (i.e. scale grows well past 125), the prerequisites are: put the SQL
+digest expression *next to* `campaign_canary_manifest_hash` in `packages/database` so the two
+forms are maintained together rather than duplicated; make `_GateSession` in
+`test_delivery_gate_hoist.py` statement-aware (it currently returns a bare `list`, so any
+aggregate/`EXISTS` form fails on `.one()`); and add a `postgres`-marked equivalence test that runs
+in CI.
+
 ## Out of scope
 
 Item 1 Phase 2 (retiring GUI GitHub-dispatch for runbook scripts), Item 3 (Postgres-only queue
