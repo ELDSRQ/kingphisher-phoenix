@@ -1101,10 +1101,15 @@ locals {
   )
   workload_secret_access = merge([
     for workload, secret_names in local.workload_secret_names : {
+      # Skip any secret this posture does not create. secret_values drops
+      # redis-url when deploy_data_plane=false, and referencing the missing key
+      # from this for_each was the second half of the "Invalid index" failure.
+      # Filtering against secret_values (rather than special-casing redis-url)
+      # keeps this correct for any future conditionally-created secret.
       for secret_name in secret_names : "${workload}:${secret_name}" => {
         workload    = workload
         secret_name = secret_name
-      }
+      } if contains(keys(local.secret_values), secret_name)
     }
   ]...)
 }
@@ -1156,12 +1161,24 @@ resource "azurerm_container_app_environment" "main" {
 }
 
 locals {
-  common_secrets = {
-    audit-database-url = azurerm_key_vault_secret.runtime["audit-database-url"].versionless_id
-    redis-url          = azurerm_key_vault_secret.runtime["redis-url"].versionless_id
-    ciphertext-kek     = azurerm_key_vault_secret.runtime["ciphertext-kek"].versionless_id
-    recipient-salt     = azurerm_key_vault_secret.runtime["recipient-salt"].versionless_id
-  }
+  # redis-url exists ONLY when the data plane is deployed (see secret_values
+  # above). Indexing it unconditionally here made the documented idle posture
+  # (deploy_data_plane=false) impossible to even PLAN — terraform failed with
+  # "Invalid index" before showing a diff, which is why idle.tfvars carried a
+  # "not plan-verified" caveat. The consumers at the container apps are
+  # count-gated on deploy_workloads, and the variable validation makes
+  # deploy_data_plane=false imply deploy_workloads=false, so they never read it
+  # in that posture.
+  common_secrets = merge(
+    {
+      audit-database-url = azurerm_key_vault_secret.runtime["audit-database-url"].versionless_id
+      ciphertext-kek     = azurerm_key_vault_secret.runtime["ciphertext-kek"].versionless_id
+      recipient-salt     = azurerm_key_vault_secret.runtime["recipient-salt"].versionless_id
+    },
+    local.data_plane ? {
+      redis-url = azurerm_key_vault_secret.runtime["redis-url"].versionless_id
+    } : {},
+  )
 }
 
 resource "azurerm_container_app" "ai_gateway" {
