@@ -319,8 +319,10 @@ def _split_privileges(privilege_string: str) -> set[str]:
 def expected_column_verbs(workload: str, table: str) -> set[str]:
     """Verbs a workload holds on SOME column of ``table``.
 
-    ``has_table_privilege`` reads TRUE when the role holds the verb on the whole
-    table OR on any single column, so this set feeds the table-level oracle.
+    This is the oracle for ``has_any_column_privilege()``, NOT for
+    ``has_table_privilege()`` — the latter is false for a column-only grant, so
+    this set must never feed the table-level oracle (see
+    ``expected_table_privilege``).
     """
     verbs: set[str] = set()
     for privilege, table_columns in WORKLOAD_COLUMN_GRANTS.get(workload, {}).items():
@@ -337,13 +339,21 @@ def expected_column_verbs(workload: str, table: str) -> set[str]:
 def expected_table_privilege(workload: str, table: str, verb: str) -> bool:
     """Oracle for ``has_table_privilege(role, table, verb)`` from the matrix.
 
+    TABLE-LEVEL ONLY. PostgreSQL's ``has_table_privilege()`` is FALSE for a
+    column-only grant — ``has_any_column_privilege()`` is the function that folds
+    column grants in. Reporting column-scoped access as a table privilege here
+    made the runtime probe demand a table-level grant that KP-008 deliberately
+    withholds (the enqueue roles get ``INSERT (cols)`` +
+    ``SELECT (idempotency_key)`` precisely so the bearer payload stays
+    unreadable), so every enqueue role failed the probe as "SELECT on
+    transactional_outbox missing". Column expectations belong in
+    ``expected_column_privilege``, which the probe checks separately.
+
     The single source of truth the runtime probe compares live PostgreSQL
     against, and the same oracle the fast unit-test harness models — so the two
     can never silently disagree.
     """
-    if verb in table_privileges(workload).get(table, set()):
-        return True
-    return verb in expected_column_verbs(workload, table)
+    return verb in table_privileges(workload).get(table, set())
 
 
 def expected_column_privilege(workload: str, table: str, column: str, verb: str) -> bool:
