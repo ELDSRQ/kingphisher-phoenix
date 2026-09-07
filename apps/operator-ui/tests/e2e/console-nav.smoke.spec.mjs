@@ -1,6 +1,8 @@
 // @ts-check
-// TST-002 SCAFFOLD -- OPERATOR-RUN ONLY. Do not run in CI or on the controller
-// without an operator present: it drives a real browser against a live console.
+// Standing console smoke gate: `make test-e2e-console`.
+// Drives a real browser (chromium) against a LIVE, authenticated console, so it
+// is deliberately NOT part of `make test` or CI — both lack a browser and a
+// reachable console. Run it whenever the console UI changes.
 //
 // Purpose: replace a regex-over-source UI assertion with a real-DOM effect
 // assertion. The Python contract test

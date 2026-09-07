@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PY := uv run --frozen
 COMPOSE := docker compose
 
-.PHONY: bootstrap install verify-install operational-readiness dev mock-stack lock-mock-services test test-unit test-postgres test-redis test-contract test-fresh-migration test-live-azure test-e2e lint typecheck security-scan security-scan-bandit security-scan-semgrep security-scan-trivy security-scan-dependencies security-scan-images verify-images db-migrate db-rollback db-init seed build sbom sign verify-audit
+.PHONY: bootstrap install verify-install operational-readiness dev mock-stack lock-mock-services test test-unit test-postgres test-redis test-contract test-fresh-migration test-live-azure test-e2e test-e2e-console lint typecheck security-scan security-scan-bandit security-scan-semgrep security-scan-trivy security-scan-dependencies security-scan-images verify-images db-migrate db-rollback db-init seed build sbom sign verify-audit
 
 ## One-shot installer: installs all dependencies and starts the full system.
 ## See scripts/install.sh for supported platforms (macOS, Debian/Ubuntu).
@@ -68,6 +68,21 @@ test-contract: test-redis
 test-fresh-migration:
 	@[ -n "$$DATABASE_URL_TEST" ] || { echo "DATABASE_URL_TEST is required for the migration gate" >&2; exit 2; }
 	@KP_DISABLE_DOTENV=1 KP_TEST_PROFILE=postgres $(PY) python -m pytest packages/database/tests/test_migrations_fresh_install.py -k fresh_postgres -p tests.no_skips_plugin
+
+## Real-DOM operator console smoke (Playwright/chromium) against a LIVE console.
+## Proves rendered navigation effect, not app.js source text. Deliberately NOT in
+## `make test` or CI: it needs a browser and a reachable, authenticated console.
+## The canonical local console runs on .105 — reach it over an SSH tunnel first:
+##   ssh -N -o ControlMaster=no -o ControlPath=none \
+##       -L 18000:127.0.0.1:8000 -L 18001:127.0.0.1:8001 erikd@192.168.1.105
+## then: export OPERATOR_CONSOLE_URL=http://localhost:18000
+## One-time browser install: npm --prefix apps/operator-ui run test:e2e:install
+test-e2e-console:
+	@[ -n "$$OPERATOR_CONSOLE_URL" ] || { echo "OPERATOR_CONSOLE_URL is required (e.g. http://localhost:18000 via the .105 tunnel)" >&2; exit 2; }
+	@[ -n "$$OPERATOR_CONSOLE_PASSWORD" ] || [ -n "$$OPERATOR_CONSOLE_STORAGE_STATE" ] || { echo "set OPERATOR_CONSOLE_PASSWORD (local-stack KP_CONSOLE_PASSWORD) or OPERATOR_CONSOLE_STORAGE_STATE" >&2; exit 2; }
+	@[ -d apps/operator-ui/node_modules/@playwright/test ] || { echo "Playwright is not installed: run 'npm --prefix apps/operator-ui install' then 'npm --prefix apps/operator-ui run test:e2e:install'" >&2; exit 2; }
+	@curl -sfo /dev/null --max-time 8 "$$OPERATOR_CONSOLE_URL/console/" || { echo "console not reachable at $$OPERATOR_CONSOLE_URL/console/ — is the SSH tunnel up?" >&2; exit 2; }
+	@npm --prefix apps/operator-ui run --silent test:e2e
 
 ## Read-only live Azure smoke test. Requires explicit opt-in and subscription.
 test-live-azure:

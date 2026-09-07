@@ -5,9 +5,12 @@
   "description": "Kingphisher-Phoenix operator console (browser GUI). Sources are ES modules bundled to a single committed app.js; deploys serve the committed bundle and need no node.",
   "scripts": {
     "build": "node scripts/build-console.mjs",
-    "check": "node --check src/console/app.js"
+    "check": "node --check src/console/app.js",
+    "test:e2e": "playwright test -c tests/e2e/playwright.config.mjs",
+    "test:e2e:install": "playwright install chromium"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "esbuild": "0.25.0"
   }
 }

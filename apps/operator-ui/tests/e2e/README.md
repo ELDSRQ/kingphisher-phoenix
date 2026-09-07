@@ -1,10 +1,24 @@
-# Operator console E2E smoke (TST-002 scaffold — OPERATOR-RUN ONLY)
+# Operator console E2E smoke — standing gate (`make test-e2e-console`)
 
-This directory is a **scaffold**. It is not wired into CI, `make test`, or any
-agent-runnable gate, and no browsers are installed by the repo. A human operator
-runs it against a live console. It exists to begin replacing regex-over-source
-UI assertions (e.g. `apps/operator-api/tests/test_gui_wiring_ui_contract.py`)
-with real-DOM effect assertions.
+This is a **standing gate**, not a scaffold: run it whenever the console UI
+changes. It replaces regex-over-source UI assertions (e.g.
+`apps/operator-api/tests/test_gui_wiring_ui_contract.py`) with real-DOM effect
+assertions — first verified green against the live `.105` console on 2026-09-07.
+
+It is deliberately **not** part of `make test` or CI: it needs a browser and a
+reachable, authenticated console, neither of which exists on the hermetic
+runners. `make test-e2e-console` fails with an explicit message (rather than
+silently passing) if the console is unreachable, the credentials are missing, or
+Playwright is not installed.
+
+## Quick start
+
+```
+make test-e2e-console
+```
+
+with `OPERATOR_CONSOLE_URL` and `OPERATOR_CONSOLE_PASSWORD` exported — see
+"How the operator runs it" below for the tunnel and one-time browser install.
 
 ## What it asserts
 

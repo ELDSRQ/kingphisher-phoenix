@@ -128,7 +128,15 @@ Converted to use it (drop_all/create_all → migrate-to-head):
 
 ---
 
-## C. Playwright smoke scaffold (operator-run only)
+## C. Playwright console smoke — PROMOTED to a standing gate (`make test-e2e-console`)
+
+> **Update 2026-09-07:** no longer a scaffold. First real-browser run against the live
+> .105 console found two defects that could only surface in a browser — it navigated to
+> `/` (the SPA is mounted at `/console/`, root 404s) and probed for the login form with a
+> non-waiting `count()` that raced the client-side render. Both fixed (711c09d, 433154b);
+> the suite is green (2 passed) and is now wired in as `make test-e2e-console` with an
+> npm script + pinned `@playwright/test` devDependency. It stays out of `make test`/CI
+> because it needs a browser and a live authenticated console.
 
 `apps/operator-ui/tests/e2e/` (new):
 - `playwright.config.mjs` — minimal, **no `webServer`** (operator owns stack
