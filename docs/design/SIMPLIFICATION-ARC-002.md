@@ -18,7 +18,7 @@ The operator API's complexity budget is inverted toward **Azure deployment orche
 Behavior-preserving refactors; precedent already exists (`content_library.py`, `threat_routes.py`, `program_routes.py` are split out).
 - **`routers.py` (~4,711)** → by resource: `audience_groups` / `campaigns` / `sources` / `recipients` / `alerts` / `patterns` / `dead_letters` / `audit+kill_switch` / `privacy`.
 - **`console.py` (~3,658)** → `env_store` / `console_auth` / `config` / `azure_deployment_routes` (moves with Item 1) / `onboarding` / `runtime_status`.
-- **`process_delivery` (`jobs.py:1274`, ~471 lines / 68 branches)** → `claim` / `gate` / `render` / `send` / `record`; and **hoist `_launch_delivery_gate_reason` out of the per-assignment loop** (it re-reads+re-hashes a 10k-row canary manifest per recipient today).
+- **`process_delivery` (`jobs.py:1274`, ~471 lines / 68 branches)** → `claim` / `gate` / `render` / `send` / `record`; and the per-recipient cost of `_launch_delivery_gate_reason` (it re-reads+re-hashes a 10k-row canary manifest per recipient today). **DO NOT hoist that call out of the loop** — attempted 2026-09-07 and proven unsafe: each iteration is a new transaction re-acquiring the launch gate, so hoisting sent real mail to a whole batch whose gate had been revoked mid-batch. See `docs/design/ARC-002-ITEM2-WAVE.md`. Fix the cost in SQL instead, as a separate reviewed task.
 - **Risk:** low if done as pure moves with the suite green each step; **do NOT** change the gate *sequence* (that's a safety invariant — pair with the single-gate-list idea in PLT/AUT work).
 
 ## Item 3 (evaluation, not a mandate) — Postgres-only queue (drop Redis)

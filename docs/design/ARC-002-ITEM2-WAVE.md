@@ -52,12 +52,33 @@ them.
    `scripts/run-hermetic-tests.sh all`. This session lost several hours to gating on `make test`
    alone, which runs none of the other two.
 
-## The one intentional behaviour change
+## The proposed hoist — ATTEMPTED, PROVEN UNSAFE, REFUSED (2026-09-07)
 
-`_launch_delivery_gate_reason` is currently evaluated inside the per-assignment loop, re-reading
-and re-hashing a canary manifest of up to 10k rows **per recipient**. M1-C hoists it out. That
-changes performance, not outcomes: the set of gated recipients must be identical, and the task
-must prove it.
+This plan originally told M1-C to hoist `_launch_delivery_gate_reason` out of the per-assignment
+loop, on the assumption it was a redundant re-computation. **That assumption is wrong. Do not
+re-attempt it.**
+
+`_claim_delivery` and `_durable_delivery_correlation` each `session.commit()` inside the loop,
+*before* the gate re-check. Every iteration is therefore a NEW transaction that re-acquires
+`CampaignLaunchGate ... FOR UPDATE`. The in-loop call is a concurrency/time re-check — the
+launch-gate member of the deliberate stop-race trio (campaign state -> launch gate -> emergency
+stop) that sits between the claim and the provider call. Hoisting it blinds delivery to a gate
+that expires (`canary_expires_at <= now`), is flipped to `canary_failed` by a concurrent
+`_refresh_canary_evidence`, or whose canary manifest changes mid-batch.
+
+Demonstrated empirically, not merely argued: with the hoist applied,
+`test_launch_gate_is_re_evaluated_for_every_recipient_of_a_batch` failed
+`assert [True, True, True] == [True]` — the worker **sent real mail to all three recipients of a
+batch whose gate was revoked after the first**. The pre-existing sequence guard
+(`test_campaign_canary_gate.py::test_worker_rechecks_gate_before_initial_and_per_assignment_provider_boundaries`)
+also failed. The experiment was reverted; regression tests pinning this now live in
+`apps/workers/tests/test_delivery_gate_hoist.py`.
+
+**The underlying cost is real and still open.** Up to 10k canary rows are read and hashed per
+recipient. Safe directions that do NOT weaken the gate: push the drift comparison into SQL (a
+digest aggregate or an `EXISTS` against a stored hash column), or narrow the row scan. Both are
+rewrites of `_launch_delivery_gate_reason` rather than a move, so they belong to a separate,
+reviewed task — not to a decomposition wave.
 
 ## Out of scope
 
