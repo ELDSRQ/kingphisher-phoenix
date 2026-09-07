@@ -22,13 +22,17 @@ links are not rendered) are **not** yet covered here — keep that contract.
 
 ## How the operator runs it
 
-Prerequisites: Node 18+, and a reachable console. Per platform norms the stack
-runs on the `.140` host (or via a tunnel), **not** `localhost` on the Mac.
+Prerequisites: Node 18+, and a reachable console. The canonical local stack runs
+on the `.105` WSL2 host (`.140` is RETIRED), and Docker never runs on the Mac —
+so reach the console through an SSH tunnel rather than `localhost` directly:
 
 ```
-# 1. Bring up the operator-api + console (operator's normal local/dev stack),
-#    then export where it is reachable and how to authenticate:
-export OPERATOR_CONSOLE_URL=http://192.168.1.140:8000
+# 0. Tunnel the console from .105 to the Mac (leave this running in its own shell):
+ssh -L 8000:localhost:8000 -L 8001:localhost:8001 erikd@192.168.1.105
+
+# 1. In a second shell, point the suite at the tunnelled console and say how to
+#    authenticate:
+export OPERATOR_CONSOLE_URL=http://localhost:8000
 export OPERATOR_CONSOLE_PASSWORD="$KP_CONSOLE_PASSWORD"   # local-stack dev login
 #    (managed Azure disables password login — supply a pre-authenticated
 #     session instead: export OPERATOR_CONSOLE_STORAGE_STATE=/path/to/state.json)
