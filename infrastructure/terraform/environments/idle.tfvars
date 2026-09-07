@@ -8,16 +8,36 @@
 #   the idle posture is ONE reproducible `terraform apply` instead of a pile of ad-hoc
 #   `az` commands that the next deploy silently undoes.
 #
-# HOW TO APPLY (direct terraform, NOT the GitHub workloads deploy — see WARNING):
-#   cd infrastructure/terraform
-#   terraform apply \
-#     -var-file="environments/staging.tfvars" \
-#     -var-file="environments/idle.tfvars"
-#   (plus whatever var-file / TF_VAR_* supplies the no-default vars: subscription_id,
-#    operator_fqdn, tracking_fqdn, entra_*, acs_* — e.g. the reviewed .auto.tfvars.json.)
+# HOW TO APPLY — use the wrapper, not a bare terraform command:
+#
+#   scripts/operator/azure-idle.sh stop
+#
+#   A bare `terraform apply -var-file=... environments/idle.tfvars` in this directory
+#   CANNOT work, and the wrapper exists because of exactly that:
+#     * versions.tf declares `backend "azurerm" {}` with no values, so `terraform init`
+#       must be given resource_group_name / storage_account_name / container_name / key.
+#       They are GitHub ENVIRONMENT variables TF_STATE_* on the staging environment
+#       (see .github/workflows/azure-deploy.yml, "Initialize Terraform").
+#     * 13 variables in variables.tf have no default and are not in staging.tfvars.
+#       They come from the reviewed deployment configuration — the CONFIG='{...}' line in
+#       scripts/operator/deployment-preflight/dispatch-staging-workloads.sh.
+#     * the ACS readiness strings in that configuration must be replaced by a FRESH live
+#       control-plane readback, or azurerm_communication_service_email_domain_association
+#       and azurerm_email_communication_service_domain_sender_username (both
+#       prevent_destroy) drop to count 0 and terraform refuses the whole plan.
+#   azure-idle.sh does all three, then shows the plan and waits for you to type 'yes'.
+#
 #   Review the plan: it must destroy ONLY Container Apps + ACR + Redis (+ their private
-#   endpoints / role / secret) and show NO destroy/replace of Postgres or audit storage.
-#   `scripts/operator/azure-idle.sh stop` wraps this apply and the Postgres stop below.
+#   endpoints / role / secret / ACR-pull role assignments, the ACS delivery Event Grid
+#   system topic and the custom ACS sender role) and show NO destroy/replace of Postgres,
+#   the Key Vault, the audit storage or the ACS email domain. The exact 20-resource
+#   destroy set is listed in docs/AZURE-IDLE.md.
+#
+# BLOCKED TODAY — this file cannot be planned yet. See docs/AZURE-IDLE.md,
+#   "Known blocker: redis-url is indexed unconditionally". local.secret_values drops the
+#   "redis-url" Key Vault secret when deploy_data_plane=false, but local.common_secrets
+#   and local.workload_secret_access in main.tf still index it unconditionally, so the
+#   plan fails with "Invalid index ... redis-url". main.tf needs a two-hunk change first.
 #
 # WARNING — precedence: the GitHub Actions `workloads` phase hardcodes CLI
 #   `-var="deploy_workloads=true"` (and `deploy_ai_gateway`), and a CLI `-var` OUTRANKS
@@ -62,6 +82,9 @@ deploy_ci_runner = false
 # entra_* — the verified ACS domain / public DNS / Entra app remain up at ~$0 so the next
 # real send skips all SPF/DKIM re-verification.
 #
-# RESUME: re-apply with ONLY staging.tfvars (drop this file) — or azure-idle.sh start —
-# and `az postgres flexible-server start` to bring Tier 2 back.
+# RESUME: `scripts/operator/azure-idle.sh start` re-applies without this file and starts
+# Postgres, bringing back ACR + Redis (empty) but NOT the workloads — this file destroys
+# the container registry, so every image is gone and the Container Apps have nothing to
+# run. Rebuild and re-push them, which also deploys the workloads:
+#     scripts/operator/deployment-preflight/dispatch-staging-workloads.sh
 # ---------------------------------------------------------------------------------------
