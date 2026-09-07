@@ -50,6 +50,14 @@ def _fake_environment(tmp_path: Path, test_url: str = "redis://test@localhost:63
             "TMPDIR": str(tmp_path),
             "TRACKING_API_DATABASE_URL": APP_RUNTIME_URL,
             "PYTEST_ADDOPTS": "-k never-run-the-gate",
+            # These tests assert the gate's Redis queue isolation/cleanup using
+            # stub binaries and placeholder DSNs that point at no real server.
+            # The live-server guard (which refuses to run when the target cluster
+            # also hosts an application database, because the gate rewrites
+            # CLUSTER-WIDE role passwords) would fail its connection probe here
+            # and abort before the behaviour under test. Opt out explicitly —
+            # the guard itself is exercised against a real server, not here.
+            "KP_POSTGRES_GATE_ALLOW_SHARED_SERVER": "1",
         }
     )
     for name in ("OPERATOR_API_REDIS_URL", "TRACKING_API_REDIS_URL", "KP_WORKER_REDIS_URL"):
