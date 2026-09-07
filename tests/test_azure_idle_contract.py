@@ -764,3 +764,28 @@ def test_read_only_commands_never_mutate(tmp_path: Path, command: str) -> None:
         assert " stop " not in f" {call} "
         assert " start " not in f" {call} "
         assert "containerapp update" not in call
+
+
+def test_operator_scripts_use_portable_mktemp_templates() -> None:
+    """`mktemp -t prefix` is BSD-only and fails on the Linux runners we deploy from.
+
+    GNU coreutils requires the template to end in at least three X's; BSD accepts a
+    bare prefix. These scripts are authored on macOS but EXECUTE on Linux — the
+    self-hosted VNet runner and GitHub-hosted runners — where the bare form dies with
+    "mktemp: too few X's in template". That is exactly how the first real dispatch of
+    azure-idle.yml failed, after it had already cleared the state backend and the
+    Key Vault check.
+    """
+    offenders: list[str] = []
+    for script in sorted((REPO_ROOT / "scripts").rglob("*.sh")):
+        for number, line in enumerate(script.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or "mktemp" not in stripped:
+                continue
+            match = re.search(r"mktemp\s+(?:-[a-zA-Z]+\s+)*-t\s+(\S+)", stripped)
+            if match and "XXX" not in match.group(1):
+                offenders.append(f"{script}:{number}: {stripped}")
+    assert not offenders, (
+        "these use the BSD-only bare `mktemp -t prefix` form and will fail on Linux; "
+        "use a template ending in XXXXXXXX instead:\n  " + "\n  ".join(offenders)
+    )

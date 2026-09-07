@@ -743,7 +743,11 @@ run_preflight() {
   check_state_access
   note "state container readable by this login."
   check_data_plane_reachability
-  WORKDIR="$(mktemp -d -t kp-azure-idle)"
+  # Portable across BSD and GNU mktemp: BSD accepts a bare -t prefix, GNU
+  # requires the template to end in at least three X's. This script is written
+  # on macOS but RUNS on the Linux VNet runner, where the bare form fails with
+  # "mktemp: too few X's in template".
+  WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/kp-azure-idle.XXXXXXXX")"
   chmod 700 "$WORKDIR"
   GENERATED_TFVARS="$WORKDIR/reviewed.local.tfvars.json"
   step "assembling reviewed variables from $(basename "$CONFIG_SOURCE") + live ACS readback"
