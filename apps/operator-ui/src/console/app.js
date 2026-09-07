@@ -382,6 +382,7 @@
     "can_schedule",
     "can_publish",
     "can_test_send",
+    "can_proof_send",
     "can_recall"
   ]);
   var PATTERN_ACTION_FLAGS = Object.freeze(["can_clone", "can_approve"]);
@@ -3282,6 +3283,16 @@
                 actions.push(el("button", { class: "btn small", type: "button", text: "Approve privacy", "aria-label": `Approve privacy review for ${c.title}`, onclick: approvalAct(c, "privacy", "approved") }));
                 actions.push(el("button", { class: "btn small danger", type: "button", text: "Reject privacy", "aria-label": `Reject privacy review for ${c.title}`, onclick: approvalAct(c, "privacy", "rejected") }));
               }
+              if (c.can_proof_send === true) {
+                actions.push(el("button", {
+                  class: "btn small",
+                  type: "button",
+                  text: "Send proof to test mailbox",
+                  "aria-label": `Send a proof of ${c.title} to the server-designated test mailbox`,
+                  title: "Mails this campaign's rendered message to the server-designated test account so you can see how it lands. The destination is chosen by the server and cannot be set here.",
+                  onclick: proofSendAct(c)
+                }));
+              }
               if (c.can_schedule === true) {
                 const scheduleButton = el("button", {
                   class: "btn small primary",
@@ -3432,6 +3443,39 @@
           });
           toast(`${approvalType} review recorded as ${decision}`, "success");
           location.reload();
+        } catch (err) {
+          if (!await refreshAfterStaleActionFailure(err, render)) toast(err.message, "error");
+        } finally {
+          if (btn.isConnected) btn.disabled = false;
+        }
+      };
+    }
+    function proofSendAct(campaign) {
+      return async (e) => {
+        const values = await promptDialog({
+          title: `Send a proof of "${campaign.title}"?`,
+          description: "This sends one real message containing this campaign's rendered content. The destination is the server-designated test account \u2014 it is chosen by the server, cannot be set from this console, and is never a campaign recipient. No recipient row, tracking token, approval, schedule or delivery state is created or changed. The server rechecks the emergency stop and the recipient-domain allowlist and fails closed.",
+          fields: [
+            {
+              name: "reason",
+              label: "Reason",
+              type: "textarea",
+              required: true,
+              placeholder: "Why you need to see this message in a mailbox",
+              help: "Recorded in the audit chain against your identity. Proof sends are throttled."
+            }
+          ],
+          submitLabel: "Send proof"
+        });
+        if (!values) return;
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+          const res = await api(`/campaigns/${campaign.campaign_id}/proof-send`, {
+            method: "POST",
+            body: JSON.stringify({ confirm: true, reason: values.reason.trim() })
+          });
+          toast(`Proof queued to the designated test account${res.masked_mailbox ? ` (${res.masked_mailbox})` : ""}`, "success");
         } catch (err) {
           if (!await refreshAfterStaleActionFailure(err, render)) toast(err.message, "error");
         } finally {

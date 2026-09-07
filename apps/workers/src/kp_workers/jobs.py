@@ -164,6 +164,16 @@ _DELIVERABLE_CAMPAIGN_STATES = frozenset(
         dm.CampaignState.ACTIVE,
     }
 )
+# UX-011 §2b. A proof send exists to inform a decision, so it is only honored
+# while the campaign is still being authored or reviewed. Mirrors
+# ``_PROOF_SEND_CAMPAIGN_STATES`` in the operator API; the worker re-checks it
+# because the campaign may have moved on between enqueue and dispatch.
+_PROOF_SEND_CAMPAIGN_STATES = frozenset(
+    {
+        dm.CampaignState.DRAFT,
+        dm.CampaignState.PENDING_APPROVAL,
+    }
+)
 _TEST_SEND_CAMPAIGN_STATES = (
     frozenset(
         {
@@ -1291,10 +1301,179 @@ def _two_person_approval_reason(approvals: Sequence[CampaignApproval]) -> str | 
     return None
 
 
+def process_proof_send(ctx: WorkerContext, message: dict[str, Any]) -> None:
+    """UX-011 §2b — mail ONE rendered proof to the server-designated test mailbox.
+
+    Deliberately NOT a delivery. It claims nothing, creates no
+    ``RecipientAssignment``, no ``TrackingToken``, no ``DeliveryCorrelation``
+    and no canary evidence, and it never writes campaign, launch-gate,
+    audience, approval or send state. The only rows it writes are audit events.
+
+    The destination is re-derived here from the recipient row's server-set
+    ``is_test_account`` designation. The queue payload carries a recipient id
+    and never a mailbox, so nothing outside the database — least of all an API
+    caller — can influence where this lands. Every gate the delivery worker
+    applies to *who may be contacted* is applied again: emergency stop,
+    designation, exclusions, delivery suppression, the recipient-domain
+    allowlist (fail-closed under PLT-002) and, when one is bound, the signed
+    RoE's verified target domains.
+    """
+
+    payload = message["payload"]
+    campaign_id = payload.get("campaign_id")
+    raw_recipient_id = payload.get("proof_recipient_id")
+    if not isinstance(campaign_id, str) or not isinstance(raw_recipient_id, str):
+        logger.error("proof send message is malformed; refusing")
+        return
+    try:
+        campaign_uuid = uuid.UUID(campaign_id)
+        recipient_uuid = uuid.UUID(raw_recipient_id)
+    except ValueError:
+        logger.error("proof send message carries an invalid identifier; refusing")
+        return
+
+    with ctx.session_factory() as session:
+        campaign = session.get(Campaign, campaign_uuid, populate_existing=True)
+        if campaign is None:
+            logger.error("proof send references unknown campaign")
+            return
+
+        def blocked(reason: str) -> None:
+            ctx.audit_store.record(
+                session=session,
+                actor="worker:proof-send",
+                action="campaign.proof-send.blocked",
+                object_type="campaign",
+                object_id=campaign_id,
+                detail={"reason": reason},
+            )
+            session.commit()
+            logger.error("campaign %s proof send blocked: %s", campaign_id, reason)
+
+        safety_state = _delivery_safety_state(session)
+        if safety_state is None or safety_state.emergency_stop_engaged:
+            blocked("safety_state_unavailable" if safety_state is None else "global_emergency_stop")
+            return
+        if campaign.state not in _PROOF_SEND_CAMPAIGN_STATES:
+            blocked("campaign_state_not_proofable")
+            return
+        if payload.get("template_hash") != campaign.manifest_hash:
+            blocked("stale_campaign_manifest")
+            return
+        template = session.get(TemplateVersion, campaign.current_template_id) if campaign.current_template_id else None
+        if template is None:
+            blocked("no_template")
+            return
+
+        recipient = session.get(Recipient, recipient_uuid)
+        # The single most important check on this path: the destination must be
+        # a live, server-designated test account. A recipient whose designation
+        # was revoked between enqueue and dispatch is refused here.
+        if (
+            recipient is None
+            or not recipient.is_test_account
+            or recipient.status != dm.RecipientStatus.ACTIVE
+            or recipient.deleted_at is not None
+            or not (recipient.mailbox or "").strip()
+        ):
+            blocked("not_a_designated_test_account")
+            return
+        if recipient.recipient_id in _excluded_recipient_ids(session, campaign.campaign_id):
+            blocked("recipient_excluded")
+            return
+        suppression = session.get(RecipientDeliverySuppression, recipient.recipient_id)
+        if suppression is not None and suppression.active:
+            blocked("recipient_suppressed")
+            return
+        assigned = session.scalar(
+            select(RecipientAssignment.recipient_assignment_id)
+            .where(
+                RecipientAssignment.campaign_id == campaign.campaign_id,
+                RecipientAssignment.recipient_id == recipient.recipient_id,
+            )
+            .limit(1)
+        )
+        if assigned is not None:
+            blocked("recipient_already_assigned")
+            return
+
+        allowlist = ctx.settings.recipient_domain_allowlist()
+        # Same rule as delivery: an unset allowlist is allow-all only for the
+        # explicitly-marked dev stack, and fails closed everywhere else.
+        unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+        if not unrestricted and not is_recipient_allowed(recipient.mailbox or "", allowlist):
+            blocked("domain_not_allowed")
+            return
+        if campaign.roe_id is not None:
+            roe = session.get(RulesOfEngagement, campaign.roe_id)
+            if roe is None or not recipient_domain_roe_covered(
+                recipient.mailbox or "", frozenset(roe.target_domains or [])
+            ):
+                blocked("target_domain_not_roe_covered")
+                return
+
+        pattern = session.get(CampaignPattern, campaign.pattern_id) if campaign.pattern_id else None
+        sender_address, sender_honored = effective_sender_address(ctx, campaign)
+        # Re-read the interlock under its shared lock immediately before the
+        # provider call, exactly as delivery does, so engaging the emergency
+        # stop either orders before this send or after its durable result.
+        safety_state = _delivery_safety_state(session, shared_lock=True)
+        if safety_state is None or safety_state.emergency_stop_engaged:
+            blocked("safety_state_unavailable" if safety_state is None else "global_emergency_stop")
+            return
+        try:
+            receipt = _send_proof_email(
+                ctx,
+                campaign,
+                template,
+                pattern,
+                recipient,
+                sender_address=sender_address,
+            )
+        except Exception as exc:
+            ctx.audit_store.record(
+                session=session,
+                actor="worker:proof-send",
+                action="campaign.proof-send.failed",
+                object_type="campaign",
+                object_id=campaign_id,
+                detail={
+                    "proof_recipient_id": str(recipient.recipient_id),
+                    "exception_type": type(exc).__name__[:128],
+                },
+            )
+            session.commit()
+            logger.error("proof_send_failed campaign_id=%s exception_type=%s", campaign_id, type(exc).__name__[:128])
+            return
+        ctx.audit_store.record(
+            session=session,
+            actor="worker:proof-send",
+            action="campaign.proof-send",
+            object_type="campaign",
+            object_id=campaign_id,
+            detail={
+                "proof_recipient_id": str(recipient.recipient_id),
+                "destination": "server_designated_test_account",
+                "requested_by": str(payload.get("requested_by"))[:255],
+                "template_hash": campaign.manifest_hash,
+                "campaign_state": campaign.state.value,
+                "sender_address": sender_address,
+                "sender_persona_honored": sender_honored,
+                "provider_id": receipt.provider_id,
+                "creates_assignment": False,
+                "creates_tracking_token": False,
+            },
+        )
+        session.commit()
+
+
 def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
     payload = message["payload"]
     if payload.get("job_type") == "acs_delivery_receipt":
         process_acs_delivery_receipt(ctx, message)
+        return
+    if payload.get("job_type") == "proof_send":
+        process_proof_send(ctx, message)
         return
     assignment_ids = _delivery_assignment_ids(payload, limit=ctx.settings.delivery_batch_size)
     template_hash = payload.get("template_hash")
@@ -2220,6 +2399,98 @@ def _delivery_template_content(template: TemplateVersion) -> tuple[str, str, str
     if safe_html.strip() and TRAINING_URL_PLACEHOLDER not in safe_html:
         raise SafetyRejectionError("approved template content is incomplete or not recipient-bound")
     return subject, plain_text, safe_html
+
+
+_PROOF_SUBJECT_PREFIX = "[PROOF] "
+
+
+def _send_proof_email(
+    ctx: WorkerContext,
+    campaign: Campaign,
+    template: TemplateVersion,
+    pattern: CampaignPattern | None,
+    recipient: Recipient,
+    *,
+    sender_address: str,
+) -> DeliveryReceipt:
+    """Render and send one proof to an already-validated designated mailbox.
+
+    Differences from :func:`_send_email`, all deliberate:
+
+    * The tracking context uses a synthetic, non-persisted ``proof-…``
+      identifier. No ``TrackingToken`` row exists for it, so a click or open
+      from a proof resolves to nothing and can never become evidence, a
+      training assignment, or a followup.
+    * No open pixel and no calendar attachment are added — both are
+      recipient-bound artefacts of a real send.
+    * The subject is prefixed ``[PROOF]`` and an ``X-KP-Proof-Send`` header is
+      set, so a proof sitting in the test mailbox can never be mistaken for a
+      real lure by a human or by the reported-mail pipeline.
+
+    Everything else is the delivery path: the same renderer, the same
+    static-training-URL fence, the same ``SafetyValidator`` verdict, the same
+    resolved sender address and the same provider transport.
+    """
+
+    subject_source, plain_text_source, safe_html_source = _delivery_template_content(template)
+    tracking_base = ctx.settings.tracking_base_url.rstrip("/")
+    synthetic = "proof-" + secrets.token_hex(16)
+    click_url = f"{tracking_base}/v1/track/click/{synthetic}"
+    tracking = TrackingContext(
+        open_url=f"{tracking_base}/v1/track/open/{synthetic}",
+        click_url=click_url,
+        training_url=click_url,
+    )
+    recipient_ctx = RecipientContext(
+        first_name=recipient.display_name or "",
+        department=recipient.department or "",
+        email=recipient.mailbox or "",
+    )
+    campaign_ctx = CampaignContext(
+        title=campaign.title,
+        sender_display=(
+            pattern.impersonation_category if pattern and pattern.impersonation_category else campaign.sender_mailbox
+        ),
+        training_domain=campaign.training_domain,
+    )
+    subject = _render_or_plain(ctx, subject_source, recipient_ctx, campaign_ctx, tracking, recipient.mailbox or "")
+    plain_text = _render_or_plain(
+        ctx, plain_text_source, recipient_ctx, campaign_ctx, tracking, recipient.mailbox or ""
+    )
+    html = _render_or_plain(
+        ctx,
+        safe_html_source,
+        recipient_ctx,
+        campaign_ctx,
+        tracking,
+        recipient.mailbox or "",
+        html_context=True,
+    )
+    if any(_contains_url(part, ctx.settings.training_base_url) for part in (subject, plain_text, html)):
+        raise SafetyRejectionError("static training URL is not allowed in proof content")
+    allowed_domains = ctx.settings.training_domain_set()
+    for configured_url in (ctx.settings.tracking_base_url, ctx.settings.training_base_url):
+        host = urlparse(configured_url).hostname
+        if host:
+            allowed_domains.add(host)
+    verdict = SafetyValidator(training_domains=allowed_domains).validate(subject, plain_text, html)
+    if not verdict.allowed:
+        raise SafetyRejectionError(f"rendered proof message rejected: {verdict.reasons}")
+
+    msg = EmailMessage()
+    msg["Subject"] = _PROOF_SUBJECT_PREFIX + subject
+    if campaign.sender_display_name and ctx.settings.email_provider != "azure_communication_services":
+        msg["From"] = formataddr((campaign.sender_display_name, sender_address))
+    else:
+        msg["From"] = sender_address
+    msg["To"] = recipient.mailbox or ""
+    msg["X-KP-Proof-Send"] = "1"
+    msg.set_content(plain_text or subject)
+    if html:
+        msg.add_alternative(html, subtype="html")
+    provider_name = ctx.settings.email_provider_kind.metrics_name
+    with provider_call(provider_name, "send"):
+        return _make_batch_sender(ctx).send(msg)
 
 
 def _send_email(

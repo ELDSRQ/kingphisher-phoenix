@@ -101,6 +101,14 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
         ),
     ),
     (frozenset({"send:campaign"}), _routes("POST /api/v1/campaigns/{campaign_id}/test-send")),
+    (
+        # UX-011 §2b proof send: an author or either approver may ask to see the
+        # campaign's own rendered message land in a real mail client before a
+        # decision is recorded. No new capability was introduced; the
+        # destination is server-derived and is never part of the request.
+        frozenset({"create:campaign", "approve_security:campaign", "approve_privacy:campaign"}),
+        _routes("POST /api/v1/campaigns/{campaign_id}/proof-send"),
+    ),
     (frozenset({"stop:campaign"}), _routes("POST /api/v1/campaigns/{campaign_id}/recall")),
     (
         frozenset({"view_named:results"}),

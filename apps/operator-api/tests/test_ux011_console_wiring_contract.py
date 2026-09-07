@@ -79,3 +79,24 @@ def test_clone_and_resign_roe_start_fresh() -> None:
     # Re-sign opens the sign dialog prefilled; it is always a brand-new signature.
     assert "async function signRoe(prefill = {})" in APP
     assert "Re-sign for a new window" in APP
+
+
+def test_proof_send_button_is_flag_gated_and_offers_no_destination_input() -> None:
+    # UX-011 §2b. The button exists, it is gated on the server's own
+    # can_proof_send flag, and it posts a body that carries ONLY confirm+reason.
+    assert '"can_proof_send"' in APP
+    assert "if (c.can_proof_send === true)" in APP
+    assert 'text: "Send proof to test mailbox"' in APP
+    assert "function proofSendAct(campaign)" in APP
+    assert "api(`/campaigns/${campaign.campaign_id}/proof-send`" in APP
+    assert "JSON.stringify({ confirm: true, reason: values.reason.trim() })" in APP
+    # The console must never be able to name a destination: the dialog has one
+    # field (a reason), the request body is built exactly once, and no
+    # recipient picker or address input exists on this path.
+    proof_block = APP[APP.index("function proofSendAct(campaign)") : APP.index("function scheduleAct(campaign")]
+    assert proof_block.count("name: ") == 1
+    assert 'name: "reason"' in proof_block
+    assert proof_block.count("JSON.stringify(") == 1
+    for forbidden in ('name: "recipient', 'name: "mailbox', 'name: "email', 'name: "to"', "recipientPicker"):
+        assert forbidden not in proof_block
+    assert "chosen by the server" in APP

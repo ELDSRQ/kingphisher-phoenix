@@ -16,6 +16,7 @@ import io
 import json
 import re
 import secrets
+import threading
 import uuid
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -89,7 +90,7 @@ from kp_database.privacy import (
 )
 from kp_database.program_service import require_program_active_for_schedule
 from kp_domain_models import models as dm
-from kp_domain_models.policy import ApprovalPolicy
+from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
 from kp_domain_models.roe import (
     recipient_domain_roe_covered,
     roe_covers_schedule,
@@ -116,6 +117,7 @@ from kp_operator_api.auth import require_any_capability, require_capability
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.content_library import register_routes as register_content_library_routes
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
+from kp_operator_api.ratelimit import RateLimiter
 from kp_operator_api.recipient_import_planning import (
     RecipientImportApplyRequest,
     RecipientImportPreviewRequest,
@@ -155,6 +157,25 @@ router = APIRouter(prefix="/api/v1")
 
 _MAX_COVERING_ROE_CANDIDATES = 100
 _CANARY_EVIDENCE_TTL = timedelta(hours=24)
+
+# UX-011 §2b — proof send ("show me how this lands in a real mail client").
+# Only before a decision is recorded: a proof exists to inform the approval, so
+# it is offered exactly while the campaign is still being authored or reviewed.
+_PROOF_SEND_CAMPAIGN_STATES = frozenset(
+    {
+        dm.CampaignState.DRAFT,
+        dm.CampaignState.PENDING_APPROVAL,
+    }
+)
+# Throttle: a proof is a REAL outbound message, so the endpoint must not be
+# loopable into a mail bomb against the designated test mailbox. Two windows,
+# both fail-closed (RateLimiter.allow() returns False on any backend error):
+# one per authenticated actor, one for the whole deployment.
+_PROOF_SEND_ACTOR_LIMIT = 3
+_PROOF_SEND_GLOBAL_LIMIT = 10
+_PROOF_SEND_WINDOW_SECONDS = 300.0
+_PROOF_SEND_GLOBAL_KEY = "__deployment__"
+_proof_send_limiter_lock = threading.Lock()
 _RECIPIENT_IMPORT_REPREVIEW_CONFLICT = "recipient state changed concurrently; preview the import again"
 
 _AUDIENCE_VALIDATION_MESSAGES = frozenset(
@@ -1353,6 +1374,21 @@ def _campaign_action_flags(
         # Kept in the stable response schema for old consoles. The reviewed
         # canary action is now `can_schedule`; ad-hoc test sends are disabled.
         "can_test_send": False,
+        # UX-011 §2b. Read-only authority hint for the proof send. It says only
+        # "this principal may ask for a proof of THIS campaign"; it says nothing
+        # about where a proof would go — the destination is derived from server
+        # state alone (see ``_designated_proof_recipient``) and is re-derived by
+        # the worker. The route revalidates the emergency stop, the recipient
+        # policy and the designation at mutation time.
+        "can_proof_send": bool(
+            (
+                principal.can(Capability.CREATE_CAMPAIGN)
+                or principal.can(Capability.APPROVE_SECURITY)
+                or principal.can(Capability.APPROVE_PRIVACY)
+            )
+            and campaign.state in _PROOF_SEND_CAMPAIGN_STATES
+            and campaign.current_template_id is not None
+        ),
         "can_recall": bool(
             principal.can(Capability.STOP_CAMPAIGN)
             and campaign.state
@@ -1939,6 +1975,270 @@ def test_send_campaign(
     raise ConflictError(
         "ad-hoc test sends are disabled; use Review & run canary so successful evidence can gate full publication"
     )
+
+
+class ProofSendRequest(BaseModel):
+    """Request body for a proof send.
+
+    SECURITY — this model deliberately carries NO destination of any kind, and
+    ``extra="forbid"`` makes an attempt to smuggle one (``mailbox``,
+    ``recipient_id``, ``to``, …) a 422 rather than a silently ignored field.
+    The destination comes only from :func:`_designated_proof_recipient`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: StrictBool = False
+    reason: str = Field(min_length=1, max_length=500)
+
+
+def _proof_send_limiters(request: Request) -> tuple[RateLimiter, RateLimiter]:
+    """Return the (per-actor, per-deployment) proof-send limiters.
+
+    Built lazily on ``app.state`` so the shared limiter wiring in ``main`` is
+    untouched, and configured to match it: Redis-backed (shared across
+    replicas) exactly when the process-wide user limiter is, otherwise the
+    same bounded in-process window.
+    """
+
+    limiters = getattr(request.app.state, "proof_send_limiters", None)
+    if limiters is not None:
+        return cast(tuple[RateLimiter, RateLimiter], limiters)
+    with _proof_send_limiter_lock:
+        limiters = getattr(request.app.state, "proof_send_limiters", None)
+        if limiters is None:
+            shared = getattr(request.app.state, "user_limiter", None)
+            redis_url = (
+                (request.app.state.settings.redis_url.strip() or None)
+                if shared is not None and getattr(shared, "distributed", False)
+                else None
+            )
+            limiters = (
+                RateLimiter(
+                    limit=_PROOF_SEND_ACTOR_LIMIT,
+                    window_seconds=_PROOF_SEND_WINDOW_SECONDS,
+                    redis_url=redis_url,
+                    namespace="operator-proof-send-actor",
+                ),
+                RateLimiter(
+                    limit=_PROOF_SEND_GLOBAL_LIMIT,
+                    window_seconds=_PROOF_SEND_WINDOW_SECONDS,
+                    redis_url=redis_url,
+                    namespace="operator-proof-send-global",
+                ),
+            )
+            request.app.state.proof_send_limiters = limiters
+    return cast(tuple[RateLimiter, RateLimiter], limiters)
+
+
+def _designated_proof_recipient(session: Session) -> Recipient:
+    """The proof mailbox — derived from server state, never from the caller.
+
+    THE security property of the proof send: a caller must not be able to
+    influence WHERE a real message goes. So the destination is not read from
+    the request body, the query string, the path, or any header. It is the
+    deterministic first row of the *server-designated test-account* set — the
+    identical ``Recipient.is_test_account`` designation that already gates the
+    canary cohort (``bind_campaign_launch_review``), that only a
+    ``manage:recipients`` holder can change, that requires ``confirm`` + a
+    reason, that is audited as ``recipient.test-account.update``, and that is
+    locked while the recipient sits in a frozen or assigned live campaign
+    (``designate_test_account``).
+
+    Ordering by ``recipient_id`` makes the choice deterministic and
+    caller-independent rather than "whichever row the planner returned first".
+    The response tells the operator which designated account was used, so the
+    selection is visible without ever being selectable.
+    """
+
+    recipient = session.scalars(
+        select(Recipient)
+        .where(
+            Recipient.is_test_account.is_(True),
+            Recipient.status == dm.RecipientStatus.ACTIVE,
+            Recipient.deleted_at.is_(None),
+        )
+        .order_by(Recipient.recipient_id)
+        .limit(1)
+    ).first()
+    if recipient is None:
+        raise ConflictError(
+            "no server-designated test account is available; designate one under Recipients before sending a proof"
+        )
+    return recipient
+
+
+@router.post("/campaigns/{campaign_id}/proof-send", status_code=status.HTTP_202_ACCEPTED)
+def proof_send_campaign(
+    campaign_id: uuid.UUID,
+    body: ProofSendRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(
+        require_any_capability(
+            Capability.CREATE_CAMPAIGN,
+            Capability.APPROVE_SECURITY,
+            Capability.APPROVE_PRIVACY,
+        )
+    ),
+) -> dict[str, Any]:
+    """UX-011 §2b — queue ONE rendered proof to the designated test mailbox.
+
+    What this is: an author or approver asking to see the campaign's own
+    rendered message land in a real mail client before a decision is recorded.
+
+    What this is NOT, by construction:
+
+    * It is not a delivery. It creates no ``RecipientAssignment``, no
+      ``TrackingToken``, no ``DeliveryCorrelation`` and no canary evidence, and
+      it never writes campaign, launch-gate, audience or approval state. The
+      only rows this route writes are the queue outbox message and its audit
+      events.
+    * It is not caller-addressable. The queue payload carries a *recipient id*
+      that this route derived from server state; it never carries a mailbox,
+      and the worker re-derives and re-checks the designation before sending.
+
+    Every refusal below is recorded as ``campaign.proof-send.blocked`` so an
+    auditor sees attempts, not only successes.
+    """
+
+    if not body.confirm:
+        raise ValidationError_("a proof send is a real outbound message and requires confirmation (confirm=true)")
+    reason = body.reason.strip()
+    if not reason:
+        raise ValidationError_("a proof send requires a reason")
+
+    campaign = _get_campaign(session, campaign_id)
+
+    def refuse(detail_reason: str, error: Exception) -> None:
+        audit.record(
+            session=session,
+            actor=principal.principal_id,
+            action="campaign.proof-send.blocked",
+            object_type="campaign",
+            object_id=str(campaign.campaign_id),
+            detail={"reason": detail_reason, "operator_reason": reason},
+        )
+        session.commit()
+        raise error
+
+    if campaign.state not in _PROOF_SEND_CAMPAIGN_STATES:
+        refuse(
+            "campaign_state_not_proofable",
+            ConflictError("a proof send is only available while a campaign is a draft or pending approval"),
+        )
+    if campaign.current_template_id is None:
+        refuse("no_template", ConflictError("campaign has no template to prove"))
+
+    # Throttle before anything else that could turn into outbound mail. Both
+    # windows must allow; `allow()` fails closed if its backend is unavailable.
+    actor_limiter, global_limiter = _proof_send_limiters(request)
+    if not actor_limiter.allow(principal.principal_id) or not global_limiter.allow(_PROOF_SEND_GLOBAL_KEY):
+        refuse(
+            "throttled",
+            HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="proof sends are throttled; wait before requesting another",
+            ),
+        )
+
+    safety_state = _system_safety_state(session, shared_lock=True)
+    if safety_state.emergency_stop_engaged:
+        refuse(
+            "global_emergency_stop",
+            ConflictError("the global emergency stop is engaged; proof sends are disabled"),
+        )
+
+    recipient = _designated_proof_recipient(session)
+
+    # Recipient policy, identical to the delivery worker's: PLT-002 makes an
+    # unset allowlist a hard 422 outside an explicitly-marked dev stack, and
+    # this route deliberately does not special-case around that.
+    settings: OperatorApiSettings = request.app.state.settings
+    allowlist, unrestricted = resolve_recipient_policy(settings)
+    if not unrestricted and not is_recipient_allowed(recipient.mailbox or "", allowlist):
+        refuse(
+            "domain_not_allowed",
+            ConflictError("the designated test mailbox is outside the recipient-domain allowlist"),
+        )
+
+    # If a signed RoE is already bound, its verified target domains bind the
+    # proof too. Before review there is usually no RoE yet; this check can only
+    # ever refuse more, never allow something the allowlist refused.
+    if campaign.roe_id is not None:
+        roe = session.get(RulesOfEngagement, campaign.roe_id)
+        covered = roe is not None and recipient_domain_roe_covered(
+            recipient.mailbox or "", frozenset(roe.target_domains or [])
+        )
+        if not covered:
+            refuse(
+                "target_domain_not_roe_covered",
+                ConflictError("the designated test mailbox is outside this campaign's Rules-of-Engagement"),
+            )
+
+    # A proof must never touch a mailbox this campaign is actually contacting:
+    # that is the one way a proof could be confused with, or double up on, a
+    # real send.
+    assigned = session.scalar(
+        select(RecipientAssignment.recipient_assignment_id)
+        .where(
+            RecipientAssignment.campaign_id == campaign.campaign_id,
+            RecipientAssignment.recipient_id == recipient.recipient_id,
+        )
+        .limit(1)
+    )
+    if assigned is not None:
+        refuse(
+            "recipient_already_assigned",
+            ConflictError("the designated test mailbox is already a recipient of this campaign; no proof was sent"),
+        )
+
+    # No mailbox in the payload — the worker re-derives it from the recipient
+    # row and re-checks the designation before it contacts any provider.
+    enqueue_queue(
+        session,
+        topic="deliver",
+        payload={
+            "job_type": "proof_send",
+            "campaign_id": str(campaign.campaign_id),
+            "proof_recipient_id": str(recipient.recipient_id),
+            "template_hash": campaign.manifest_hash,
+            "requested_by": principal.principal_id,
+        },
+        idempotency_key=f"proof-send:{campaign.campaign_id}:{uuid.uuid4()}",
+    )
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="campaign.proof-send.queued",
+        object_type="campaign",
+        object_id=str(campaign.campaign_id),
+        detail={
+            "proof_recipient_id": str(recipient.recipient_id),
+            "destination": "server_designated_test_account",
+            "template_hash": campaign.manifest_hash,
+            "campaign_state": campaign.state.value,
+            "operator_reason": reason,
+        },
+    )
+    dispatch_after_commit(
+        session,
+        lambda: request.app.state.audit_store.dispatch_pending_queue(request.app.state.queue),
+    )
+    session.commit()
+    payload: dict[str, Any] = {
+        "campaign_id": str(campaign.campaign_id),
+        "state": campaign.state.value,
+        "queued": True,
+        "proof_recipient_id": str(recipient.recipient_id),
+        "destination": "server_designated_test_account",
+    }
+    # Same privacy boundary as every other recipient projection: the masked
+    # mailbox appears only for the capability literally named view_named:results.
+    if principal.can(Capability.VIEW_NAMED_RESULTS):
+        payload["masked_mailbox"] = _masked_mailbox(recipient.mailbox)
+    return payload
 
 
 @router.post("/campaigns/{campaign_id}/recall", status_code=status.HTTP_200_OK)
