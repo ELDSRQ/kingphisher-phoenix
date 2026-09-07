@@ -53,7 +53,12 @@ def _manage_only() -> Principal:
 def test_view_named_holder_sees_masked_label() -> None:
     session = _ListSession([_recipient()])
     page = routers.list_recipients(
-        limit=100, offset=0, mailbox=None, session=session, settings=object(), principal=_view_named()  # type: ignore[arg-type]
+        limit=100,
+        offset=0,
+        mailbox=None,
+        session=session,
+        settings=object(),
+        principal=_view_named(),  # type: ignore[arg-type]
     )
     (item,) = page["items"]
     assert item["display_name"] == "Jane Doe"
@@ -64,7 +69,12 @@ def test_view_named_holder_sees_masked_label() -> None:
 def test_manage_recipients_only_holder_sees_no_name_or_mailbox() -> None:
     session = _ListSession([_recipient()])
     page = routers.list_recipients(
-        limit=100, offset=0, mailbox=None, session=session, settings=object(), principal=_manage_only()  # type: ignore[arg-type]
+        limit=100,
+        offset=0,
+        mailbox=None,
+        session=session,
+        settings=object(),
+        principal=_manage_only(),  # type: ignore[arg-type]
     )
     (item,) = page["items"]
     assert set(item) == {"recipient_id", "department", "status", "is_test_account"}

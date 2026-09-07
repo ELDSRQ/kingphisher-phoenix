@@ -255,9 +255,7 @@ def test_propose_401_when_key_set_and_no_bearer(monkeypatch) -> None:
 def test_propose_401_when_key_set_and_wrong_bearer(monkeypatch) -> None:
     monkeypatch.setattr(gateway_main.settings, "api_key", "s3cret")
     _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
-    resp = TestClient(gateway_main.app).post(
-        "/propose", json=VALID_REQUEST, headers={"Authorization": "Bearer wrong"}
-    )
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST, headers={"Authorization": "Bearer wrong"})
     assert resp.status_code == 401
 
 
@@ -266,9 +264,7 @@ def test_propose_200_with_correct_bearer(monkeypatch) -> None:
     # the same secret configured here as ``api_key`` must be accepted.
     monkeypatch.setattr(gateway_main.settings, "api_key", "s3cret")
     _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
-    resp = TestClient(gateway_main.app).post(
-        "/propose", json=VALID_REQUEST, headers={"Authorization": "Bearer s3cret"}
-    )
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST, headers={"Authorization": "Bearer s3cret"})
     assert resp.status_code == 200, resp.text
 
 
@@ -290,6 +286,7 @@ def test_propose_allows_unauthenticated_when_key_unset(monkeypatch) -> None:
 
 
 # --- AI-016: fail-closed posture (require_auth) ------------------------------
+
 
 def test_propose_fails_closed_when_auth_required_but_key_unset(monkeypatch) -> None:
     # Managed misconfiguration: auth is required but no secret is configured.
@@ -313,9 +310,7 @@ def test_propose_200_when_auth_required_and_correct_bearer(monkeypatch) -> None:
     monkeypatch.setattr(gateway_main.settings, "api_key", "s3cret")
     monkeypatch.setattr(gateway_main.settings, "require_auth", True)
     _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
-    resp = TestClient(gateway_main.app).post(
-        "/propose", json=VALID_REQUEST, headers={"Authorization": "Bearer s3cret"}
-    )
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST, headers={"Authorization": "Bearer s3cret"})
     assert resp.status_code == 200, resp.text
 
 
@@ -355,6 +350,7 @@ def test_settings_default_posture_allows_local_stack_without_key(monkeypatch) ->
 
 # --- AI-016: training_url is HTML-escaped before reaching safe_html ---------
 
+
 def test_propose_escapes_training_url_into_safe_html(monkeypatch) -> None:
     # A hostile caller string reaches ``training_url``; the model omits it, so the
     # gateway appends the training link. The appended href must be escaped: no raw
@@ -376,6 +372,7 @@ def test_propose_escapes_training_url_into_safe_html(monkeypatch) -> None:
 
 
 # --- AI-016: guidance is appended (not replaced) and is bounded -------------
+
 
 def test_propose_appends_caller_guidance_and_keeps_the_default(monkeypatch) -> None:
     captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
@@ -407,6 +404,7 @@ def test_propose_forbids_unknown_top_level_fields(monkeypatch) -> None:
 
 
 # --- AI-016: backend errors surface as a clean 502 --------------------------
+
 
 def test_propose_502_on_backend_http_error(monkeypatch) -> None:
     class _RaisingResponse:

@@ -112,7 +112,9 @@ class _EvidenceSession:
 
 def _bundle(session) -> dict[str, bytes]:  # noqa: ANN001
     response = routers.campaign_evidence_bundle(
-        campaign_id=uuid4(), session=session, _principal=object()  # type: ignore[arg-type]
+        campaign_id=uuid4(),
+        session=session,
+        _principal=object(),  # type: ignore[arg-type]
     )
     assert response.media_type == "application/zip"
     assert "evidence.zip" in response.headers["Content-Disposition"]

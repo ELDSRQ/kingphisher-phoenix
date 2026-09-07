@@ -76,7 +76,7 @@ def _rename(table: str, old: str, new: str) -> None:
     *identifier* as a parameter. Every value comes from the ``_RENAMES`` literal
     above — module constants, never input — so there is no injection path.
     """
-    op.execute(  # noqa: S608 - identifiers cannot be bound; all values are module constants
+    op.execute(
         f"""
         DO $rename$
         BEGIN

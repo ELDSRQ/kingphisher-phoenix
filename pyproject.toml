@@ -42,6 +42,11 @@ kp-domain-verification = { workspace = true }
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+# `.claude/worktrees/` holds throwaway agent worktrees — full checkouts of other
+# revisions of this same repo. They are untracked, so CI never sees them, but
+# locally they made `make lint` report errors from stale copies of files that are
+# already fixed on main. Excluding them keeps the local gate honest to CI.
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM"]
@@ -52,6 +57,11 @@ ignore = ["S101"]  # assert allowed in tests
 "**/tests/**" = ["S105", "S106", "S113", "B008"]
 "apps/**/src/**" = ["B008"]  # FastAPI Depends() defaults are the framework idiom
 "packages/**/src/**/config.py" = ["S106"]  # dev-only DB defaults in the local stack
+# DDL migrations must interpolate identifiers (table/constraint names): PostgreSQL
+# cannot bind an identifier as a parameter. Every interpolated value in these files
+# is a literal written into the migration, never input, so S608 has no reachable
+# injection path here. Application query code is NOT exempt.
+"packages/database/alembic/versions/**" = ["S608"]
 
 [tool.mypy]
 python_version = "3.13"

@@ -579,10 +579,7 @@ def test_ai_gateway_workload_is_internal_two_container_and_opt_in() -> None:
     # shared bearer key, resolved by the gateway's own workload identity.
     assert gateway.count("key_vault_secret_id") == 1
     assert 'name                = "ai-gateway-auth-key"' in gateway
-    assert (
-        'key_vault_secret_id = azurerm_key_vault_secret.runtime["ai-gateway-auth-key"].versionless_id'
-        in gateway
-    )
+    assert 'key_vault_secret_id = azurerm_key_vault_secret.runtime["ai-gateway-auth-key"].versionless_id' in gateway
     # REQUIRE_AUTH is hard-on and the key is injected via a secret reference,
     # never a plaintext value.
     assert 'name  = "KP_AI_GATEWAY_REQUIRE_AUTH"' in gateway
@@ -623,7 +620,7 @@ def test_ai_gateway_fail_closed_auth_is_shared_and_gated_to_managed() -> None:
     )[0]
     assert (
         "(var.deploy_workloads && var.deploy_ai_gateway) ? {\n"
-        "      ai-gateway = toset([\"ai-gateway-auth-key\"])\n"
+        '      ai-gateway = toset(["ai-gateway-auth-key"])\n'
         "    } : {}"
     ) in secret_access
     # The generation worker deployment also reads it, gated identically.
@@ -656,8 +653,8 @@ def test_ai_gateway_auth_default_is_off_for_local_dev() -> None:
         encoding="utf-8"
     )
     assert "require_auth: bool = False" in gateway_config
-    compose = (
-        PROJECT_ROOT / "infrastructure" / "containers" / "ai-gateway-compose.snippet.yml"
-    ).read_text(encoding="utf-8")
+    compose = (PROJECT_ROOT / "infrastructure" / "containers" / "ai-gateway-compose.snippet.yml").read_text(
+        encoding="utf-8"
+    )
     assert "KP_AI_GATEWAY_REQUIRE_AUTH" not in compose
     assert "KP_AI_GATEWAY_API_KEY" not in compose

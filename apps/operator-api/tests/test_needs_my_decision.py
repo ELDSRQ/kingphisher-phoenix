@@ -170,7 +170,11 @@ def _run_queue(principal: Principal, campaigns, audiences, gates, approvals) -> 
     session = _QueueSession(campaigns, audiences, gates, approvals)
     settings = SimpleNamespace(approval_policy=ApprovalPolicy.ENFORCE)
     return routers.campaigns_needing_my_decision(
-        limit=100, offset=0, session=session, settings=settings, principal=principal  # type: ignore[arg-type]
+        limit=100,
+        offset=0,
+        session=session,
+        settings=settings,
+        principal=principal,  # type: ignore[arg-type]
     )
 
 

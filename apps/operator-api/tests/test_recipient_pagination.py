@@ -103,7 +103,12 @@ _ANON_PRINCIPAL = SimpleNamespace(can=lambda _capability: False)
 def test_global_recipient_query_and_envelope_are_bounded_beyond_one_page() -> None:
     session = _GlobalSession([_recipient(index) for index in range(501)])
     page = list_recipients(
-        limit=500, offset=0, mailbox=None, session=session, settings=object(), principal=_ANON_PRINCIPAL  # type: ignore[arg-type]
+        limit=500,
+        offset=0,
+        mailbox=None,
+        session=session,
+        settings=object(),
+        principal=_ANON_PRINCIPAL,  # type: ignore[arg-type]
     )
 
     assert len(page["items"]) == 500
@@ -119,7 +124,12 @@ def test_global_recipient_query_and_envelope_are_bounded_beyond_one_page() -> No
     assert "OFFSET" in str(session.page_statement)
 
     final_page = list_recipients(
-        limit=500, offset=500, mailbox=None, session=session, settings=object(), principal=_ANON_PRINCIPAL  # type: ignore[arg-type]
+        limit=500,
+        offset=500,
+        mailbox=None,
+        session=session,
+        settings=object(),
+        principal=_ANON_PRINCIPAL,  # type: ignore[arg-type]
     )
     assert len(final_page["items"]) == 1
     assert final_page["truncated"] is False

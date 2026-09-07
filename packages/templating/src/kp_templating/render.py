@@ -51,6 +51,7 @@ _INTERCEPTED_BINOPS = frozenset({"*", "**", "+", "-", "~"})
 class TemplateRenderError(ValueError):
     """Raised when a template exceeds a rendering resource limit."""
 
+
 _RECIPIENT_FIELDS = frozenset({"first_name", "last_name", "department", "email"})
 _CAMPAIGN_FIELDS = frozenset({"title", "sender_display", "training_domain"})
 _TRACKING_FIELDS = frozenset({"open_url", "click_url", "training_url"})
@@ -143,11 +144,7 @@ def _check_binop(operator: str, left: Any, right: Any) -> None:
                 )
     elif operator == "+":
         # sequence concatenation: len(left) + len(right)
-        if (
-            _sized_sequence(left)
-            and _sized_sequence(right)
-            and len(left) + len(right) > _MAX_SEQUENCE_LEN
-        ):
+        if _sized_sequence(left) and _sized_sequence(right) and len(left) + len(right) > _MAX_SEQUENCE_LEN:
             raise TemplateRenderError(
                 f"template concatenation would create a sequence of "
                 f"{len(left) + len(right)} items (limit {_MAX_SEQUENCE_LEN})"
@@ -179,9 +176,7 @@ def _capped_concat(parts: Iterable[str]) -> str:
     for part in parts:
         total += len(part)
         if total > _MAX_OUTPUT_CHARS:
-            raise TemplateRenderError(
-                f"rendered template exceeds the {_MAX_OUTPUT_CHARS}-character output limit"
-            )
+            raise TemplateRenderError(f"rendered template exceeds the {_MAX_OUTPUT_CHARS}-character output limit")
         collected.append(part)
     return "".join(collected)
 

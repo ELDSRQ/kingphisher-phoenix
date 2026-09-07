@@ -191,9 +191,7 @@ def test_html_summary_extracts_structure_and_counts() -> None:
 def test_html_summary_caps_text_and_href_length() -> None:
     long_text = "T" * 500
     long_href = "https://train.local/" + ("q" * 500)
-    summary = content_library_module._summarize_safe_html(
-        f'<a href="{long_href}">{long_text}</a><h1>{long_text}</h1>'
-    )
+    summary = content_library_module._summarize_safe_html(f'<a href="{long_href}">{long_text}</a><h1>{long_text}</h1>')
     assert len(summary["links"][0]["text"]) == content_library_module._HTML_SUMMARY_MAX_TEXT
     assert len(summary["links"][0]["href"]) == content_library_module._HTML_SUMMARY_MAX_HREF
     assert len(summary["headings"][0]) == content_library_module._HTML_SUMMARY_MAX_TEXT

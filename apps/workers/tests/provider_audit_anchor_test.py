@@ -190,8 +190,7 @@ def _list_xml(leaf_names: list[str], next_marker: str = "") -> bytes:
     blobs = "".join(f"<Blob><Name>v1/{name}</Name></Blob>" for name in leaf_names)
     marker = f"<NextMarker>{next_marker}</NextMarker>" if next_marker else "<NextMarker/>"
     return (
-        f'<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Blobs>{blobs}</Blobs>{marker}'
-        "</EnumerationResults>"
+        f'<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Blobs>{blobs}</Blobs>{marker}</EnumerationResults>'
     ).encode("ascii")
 
 

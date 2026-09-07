@@ -1165,9 +1165,7 @@ def submit_campaign(
     template = session.get(TemplateVersion, campaign.current_template_id, with_for_update=True)
     if template is None:
         raise ConflictError("campaign requires an approved template before review")
-    launch_gate = bind_campaign_launch_review(
-        session, campaign, template, submitted_by=_principal_uuid(principal)
-    )
+    launch_gate = bind_campaign_launch_review(session, campaign, template, submitted_by=_principal_uuid(principal))
     campaign.state = (
         dm.CampaignState.PENDING_APPROVAL
         if request.app.state.settings.approval_policy is ApprovalPolicy.ENFORCE
@@ -1594,9 +1592,7 @@ def approve_campaign(
     # decision from anyone who has already approved a facet of this review, even
     # across a different lane. This closes the single-ADMINISTRATOR path where
     # one principal holds both APPROVE_SECURITY and APPROVE_PRIVACY.
-    if body.decision == dm.ApprovalDecision.APPROVED and any(
-        row.approver_id == principal_id for row in approved_rows
-    ):
+    if body.decision == dm.ApprovalDecision.APPROVED and any(row.approver_id == principal_id for row in approved_rows):
         raise PermissionDeniedError(
             "you have already approved a facet of this review; an independent approver is required"
         )
@@ -2418,9 +2414,7 @@ def campaigns_needing_my_decision(
     offset: int = Query(default=0, ge=0, le=_GUI_COLLECTION_MAX_OFFSET),
     session: Session = Depends(get_session),
     settings: OperatorApiSettings = Depends(get_settings),
-    principal: Principal = Depends(
-        require_any_capability(Capability.APPROVE_SECURITY, Capability.APPROVE_PRIVACY)
-    ),
+    principal: Principal = Depends(require_any_capability(Capability.APPROVE_SECURITY, Capability.APPROVE_PRIVACY)),
 ) -> list[dict[str, Any]]:
     """Campaigns awaiting THIS principal's approval decision.
 
@@ -2922,9 +2916,7 @@ def campaign_evidence_bundle(
         "approvals.json": _evidence_json(approvals_doc),
         "roe.json": _evidence_json(roe_doc),
     }
-    manifest_lines = "".join(
-        f"{hashlib.sha256(body).hexdigest()}  {name}\n" for name, body in sorted(members.items())
-    )
+    manifest_lines = "".join(f"{hashlib.sha256(body).hexdigest()}  {name}\n" for name, body in sorted(members.items()))
     members["manifest.sha256"] = manifest_lines.encode("utf-8")
 
     buffer = io.BytesIO()
@@ -3325,9 +3317,7 @@ def list_recipients(
     mailbox: str | None = Query(default=None, max_length=320),
     session: Session = Depends(get_session),
     settings: OperatorApiSettings = Depends(get_settings),
-    principal: Principal = Depends(
-        require_any_capability(Capability.VIEW_NAMED_RESULTS, Capability.MANAGE_RECIPIENTS)
-    ),
+    principal: Principal = Depends(require_any_capability(Capability.VIEW_NAMED_RESULTS, Capability.MANAGE_RECIPIENTS)),
 ) -> dict[str, Any]:
     # Names appear ONLY for the capability literally named ``view_named:results``.
     # A ``manage:recipients`` holder (the campaign operator) sees the unchanged
