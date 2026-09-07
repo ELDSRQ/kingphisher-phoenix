@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 from fastapi import HTTPException, Request
 from kp_operator_api import console
+from kp_operator_api.console import onboarding as console_onboarding_module
 from kp_telemetry.errors import ConflictError
 
 
@@ -314,7 +315,7 @@ def test_transient_http_destination_never_receives_stored_secrets(
         calls.append((url, headers or {}))
         return True, None
 
-    monkeypatch.setattr(console, "_probe_http", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", probe)
     result = console.test_onboarding_connection(
         console.ConnectionTest(component=component, values=transient_values),
         _request(env_file),
@@ -350,7 +351,7 @@ def test_transient_smtp_destination_never_receives_stored_credentials(
         calls.append((address, username, password))
         return True, None
 
-    monkeypatch.setattr(console, "_probe_smtp", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_smtp", probe)
     result = console.test_onboarding_connection(
         console.ConnectionTest(component="smtp", values={"KP_WORKER_SMTP_ADDRESS": "smtp.attacker.example:587"}),
         _request(env_file),
@@ -380,7 +381,7 @@ def test_transient_microsoft365_destination_never_receives_saved_bearer(
         calls.append((url, kwargs))
         return True, None
 
-    monkeypatch.setattr(console, "_probe_http", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", probe)
     result = console.test_onboarding_connection(
         console.ConnectionTest(
             component="mailbox",
@@ -420,7 +421,7 @@ def test_mailbox_provider_change_never_reuses_saved_provider_credentials(
         calls.append((url, kwargs))
         return True, None
 
-    monkeypatch.setattr(console, "_probe_http", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", probe)
     result = console.test_onboarding_connection(
         console.ConnectionTest(
             component="mailbox",
@@ -456,7 +457,7 @@ def test_saved_and_complete_transient_credentials_remain_testable(
         calls.append((url, headers or {}))
         return True, None
 
-    monkeypatch.setattr(console, "_probe_http", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", probe)
     saved_result = console.test_onboarding_connection(
         console.ConnectionTest(component="ai", values={}), _request(env_file)
     )
@@ -482,17 +483,17 @@ def test_saved_and_complete_transient_credentials_remain_testable(
 def test_managed_deployment_refuses_env_file_connection_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     env_file = tmp_path / "must-not-be-read.env"
     monkeypatch.setattr(
-        console,
+        console_onboarding_module,
         "_env_values",
         lambda _path: pytest.fail("managed connection tests must not read an env file"),
     )
     monkeypatch.setattr(
-        console,
+        console_onboarding_module,
         "_probe_http",
         lambda *_args, **_kwargs: pytest.fail("managed connection tests must not call provider networks"),
     )
     monkeypatch.setattr(
-        console,
+        console_onboarding_module,
         "_probe_smtp",
         lambda *_args, **_kwargs: pytest.fail("managed connection tests must not call provider networks"),
     )
@@ -803,7 +804,7 @@ def test_acs_connection_test_enforces_exact_endpoint_before_probe(
         calls.append(url)
         return True, None
 
-    monkeypatch.setattr(console, "_probe_http", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", probe)
     accepted = console.test_onboarding_connection(
         console.ConnectionTest(
             component="smtp",

@@ -12,6 +12,7 @@ import httpx
 import pytest
 from fastapi import Request
 from kp_operator_api import console as console_module
+from kp_operator_api.console import onboarding as console_onboarding_module
 from kp_telemetry.errors import ConflictError
 
 
@@ -199,22 +200,22 @@ def test_managed_setup_assist_exits_before_env_credentials_dns_or_http(
 ) -> None:
     request = _assist_request(tmp_path / "must-not-be-read.env", managed=True, dev=False)
     monkeypatch.setattr(
-        console_module,
+        console_onboarding_module,
         "_env_values",
         lambda *_args, **_kwargs: pytest.fail("managed setup assist must not read local configuration"),
     )
     monkeypatch.setattr(
-        console_module,
+        console_onboarding_module,
         "_auth_headers",
         lambda *_args, **_kwargs: pytest.fail("managed setup assist must not load credentials"),
     )
     monkeypatch.setattr(
-        console_module,
+        console_onboarding_module,
         "_resolve_setup_assist_endpoint",
         lambda *_args, **_kwargs: pytest.fail("managed setup assist must not resolve or contact a provider"),
     )
     monkeypatch.setattr(
-        console_module.httpx,
+        console_onboarding_module.httpx,
         "AsyncClient",
         lambda *_args, **_kwargs: pytest.fail("managed setup assist must not create an HTTP client"),
     )
@@ -253,12 +254,12 @@ def test_setup_assist_rejects_each_non_public_dns_answer_before_credentials(
         lambda _host, port, **_kwargs: [_dns_answer(address, port)],
     )
     monkeypatch.setattr(
-        console_module,
+        console_onboarding_module,
         "_auth_headers",
         lambda *_args, **_kwargs: pytest.fail("credentials must not be prepared before endpoint validation"),
     )
     monkeypatch.setattr(
-        console_module.httpx,
+        console_onboarding_module.httpx,
         "AsyncClient",
         lambda *_args, **_kwargs: pytest.fail("blocked setup-assist endpoint must not receive a request"),
     )
@@ -417,7 +418,7 @@ def test_setup_assist_refuses_redirect_and_disables_proxy_and_http2(
             captured["request"] = (method, url, kwargs)
             return Stream()
 
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(console_onboarding_module.httpx, "AsyncClient", Client)
 
     result = _assist(
         console_module.SetupAssistRequest(component="ai", question="Help with the AI service."),

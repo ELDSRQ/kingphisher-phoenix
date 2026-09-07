@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from kp_operator_api import auth as auth_module
 from kp_operator_api import console as console_module
 from kp_operator_api.auth import BoundedPyJWKClient, OidcIdP
+from kp_operator_api.console import console_auth as console_auth_module
 from kp_operator_api.oidc_provider import OidcProviderResponseError, bounded_json, bounded_json_async
 from kp_telemetry.errors import AuthenticationError
 
@@ -183,7 +184,7 @@ def test_async_discovery_accepts_normal_compressed_metadata(monkeypatch: pytest.
         _AsyncChunks(compressed),
         headers={"content-encoding": "gzip", "content-length": str(len(compressed))},
     )
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", _AsyncClient)
+    monkeypatch.setattr(console_auth_module.httpx, "AsyncClient", _AsyncClient)
 
     metadata = asyncio.run(console_module._oidc_metadata("https://id.example"))
 
@@ -199,7 +200,7 @@ def test_async_discovery_maps_oversize_to_content_free_authentication_error(
         _AsyncChunks((provider_secret + "x" * (64 * 1024)).encode()),
         headers={"content-length": str(64 * 1024 + len(provider_secret))},
     )
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", _AsyncClient)
+    monkeypatch.setattr(console_auth_module.httpx, "AsyncClient", _AsyncClient)
 
     with pytest.raises(AuthenticationError, match="identity provider discovery failed") as caught:
         asyncio.run(console_module._oidc_metadata("https://id.example"))
@@ -214,7 +215,7 @@ def test_async_discovery_rejects_wrong_issuer_type_as_stable_schema_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _AsyncClient.response = _response(_AsyncChunks(b'{"issuer":42}'))
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", _AsyncClient)
+    monkeypatch.setattr(console_auth_module.httpx, "AsyncClient", _AsyncClient)
 
     with pytest.raises(AuthenticationError, match="invalid issuer"):
         asyncio.run(console_module._oidc_metadata("https://id.example"))
@@ -242,7 +243,7 @@ def test_async_token_exchange_maps_transport_and_schema_failures_without_content
     response: httpx.Response,
 ) -> None:
     _AsyncClient.response = response
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", _AsyncClient)
+    monkeypatch.setattr(console_auth_module.httpx, "AsyncClient", _AsyncClient)
 
     with pytest.raises(AuthenticationError, match="invalid token response") as caught:
         asyncio.run(
@@ -261,7 +262,7 @@ def test_async_token_exchange_accepts_normal_chunked_response(monkeypatch: pytes
         _AsyncChunks(b'{"access_token":"access",', b'"id_token":"identity"}'),
         method="POST",
     )
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", _AsyncClient)
+    monkeypatch.setattr(console_auth_module.httpx, "AsyncClient", _AsyncClient)
 
     assert asyncio.run(
         console_module._oidc_token_response(
@@ -275,7 +276,7 @@ def test_async_token_exchange_accepts_normal_chunked_response(monkeypatch: pytes
 def test_rejected_token_exchange_does_not_read_or_echo_provider_body(monkeypatch: pytest.MonkeyPatch) -> None:
     stream = _AsyncChunks(b'{"error_description":"provider-secret-never-echo"}')
     _AsyncClient.response = _response(stream, status_code=400, method="POST")
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", _AsyncClient)
+    monkeypatch.setattr(console_auth_module.httpx, "AsyncClient", _AsyncClient)
 
     with pytest.raises(AuthenticationError, match="rejected the authorization code") as caught:
         asyncio.run(

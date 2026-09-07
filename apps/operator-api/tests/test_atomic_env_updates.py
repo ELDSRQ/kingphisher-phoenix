@@ -72,7 +72,7 @@ def test_invalid_field_is_rejected_before_any_staging_write(tmp_path: Path, monk
     def unexpected_stage(*_args: object, **_kwargs: object) -> tuple[int, str]:
         pytest.fail("invalid input must be rejected before a staging file is created")
 
-    monkeypatch.setattr("kp_operator_api.console.tempfile.mkstemp", unexpected_stage)
+    monkeypatch.setattr("kp_operator_api.console.env_store.tempfile.mkstemp", unexpected_stage)
     with pytest.raises(HTTPException, match="single-line"):
         console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "INFO\nSECRET=value"})
 
@@ -96,7 +96,7 @@ def test_set_failure_never_partially_replaces_or_discloses_secret(
             raise OSError(f"synthetic failure while setting {value}")
         return dotenv_set_key(dotenv_path, key, value)
 
-    monkeypatch.setattr("kp_operator_api.console.set_key", fail_second_set)
+    monkeypatch.setattr("kp_operator_api.console.env_store.set_key", fail_second_set)
     with pytest.raises(console._AtomicEnvUpdateError) as raised:
         console._atomic_update_env(
             path,
@@ -121,7 +121,7 @@ def test_replace_failure_leaves_original_and_retains_recovery(tmp_path: Path, mo
     def fail_replace(_source: os.PathLike[str] | str, _target: os.PathLike[str] | str) -> None:
         raise OSError(secret)
 
-    monkeypatch.setattr("kp_operator_api.console._replace_env_file", fail_replace)
+    monkeypatch.setattr("kp_operator_api.console.env_store._replace_env_file", fail_replace)
     with pytest.raises(console._AtomicEnvUpdateError) as raised:
         console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})
 
@@ -154,7 +154,7 @@ def test_failed_config_commit_emits_no_changed_key_audit(tmp_path: Path, monkeyp
     def fail_replace(_source: os.PathLike[str] | str, _target: os.PathLike[str] | str) -> None:
         raise OSError("synthetic replace failure")
 
-    monkeypatch.setattr("kp_operator_api.console._replace_env_file", fail_replace)
+    monkeypatch.setattr("kp_operator_api.console.env_store._replace_env_file", fail_replace)
     with pytest.raises(HTTPException, match="original configuration is unchanged"):
         console.put_config(
             console.ConfigPatch(values={"OPERATOR_API_LOG_LEVEL": "ERROR"}),
@@ -182,7 +182,7 @@ def test_post_replace_sync_failure_rolls_back_without_removing_recovery(
             raise OSError("synthetic post-replace directory fsync failure")
         real_fsync(descriptor)
 
-    monkeypatch.setattr("kp_operator_api.console.os.fsync", fail_post_replace_once)
+    monkeypatch.setattr("kp_operator_api.console.env_store.os.fsync", fail_post_replace_once)
     with pytest.raises(console._AtomicEnvUpdateError, match="original configuration is unchanged"):
         console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})
 
@@ -208,7 +208,7 @@ def test_repeated_post_replace_sync_failures_still_restore_logical_contents(
             raise OSError("filesystem will not sync")
         real_fsync(descriptor)
 
-    monkeypatch.setattr("kp_operator_api.console.os.fsync", fail_from_post_replace)
+    monkeypatch.setattr("kp_operator_api.console.env_store.os.fsync", fail_from_post_replace)
     with pytest.raises(console._AtomicEnvUpdateError, match="original configuration is unchanged"):
         console._atomic_update_env(path, {"OPERATOR_API_LOG_LEVEL": "ERROR"})
 
@@ -235,7 +235,7 @@ def test_concurrent_updates_serialize_without_lost_fields(tmp_path: Path, monkey
         time.sleep(0.01)
         return result
 
-    monkeypatch.setattr("kp_operator_api.console.set_key", slow_set)
+    monkeypatch.setattr("kp_operator_api.console.env_store.set_key", slow_set)
     with ThreadPoolExecutor(max_workers=len(updates)) as executor:
         results = list(
             executor.map(

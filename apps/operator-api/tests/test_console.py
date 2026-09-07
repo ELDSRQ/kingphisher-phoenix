@@ -18,6 +18,11 @@ from kp_authorization.rbac import Principal, Role
 from kp_operator_api import console as console_module
 from kp_operator_api.auth import OidcIdP
 from kp_operator_api.config import OperatorApiSettings
+from kp_operator_api.console import config as console_config_module
+from kp_operator_api.console import console_auth as console_auth_module
+from kp_operator_api.console import env_store as console_env_store_module
+from kp_operator_api.console import onboarding as console_onboarding_module
+from kp_operator_api.console import runtime_status as console_runtime_status_module
 from kp_operator_api.main import create_app
 
 KEK = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -42,7 +47,7 @@ def test_webhook_probe_fails_closed_if_validated_hostname_disappears(monkeypatch
     )
     monkeypatch.setattr(console_module, "urlparse", lambda _value: next(parsed))
     monkeypatch.setattr(
-        console_module.socket,
+        socket,
         "create_connection",
         lambda *_args, **_kwargs: pytest.fail("a missing hostname must not reach the network"),
     )
@@ -343,7 +348,7 @@ def test_oidc_callback_exchanges_code_validates_nonce_and_sets_session(
 
     monkeypatch.setattr(console_module, "_oidc_metadata", metadata)
     monkeypatch.setattr(
-        console_module,
+        console_auth_module,
         "resolve_oidc_endpoint",
         lambda *_args, **_kwargs: SimpleNamespace(
             request_url="http://127.0.0.1:8443/realms/kingphisher/token",
@@ -552,9 +557,9 @@ def test_ai_destination_change_requires_fresh_credentials_through_every_mutation
     env_file: str,
     path: str,
 ) -> None:
-    console_module.set_key(env_file, "KP_WORKER_AI_BASE_URL", "https://ai.old.example")
-    console_module.set_key(env_file, "KP_WORKER_AI_BEARER_TOKEN", "stored-token")
-    console_module.set_key(env_file, "KP_WORKER_AI_API_KEY", "stored-key")
+    console_env_store_module.set_key(env_file, "KP_WORKER_AI_BASE_URL", "https://ai.old.example")
+    console_env_store_module.set_key(env_file, "KP_WORKER_AI_BEARER_TOKEN", "stored-token")
+    console_env_store_module.set_key(env_file, "KP_WORKER_AI_API_KEY", "stored-key")
     app = _app(env_file)
     with TestClient(app) as client:
         headers = _auth(_login(client))
@@ -1273,8 +1278,8 @@ def test_setup_assist_falls_back_without_ai_and_does_not_audit(env_file: str) ->
 def test_setup_assist_redacts_secrets_and_filters_ai_suggestions(
     env_file: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    console_module.set_key(env_file, "KP_WORKER_AI_BASE_URL", "https://ai.example")
-    console_module.set_key(env_file, "KP_WORKER_AI_API_KEY", "stored-super-secret-key")
+    console_env_store_module.set_key(env_file, "KP_WORKER_AI_BASE_URL", "https://ai.example")
+    console_env_store_module.set_key(env_file, "KP_WORKER_AI_API_KEY", "stored-super-secret-key")
     captured: dict[str, object] = {}
 
     class AssistResponse:
@@ -1320,9 +1325,9 @@ def test_setup_assist_redacts_secrets_and_filters_ai_suggestions(
             captured.update(kwargs)
             return AssistStream()
 
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(console_onboarding_module.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(
-        console_module,
+        console_onboarding_module,
         "_resolve_setup_assist_endpoint",
         lambda *_args, **_kwargs: SimpleNamespace(
             request_url="https://93.184.216.34/setup-assist",
@@ -1369,7 +1374,7 @@ def test_setup_assist_redacts_secrets_and_filters_ai_suggestions(
 def test_setup_assist_provider_failures_return_only_stable_curated_guidance(
     env_file: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    console_module.set_key(env_file, "KP_WORKER_AI_BASE_URL", "https://ai.example")
+    console_env_store_module.set_key(env_file, "KP_WORKER_AI_BASE_URL", "https://ai.example")
     provider_secret = "provider-body-secret-must-not-escape"
 
     class InvalidResponse:
@@ -1405,9 +1410,9 @@ def test_setup_assist_provider_failures_return_only_stable_curated_guidance(
         def stream(self, *_args: object, **_kwargs: object) -> InvalidStream:
             return InvalidStream()
 
-    monkeypatch.setattr(console_module.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(console_onboarding_module.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(
-        console_module,
+        console_onboarding_module,
         "_resolve_setup_assist_endpoint",
         lambda *_args, **_kwargs: SimpleNamespace(
             request_url="https://93.184.216.34/setup-assist",
@@ -1529,7 +1534,7 @@ def test_onboarding_rejects_partial_or_unknown_provider_configuration_atomically
     values: dict[str, str],
     detail: str,
 ) -> None:
-    original = console_module.Path(env_file).read_text(encoding="utf-8")
+    original = Path(env_file).read_text(encoding="utf-8")
     with TestClient(_app(env_file)) as client:
         response = client.put(
             "/api/v1/console/onboarding",
@@ -1539,7 +1544,7 @@ def test_onboarding_rejects_partial_or_unknown_provider_configuration_atomically
 
     assert response.status_code == 422
     assert detail in response.json()["detail"]
-    assert console_module.Path(env_file).read_text(encoding="utf-8") == original
+    assert Path(env_file).read_text(encoding="utf-8") == original
 
 
 def test_onboarding_training_values_are_mirrored_to_workers(env_file: str) -> None:
@@ -1556,7 +1561,7 @@ def test_onboarding_training_values_are_mirrored_to_workers(env_file: str) -> No
             },
         )
         assert response.status_code == 200
-        persisted = console_module._env_values(console_module.Path(env_file))
+        persisted = console_module._env_values(Path(env_file))
         assert persisted["KP_WORKER_TRAINING_BASE_URL"] == "https://training.example/course"
         assert persisted["KP_WORKER_TRAINING_DOMAINS"] == "training.example"
 
@@ -1592,7 +1597,7 @@ def test_onboarding_http_test_uses_transient_value_without_persisting(
             "message": "Connection successful.",
         }
         assert requested == ["https://ai.example/health/propose"]
-        assert "ai.example" not in console_module.Path(env_file).read_text(encoding="utf-8")
+        assert "ai.example" not in Path(env_file).read_text(encoding="utf-8")
 
 
 def test_onboarding_smtp_test_uses_only_current_starttls_setting(
@@ -1605,7 +1610,7 @@ def test_onboarding_smtp_test_uses_only_current_starttls_setting(
         calls.append((address, use_tls, use_ssl))
         return True, None
 
-    monkeypatch.setattr(console_module, "_probe_smtp", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_smtp", probe)
     with TestClient(_app(env_file)) as client:
         response = client.post(
             "/api/v1/console/onboarding/test",
@@ -1637,9 +1642,9 @@ def test_onboarding_acs_test_is_non_sending_reachability_only(
         calls.append((url, kwargs))
         return True, None
 
-    monkeypatch.setattr(console_module, "_probe_http", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", probe)
     monkeypatch.setattr(
-        console_module,
+        console_onboarding_module,
         "_probe_smtp",
         lambda *_args, **_kwargs: pytest.fail("ACS validation must never use SMTP or send a message"),
     )
@@ -1689,7 +1694,7 @@ def test_onboarding_microsoft365_test_uses_exact_bounded_graph_path_and_transien
         calls.append((url, kwargs))
         return True, None
 
-    monkeypatch.setattr(console_module, "_probe_http", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", probe)
     with TestClient(_app(env_file)) as client:
         response = client.post(
             "/api/v1/console/onboarding/test",
@@ -1732,7 +1737,7 @@ def test_onboarding_microsoft365_without_bearer_is_reachability_only(
         calls.append((url, kwargs))
         return True, None
 
-    monkeypatch.setattr(console_module, "_probe_http", probe)
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", probe)
     with TestClient(_app(env_file)) as client:
         response = client.post(
             "/api/v1/console/onboarding/test",
@@ -1763,7 +1768,7 @@ def test_onboarding_microsoft365_explicit_bearer_auth_failure_blocks_save(
     env_file: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(console_module, "_probe_http", lambda *_args, **_kwargs: (False, "auth"))
+    monkeypatch.setattr(console_onboarding_module, "_probe_http", lambda *_args, **_kwargs: (False, "auth"))
     with TestClient(_app(env_file)) as client:
         response = client.post(
             "/api/v1/console/onboarding/test",
@@ -1790,7 +1795,7 @@ def test_onboarding_microsoft365_explicit_bearer_auth_failure_blocks_save(
 def test_onboarding_test_rejects_credentials_and_unsupported_components(
     env_file: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(console_module.httpx, "get", lambda *_args, **_kwargs: pytest.fail("network called"))
+    monkeypatch.setattr(console_onboarding_module.httpx, "get", lambda *_args, **_kwargs: pytest.fail("network called"))
     with TestClient(_app(env_file)) as client:
         token = _login(client)
         bad_url = client.post(
@@ -1878,7 +1883,7 @@ def test_local_status_uses_local_probes_and_advertises_local_controls(
         tcp_calls.append((host, port))
         return port == 5432
 
-    def process_alive(path: console_module.Path) -> bool:
+    def process_alive(path: Path) -> bool:
         process_calls.append(path.name)
         return path.name == "worker-delivery.pid"
 
@@ -1886,9 +1891,9 @@ def test_local_status_uses_local_probes_and_advertises_local_controls(
         http_calls.append(url)
         return True
 
-    monkeypatch.setattr(console_module, "_tcp_ok", tcp_ok)
-    monkeypatch.setattr(console_module, "_process_alive", process_alive)
-    monkeypatch.setattr(console_module, "_http_ok", http_ok)
+    monkeypatch.setattr(console_runtime_status_module, "_tcp_ok", tcp_ok)
+    monkeypatch.setattr(console_runtime_status_module, "_process_alive", process_alive)
+    monkeypatch.setattr(console_runtime_status_module, "_http_ok", http_ok)
 
     # The probe derives its target from the configured URLs rather than assuming
     # 127.0.0.1:5432, so this test pins them explicitly instead of inheriting the
@@ -1935,10 +1940,10 @@ def test_managed_status_is_explicitly_external_and_never_uses_local_probes(
     def unexpected_probe(*_args: object, **_kwargs: object) -> bool:
         pytest.fail("managed status must not use local or process probes")
 
-    monkeypatch.setattr(console_module, "_tcp_ok", unexpected_probe)
-    monkeypatch.setattr(console_module, "_process_alive", unexpected_probe)
-    monkeypatch.setattr(console_module, "_http_ok", unexpected_probe)
-    monkeypatch.setattr(console_module, "_console_password", unexpected_probe)
+    monkeypatch.setattr(console_runtime_status_module, "_tcp_ok", unexpected_probe)
+    monkeypatch.setattr(console_runtime_status_module, "_process_alive", unexpected_probe)
+    monkeypatch.setattr(console_runtime_status_module, "_http_ok", unexpected_probe)
+    monkeypatch.setattr(console_runtime_status_module, "_console_password", unexpected_probe)
 
     app = create_app(settings)
     app.state.audit_store = FakeAuditStore()
@@ -1968,7 +1973,7 @@ def test_managed_config_read_is_marked_read_only_and_ignores_ephemeral_env(
 ) -> None:
     settings = _settings(env_file).model_copy(update={"config_store": "managed"})
     monkeypatch.setattr(
-        console_module,
+        console_config_module,
         "_env_values",
         lambda *_args, **_kwargs: pytest.fail("managed config must not read an incidental env file"),
     )
