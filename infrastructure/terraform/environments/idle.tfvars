@@ -33,11 +33,13 @@
 #   the Key Vault, the audit storage or the ACS email domain. The exact 20-resource
 #   destroy set is listed in docs/AZURE-IDLE.md.
 #
-# BLOCKED TODAY — this file cannot be planned yet. See docs/AZURE-IDLE.md,
-#   "Known blocker: redis-url is indexed unconditionally". local.secret_values drops the
-#   "redis-url" Key Vault secret when deploy_data_plane=false, but local.common_secrets
-#   and local.workload_secret_access in main.tf still index it unconditionally, so the
-#   plan fails with "Invalid index ... redis-url". main.tf needs a two-hunk change first.
+# PREVIOUSLY BLOCKED, NOW FIXED (2026-09-07). `deploy_data_plane=false` could not even be
+#   planned: local.secret_values correctly drops `redis-url`, but local.common_secrets and the
+#   local.workload_secret_access for_each both indexed azurerm_key_vault_secret.runtime
+#   ["redis-url"] unconditionally, so terraform failed with "Invalid index" before producing a
+#   diff. main.tf now merges redis-url into common_secrets only when local.data_plane, and
+#   filters workload_secret_access against keys(local.secret_values) — general, so any future
+#   conditionally-created secret is handled too. Verified: the idle posture now plans.
 #
 # WARNING — precedence: the GitHub Actions `workloads` phase hardcodes CLI
 #   `-var="deploy_workloads=true"` (and `deploy_ai_gateway`), and a CLI `-var` OUTRANKS

@@ -736,10 +736,16 @@ def test_the_runbook_lists_what_survives_and_what_does_not() -> None:
         assert survives in runbook
 
 
-def test_the_known_terraform_blocker_is_written_down_where_it_is_hit() -> None:
-    """deploy_data_plane=false cannot plan until main.tf stops indexing redis-url."""
+def test_the_resolved_terraform_blocker_is_written_down_where_it_was_hit() -> None:
+    """The redis-url indexing bug is fixed; the record of it must stay where it bit.
+
+    main.tf now merges redis-url into common_secrets only when local.data_plane and
+    filters workload_secret_access against keys(local.secret_values), so
+    deploy_data_plane=false plans instead of failing with "Invalid index". The
+    history stays documented so nobody reintroduces the unconditional index.
+    """
     runbook = _source(RUNBOOK)
-    assert "Known blocker: redis-url is indexed unconditionally" in runbook
+    assert "RESOLVED blocker: redis-url was indexed unconditionally" in runbook
     assert "local.workload_secret_access" in runbook
     assert "local.common_secrets" in runbook
     assert "Known blocker: redis-url is indexed unconditionally" in _source(IDLE_TFVARS) or (

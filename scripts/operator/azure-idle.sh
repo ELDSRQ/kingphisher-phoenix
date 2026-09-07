@@ -537,6 +537,10 @@ PROTECTED_NAMED = {
     ("azurerm_storage_container", "audit_anchor"),
     ("azurerm_storage_container_immutability_policy", "audit_anchor"),
     ("azurerm_linux_virtual_machine", "ci_runner"),
+    # The vault holds every runtime secret. Nothing in the idle posture should
+    # remove it, and if a plan ever proposes to, that is a bug worth stopping on
+    # rather than discovering afterwards.
+    ("azurerm_key_vault", "main"),
 }
 WHY = {
     "azurerm_postgresql_flexible_server": "the PostgreSQL server holds the data; idle STOPS it, never removes it",

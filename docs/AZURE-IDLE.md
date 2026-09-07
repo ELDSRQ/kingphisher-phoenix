@@ -347,9 +347,9 @@ cannot force it to be replaced; the value only has to exist.
 
 ---
 
-## Known blocker: redis-url is indexed unconditionally
+## RESOLVED blocker: redis-url was indexed unconditionally
 
-**`deploy_data_plane=false` cannot be planned today.** It is a configuration bug, not a
+**FIXED 2026-09-07 — `deploy_data_plane=false` now plans.** It was a configuration bug, not a
 credentials or wiring problem, and it is why `environments/idle.tfvars` has never been
 plan-verified.
 
