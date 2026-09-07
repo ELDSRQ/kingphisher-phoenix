@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import signal
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -128,7 +128,7 @@ def _check_binop(operator: str, left: Any, right: Any) -> None:
             seq, count = left, right
         elif _sized_sequence(right) and _is_int(left):
             seq, count = right, left
-        if seq is not None and count > 0 and len(seq) * count > _MAX_SEQUENCE_LEN:
+        if seq is not None and count is not None and count > 0 and len(seq) * count > _MAX_SEQUENCE_LEN:
             raise TemplateRenderError(
                 f"template multiplication would create a sequence of "
                 f"{len(seq) * count} items (limit {_MAX_SEQUENCE_LEN})"
@@ -182,7 +182,7 @@ def _capped_concat(parts: Iterable[str]) -> str:
 
 
 @contextmanager
-def _time_limit(seconds: float | None):
+def _time_limit(seconds: float | None) -> Iterator[None]:
     """Best-effort wall-clock guard for preview rendering.
 
     Uses SIGALRM, which is only available on the main thread on POSIX. In any
@@ -230,7 +230,7 @@ def make_environment(*, autoescape: bool = False) -> Environment:
         method = getattr(str, name) if name != "trim" else str.strip
         env.filters[name] = method
     # Bound total output length (and, being lazily pulled, output-producing loops).
-    env.concat = _capped_concat  # type: ignore[assignment]
+    env.concat = _capped_concat  # type: ignore[method-assign]
     return env
 
 

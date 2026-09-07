@@ -269,7 +269,9 @@ def _make_anchor_heartbeat_reader(queue: Any, logger: Any) -> Callable[[], datet
         if reader is None:
             return None
         try:
-            when = reader()
+            # reader comes from getattr(), so it is untyped; bind explicitly so the
+            # declared datetime | None return is not silently an Any.
+            when: datetime | None = reader()
         except Exception:  # noqa: BLE001 - a Redis blip must not gate the console
             return None
         if when is None:

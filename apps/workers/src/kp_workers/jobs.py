@@ -1558,21 +1558,23 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
                     CampaignApproval.launch_manifest_hash == payload.get("launch_manifest_hash"),
                 )
             ).all()
-            reason = _two_person_approval_reason(covering_approvals)
-            if reason is not None:
+            # Distinct name: `reason` is already bound as a plain str earlier in
+            # this function (the emergency-stop branch), and this one is str|None.
+            approval_reason = _two_person_approval_reason(covering_approvals)
+            if approval_reason is not None:
                 ctx.audit_store.record(
                     session=session,
                     actor="worker:delivery",
                     action="campaign.deliver.blocked",
                     object_type="campaign",
                     object_id=campaign_id,
-                    detail={"reason": reason},
+                    detail={"reason": approval_reason},
                 )
                 session.commit()
                 logger.error(
                     "campaign %s fails the two-person approval rule (%s); refusing to deliver",
                     campaign_id,
-                    reason,
+                    approval_reason,
                 )
                 return
         # Signed Rules-of-Engagement gate. Delivery is impossible without an
