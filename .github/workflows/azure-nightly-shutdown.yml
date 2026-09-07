@@ -1,0 +1,324 @@
+# Nightly cost safety net: power the Azure compute tier down at 23:00 in the
+# operator's local time (America/New_York), so cost cannot silently resume when
+# someone starts the stack for a test and forgets to stop it.
+#
+# THIS IS NOT `scripts/operator/azure-idle.sh stop`.
+#   That command also runs `terraform apply -var deploy_workloads=false
+#   -var deploy_data_plane=false`, which DESTROYS the container registry and
+#   Redis. Doing that nightly would force re-pushing every image before the next
+#   morning's test, and an unattended `terraform apply` must never run on a
+#   timer. `azure-idle.sh stop` stays the deliberate, operator-driven, deeper
+#   idle; this workflow is the lighter, fast-reversible safety net.
+#
+# It runs exactly three reversible actions (see the script for the full rules):
+#   stop the PostgreSQL flexible server, set every project Container App to
+#   min-replicas 0, and deallocate the CI runner VM. ACR, Redis and the whole
+#   Tier-1 real-send slice (ACS + email domain + public DNS + Event Grid +
+#   Entra) are left intact.
+#
+# It NEVER starts anything. Restart is manual and on demand — see
+# docs/NIGHTLY-AZURE-SHUTDOWN.md.
+#
+# DAYLIGHT SAVING TIME
+#   GitHub's `schedule:` cron is UTC and has no DST handling, so 23:00 in
+#   America/New_York is 03:00 UTC under EDT and 04:00 UTC under EST. Both times
+#   are scheduled below, and the first job refuses to act unless the operator's
+#   LOCAL clock actually reads hour 23. Exactly one of the two fires per night,
+#   year-round, with no seasonal drift; the other exits early as a logged skip.
+#   The window is one hour wide, so a GitHub scheduling delay beyond 59 minutes
+#   skips that night rather than firing at an unexpected local hour.
+
+name: Nightly Azure shutdown
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 23:00 America/New_York while EDT (UTC-4)
+    - cron: "0 4 * * *" # 23:00 America/New_York while EST (UTC-5)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: >-
+          Read-only what-if. Discovers every resource and prints the exact
+          commands without running them. This is how you verify the job before
+          enabling the schedule; leave it true unless you mean to power down now.
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# Deliberately NOT the `azure-${{ environment }}` group used by azure-deploy.yml
+# and provision-ci-runner.yml. Sharing that group would make a nightly run QUEUE
+# behind an in-flight deploy and then execute at an arbitrary later hour. This
+# workflow instead refuses outright while a deploy is in flight (see the
+# `decide` job) and leaves the resources running until the next night.
+concurrency:
+  group: azure-nightly-shutdown
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    name: Decide whether tonight's power-down may run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # read workflow run status; no write scope anywhere here.
+    outputs:
+      proceed: ${{ steps.window.outputs.proceed == 'true' && steps.deployments.outputs.proceed == 'true' }}
+      dry_run: ${{ steps.window.outputs.dry_run }}
+      reason: "${{ steps.window.outputs.reason }} | ${{ steps.deployments.outputs.reason }}"
+    steps:
+      - name: Resolve the operator switch, the skip window, and local time
+        id: window
+        shell: bash
+        env:
+          # Repo-level variables, readable without a GitHub Environment.
+          #   NIGHTLY_AZURE_SHUTDOWN            disabled (default) | dry_run | enabled
+          #   NIGHTLY_AZURE_SHUTDOWN_SKIP_UNTIL YYYY-MM-DD or an ISO-8601 timestamp
+          NIGHTLY_MODE: ${{ vars.NIGHTLY_AZURE_SHUTDOWN || 'disabled' }}
+          NIGHTLY_SKIP_UNTIL: ${{ vars.NIGHTLY_AZURE_SHUTDOWN_SKIP_UNTIL }}
+          DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from datetime import UTC, datetime, time
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          OPERATOR_TIMEZONE = "America/New_York"
+          WINDOW_LOCAL_HOUR = 23
+          MODES = {"disabled", "dry_run", "enabled"}
+
+          mode = os.environ.get("NIGHTLY_MODE", "").strip().lower() or "disabled"
+          skip_until_raw = os.environ.get("NIGHTLY_SKIP_UNTIL", "").strip()
+          event = os.environ.get("GITHUB_EVENT_NAME", "")
+          dispatch_dry_run = os.environ.get("DISPATCH_DRY_RUN", "true").strip().lower() != "false"
+
+          now_local = datetime.now(UTC).astimezone(ZoneInfo(OPERATOR_TIMEZONE))
+          stamp = now_local.strftime("%Y-%m-%d %H:%M %Z")
+
+          def decide():
+              if event == "workflow_dispatch":
+                  # A manual dispatch is the operator asking explicitly. It
+                  # bypasses the switch, the skip window and the local-time
+                  # window, but never the deploy-in-flight refusal below.
+                  return True, dispatch_dry_run, f"manual dispatch at {stamp}"
+              if mode not in MODES:
+                  return False, True, (
+                      f"NIGHTLY_AZURE_SHUTDOWN is {mode!r}; expected disabled, dry_run or enabled. "
+                      "Refusing to touch Azure on an unreadable switch."
+                  )
+              if mode == "disabled":
+                  return False, True, (
+                      "NIGHTLY_AZURE_SHUTDOWN is disabled (or unset). "
+                      "Set it to dry_run, then enabled, to arm the nightly power-down."
+                  )
+              if now_local.hour != WINDOW_LOCAL_HOUR:
+                  return False, True, (
+                      f"local time is {stamp}, outside the {WINDOW_LOCAL_HOUR}:00 "
+                      f"{OPERATOR_TIMEZONE} window; this is the other DST cron branch "
+                      "(or GitHub delayed the run past the window)."
+                  )
+              if skip_until_raw:
+                  try:
+                      parsed = datetime.fromisoformat(skip_until_raw)
+                  except ValueError:
+                      return False, True, (
+                          f"NIGHTLY_AZURE_SHUTDOWN_SKIP_UNTIL={skip_until_raw!r} is not an ISO-8601 "
+                          "date or timestamp. Failing safe: leaving Azure running tonight."
+                      )
+                  if parsed.tzinfo is None:
+                      # A bare date means "skip through the end of that local day".
+                      if parsed.time() == time(0, 0):
+                          parsed = datetime.combine(parsed.date(), time(23, 59, 59))
+                      parsed = parsed.replace(tzinfo=ZoneInfo(OPERATOR_TIMEZONE))
+                  if now_local < parsed:
+                      return False, True, (
+                          f"operator skip is active until {parsed.isoformat()}; "
+                          f"leaving Azure running (now {stamp})."
+                      )
+              return True, mode == "dry_run", (
+                  f"in the {WINDOW_LOCAL_HOUR}:00 {OPERATOR_TIMEZONE} window at {stamp}; "
+                  f"NIGHTLY_AZURE_SHUTDOWN={mode}"
+              )
+
+          proceed, dry_run, reason = decide()
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"proceed={'true' if proceed else 'false'}\n")
+              output.write(f"dry_run={'true' if dry_run else 'false'}\n")
+              output.write(f"reason={reason}\n")
+          print(f"proceed={proceed} dry_run={dry_run}: {reason}")
+          PY
+      - name: Refuse while an Azure deployment is in flight
+        id: deployments
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          # Never yank infrastructure out from under a deploy. Both workflows
+          # share the azure-<environment> concurrency group and both mutate the
+          # same Terraform state and Azure resources.
+          WATCHED = ("azure-deploy.yml", "provision-ci-runner.yml")
+          BLOCKING = {
+              "queued", "in_progress", "waiting", "requested", "pending", "action_required",
+          }
+          repository = os.environ["GITHUB_REPOSITORY"]
+
+          def runs(workflow):
+              result = subprocess.run(  # noqa: S603
+                  [
+                      "gh", "api",
+                      f"/repos/{repository}/actions/workflows/{workflow}/runs?per_page=30",
+                  ],
+                  check=False,
+                  capture_output=True,
+                  timeout=60,
+              )
+              if result.returncode != 0:
+                  if b"Not Found" in result.stderr:
+                      # The workflow has never run in this repository.
+                      return []
+                  raise RuntimeError(f"could not read {workflow} run status")
+              if len(result.stdout) > 1_048_576:
+                  raise RuntimeError(f"{workflow} run listing exceeds the fixed limit")
+              payload = json.loads(result.stdout)
+              listed = payload.get("workflow_runs")
+              if not isinstance(listed, list):
+                  raise RuntimeError(f"{workflow} run listing is malformed")
+              return listed
+
+          blocked = []
+          failure = None
+          try:
+              for workflow in WATCHED:
+                  for run in runs(workflow):
+                      if not isinstance(run, dict):
+                          raise RuntimeError(f"{workflow} run listing is malformed")
+                      if str(run.get("status", "")).lower() in BLOCKING:
+                          blocked.append(f"{workflow} run {run.get('run_number')} is {run.get('status')}")
+          except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as error:
+              failure = str(error)
+
+          if failure is not None:
+              # Fail safe: an unreadable deploy state means we do not know
+              # whether a deploy is running, so leave Azure alone.
+              proceed, reason = False, f"could not confirm no deploy is in flight ({failure}); leaving Azure running"
+          elif blocked:
+              proceed, reason = False, "a deployment is in flight: " + "; ".join(sorted(blocked))
+          else:
+              proceed, reason = True, "no azure-deploy or provision-ci-runner run is in flight"
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write(f"proceed={'true' if proceed else 'false'}\n")
+              output.write(f"reason={reason}\n")
+          print(reason)
+          PY
+      - name: Record the decision
+        if: always()
+        shell: bash
+        env:
+          WINDOW_PROCEED: ${{ steps.window.outputs.proceed }}
+          WINDOW_REASON: ${{ steps.window.outputs.reason }}
+          DEPLOY_PROCEED: ${{ steps.deployments.outputs.proceed }}
+          DEPLOY_REASON: ${{ steps.deployments.outputs.reason }}
+          DRY_RUN: ${{ steps.window.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Nightly Azure shutdown — decision"
+            echo ""
+            echo "| gate | result | reason |"
+            echo "| --- | --- | --- |"
+            echo "| operator switch + 23:00 America/New_York window | ${WINDOW_PROCEED:-unknown} | ${WINDOW_REASON:-n/a} |"
+            echo "| no deployment in flight | ${DEPLOY_PROCEED:-not evaluated} | ${DEPLOY_REASON:-not evaluated} |"
+            echo "| mode | ${DRY_RUN} | true = read-only what-if |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${WINDOW_PROCEED:-false}" != "true" ] || [ "${DEPLOY_PROCEED:-false}" != "true" ]; then
+            echo "::warning::Azure was left running tonight. See the run summary for which gate refused."
+          fi
+
+  shutdown:
+    name: Power down the Azure compute tier
+    needs: decide
+    if: needs.decide.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A dedicated GitHub Environment. The deploy identity's variables and OIDC
+    # federated credential are scoped to the `staging` environment, which
+    # requires a human reviewer — correct for a deploy, fatal for an unattended
+    # nightly job, which would sit waiting for approval forever. This
+    # environment must therefore exist with NO protection rules, and the Entra
+    # application needs a federated credential for its subject. See
+    # docs/NIGHTLY-AZURE-SHUTDOWN.md for the exact operator commands.
+    environment: azure-nightly-shutdown
+    permissions:
+      contents: read
+      id-token: write # Azure OIDC login; no stored Azure credential.
+    env:
+      KP_RG: ${{ vars.NIGHTLY_AZURE_RESOURCE_GROUP || 'rg-kp-staging' }}
+      KP_ENV: ${{ vars.NIGHTLY_AZURE_ENVIRONMENT_TAG || 'staging' }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Authenticate to Azure
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Power down (or what-if) the Azure compute tier
+        id: shutdown
+        shell: bash
+        env:
+          NIGHTLY_DRY_RUN: ${{ needs.decide.outputs.dry_run }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          arguments=(--json --resource-group "$KP_RG" --environment "$KP_ENV")
+          if [ -n "${AZURE_SUBSCRIPTION_ID:-}" ]; then
+            arguments+=(--subscription "$AZURE_SUBSCRIPTION_ID")
+          fi
+          if [ "${NIGHTLY_DRY_RUN}" = "true" ]; then
+            arguments+=(--dry-run)
+          fi
+          bash scripts/operator/azure-nightly-shutdown.sh "${arguments[@]}" \
+            | tee "$RUNNER_TEMP/nightly-shutdown.log"
+      - name: Publish what was stopped and what was skipped
+        if: always()
+        shell: bash
+        env:
+          NIGHTLY_DRY_RUN: ${{ needs.decide.outputs.dry_run }}
+          DECISION_REASON: ${{ needs.decide.outputs.reason }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Nightly Azure shutdown — result"
+            echo ""
+            echo "- decision: ${DECISION_REASON}"
+            echo "- mode: $([ "$NIGHTLY_DRY_RUN" = "true" ] && echo 'DRY RUN — nothing was changed' || echo 'APPLY')"
+            echo "- restart is MANUAL: see \`docs/NIGHTLY-AZURE-SHUTDOWN.md\`"
+            echo ""
+            echo '```'
+            cat "$RUNNER_TEMP/nightly-shutdown.log" 2>/dev/null || echo "(the shutdown step produced no log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the action log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-azure-shutdown-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nightly-shutdown.log
+          if-no-files-found: warn
+          retention-days: 30
