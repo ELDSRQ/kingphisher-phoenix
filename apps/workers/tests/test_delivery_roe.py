@@ -174,6 +174,8 @@ def _run(
     suppressed: bool = False,
     excluded: set[uuid.UUID] | None = None,
     test_send: bool = False,
+    launch_gate_reasons: list[str | None] | None = None,
+    launch_gate_batches: list[list[str]] | None = None,
 ) -> tuple[WorkerContext, _Audit, list[bool]]:
     session = _Session()
     session.get_results[(SystemSafetyState, 1)] = SimpleNamespace(
@@ -238,8 +240,27 @@ def _run(
     monkeypatch.setattr("kp_workers.jobs._send_email", send)
     monkeypatch.setattr("kp_workers.jobs._make_batch_sender", lambda _ctx: MagicMock())
     # RoE tests isolate the authorization boundary below the independent
-    # durable canary gate, which has its own focused contract suite.
-    monkeypatch.setattr("kp_workers.jobs._launch_delivery_gate_reason", lambda *_args, **_kwargs: (None, None))
+    # durable canary gate, which has its own focused contract suite. A test may
+    # script the gate instead: `launch_gate_reasons` is consumed one entry per
+    # call (the batch pre-flight first, then one call per attempted recipient)
+    # and `launch_gate_batches` records the assignment ids each call was asked
+    # about.
+    scripted_reasons = list(launch_gate_reasons or [])
+
+    def launch_gate(
+        _session: Any,
+        _campaign: Campaign,
+        _payload: dict[str, Any],
+        gate_assignment_ids: list[str],
+        _settings: Any,
+    ) -> tuple[None, str | None]:
+        if launch_gate_batches is not None:
+            launch_gate_batches.append(list(gate_assignment_ids))
+        if not scripted_reasons:
+            return None, None
+        return None, scripted_reasons.pop(0)
+
+    monkeypatch.setattr("kp_workers.jobs._launch_delivery_gate_reason", launch_gate)
     monkeypatch.setattr("kp_workers.jobs._refresh_canary_evidence", lambda *_args, **_kwargs: None)
     excluded_ids = frozenset(excluded or set())
     monkeypatch.setattr("kp_workers.jobs._excluded_recipient_ids", lambda *_args, **_kwargs: excluded_ids)
@@ -694,3 +715,95 @@ def test_canary_test_send_delivers_with_an_approved_template(monkeypatch: pytest
 
     assert sends == [True]
     assert assignment.send_state == dm.SendState.ACCEPTED
+
+
+def test_launch_gate_is_re_evaluated_for_every_recipient_of_a_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ARC-002 M1-C: the in-loop launch-gate check cannot be hoisted.
+
+    Three recipients, one batch. The gate passes the batch pre-flight and the
+    first recipient, then a concurrent revocation lands (the loop commits
+    between recipients, releasing the gate's row lock). The second recipient is
+    refused and the batch stops before the third is ever claimed. A verdict
+    computed once per run would have delivered to all three.
+    """
+
+    roe = _make_roe(target_domains=["example.com"])
+    campaign = _make_campaign(roe=roe)
+    recipients = [_make_recipient(f"learner{index}@example.com") for index in range(3)]
+    assignments = [_make_assignment(campaign, recipient.recipient_id) for recipient in recipients]
+    batches: list[list[str]] = []
+
+    _, audit, sends = _run(
+        monkeypatch,
+        campaign=campaign,
+        roe=roe,
+        template=_make_template(),
+        assignments=assignments,
+        recipients=recipients,
+        launch_gate_reasons=[None, None, "canary_evidence_expired"],
+        launch_gate_batches=batches,
+    )
+
+    # Exactly one message reached the provider: the gated recipient set is
+    # {second}, and the third is never even claimed.
+    assert sends == [True]
+    assert assignments[0].send_state == dm.SendState.ACCEPTED
+    assert assignments[1].send_state == dm.SendState.EXPIRED
+    assert assignments[1].failure_reason == "canary_evidence_expired"
+    assert assignments[2].send_state == dm.SendState.QUEUED
+    assert assignments[2].delivery_attempt_id is None
+
+    # The pre-flight sees the whole batch; each in-loop call sees one id.
+    assert batches[0] == [str(assignment.recipient_assignment_id) for assignment in assignments]
+    assert batches[1:] == [
+        [str(assignments[0].recipient_assignment_id)],
+        [str(assignments[1].recipient_assignment_id)],
+    ]
+
+    blocked = [record for record in audit.records if record["action"] == "campaign.deliver.blocked"]
+    assert blocked[0]["detail"] == {
+        "reason": "canary_evidence_expired",
+        "assignment_id": str(assignments[1].recipient_assignment_id),
+    }
+    summary = [record for record in audit.records if record["action"] == "campaign.deliver"][0]
+    assert summary["detail"]["sent"] == 1
+    assert summary["detail"]["blocked"] == 1
+
+
+def test_batch_gates_and_sends_the_same_recipients_regardless_of_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gated-recipient set is a property of the recipients, not the batch.
+
+    One recipient outside the signed RoE target domains, two inside. With the
+    gate steady, the outcome per recipient is identical whether they are
+    delivered as one batch of three or as three batches of one.
+    """
+
+    def outcomes(batch: list[int]) -> list[tuple[dm.SendState, str | None]]:
+        roe = _make_roe(target_domains=["example.com"])
+        campaign = _make_campaign(roe=roe)
+        mailboxes = ["inside0@example.com", "outside@other.example", "inside1@example.com"]
+        recipients = [_make_recipient(mailboxes[index]) for index in batch]
+        assignments = [_make_assignment(campaign, recipient.recipient_id) for recipient in recipients]
+        _run(
+            monkeypatch,
+            campaign=campaign,
+            roe=roe,
+            template=_make_template(),
+            assignments=assignments,
+            recipients=recipients,
+        )
+        return [(assignment.send_state, assignment.failure_reason) for assignment in assignments]
+
+    together = outcomes([0, 1, 2])
+    separate = [outcomes([index])[0] for index in (0, 1, 2)]
+
+    assert together == separate
+    assert together == [
+        (dm.SendState.ACCEPTED, None),
+        (dm.SendState.FAILED, "target_domain_not_roe_covered"),
+        (dm.SendState.ACCEPTED, None),
+    ]

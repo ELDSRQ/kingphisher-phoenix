@@ -17,6 +17,7 @@ import smtplib
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -96,7 +97,7 @@ from kp_telemetry.errors import SafetyRejectionError
 from kp_telemetry.logging import get_logger
 from kp_templating.ics import generate_invite
 from kp_templating.render import CampaignContext, MessageRenderer, RecipientContext, TrackingContext
-from kp_templating.spf import check_spf_for_mailbox
+from kp_templating.spf import SpfResult, check_spf_for_mailbox
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import and_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -1468,6 +1469,17 @@ def process_proof_send(ctx: WorkerContext, message: dict[str, Any]) -> None:
 
 
 def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
+    """Deliver one bounded assignment batch, phase by phase.
+
+    The phases are ``claim`` (load the campaign under its row lock), ``gate``
+    (campaign-level stops, then the authorization plan in
+    :func:`_authorize_delivery`), ``capacity`` (:func:`_reserve_delivery_batch`),
+    ``render/send`` (:func:`_deliver_assignments`) and ``record``
+    (:func:`_record_delivery_summary`). The ORDER of the gates is a safety
+    invariant: emergency stop, campaign state, launch gate, template approval,
+    manifest hash, two-person approval, RoE, then the per-recipient gates.
+    """
+
     payload = message["payload"]
     if payload.get("job_type") == "acs_delivery_receipt":
         process_acs_delivery_receipt(ctx, message)
@@ -1529,488 +1541,711 @@ def process_delivery(ctx: WorkerContext, message: dict[str, Any]) -> None:
             session.commit()
             logger.error("campaign %s delivery blocked: %s", campaign_id, launch_reason)
             return
-        template = session.get(TemplateVersion, campaign.current_template_id) if campaign.current_template_id else None
-        if template is None:
-            logger.error("campaign %s has no approved template; refusing to deliver", campaign_id)
+        plan = _authorize_delivery(
+            ctx,
+            session,
+            campaign,
+            payload,
+            campaign_id=campaign_id,
+            template_hash=template_hash,
+        )
+        if plan is None:
             return
-        # Template approval is enforced for every real send, including the
-        # canary (test_send=True): a canary delivers to real reviewed mailboxes,
-        # so it must not bypass approval. The now-dead ad-hoc test-send endpoint
-        # was the only caller that legitimately needed this skip.
-        if template.approval_state != dm.TemplateApprovalState.APPROVED:
-            raise SafetyRejectionError("delivery requires an approved template")
-        if template_hash != campaign.manifest_hash:
-            raise SafetyRejectionError("delivery manifest does not match the approved campaign")
-        pattern = session.get(CampaignPattern, campaign.pattern_id) if campaign.pattern_id else None
-        # Re-check the two-person rule here, not just at scheduling: a message
-        # queued before the policy tightened must not still go out under the
-        # old rules. This applies to the canary (test_send=True) too, whose
-        # cohort receives real messages; scheduling already required these
-        # approvals against the same review manifest, so the re-check passes for
-        # a legitimately reviewed canary and blocks one whose approvals lapsed.
-        # AUT-002: the rule is now two DISTINCT approvers, not two approval
-        # lanes — enforced here by _two_person_approval_reason.
-        if ctx.settings.approval_policy is ApprovalPolicy.ENFORCE:
-            covering_approvals = session.scalars(
-                select(CampaignApproval).where(
-                    CampaignApproval.campaign_id == campaign.campaign_id,
-                    CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
-                    CampaignApproval.launch_manifest_hash == payload.get("launch_manifest_hash"),
-                )
-            ).all()
-            # Distinct name: `reason` is already bound as a plain str earlier in
-            # this function (the emergency-stop branch), and this one is str|None.
-            approval_reason = _two_person_approval_reason(covering_approvals)
-            if approval_reason is not None:
-                ctx.audit_store.record(
-                    session=session,
-                    actor="worker:delivery",
-                    action="campaign.deliver.blocked",
-                    object_type="campaign",
-                    object_id=campaign_id,
-                    detail={"reason": approval_reason},
-                )
-                session.commit()
-                logger.error(
-                    "campaign %s fails the two-person approval rule (%s); refusing to deliver",
-                    campaign_id,
-                    approval_reason,
-                )
-                return
-        # Signed Rules-of-Engagement gate. Delivery is impossible without an
-        # active, validly-signed RoE attached at scheduling: the RoE names the
-        # verified target domains recipients are confined to. Every failure
-        # mode here returns without sending anything.
-        roe = session.get(RulesOfEngagement, campaign.roe_id) if campaign.roe_id is not None else None
-        if roe is None:
-            ctx.audit_store.record(
-                session=session,
-                actor="worker:delivery",
-                action="campaign.deliver.blocked",
-                object_type="campaign",
-                object_id=campaign_id,
-                detail={"reason": "no_roe"},
+        assignment_ids, deferred = _reserve_delivery_batch(
+            ctx,
+            session,
+            message,
+            payload,
+            assignment_ids,
+            campaign_id=campaign_id,
+        )
+        if ctx.settings.email_provider_kind.is_acs and not assignment_ids:
+            return
+        outcome = _deliver_assignments(
+            ctx,
+            session,
+            campaign,
+            plan,
+            payload,
+            assignment_ids,
+            campaign_id=campaign_id,
+            test_send=test_send,
+        )
+        _record_delivery_summary(
+            ctx,
+            session,
+            outcome.campaign,
+            plan,
+            payload,
+            outcome,
+            campaign_id=campaign_id,
+            template_hash=template_hash,
+            test_send=test_send,
+            deferred=deferred,
+        )
+
+
+@dataclass(slots=True)
+class _DeliveryPlan:
+    """Campaign-level authorization resolved once, before any provider work."""
+
+    template: TemplateVersion
+    pattern: CampaignPattern | None
+    roe: RulesOfEngagement
+    roe_targets: frozenset[str]
+    allowlist: frozenset[str]
+    unrestricted: bool
+    sender_address: str
+    sender_honored: bool
+    spf: SpfResult
+
+
+@dataclass(slots=True)
+class _DeliveryOutcome:
+    """Counters and the campaign row as the send loop left it."""
+
+    campaign: Campaign | None
+    sent: int = 0
+    failed: int = 0
+    blocked: int = 0
+    indeterminate: int = 0
+    stop_observed: bool = False
+
+
+@dataclass(slots=True)
+class _RecipientTarget:
+    """One recipient that cleared every pre-claim gate."""
+
+    assignment: RecipientAssignment
+    recipient: Recipient
+    token: TrackingToken
+    tracking_bearer: str
+
+
+@dataclass(slots=True)
+class _RecipientGateResult:
+    """Verdict of the pre-claim gates for one assignment."""
+
+    target: _RecipientTarget | None = None
+    blocked: int = 0
+    failed: int = 0
+    commit: bool = False
+
+
+def _authorize_delivery(
+    ctx: WorkerContext,
+    session: Session,
+    campaign: Campaign,
+    payload: dict[str, Any],
+    *,
+    campaign_id: str,
+    template_hash: object,
+) -> _DeliveryPlan | None:
+    """Run the campaign-level authorization gates, in order, before any send.
+
+    Returns ``None`` when the campaign must not be delivered (the caller
+    returns without contacting a provider); raises ``SafetyRejectionError`` for
+    the two conditions that were fatal before this split, unchanged.
+    """
+
+    template = session.get(TemplateVersion, campaign.current_template_id) if campaign.current_template_id else None
+    if template is None:
+        logger.error("campaign %s has no approved template; refusing to deliver", campaign_id)
+        return None
+    # Template approval is enforced for every real send, including the
+    # canary (test_send=True): a canary delivers to real reviewed mailboxes,
+    # so it must not bypass approval. The now-dead ad-hoc test-send endpoint
+    # was the only caller that legitimately needed this skip.
+    if template.approval_state != dm.TemplateApprovalState.APPROVED:
+        raise SafetyRejectionError("delivery requires an approved template")
+    if template_hash != campaign.manifest_hash:
+        raise SafetyRejectionError("delivery manifest does not match the approved campaign")
+    pattern = session.get(CampaignPattern, campaign.pattern_id) if campaign.pattern_id else None
+    # Re-check the two-person rule here, not just at scheduling: a message
+    # queued before the policy tightened must not still go out under the
+    # old rules. This applies to the canary (test_send=True) too, whose
+    # cohort receives real messages; scheduling already required these
+    # approvals against the same review manifest, so the re-check passes for
+    # a legitimately reviewed canary and blocks one whose approvals lapsed.
+    # AUT-002: the rule is now two DISTINCT approvers, not two approval
+    # lanes — enforced here by _two_person_approval_reason.
+    if ctx.settings.approval_policy is ApprovalPolicy.ENFORCE:
+        covering_approvals = session.scalars(
+            select(CampaignApproval).where(
+                CampaignApproval.campaign_id == campaign.campaign_id,
+                CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+                CampaignApproval.launch_manifest_hash == payload.get("launch_manifest_hash"),
             )
-            session.commit()
-            logger.error("campaign %s has no Rules-of-Engagement; refusing to deliver", campaign_id)
-            return
-        try:
-            roe_key = ctx.settings.require_roe_signing_key()
-        except RuntimeError as exc:
+        ).all()
+        # Distinct name: `reason` is bound as a plain str in the delivery
+        # phases that own the emergency-stop wording, and this one is
+        # str|None. The two must never be merged back together.
+        approval_reason = _two_person_approval_reason(covering_approvals)
+        if approval_reason is not None:
             ctx.audit_store.record(
                 session=session,
                 actor="worker:delivery",
                 action="campaign.deliver.blocked",
                 object_type="campaign",
                 object_id=campaign_id,
-                detail={"reason": "roe_key_unconfigured"},
+                detail={"reason": approval_reason},
             )
             session.commit()
             logger.error(
-                "campaign_roe_key_unavailable campaign_id=%s exception_type=%s",
+                "campaign %s fails the two-person approval rule (%s); refusing to deliver",
                 campaign_id,
-                type(exc).__name__[:128],
+                approval_reason,
             )
-            return
-        if not verify_roe_signature(
-            roe.terms_hash,
-            roe.signer,
-            roe.signed_at,
-            roe.signature,
-            authorizing_party=roe.authorizing_party,
-            target_domains=roe.target_domains or [],
-            window_start=roe.window_start,
-            window_end=roe.window_end,
-            signature_version=roe.signature_version,
-            signing_key=roe_key,
-        ):
-            ctx.audit_store.record(
-                session=session,
-                actor="worker:delivery",
-                action="campaign.deliver.blocked",
-                object_type="campaign",
-                object_id=campaign_id,
-                detail={"reason": "roe_signature_invalid"},
-            )
-            session.commit()
-            logger.error("campaign %s RoE signature is invalid; refusing to deliver", campaign_id)
-            return
-        if not roe_active_at(
-            revoked_at=roe.revoked_at,
-            window_start=roe.window_start,
-            window_end=roe.window_end,
-            when=datetime.now(UTC),
-        ):
-            ctx.audit_store.record(
-                session=session,
-                actor="worker:delivery",
-                action="campaign.deliver.blocked",
-                object_type="campaign",
-                object_id=campaign_id,
-                detail={"reason": "roe_not_active"},
-            )
-            session.commit()
-            logger.error("campaign %s RoE is not active; refusing to deliver", campaign_id)
-            return
-        roe_targets = frozenset(roe.target_domains or [])
-        allowlist = ctx.settings.recipient_domain_allowlist()
-        # Mirror the import rule: unset is fail-closed under OIDC-shaped
-        # deployments and allow-all only for the offline dev stack.
-        unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
-        # Check the domain that will actually send, not the one configured on
-        # the campaign: under ACS they differ, and checking the wrong one gave
-        # an SPF verdict about a domain absent from the message.
-        sender_address, sender_honored = effective_sender_address(ctx, campaign)
-        spf = check_spf_for_mailbox(sender_address)
-        if not spf.has_spf:
-            logger.warning("SPF pre-flight: %s publishes no SPF record; delivery may be flagged", spf.domain)
-        if sender_address != campaign.sender_mailbox:
-            if ctx.settings.email_provider_kind.is_acs:
-                logger.info(
-                    "sender override: campaign requests %s but the %s provider sends as %s",
-                    campaign.sender_mailbox,
-                    ctx.settings.email_provider,
-                    sender_address,
-                )
-            else:
-                logger.warning(
-                    "sender fallback: %s is not in the sending-domain pool; sending as %s",
-                    campaign.sender_mailbox,
-                    sender_address,
-                )
-        deferred = 0
+            return None
+    # Signed Rules-of-Engagement gate. Delivery is impossible without an
+    # active, validly-signed RoE attached at scheduling: the RoE names the
+    # verified target domains recipients are confined to. Every failure
+    # mode here returns without sending anything.
+    roe = session.get(RulesOfEngagement, campaign.roe_id) if campaign.roe_id is not None else None
+    if roe is None:
+        ctx.audit_store.record(
+            session=session,
+            actor="worker:delivery",
+            action="campaign.deliver.blocked",
+            object_type="campaign",
+            object_id=campaign_id,
+            detail={"reason": "no_roe"},
+        )
+        session.commit()
+        logger.error("campaign %s has no Rules-of-Engagement; refusing to deliver", campaign_id)
+        return None
+    try:
+        roe_key = ctx.settings.require_roe_signing_key()
+    except RuntimeError as exc:
+        ctx.audit_store.record(
+            session=session,
+            actor="worker:delivery",
+            action="campaign.deliver.blocked",
+            object_type="campaign",
+            object_id=campaign_id,
+            detail={"reason": "roe_key_unconfigured"},
+        )
+        session.commit()
+        logger.error(
+            "campaign_roe_key_unavailable campaign_id=%s exception_type=%s",
+            campaign_id,
+            type(exc).__name__[:128],
+        )
+        return None
+    if not verify_roe_signature(
+        roe.terms_hash,
+        roe.signer,
+        roe.signed_at,
+        roe.signature,
+        authorizing_party=roe.authorizing_party,
+        target_domains=roe.target_domains or [],
+        window_start=roe.window_start,
+        window_end=roe.window_end,
+        signature_version=roe.signature_version,
+        signing_key=roe_key,
+    ):
+        ctx.audit_store.record(
+            session=session,
+            actor="worker:delivery",
+            action="campaign.deliver.blocked",
+            object_type="campaign",
+            object_id=campaign_id,
+            detail={"reason": "roe_signature_invalid"},
+        )
+        session.commit()
+        logger.error("campaign %s RoE signature is invalid; refusing to deliver", campaign_id)
+        return None
+    if not roe_active_at(
+        revoked_at=roe.revoked_at,
+        window_start=roe.window_start,
+        window_end=roe.window_end,
+        when=datetime.now(UTC),
+    ):
+        ctx.audit_store.record(
+            session=session,
+            actor="worker:delivery",
+            action="campaign.deliver.blocked",
+            object_type="campaign",
+            object_id=campaign_id,
+            detail={"reason": "roe_not_active"},
+        )
+        session.commit()
+        logger.error("campaign %s RoE is not active; refusing to deliver", campaign_id)
+        return None
+    roe_targets = frozenset(roe.target_domains or [])
+    allowlist = ctx.settings.recipient_domain_allowlist()
+    # Mirror the import rule: unset is fail-closed under OIDC-shaped
+    # deployments and allow-all only for the offline dev stack.
+    unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+    # Check the domain that will actually send, not the one configured on
+    # the campaign: under ACS they differ, and checking the wrong one gave
+    # an SPF verdict about a domain absent from the message.
+    sender_address, sender_honored = effective_sender_address(ctx, campaign)
+    spf = check_spf_for_mailbox(sender_address)
+    if not spf.has_spf:
+        logger.warning("SPF pre-flight: %s publishes no SPF record; delivery may be flagged", spf.domain)
+    if sender_address != campaign.sender_mailbox:
         if ctx.settings.email_provider_kind.is_acs:
-            requested_ids = assignment_ids
-            reserved, next_available = _reserve_acs_delivery_capacity(
-                session,
-                ctx.settings,
-                requested=len(requested_ids),
-                now=datetime.now(UTC),
+            logger.info(
+                "sender override: campaign requests %s but the %s provider sends as %s",
+                campaign.sender_mailbox,
+                ctx.settings.email_provider,
+                sender_address,
             )
-            assignment_ids = requested_ids[:reserved]
-            deferred_ids = requested_ids[reserved:]
-            deferred = len(deferred_ids)
-            if deferred_ids:
-                _defer_acs_assignments(
-                    ctx,
-                    session,
-                    message,
-                    payload,
-                    deferred_ids,
-                    available_at=next_available,
-                )
-                ctx.audit_store.record(
-                    session=session,
-                    actor="worker:delivery",
-                    action="campaign.deliver.deferred",
-                    object_type="campaign",
-                    object_id=campaign_id,
-                    detail={"provider": "acs", "deferred": deferred, "reserved": reserved},
-                )
+        else:
+            logger.warning(
+                "sender fallback: %s is not in the sending-domain pool; sending as %s",
+                campaign.sender_mailbox,
+                sender_address,
+            )
+    return _DeliveryPlan(
+        template=template,
+        pattern=pattern,
+        roe=roe,
+        roe_targets=roe_targets,
+        allowlist=allowlist,
+        unrestricted=unrestricted,
+        sender_address=sender_address,
+        sender_honored=sender_honored,
+        spf=spf,
+    )
+
+
+def _reserve_delivery_batch(
+    ctx: WorkerContext,
+    session: Session,
+    message: dict[str, Any],
+    payload: dict[str, Any],
+    assignment_ids: list[str],
+    *,
+    campaign_id: str,
+) -> tuple[list[str], int]:
+    """Trim the batch to the provider's paced capacity, re-queueing the rest."""
+
+    if not ctx.settings.email_provider_kind.is_acs:
+        return assignment_ids, 0
+    requested_ids = assignment_ids
+    reserved, next_available = _reserve_acs_delivery_capacity(
+        session,
+        ctx.settings,
+        requested=len(requested_ids),
+        now=datetime.now(UTC),
+    )
+    assignment_ids = requested_ids[:reserved]
+    deferred_ids = requested_ids[reserved:]
+    deferred = len(deferred_ids)
+    if deferred_ids:
+        _defer_acs_assignments(
+            ctx,
+            session,
+            message,
+            payload,
+            deferred_ids,
+            available_at=next_available,
+        )
+        ctx.audit_store.record(
+            session=session,
+            actor="worker:delivery",
+            action="campaign.deliver.deferred",
+            object_type="campaign",
+            object_id=campaign_id,
+            detail={"provider": "acs", "deferred": deferred, "reserved": reserved},
+        )
+        session.commit()
+    return assignment_ids, deferred
+
+
+def _gate_delivery_recipient(
+    session: Session,
+    payload: dict[str, Any],
+    plan: _DeliveryPlan,
+    assignment_id: str,
+    *,
+    campaign_id: uuid.UUID,
+    excluded_ids: set[uuid.UUID],
+) -> _RecipientGateResult:
+    """Apply the per-recipient gates that precede any provider claim.
+
+    The order — assignment liveness, recipient/token availability, exclusions,
+    suppression, tracking bearer, recipient allowlist, RoE target domain — is
+    a safety invariant. ``commit`` mirrors which branches committed before this
+    split; ``recipient_unavailable`` deliberately does not.
+    """
+
+    assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
+    if assignment is None or assignment.campaign_id != campaign_id or assignment.send_state != dm.SendState.QUEUED:
+        return _RecipientGateResult()
+    token = session.scalar(
+        select(TrackingToken).where(TrackingToken.recipient_assignment_id == assignment.recipient_assignment_id)
+    )
+    recipient = session.get(Recipient, assignment.recipient_id)
+    if token is None or recipient is None or recipient.status != dm.RecipientStatus.ACTIVE:
+        assignment.send_state = dm.SendState.FAILED
+        assignment.failure_reason = "recipient_unavailable"
+        return _RecipientGateResult(failed=1)
+    if assignment.recipient_id in excluded_ids:
+        # A campaign-scoped or global exclusion active now retires the
+        # assignment before any transport attempt. Fail closed even
+        # though the audience was filtered at publish.
+        assignment.send_state = dm.SendState.EXPIRED
+        assignment.failure_reason = "recipient_excluded"
+        return _RecipientGateResult(blocked=1, commit=True)
+    suppression = session.get(RecipientDeliverySuppression, assignment.recipient_id)
+    if suppression is not None and suppression.active:
+        assignment.send_state = dm.SendState.FAILED
+        assignment.failure_reason = "recipient_suppressed"
+        return _RecipientGateResult(blocked=1, commit=True)
+    tracking_bearer, tracking_reason = _delivery_tracking_bearer(payload, assignment, token)
+    if tracking_bearer is None:
+        # Leave the assignment QUEUED so an explicit scheduling
+        # retry can rotate/publish a valid bearer. This fails
+        # closed without turning stale queue data into an
+        # abandoned terminal assignment.
+        assignment.failure_reason = tracking_reason
+        return _RecipientGateResult(blocked=1, commit=True)
+    if not plan.unrestricted and not is_recipient_allowed(recipient.mailbox or "", plan.allowlist):
+        # Policy refusal, not a transport error: never attempt the send.
+        assignment.send_state = dm.SendState.FAILED
+        assignment.failure_reason = "domain_not_allowed"
+        return _RecipientGateResult(blocked=1, commit=True)
+    if not recipient_domain_roe_covered(recipient.mailbox or "", plan.roe_targets):
+        # The authorization boundary: recipients may only be in the
+        # verified target domains the signed RoE names. This is
+        # independent of the recipient allowlist and cannot be
+        # switched off by config.
+        assignment.send_state = dm.SendState.FAILED
+        assignment.failure_reason = "target_domain_not_roe_covered"
+        return _RecipientGateResult(blocked=1, commit=True)
+    return _RecipientGateResult(
+        target=_RecipientTarget(
+            assignment=assignment,
+            recipient=recipient,
+            token=token,
+            tracking_bearer=tracking_bearer,
+        )
+    )
+
+
+def _record_delivery_stop(
+    ctx: WorkerContext,
+    session: Session,
+    assignment: RecipientAssignment,
+    reason: str,
+    *,
+    campaign_id: str,
+    assignment_id: str,
+) -> None:
+    """Retire the assignment that observed a stop and audit why the batch ended."""
+
+    assignment.send_state = dm.SendState.EXPIRED
+    assignment.failure_reason = reason
+    ctx.audit_store.record(
+        session=session,
+        actor="worker:delivery",
+        action="campaign.deliver.blocked",
+        object_type="campaign",
+        object_id=campaign_id,
+        detail={"reason": reason, "assignment_id": assignment_id},
+    )
+    session.commit()
+
+
+def _deliver_assignments(
+    ctx: WorkerContext,
+    session: Session,
+    campaign: Campaign,
+    plan: _DeliveryPlan,
+    payload: dict[str, Any],
+    assignment_ids: list[str],
+    *,
+    campaign_id: str,
+    test_send: bool,
+) -> _DeliveryOutcome:
+    """Gate, claim, render, send and record one assignment at a time.
+
+    Every per-assignment re-check between the claim and the provider call is
+    deliberate: the claim and correlation commits release the campaign and
+    launch-gate row locks, so campaign state, the launch gate and the global
+    emergency stop are all re-read under fresh locks before each send.
+    """
+
+    sent = 0
+    failed = 0
+    blocked = 0
+    indeterminate = 0
+    stop_observed = False
+    locked_campaign: Campaign | None = campaign
+    # Exclusions are enforced at publish, but an operator may exclude a
+    # recipient after the batch was queued. Re-read the active set here so a
+    # freshly excluded recipient still QUEUED is never contacted.
+    excluded_ids = _excluded_recipient_ids(session, campaign.campaign_id)
+    sender = _make_batch_sender(ctx) if assignment_ids else None
+    # One held SMTP/ACS connection for the whole batch (ARCH-1).
+    with sender if sender is not None else nullcontext():
+        for assignment_id in assignment_ids:
+            gated = _gate_delivery_recipient(
+                session,
+                payload,
+                plan,
+                assignment_id,
+                campaign_id=campaign.campaign_id,
+                excluded_ids=excluded_ids,
+            )
+            blocked += gated.blocked
+            failed += gated.failed
+            if gated.commit:
                 session.commit()
-            if not assignment_ids:
-                return
-        sent = 0
-        failed = 0
-        blocked = 0
-        indeterminate = 0
-        stop_observed = False
-        # Exclusions are enforced at publish, but an operator may exclude a
-        # recipient after the batch was queued. Re-read the active set here so a
-        # freshly excluded recipient still QUEUED is never contacted.
-        excluded_ids = _excluded_recipient_ids(session, campaign.campaign_id)
-        sender = _make_batch_sender(ctx) if assignment_ids else None
-        # One held SMTP/ACS connection for the whole batch (ARCH-1).
-        with sender if sender is not None else nullcontext():
-            for assignment_id in assignment_ids:
-                assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
-                if (
-                    assignment is None
-                    or assignment.campaign_id != campaign.campaign_id
-                    or assignment.send_state != dm.SendState.QUEUED
-                ):
-                    continue
-                token = session.scalar(
-                    select(TrackingToken).where(
-                        TrackingToken.recipient_assignment_id == assignment.recipient_assignment_id
-                    )
-                )
-                recipient = session.get(Recipient, assignment.recipient_id)
-                if token is None or recipient is None or recipient.status != dm.RecipientStatus.ACTIVE:
-                    assignment.send_state = dm.SendState.FAILED
-                    assignment.failure_reason = "recipient_unavailable"
-                    failed += 1
-                    continue
-                if assignment.recipient_id in excluded_ids:
-                    # A campaign-scoped or global exclusion active now retires the
-                    # assignment before any transport attempt. Fail closed even
-                    # though the audience was filtered at publish.
-                    assignment.send_state = dm.SendState.EXPIRED
-                    assignment.failure_reason = "recipient_excluded"
-                    blocked += 1
-                    session.commit()
-                    continue
-                suppression = session.get(RecipientDeliverySuppression, assignment.recipient_id)
-                if suppression is not None and suppression.active:
-                    assignment.send_state = dm.SendState.FAILED
-                    assignment.failure_reason = "recipient_suppressed"
-                    blocked += 1
-                    session.commit()
-                    continue
-                tracking_bearer, tracking_reason = _delivery_tracking_bearer(payload, assignment, token)
-                if tracking_bearer is None:
-                    # Leave the assignment QUEUED so an explicit scheduling
-                    # retry can rotate/publish a valid bearer. This fails
-                    # closed without turning stale queue data into an
-                    # abandoned terminal assignment.
-                    assignment.failure_reason = tracking_reason
-                    blocked += 1
-                    session.commit()
-                    continue
-                if not unrestricted and not is_recipient_allowed(recipient.mailbox or "", allowlist):
-                    # Policy refusal, not a transport error: never attempt the send.
-                    assignment.send_state = dm.SendState.FAILED
-                    assignment.failure_reason = "domain_not_allowed"
-                    blocked += 1
-                    session.commit()
-                    continue
-                if not recipient_domain_roe_covered(recipient.mailbox or "", roe_targets):
-                    # The authorization boundary: recipients may only be in the
-                    # verified target domains the signed RoE names. This is
-                    # independent of the recipient allowlist and cannot be
-                    # switched off by config.
-                    assignment.send_state = dm.SendState.FAILED
-                    assignment.failure_reason = "target_domain_not_roe_covered"
-                    blocked += 1
-                    session.commit()
-                    continue
-                attempt_id = _claim_delivery(
+            if gated.target is None:
+                continue
+            assignment = gated.target.assignment
+            recipient = gated.target.recipient
+            token = gated.target.token
+            tracking_bearer = gated.target.tracking_bearer
+            attempt_id = _claim_delivery(
+                session,
+                assignment,
+                campaign.campaign_id,
+                claimed_at=datetime.now(UTC),
+            )
+            if attempt_id is None:
+                # Another worker claimed this assignment after our read.
+                # Its provider call (or its uncertain result) owns the row.
+                continue
+            try:
+                correlation_row, delivery_correlation = _durable_delivery_correlation(
                     session,
                     assignment,
-                    campaign.campaign_id,
-                    claimed_at=datetime.now(UTC),
+                    message_id_domain=plan.sender_address.rsplit("@", 1)[-1],
                 )
-                if attempt_id is None:
-                    # Another worker claimed this assignment after our read.
-                    # Its provider call (or its uncertain result) owns the row.
-                    continue
-                try:
-                    correlation_row, delivery_correlation = _durable_delivery_correlation(
-                        session,
-                        assignment,
-                        message_id_domain=sender_address.rsplit("@", 1)[-1],
-                    )
-                except Exception as exc:
-                    session.rollback()
-                    assignment = session.get(RecipientAssignment, uuid.UUID(assignment_id))
-                    if assignment is not None and assignment.delivery_attempt_id == attempt_id:
-                        assignment.send_state = dm.SendState.FAILED
-                        assignment.failure_reason = "report_correlation_unavailable"
-                        session.commit()
-                    failed += 1
-                    logger.error(
-                        "delivery_correlation_persist_failed assignment_id=%s exception_type=%s",
-                        assignment_id,
-                        type(exc).__name__[:128],
-                    )
-                    continue
-                # The assignment claim and correlation commits deliberately
-                # precede the provider call. Re-acquire the campaign lock and
-                # re-check its state after those commits so a scoped stop
-                # cannot race a send already waiting at this boundary.
-                campaign = session.get(
-                    Campaign,
-                    campaign.campaign_id,
-                    with_for_update={"read": True},
-                    populate_existing=True,
-                )
-                if campaign is None or not _campaign_state_allows_delivery(campaign.state, test_send=test_send):
-                    assignment.send_state = dm.SendState.EXPIRED
-                    assignment.failure_reason = "campaign_not_deliverable"
-                    blocked += 1
-                    stop_observed = True
-                    ctx.audit_store.record(
-                        session=session,
-                        actor="worker:delivery",
-                        action="campaign.deliver.blocked",
-                        object_type="campaign",
-                        object_id=campaign_id,
-                        detail={"reason": "campaign_not_deliverable", "assignment_id": assignment_id},
-                    )
+            except Exception as exc:
+                session.rollback()
+                reclaimed = session.get(RecipientAssignment, uuid.UUID(assignment_id))
+                if reclaimed is not None and reclaimed.delivery_attempt_id == attempt_id:
+                    reclaimed.send_state = dm.SendState.FAILED
+                    reclaimed.failure_reason = "report_correlation_unavailable"
                     session.commit()
-                    break
-                _, launch_reason = _launch_delivery_gate_reason(
+                failed += 1
+                logger.error(
+                    "delivery_correlation_persist_failed assignment_id=%s exception_type=%s",
+                    assignment_id,
+                    type(exc).__name__[:128],
+                )
+                continue
+            # The assignment claim and correlation commits deliberately
+            # precede the provider call. Re-acquire the campaign lock and
+            # re-check its state after those commits so a scoped stop
+            # cannot race a send already waiting at this boundary.
+            locked_campaign = session.get(
+                Campaign,
+                campaign.campaign_id,
+                with_for_update={"read": True},
+                populate_existing=True,
+            )
+            if locked_campaign is None or not _campaign_state_allows_delivery(
+                locked_campaign.state, test_send=test_send
+            ):
+                _record_delivery_stop(
+                    ctx,
                     session,
-                    campaign,
-                    payload,
-                    [assignment_id],
-                    ctx.settings,
+                    assignment,
+                    "campaign_not_deliverable",
+                    campaign_id=campaign_id,
+                    assignment_id=assignment_id,
                 )
-                if launch_reason is not None:
-                    assignment.send_state = dm.SendState.EXPIRED
-                    assignment.failure_reason = launch_reason
-                    blocked += 1
-                    stop_observed = True
-                    ctx.audit_store.record(
-                        session=session,
-                        actor="worker:delivery",
-                        action="campaign.deliver.blocked",
-                        object_type="campaign",
-                        object_id=campaign_id,
-                        detail={"reason": launch_reason, "assignment_id": assignment_id},
-                    )
-                    session.commit()
-                    break
-                safety_state = _delivery_safety_state(session, shared_lock=True)
-                if safety_state is None or safety_state.emergency_stop_engaged:
-                    reason = "safety_state_unavailable" if safety_state is None else "global_emergency_stop"
-                    assignment.send_state = dm.SendState.EXPIRED
-                    assignment.failure_reason = reason
-                    blocked += 1
-                    stop_observed = True
-                    ctx.audit_store.record(
-                        session=session,
-                        actor="worker:delivery",
-                        action="campaign.deliver.blocked",
-                        object_type="campaign",
-                        object_id=campaign_id,
-                        detail={"reason": reason, "assignment_id": assignment_id},
-                    )
-                    session.commit()
-                    # Once the singleton is engaged, no later assignment in
-                    # this batch can be eligible. Avoid even claiming them.
-                    break
-                try:
-                    receipt = _send_email(
-                        ctx,
-                        campaign,
-                        template,
-                        pattern,
-                        assignment,
-                        recipient,
-                        token,
-                        tracking_bearer=tracking_bearer,
-                        sender=sender,
-                        correlation=delivery_correlation,
-                        sender_address=sender_address,
-                    )
-                except SafetyRejectionError as exc:
-                    # Rendering and safety validation happen before the
-                    # transport call, so this is a definite non-delivery.
+                blocked += 1
+                stop_observed = True
+                break
+            _, launch_reason = _launch_delivery_gate_reason(
+                session,
+                locked_campaign,
+                payload,
+                [assignment_id],
+                ctx.settings,
+            )
+            if launch_reason is not None:
+                _record_delivery_stop(
+                    ctx,
+                    session,
+                    assignment,
+                    launch_reason,
+                    campaign_id=campaign_id,
+                    assignment_id=assignment_id,
+                )
+                blocked += 1
+                stop_observed = True
+                break
+            safety_state = _delivery_safety_state(session, shared_lock=True)
+            if safety_state is None or safety_state.emergency_stop_engaged:
+                reason = "safety_state_unavailable" if safety_state is None else "global_emergency_stop"
+                _record_delivery_stop(
+                    ctx,
+                    session,
+                    assignment,
+                    reason,
+                    campaign_id=campaign_id,
+                    assignment_id=assignment_id,
+                )
+                blocked += 1
+                stop_observed = True
+                # Once the singleton is engaged, no later assignment in
+                # this batch can be eligible. Avoid even claiming them.
+                break
+            try:
+                receipt = _send_email(
+                    ctx,
+                    locked_campaign,
+                    plan.template,
+                    plan.pattern,
+                    assignment,
+                    recipient,
+                    token,
+                    tracking_bearer=tracking_bearer,
+                    sender=sender,
+                    correlation=delivery_correlation,
+                    sender_address=plan.sender_address,
+                )
+            except SafetyRejectionError as exc:
+                # Rendering and safety validation happen before the
+                # transport call, so this is a definite non-delivery.
+                logger.error(
+                    "rendered_delivery_rejected assignment_id=%s exception_type=%s",
+                    assignment.recipient_assignment_id,
+                    type(exc).__name__[:128],
+                )
+                assignment.send_state = dm.SendState.FAILED
+                assignment.failure_reason = "rendered_message_rejected"
+                failed += 1
+            except smtplib.SMTPRecipientsRefused as exc:
+                # Every recipient of a single-recipient envelope was refused
+                # before DATA: the relay definitively accepted nothing, so
+                # this is a FAILED non-delivery, not an unknown result. It
+                # must not be filed indeterminate (which is never retried)
+                # nor blindly retried as a possible duplicate.
+                logger.error(
+                    "delivery_rejected assignment_id=%s exception_type=%s",
+                    assignment.recipient_assignment_id,
+                    type(exc).__name__[:128],
+                )
+                assignment.send_state = dm.SendState.FAILED
+                assignment.failure_reason = "provider_rejected"
+                failed += 1
+            except smtplib.SMTPResponseException as exc:
+                if exc.smtp_code is not None and exc.smtp_code >= 500:
+                    # A permanent 5xx (sender refused, data error, ...) is a
+                    # definite non-delivery: nothing was accepted.
                     logger.error(
-                        "rendered_delivery_rejected assignment_id=%s exception_type=%s",
+                        "delivery_rejected assignment_id=%s smtp_code=%s exception_type=%s",
                         assignment.recipient_assignment_id,
-                        type(exc).__name__[:128],
-                    )
-                    assignment.send_state = dm.SendState.FAILED
-                    assignment.failure_reason = "rendered_message_rejected"
-                    failed += 1
-                except smtplib.SMTPRecipientsRefused as exc:
-                    # Every recipient of a single-recipient envelope was refused
-                    # before DATA: the relay definitively accepted nothing, so
-                    # this is a FAILED non-delivery, not an unknown result. It
-                    # must not be filed indeterminate (which is never retried)
-                    # nor blindly retried as a possible duplicate.
-                    logger.error(
-                        "delivery_rejected assignment_id=%s exception_type=%s",
-                        assignment.recipient_assignment_id,
+                        exc.smtp_code,
                         type(exc).__name__[:128],
                     )
                     assignment.send_state = dm.SendState.FAILED
                     assignment.failure_reason = "provider_rejected"
                     failed += 1
-                except smtplib.SMTPResponseException as exc:
-                    if exc.smtp_code is not None and exc.smtp_code >= 500:
-                        # A permanent 5xx (sender refused, data error, ...) is a
-                        # definite non-delivery: nothing was accepted.
-                        logger.error(
-                            "delivery_rejected assignment_id=%s smtp_code=%s exception_type=%s",
-                            assignment.recipient_assignment_id,
-                            exc.smtp_code,
-                            type(exc).__name__[:128],
-                        )
-                        assignment.send_state = dm.SendState.FAILED
-                        assignment.failure_reason = "provider_rejected"
-                        failed += 1
-                    else:
-                        # A transient/other response code (4xx, or an unknown
-                        # code): whether the message was accepted is uncertain,
-                        # so keep the indeterminate, no-auto-retry contract.
-                        logger.error(
-                            "delivery_outcome_unknown assignment_id=%s smtp_code=%s exception_type=%s",
-                            assignment.recipient_assignment_id,
-                            exc.smtp_code,
-                            type(exc).__name__[:128],
-                        )
-                        assignment.send_state = dm.SendState.INDETERMINATE
-                        assignment.failure_reason = "provider_result_unknown"
-                        indeterminate += 1
-                except Exception as exc:
-                    # A timeout/disconnect may occur after provider acceptance.
-                    # Retrying would risk a duplicate, so surface the unknown
-                    # result for operator reconciliation instead. This remains a
-                    # deliberate fail-safe catch-all: an unexpected transport
-                    # error is treated as indeterminate rather than silently
-                    # dropped or blindly retried.
+                else:
+                    # A transient/other response code (4xx, or an unknown
+                    # code): whether the message was accepted is uncertain,
+                    # so keep the indeterminate, no-auto-retry contract.
                     logger.error(
-                        "delivery_outcome_unknown assignment_id=%s exception_type=%s",
+                        "delivery_outcome_unknown assignment_id=%s smtp_code=%s exception_type=%s",
                         assignment.recipient_assignment_id,
+                        exc.smtp_code,
                         type(exc).__name__[:128],
                     )
                     assignment.send_state = dm.SendState.INDETERMINATE
                     assignment.failure_reason = "provider_result_unknown"
                     indeterminate += 1
-                else:
-                    # Current SMTP and ACS adapters confirm only provider
-                    # acceptance. DELIVERED remains reserved for a future
-                    # provider delivery receipt.
-                    accepted_at = datetime.now(UTC)
-                    correlation_row.provider_id = receipt.provider_id
-                    correlation_row.provider_status = receipt.provider_status
-                    correlation_row.provider_accepted_at = accepted_at
-                    _record_provider_acceptance(
-                        assignment,
-                        accepted_at=accepted_at,
-                        provider_message_id=receipt.provider_id or receipt.message_id,
-                    )
-                    sent += 1
-                session.commit()
-        if payload.get("delivery_phase") == "canary" and campaign is not None:
-            _refresh_canary_evidence(session, ctx, campaign)
-        if campaign is not None and not test_send and not stop_observed:
-            # This path mutates the lifecycle state, so take an exclusive row
-            # lock. Multiple delivery workers may finish the same campaign at
-            # once; upgrading concurrent shared locks here can deadlock.
-            campaign = session.get(
-                Campaign,
-                campaign.campaign_id,
-                with_for_update=True,
-                populate_existing=True,
-            )
-            if campaign is not None and campaign.state in _DELIVERABLE_CAMPAIGN_STATES:
-                campaign.state = dm.CampaignState.ACTIVE
-        ctx.audit_store.record(
-            session=session,
-            actor="worker:delivery",
-            action="campaign.deliver",
-            object_type="campaign",
-            object_id=campaign_id,
-            detail={
-                "blocked": blocked,
-                "sent": sent,
-                "failed": failed,
-                "indeterminate": indeterminate,
-                "deferred": deferred,
-                "template_hash": template_hash,
-                "spf_has_record": spf.has_spf,
-                "spf_domain": spf.domain,
-                "roe_id": str(roe.roe_id),
-                "roe_signer": roe.signer,
-                "sender_address": sender_address,
-                "sender_persona_honored": sender_honored,
-            },
+            except Exception as exc:
+                # A timeout/disconnect may occur after provider acceptance.
+                # Retrying would risk a duplicate, so surface the unknown
+                # result for operator reconciliation instead. This remains a
+                # deliberate fail-safe catch-all: an unexpected transport
+                # error is treated as indeterminate rather than silently
+                # dropped or blindly retried.
+                logger.error(
+                    "delivery_outcome_unknown assignment_id=%s exception_type=%s",
+                    assignment.recipient_assignment_id,
+                    type(exc).__name__[:128],
+                )
+                assignment.send_state = dm.SendState.INDETERMINATE
+                assignment.failure_reason = "provider_result_unknown"
+                indeterminate += 1
+            else:
+                # Current SMTP and ACS adapters confirm only provider
+                # acceptance. DELIVERED remains reserved for a future
+                # provider delivery receipt.
+                accepted_at = datetime.now(UTC)
+                correlation_row.provider_id = receipt.provider_id
+                correlation_row.provider_status = receipt.provider_status
+                correlation_row.provider_accepted_at = accepted_at
+                _record_provider_acceptance(
+                    assignment,
+                    accepted_at=accepted_at,
+                    provider_message_id=receipt.provider_id or receipt.message_id,
+                )
+                sent += 1
+            session.commit()
+    return _DeliveryOutcome(
+        campaign=locked_campaign,
+        sent=sent,
+        failed=failed,
+        blocked=blocked,
+        indeterminate=indeterminate,
+        stop_observed=stop_observed,
+    )
+
+
+def _record_delivery_summary(
+    ctx: WorkerContext,
+    session: Session,
+    campaign: Campaign | None,
+    plan: _DeliveryPlan,
+    payload: dict[str, Any],
+    outcome: _DeliveryOutcome,
+    *,
+    campaign_id: str,
+    template_hash: object,
+    test_send: bool,
+    deferred: int,
+) -> None:
+    """Promote canary evidence, settle the lifecycle, and audit the batch."""
+
+    if payload.get("delivery_phase") == "canary" and campaign is not None:
+        _refresh_canary_evidence(session, ctx, campaign)
+    if campaign is not None and not test_send and not outcome.stop_observed:
+        # This path mutates the lifecycle state, so take an exclusive row
+        # lock. Multiple delivery workers may finish the same campaign at
+        # once; upgrading concurrent shared locks here can deadlock.
+        campaign = session.get(
+            Campaign,
+            campaign.campaign_id,
+            with_for_update=True,
+            populate_existing=True,
         )
-        session.commit()
+        if campaign is not None and campaign.state in _DELIVERABLE_CAMPAIGN_STATES:
+            campaign.state = dm.CampaignState.ACTIVE
+    ctx.audit_store.record(
+        session=session,
+        actor="worker:delivery",
+        action="campaign.deliver",
+        object_type="campaign",
+        object_id=campaign_id,
+        detail={
+            "blocked": outcome.blocked,
+            "sent": outcome.sent,
+            "failed": outcome.failed,
+            "indeterminate": outcome.indeterminate,
+            "deferred": deferred,
+            "template_hash": template_hash,
+            "spf_has_record": plan.spf.has_spf,
+            "spf_domain": plan.spf.domain,
+            "roe_id": str(plan.roe.roe_id),
+            "roe_signer": plan.roe.signer,
+            "sender_address": plan.sender_address,
+            "sender_persona_honored": plan.sender_honored,
+        },
+    )
+    session.commit()
 
 
 def _resolve_retention_policy(session: Session, policy_id: object) -> tuple[RetentionPolicy | None, int]:
