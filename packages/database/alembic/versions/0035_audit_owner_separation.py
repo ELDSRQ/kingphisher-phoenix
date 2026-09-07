@@ -83,8 +83,9 @@ $$
 
 # 2) Transfer ownership of the two audit evidence tables to audit_owner, with a
 #    transient CREATE grant so the reassignment succeeds under a non-superuser
-#    admin. Explicit audit_writer grants (SELECT/INSERT/UPDATE) survive; only the
-#    owner-implicit DELETE/TRUNCATE is removed.
+#    admin. Explicit audit_writer grants survive the change, but an install where
+#    audit_writer was the OWNER held its rights IMPLICITLY and would be left with
+#    none — so the append-only set is re-granted explicitly here (AUD-004).
 _TRANSFER_OWNERSHIP_SQL = """
 DO $$
 DECLARE
@@ -111,6 +112,31 @@ BEGIN
             WHEN insufficient_privilege OR undefined_object THEN
                 RAISE NOTICE 'not allowed to transfer ownership of %, %', target, SQLERRM;
         END;
+        -- AUD-004. The comment above assumed "explicit audit_writer grants
+        -- survive" the ownership change. They do — but on an install where
+        -- audit_writer was the OWNER (which 001-roles.sh produced on every
+        -- non-Azure install), its rights were IMPLICIT, so there were no
+        -- explicit grants to survive and the transfer left it with nothing.
+        -- Observed live on 2026-09-07: upgrading an existing database past this
+        -- migration dropped audit_writer to zero privileges, every audit-chain
+        -- verification failed closed with "permission denied for table
+        -- audit_events", and the operator API returned 503. Invisible on a FRESH
+        -- install because 001-roles.sh re-grants at container init.
+        -- Re-grant the least-privilege append-only set explicitly. Deliberately
+        -- NOT granted: DELETE and TRUNCATE on either table (that is the whole
+        -- point of the ownership split), and UPDATE on audit_events. UPDATE on
+        -- audit_chain_head only, because the head row advances in place.
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'audit_writer') THEN
+            BEGIN
+                EXECUTE format('GRANT SELECT, INSERT ON public.%I TO audit_writer', target);
+                IF target = 'audit_chain_head' THEN
+                    EXECUTE format('GRANT UPDATE ON public.%I TO audit_writer', target);
+                END IF;
+            EXCEPTION
+                WHEN insufficient_privilege OR undefined_object THEN
+                    RAISE NOTICE 'could not re-grant audit_writer on %: %', target, SQLERRM;
+            END;
+        END IF;
     END LOOP;
     BEGIN
         REVOKE CREATE ON SCHEMA public FROM audit_owner;
