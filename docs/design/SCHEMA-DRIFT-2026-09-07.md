@@ -1,6 +1,6 @@
 # ORM ↔ migration schema drift (2026-09-07)
 
-**Status:** 1 real defect (fix landed here), 5 false positives (recommendation, not fixed).
+**Status:** RESOLVED — 1 real defect (migration `0037`) and 5 false positives (migration `0038`).
 **Found by:** `packages/database/tests/test_migration_autogenerate_drift.py::test_head_schema_has_no_pending_model_additions`,
 run against a real PostgreSQL for the first time on 2026-09-07.
 **Why it went unnoticed:** the drift test is new (added by AUD-002 this session) and is
@@ -84,8 +84,27 @@ anonymous `UniqueConstraint`) against a reflected, *named* constraint/index it c
 with the model declaration, even though `MetaData(naming_convention=NAMING_CONVENTION)` is set
 (`packages/database/src/kp_database/base.py:16`) — several of these predate the convention.
 
-**Recommended fix (NOT done here — it should be a deliberate, separately reviewed change):**
-prefer one of
+**RESOLVED by migration `0038_unique_constraint_naming`.** Root cause confirmed on a freshly
+migrated database: autogenerate matches constraints **by name**, and the migrations used
+hand-abbreviated names while the ORM's `unique=True` generates the declared convention
+`uq_%(table_name)s_%(column_0_name)s`:
+
+| In the database | Convention (what the ORM expects) |
+|---|---|
+| `uq_delivery_provider_events_external_hash` | `uq_delivery_provider_events_external_event_id_hash` |
+| `uq_delivery_report_correlations_assignment` | `uq_delivery_report_correlations_recipient_assignment_id` |
+| `uq_delivery_report_correlations_verifier` | `uq_delivery_report_correlations_verifier_hash` |
+| `uq_training_assignment_token_hash` | `uq_training_assignments_training_token_hash` |
+| `uq_training_assignment_completion_token_hash` | `uq_training_assignments_training_completion_token_hash` |
+
+The theory is confirmed by the control case: `uq_delivery_report_correlations_message_id` already
+matches the convention and was never reported. Migration `0038` renames the five
+(`ALTER TABLE ... RENAME CONSTRAINT` is catalog-only — no rewrite, no index rebuild), leaving the
+composite `..._attempt_binding` and the explicitly-declared `..._recipient_assignment` alone.
+Renaming was preferred over suppressing the comparison: a gate that always reports five false
+positives is a gate nobody reads, and suppression could hide a genuinely missing constraint.
+
+Alternatives considered and rejected:
 
 1. declare these as explicit named `UniqueConstraint(...)` in `__table_args__` so the model and
    the migration agree on a name; or
