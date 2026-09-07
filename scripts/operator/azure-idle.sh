@@ -8,14 +8,31 @@
 #   stop       idle: stop Postgres (retains data) + plan/confirm/apply environments/idle.tfvars
 #   start      resume: start Postgres + plan/confirm/apply the data plane back on
 #
+#   guard-plan <plan.json>  read-only: machine-readable destroy guard over a
+#              `terraform show -json` plan. Refuses a plan that would destroy or
+#              replace PostgreSQL, the WORM audit-anchor storage, or the CI runner
+#              VM, and prints the destroy summary. Runs anywhere, touches nothing.
+#
+#   plan-idle  non-interactive: the idle plan + the guard, and NOTHING else.
+#   apply-idle non-interactive: re-plan, guard, stop Postgres, apply that SAVED plan.
+#              Reachable ONLY from .github/workflows/azure-idle.yml — see
+#              require_dispatch_confirmation() below. There is no local equivalent.
+#
 # SAFE BY DESIGN:
 #   - Postgres is STOPPED, never destroyed (it carries prevent_destroy; stop retains
 #     data and auto-restarts within ~7 days). An already-stopped server is a logged
 #     no-op, exactly like scripts/operator/azure-nightly-shutdown.sh.
-#   - The Terraform step ALWAYS shows a plan and requires you to type 'yes' after
-#     reviewing it. There is deliberately NO --yes / non-interactive flag: that
-#     confirmation is the gate protecting a destroy of ACR, Redis and the
-#     Container Apps.
+#   - Every plan, on every path, is run through the machine-readable destroy guard
+#     before anything can be applied.
+#   - The INTERACTIVE commands (`stop`, `start`, and the default) ALWAYS show a plan
+#     and require you to type 'yes' after reviewing it. There is deliberately NO
+#     --yes flag and no environment variable that skips it: that confirmation is
+#     the gate protecting a destroy of ACR, Redis and the Container Apps.
+#   - The one non-interactive path (`apply-idle`) does not weaken that gate, it
+#     MOVES it: it refuses unless it is running inside GitHub Actions AND the
+#     workflow's own `confirm` dispatch input was the exact string IDLE, which a
+#     human types into the dispatch form. It is additionally behind the `staging`
+#     GitHub environment's required reviewer.
 #   - Every precondition is checked BEFORE terraform runs, so a missing backend
 #     variable or a missing Azure role prints one sentence naming it, not a
 #     terraform stack trace.
@@ -49,7 +66,8 @@ IDLE_VARFILE="environments/idle.tfvars"
 CONFIG_SOURCE="${KP_DEPLOYMENT_CONFIG_FILE:-$REPO_ROOT/scripts/operator/deployment-preflight/dispatch-staging-workloads.sh}"
 
 WORKDIR=""
-cleanup() { [ -z "$WORKDIR" ] || rm -rf "$WORKDIR"; rm -f "$TF_DIR/.idle.tfplan"; }
+PLAN_FILE=".idle.tfplan"
+cleanup() { [ -z "$WORKDIR" ] || rm -rf "$WORKDIR"; rm -f "$TF_DIR/$PLAN_FILE"; }
 trap cleanup EXIT
 
 die() { echo "!! $*" >&2; exit 1; }
@@ -486,14 +504,155 @@ explain_plan_failure() {
 }
 
 # ---------------------------------------------------------------------------
-# The interactive gate. There is intentionally no way to skip this.
+# The machine-readable destroy guard.
+#
+# "Read the plan carefully" is not a control. This parses `terraform show -json`
+# — the structured plan, never the human rendering — and refuses outright if the
+# plan would delete or replace anything on the protected list:
+#
+#   * the PostgreSQL flexible server and its database (the data),
+#   * the WORM audit-anchor storage account / container / immutability policy,
+#   * the self-hosted CI runner VM, because when this runs as a GitHub Actions
+#     job that VM *is* the runner executing it; destroying it mid-run kills the
+#     job halfway through a destroy of the rest of the tier.
+#
+# It also names the two resources in the idle destroy set that are NOT in the
+# documented "Container Apps + ACR + Redis" summary, so nobody is surprised.
 # ---------------------------------------------------------------------------
-confirm_apply() {
+guard_plan_json() {
+  python3 - "$1" <<'PYGUARD'
+import json
+import os
+import sys
+
+plan_path = sys.argv[1]
+
+# (type, name) pairs; the index/module prefix of an address is irrelevant.
+PROTECTED_TYPES = {
+    "azurerm_postgresql_flexible_server",
+    "azurerm_postgresql_flexible_server_database",
+}
+PROTECTED_NAMED = {
+    ("azurerm_storage_account", "audit_anchor"),
+    ("azurerm_storage_container", "audit_anchor"),
+    ("azurerm_storage_container_immutability_policy", "audit_anchor"),
+    ("azurerm_linux_virtual_machine", "ci_runner"),
+}
+WHY = {
+    "azurerm_postgresql_flexible_server": "the PostgreSQL server holds the data; idle STOPS it, never removes it",
+    "azurerm_postgresql_flexible_server_database": "the application database holds the data",
+    "azurerm_storage_account": "the audit anchor is WORM/immutable and is retained on purpose",
+    "azurerm_storage_container": "the audit anchor is WORM/immutable and is retained on purpose",
+    "azurerm_storage_container_immutability_policy": "removing the immutability policy would unlock the audit anchor",
+    "azurerm_linux_virtual_machine": "this VM is the self-hosted runner executing the job",
+}
+# Beyond the documented "Container Apps + ACR + Redis". Both are gated on
+# deploy_workloads and the next workloads deploy recreates them.
+SURPRISING = {
+    ("azurerm_eventgrid_system_topic", "acs_delivery"):
+        "ACS delivery Event Grid system topic (gated on deploy_workloads; the next workloads deploy recreates it)",
+    ("azurerm_eventgrid_system_topic_event_subscription", "acs_delivery"):
+        "ACS delivery receipt subscription (gated on deploy_workloads; recreated with the topic)",
+    ("azurerm_role_definition", "acs_email_sender"):
+        "custom ACS email-sender role definition (gated on deploy_workloads; recreated by the next workloads deploy)",
+    ("azurerm_role_assignment", "communication_sender"):
+        "ACS email-sender role assignment (gated on deploy_workloads; recreated with the role definition)",
+}
+
+annotate = os.environ.get("GITHUB_ACTIONS", "") == "true"
+
+
+def emit_error(message):
+    print(f"::error::{message}" if annotate else f"!! {message}", file=sys.stderr)
+
+
+try:
+    with open(plan_path, encoding="utf-8") as handle:
+        plan = json.load(handle)
+except (OSError, ValueError) as problem:
+    emit_error(f"the structured plan at {plan_path} could not be read as JSON: {problem}")
+    emit_error("the guard refuses a plan it cannot parse; nothing was applied.")
+    raise SystemExit(3) from None
+if not isinstance(plan, dict):
+    emit_error(f"the structured plan at {plan_path} is not a terraform plan document")
+    raise SystemExit(3)
+
+changes = plan.get("resource_changes")
+if not isinstance(changes, list):
+    emit_error(f"the structured plan at {plan_path} has no resource_changes array")
+    raise SystemExit(3)
+
+destroyed, replaced, created, updated, violations, surprises = [], [], [], [], [], []
+for change in changes:
+    if not isinstance(change, dict):
+        continue
+    detail = change.get("change") or {}
+    actions = detail.get("actions") or []
+    address = str(change.get("address", "<unknown>"))
+    kind = str(change.get("type", ""))
+    name = str(change.get("name", ""))
+    removes = "delete" in actions
+    is_replace = removes and "create" in actions
+    if is_replace:
+        replaced.append(address)
+    elif removes:
+        destroyed.append(address)
+    elif "create" in actions:
+        created.append(address)
+    elif "update" in actions:
+        updated.append(address)
+    if removes and (kind in PROTECTED_TYPES or (kind, name) in PROTECTED_NAMED):
+        violations.append((address, "replace" if is_replace else "destroy", WHY.get(kind, "protected resource")))
+    if removes and (kind, name) in SURPRISING:
+        surprises.append((address, SURPRISING[(kind, name)]))
+
+print("")
+print("=== destroy guard — from `terraform show -json`, not from the human plan ===")
+print(f"    create : {len(created)}")
+print(f"    update : {len(updated)}")
+print(f"    replace: {len(replaced)}")
+print(f"    DESTROY: {len(destroyed)}")
+if destroyed:
+    print("")
+    print("    resources this plan DESTROYS:")
+    for address in sorted(destroyed):
+        print(f"      - {address}")
+if replaced:
+    print("")
+    print("    resources this plan REPLACES (destroy + create):")
+    for address in sorted(replaced):
+        print(f"      ~ {address}")
+if surprises:
+    print("")
+    print('    beyond the documented "Container Apps + ACR + Redis" destroy set:')
+    for address, reason in sorted(surprises):
+        print(f"      ! {address}")
+        print(f"          {reason}")
+print("")
+sys.stdout.flush()
+
+if violations:
+    emit_error("the plan would remove a PROTECTED resource; refusing to apply it.")
+    for address, action, reason in sorted(violations):
+        emit_error(f"{action}: {address} — {reason}")
+    print("")
+    print("    Nothing was applied. The idle posture must never remove these; if the plan", file=sys.stderr)
+    print("    really shows one, the state or the variables are wrong — investigate before", file=sys.stderr)
+    print("    re-running. See docs/AZURE-IDLE.md.", file=sys.stderr)
+    raise SystemExit(3)
+
+print("    guard OK — no protected resource is destroyed or replaced.")
+PYGUARD
+}
+
+# Plan into a saved file, then guard it. Every path that can change Azure goes
+# through here, so no plan can be applied that the guard has not seen.
+run_plan() {
   # $1 = human label, remaining args = extra terraform plan flags
   local label="$1"; shift
   local planlog; planlog="$WORKDIR/plan.log"
   step "terraform plan ($label) in $TF_DIR"
-  if ! ( cd "$TF_DIR" && terraform plan -input=false "$@" -out=".idle.tfplan" 2>&1 | tee "$planlog" ); then
+  if ! ( cd "$TF_DIR" && terraform plan -input=false "$@" -out="$PLAN_FILE" 2>&1 | tee "$planlog" ); then
     explain_plan_failure "$planlog"
     die "plan failed"
   fi
@@ -501,14 +660,62 @@ confirm_apply() {
     explain_plan_failure "$planlog"
     die "plan failed"
   fi
+  step "destroy guard (structured plan)"
+  if ! ( cd "$TF_DIR" && terraform show -json "$PLAN_FILE" ) > "$WORKDIR/plan.json"; then
+    rm -f "$TF_DIR/$PLAN_FILE"
+    die "the saved plan could not be rendered as JSON, so it cannot be guarded"
+  fi
+  if ! guard_plan_json "$WORKDIR/plan.json"; then
+    rm -f "$TF_DIR/$PLAN_FILE"
+    exit 3
+  fi
+}
+
+# The single saved-plan apply in this script. It runs only what was planned and
+# guarded moments earlier — never a bare re-resolution of the configuration.
+apply_saved_plan() {
+  ( cd "$TF_DIR" && terraform apply -input=false "$PLAN_FILE" )
+  rm -f "$TF_DIR/$PLAN_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# The interactive gate. Nothing local skips this.
+# ---------------------------------------------------------------------------
+confirm_apply() {
+  # $1 = human label, remaining args = extra terraform plan flags
+  local label="$1"; shift
+  run_plan "$label" "$@"
   echo
   echo "  REVIEW THE PLAN ABOVE. For 'stop' it must destroy ONLY the registry, Redis,"
   echo "  their private endpoints/role/secret, and (if idling) the Container Apps —"
   echo "  and must show NO destroy/replace of Postgres or the audit storage."
   read -r -p "  Type 'yes' to apply this plan: " ans
-  [ "$ans" = "yes" ] || { rm -f "$TF_DIR/.idle.tfplan"; die "aborted — nothing applied"; }
-  ( cd "$TF_DIR" && terraform apply -input=false ".idle.tfplan" )
-  rm -f "$TF_DIR/.idle.tfplan"
+  [ "$ans" = "yes" ] || { rm -f "$TF_DIR/$PLAN_FILE"; die "aborted — nothing applied"; }
+  apply_saved_plan
+}
+
+# ---------------------------------------------------------------------------
+# The workflow-only gate for `apply-idle`.
+#
+# The interactive commands are unchanged and remain the default. This path does
+# not remove the human confirmation, it relocates it into the dispatch form of
+# .github/workflows/azure-idle.yml: mode=apply is refused there unless `confirm`
+# is the exact string IDLE, and the value is passed through to this check so the
+# script itself refuses too. Outside a GitHub Actions job there is no way in.
+# ---------------------------------------------------------------------------
+require_dispatch_confirmation() {
+  local command_name="$1"
+  [ "${GITHUB_ACTIONS:-}" = "true" ] || fail_with_fix \
+    "'$command_name' is the workflow-only path and this is not a GitHub Actions job" \
+    "It exists because terraform must reach the private Key Vault data plane from" \
+    "inside the VNet, with GitHub OIDC credentials — neither is available locally." \
+    "Interactively, use:" \
+    "  $0 stop"
+  [ "${KP_IDLE_DISPATCH_CONFIRM:-}" = "IDLE" ] || fail_with_fix \
+    "'$command_name' was not given the dispatch confirmation" \
+    "The apply mode of .github/workflows/azure-idle.yml requires its 'confirm'" \
+    "dispatch input to be the exact string IDLE, typed by the operator." \
+    "Re-dispatch the workflow with mode=apply and confirm=IDLE."
 }
 
 repatch_oidc() {
@@ -615,24 +822,91 @@ common_plan_vars() {
     "-var=acs_deployment_stage=workloads"
 }
 
-cmd_stop() {
-  run_preflight "environment= network_mode= acs_deployment_stage= deploy_workloads= deploy_data_plane= deploy_ai_gateway= deploy_ci_runner="
-  stop_postgres
-  local -a flags
-  while IFS= read -r flag; do flags+=("$flag"); done < <(common_plan_vars)
-  # environments/idle.tfvars is the committed, reviewable idle posture:
-  # deploy_workloads=false, deploy_data_plane=false, deploy_ai_gateway=false,
-  # deploy_ci_runner=false. The two flags below are also passed explicitly so the
-  # destroy-scope of this command is visible in the command line itself.
-  flags+=("-var-file=$IDLE_VARFILE" "-var=deploy_workloads=false" "-var=deploy_data_plane=false")
+IDLE_PREFLIGHT_VARS="environment= network_mode= acs_deployment_stage= deploy_workloads= deploy_data_plane= deploy_ai_gateway= deploy_ci_runner="
+
+# The flag list every idle plan uses, on every path — interactive or workflow —
+# so the three commands cannot drift apart.
+#
+# environments/idle.tfvars is the committed, reviewable idle posture:
+# deploy_workloads=false, deploy_data_plane=false, deploy_ai_gateway=false,
+# deploy_ci_runner=false. The first two are also passed explicitly so the
+# destroy-scope of this command is visible in the command line itself.
+#
+# KP_KEEP_CI_RUNNER=1 adds a CLI `-var=deploy_ci_runner=true`, which OUTRANKS the
+# `deploy_ci_runner = false` in the var-file (CLI -var beats -var-file; a
+# TF_VAR_ environment variable would NOT — it loses to a var-file). Without it an
+# apply run from the runner VM destroys the VM executing it, mid-apply.
+idle_plan_flags() {
+  common_plan_vars
+  printf '%s\n' "-var-file=$IDLE_VARFILE" "-var=deploy_workloads=false" "-var=deploy_data_plane=false"
+  [ "${KP_KEEP_CI_RUNNER:-0}" != "1" ] || printf '%s\n' "-var=deploy_ci_runner=true"
+}
+
+note_ci_runner_retention() {
   if [ "${KP_KEEP_CI_RUNNER:-0}" = "1" ]; then
     note "KP_KEEP_CI_RUNNER=1 — the self-hosted runner VM is kept (use this when idling FROM it)."
-    flags+=("-var=deploy_ci_runner=true")
+  else
+    note "KP_KEEP_CI_RUNNER is not 1 — idle.tfvars will DESTROY the self-hosted runner VM."
   fi
-  confirm_apply "idle: ACR+Redis+workloads OFF" "${flags[@]}"
-  echo "==> IDLED. Tier-1 (ACS/domain/DNS) stays up at ~\$0. Resume with: $0 start"
+}
+
+idle_epilogue() {
   echo "    NOTE: this destroyed the container registry. Every image is gone and MUST be"
   echo "    rebuilt and re-pushed before the next deploy — see docs/AZURE-IDLE.md."
+  echo "    RESUME ORDER: PostgreSQL first, then the apps."
+}
+
+cmd_stop() {
+  run_preflight "$IDLE_PREFLIGHT_VARS"
+  stop_postgres
+  local -a flags
+  while IFS= read -r flag; do flags+=("$flag"); done < <(idle_plan_flags)
+  note_ci_runner_retention
+  confirm_apply "idle: ACR+Redis+workloads OFF" "${flags[@]}"
+  echo "==> IDLED. Tier-1 (ACS/domain/DNS) stays up at ~\$0. Resume with: $0 start"
+  idle_epilogue
+}
+
+# ---------------------------------------------------------------------------
+# The two non-interactive halves used by .github/workflows/azure-idle.yml.
+#
+# They exist because the idle posture CANNOT be applied from the operator's
+# machine: network_mode=private puts Key Vault behind a private endpoint, and
+# terraform must refresh ~25 azurerm_key_vault_secret resources through the vault
+# DATA plane and DELETE the redis-url secret. Only a job on the VNet runner, with
+# GitHub OIDC credentials, can reach both.
+# ---------------------------------------------------------------------------
+cmd_plan_idle() {
+  run_preflight "$IDLE_PREFLIGHT_VARS"
+  local -a flags
+  while IFS= read -r flag; do flags+=("$flag"); done < <(idle_plan_flags)
+  note_ci_runner_retention
+  run_plan "idle: ACR+Redis+workloads OFF (plan only)" "${flags[@]}"
+  rm -f "$TF_DIR/$PLAN_FILE"
+  echo
+  echo "==> PLAN ONLY — nothing was applied and nothing in Azure changed."
+  echo "    PostgreSQL was not stopped; only 'apply-idle' does that."
+}
+
+cmd_apply_idle() {
+  require_dispatch_confirmation "apply-idle"
+  run_preflight "$IDLE_PREFLIGHT_VARS"
+  local -a flags
+  while IFS= read -r flag; do flags+=("$flag"); done < <(idle_plan_flags)
+  note_ci_runner_retention
+  # Plan and guard BEFORE stopping Postgres, so a guard refusal leaves Azure
+  # exactly as it was.
+  run_plan "idle: ACR+Redis+workloads OFF" "${flags[@]}"
+  stop_postgres
+  apply_saved_plan
+  echo "==> IDLED. Tier-1 (ACS/domain/DNS) stays up at ~\$0. Resume with: $0 start"
+  idle_epilogue
+}
+
+cmd_guard_plan() {
+  [ -n "${1:-}" ] || die "usage: $0 guard-plan <terraform-show-json-file>"
+  [ -f "$1" ] || die "no such structured plan file: $1"
+  guard_plan_json "$1"
 }
 
 cmd_start() {
@@ -681,9 +955,12 @@ cmd_start() {
 }
 
 case "${1:-status}" in
-  status)    cmd_status ;;
-  preflight) cmd_preflight ;;
-  stop)      cmd_stop ;;
-  start)     shift; cmd_start "${1:-}" ;;
-  *) echo "usage: $0 {status|preflight|stop|start [--workloads]}"; exit 2 ;;
+  status)     cmd_status ;;
+  preflight)  cmd_preflight ;;
+  stop)       cmd_stop ;;
+  start)      shift; cmd_start "${1:-}" ;;
+  guard-plan) shift; cmd_guard_plan "${1:-}" ;;
+  plan-idle)  cmd_plan_idle ;;
+  apply-idle) cmd_apply_idle ;;
+  *) echo "usage: $0 {status|preflight|stop|start [--workloads]|guard-plan <plan.json>|plan-idle|apply-idle}"; exit 2 ;;
 esac

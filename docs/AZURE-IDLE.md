@@ -27,6 +27,7 @@ scripts/operator/azure-idle.sh preflight   # read-only: prove every precondition
 scripts/operator/azure-idle.sh stop        # idle  (plans, then waits for you to type 'yes')
 scripts/operator/azure-idle.sh start       # resume ACR + Redis (plans, then waits for 'yes')
 scripts/operator/azure-idle.sh status      # read-only inventory
+scripts/operator/azure-idle.sh guard-plan plan.json   # read-only: the destroy guard alone
 ```
 
 `stop` and `start` always print a full terraform plan and stop at:
@@ -36,8 +37,16 @@ scripts/operator/azure-idle.sh status      # read-only inventory
 ```
 
 There is deliberately no `--yes`, no `--auto-approve` and no environment variable that
-skips it. That confirmation is the only gate in front of a destroy of ACR, Redis and the
-Container Apps.
+skips it. That confirmation is the only local gate in front of a destroy of ACR, Redis and
+the Container Apps.
+
+> **In private mode these commands cannot actually reach Azure from your machine.** Key
+> Vault is behind a private endpoint and the runner VM has no usable managed identity, so
+> the real idle runs as a GitHub Actions job on the VNet runner — see
+> [Running the idle from GitHub Actions](#running-the-idle-from-github-actions). That job
+> uses two extra, non-interactive entry points, `plan-idle` and `apply-idle`, which are
+> unreachable outside an Actions run and which move the typed confirmation into the
+> workflow's own `confirm=IDLE` dispatch input rather than removing it.
 
 ### ACR is destroyed — images must be re-pushed
 
@@ -164,7 +173,11 @@ Everything else survives, including the things that must never be destroyed:
 - the VNet, subnets, Log Analytics, and the workload identities
 
 **A plan that shows a destroy or replace of anything in that second list is wrong. Answer
-anything other than `yes`.**
+anything other than `yes`.** Since the workflow landed this is no longer only a matter of
+reading carefully: the PostgreSQL server and database, the audit-anchor storage account /
+container / immutability policy, and the CI runner VM are enforced by the machine-readable
+destroy guard, which parses `terraform show -json` and refuses the apply outright. See
+[the guard rails](#the-guard-rails).
 
 ---
 
@@ -215,23 +228,122 @@ through the vault's **data** plane on refresh, and `stop` additionally *deletes*
 `redis-url` secret. From outside the VNet neither works — confirmed from the Mac, where
 even `az acr repository list` against `acrkpstaging` returns 403.
 
-So the deep idle must be run **from inside the VNet**, on the self-hosted CI runner VM:
+So the deep idle must be run **from inside the VNet**, on the self-hosted CI runner VM.
+Logging into that VM and running the command by hand does *not* work either: the VM has
+**no usable managed identity** — `az login --identity` fails on it — so there is no
+credential to run terraform with once you are there. The only credential that works on that
+VM is **GitHub OIDC**, and OIDC is only issued to a GitHub Actions job.
+
+VNet reachability *and* credentials together therefore exist in exactly one place: an
+Actions job on the self-hosted runner. That is
+[`.github/workflows/azure-idle.yml`](#running-the-idle-from-github-actions), below.
+
+The preflight still refuses to continue from outside the VNet. `KP_INSIDE_VNET=1` is the
+acknowledgement that you are already inside it, and the workflow sets it.
+
+---
+
+## Running the idle from GitHub Actions
+
+`.github/workflows/azure-idle.yml` is the supported way to apply the idle posture. It is a
+`workflow_dispatch`-only job that runs `scripts/operator/azure-idle.sh` on the
+`["self-hosted","linux","azure-vnet"]` runner, authenticating with GitHub OIDC exactly the
+way `.github/workflows/azure-deploy.yml` does (`ARM_USE_OIDC=true` plus `ARM_CLIENT_ID` /
+`ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID` from the `staging` environment's variables — the
+azurerm provider needs OIDC directly, not the `azure/login` service-principal session).
+It sits behind `environment: staging`, so the required reviewer still has to approve it.
+
+### The operator sequence
+
+**The job cannot start the runner VM.** It executes *on* that VM, so the VM has to be
+online before the job can be picked up at all; there is no earlier place to start it from.
+Start it first, and deallocate it when you are done:
 
 ```bash
-az vm start -g rg-kp-staging -n "$(az vm list -g rg-kp-staging --query '[0].name' -o tsv)"
-# then, on that VM:
-KP_INSIDE_VNET=1 KP_KEEP_CI_RUNNER=1 scripts/operator/azure-idle.sh stop
+# 1. bring the runner online (it is deallocated by the nightly job)
+az vm start -g rg-kp-staging -n vm-kp-staging-runner
+
+# 2. plan — this is the default mode and changes nothing
+gh workflow run azure-idle.yml -f mode=plan
+
+# 3. read the full plan and the destroy summary in the run log, then apply
+gh workflow run azure-idle.yml -f mode=apply -f confirm=IDLE
+
+# 4. approve the `staging` environment review when GitHub asks
+
+# 5. put the runner back to sleep
+az vm deallocate -g rg-kp-staging -n vm-kp-staging-runner
 ```
 
-`KP_KEEP_CI_RUNNER=1` passes `deploy_ci_runner=true` so the apply does not destroy the VM
-it is running on. Deallocate that VM afterwards (the nightly job does it for free):
+The final step of the job prints steps 4 and 5 again, in the job summary, whether the run
+succeeded or failed.
+
+### The two dispatch inputs
+
+| input | values | meaning |
+|---|---|---|
+| `mode` | `plan` (**default**) / `apply` | `plan` prints the full terraform plan and the destroy summary and stops. It does not even stop PostgreSQL. `apply` re-plans, guards, stops PostgreSQL and applies **that saved plan file** — never a bare re-resolution of the configuration. |
+| `confirm` | must be exactly `IDLE` for `mode=apply` | The typed confirmation that replaces the interactive `yes`. It is checked three times: in a cheap `ubuntu-latest` job *before* the environment review is spent, again on the runner, and a third time inside `azure-idle.sh` (`require_dispatch_confirmation`). |
+
+`mode=plan` needs no confirmation, because it changes nothing.
+
+### The guard rails
+
+**1. The destroy guard.** Every plan — from the workflow *and* from the interactive
+`stop`/`start` — is rendered with `terraform show -json` and parsed structurally. The
+rendered human plan is never grepped. The job **fails** (exit 3, nothing applied) if the
+plan would delete or replace any of:
+
+```
+azurerm_postgresql_flexible_server.*          the data; idle STOPS the server, never removes it
+azurerm_postgresql_flexible_server_database.* the data
+azurerm_storage_account.audit_anchor          WORM / immutable, retained on purpose
+azurerm_storage_container.audit_anchor
+azurerm_storage_container_immutability_policy.audit_anchor
+azurerm_linux_virtual_machine.ci_runner       the VM the job itself is running on
+```
+
+The guard is a separate, side-effect-free entry point, so it can be run over any saved
+plan:
 
 ```bash
-az vm deallocate -g rg-kp-staging -n <runner>
+terraform show -json some.tfplan > plan.json
+scripts/operator/azure-idle.sh guard-plan plan.json
 ```
 
-The preflight refuses to continue from outside the VNet. `KP_INSIDE_VNET=1` is the
-acknowledgement that you are already inside it.
+It also prints the destroy/replace counts and names the two resources that are **not**
+obviously "Container Apps + ACR + Redis" — the ACS delivery Event Grid system topic and the
+custom ACS email-sender role definition/assignment. Both are gated on `deploy_workloads`,
+neither holds data, and the next workloads deploy recreates them.
+
+**2. The runner survives its own apply.** The workflow sets `KP_KEEP_CI_RUNNER=1`, which
+makes `azure-idle.sh` add a CLI `-var=deploy_ci_runner=true`. `environments/idle.tfvars`
+pins `deploy_ci_runner = false`, so without that override the apply destroys the VM
+executing it, halfway through destroying everything else.
+
+It has to be a **CLI `-var`**: a CLI `-var` outranks a `-var-file`, but a `TF_VAR_`
+environment variable **loses** to one. `TF_VAR_deploy_ci_runner=true` would be silently
+overridden by `idle.tfvars` — which is exactly the mistake that would take the runner out.
+
+`terraform` additionally refuses `deploy_ci_runner=true` with an empty
+`ci_runner_registration_token`, so the workflow passes the `CI_RUNNER_REGISTRATION_TOKEN`
+environment secret (environment-scoped, not repository-scoped) and fails early with a named
+message if it is missing. The VM's `lifecycle` ignores `custom_data`, so an expired token
+cannot force it to be replaced; the value only has to exist.
+
+**3. It cannot interleave with a deploy.** The workflow shares azure-deploy.yml's
+`azure-staging` concurrency group, so whichever starts second queues.
+
+### After an apply
+
+* **The container registry is gone.** Every image is permanently deleted, digests included;
+  rebuild and re-push with
+  `scripts/operator/deployment-preflight/dispatch-staging-workloads.sh`.
+* **Resume order: PostgreSQL first, then the apps.** The workloads fail their startup
+  probes against a stopped database. `scripts/operator/azure-idle.sh start` does it in that
+  order (it starts the server, then brings ACR + Redis back empty, and deliberately leaves
+  `deploy_workloads=false`).
+* **Deallocate the runner** — nothing does it for you on the apply path.
 
 ---
 

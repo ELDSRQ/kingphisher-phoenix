@@ -184,6 +184,30 @@ sys.stderr.write("unexpected gh invocation: " + " ".join(args) + "\\n")
 raise SystemExit(99)
 """
 
+
+def _plan_change(kind: str, name: str, actions: list[str], index: int | None = None) -> dict[str, object]:
+    address = f"{kind}.{name}" + (f"[{index}]" if index is not None else "")
+    return {"address": address, "type": kind, "name": name, "change": {"actions": actions}}
+
+
+# What `stop` actually plans: the registry, Redis, their private endpoints, the
+# redis-url secret, the Container Apps, and the two ACS resources that are also
+# gated on deploy_workloads. Nothing protected.
+IDLE_PLAN_JSON = json.dumps(
+    {
+        "format_version": "1.2",
+        "resource_changes": [
+            _plan_change("azurerm_container_registry", "main", ["delete"], 0),
+            _plan_change("azurerm_managed_redis", "main", ["delete"], 0),
+            _plan_change("azurerm_private_endpoint", "registry", ["delete"], 0),
+            _plan_change("azurerm_key_vault_secret", "runtime", ["delete"]),
+            _plan_change("azurerm_container_app", "operator", ["delete"], 0),
+            _plan_change("azurerm_eventgrid_system_topic", "acs_delivery", ["delete"], 0),
+            _plan_change("azurerm_role_definition", "acs_email_sender", ["delete"], 0),
+        ],
+    }
+)
+
 TERRAFORM_SHIM = """import os
 import sys
 
@@ -194,6 +218,11 @@ if args[:1] == ["init"]:
     raise SystemExit(0)
 if args[:1] == ["plan"]:
     print("Plan: 0 to add, 0 to change, 20 to destroy.")
+    raise SystemExit(0)
+if args[:2] == ["show", "-json"]:
+    # The structured plan the destroy guard parses. Tests override it with
+    # KP_TEST_PLAN_JSON to exercise a plan that touches a protected resource.
+    print(os.environ["KP_TEST_PLAN_JSON"])
     raise SystemExit(0)
 if args[:1] == ["apply"]:
     print("Apply complete!")
@@ -252,6 +281,7 @@ def _environment(
         "KP_TEST_COMMUNICATION_ID": COMMUNICATION_ID,
         "KP_TEST_DOMAIN": SENDING_DOMAIN,
         "KP_TEST_SENDER": SENDER_LOCAL_PART,
+        "KP_TEST_PLAN_JSON": IDLE_PLAN_JSON,
         **(extra or {}),
     }, call_log
 
@@ -314,11 +344,22 @@ def test_anything_other_than_yes_applies_nothing(tmp_path: Path) -> None:
         assert not [call for call in calls if call.startswith("terraform apply")], answer
 
 
-def test_there_is_no_way_to_skip_the_confirmation() -> None:
+def test_there_is_no_local_way_to_skip_the_confirmation() -> None:
+    """No flag, argument or environment variable skips the typed 'yes' locally.
+
+    There is exactly one non-interactive path, `apply-idle`, and it is not a
+    bypass: it refuses unless it is running inside GitHub Actions AND the
+    `confirm` dispatch input of .github/workflows/azure-idle.yml was the exact
+    string IDLE, which a human types into the dispatch form. That path exists
+    because the private Key Vault data plane is unreachable from a laptop, and
+    it is covered by tests/test_azure_idle_workflow_contract.py.
+    """
     source = _source(SCRIPT)
-    # A saved-plan apply is the only apply, and it is only ever reached after the read.
+    # A saved-plan apply is the only apply; both paths reach it through the same
+    # helper, and the interactive one only after the read.
     assert source.count("terraform apply") == 1
     assert "read -r -p" in source
+    assert "require_dispatch_confirmation" in source
     # The header comment names `--yes` in order to say it does not exist, so only
     # lines that can actually do something are scanned.
     executable = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
