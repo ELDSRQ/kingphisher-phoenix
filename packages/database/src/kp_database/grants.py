@@ -208,6 +208,17 @@ AUDIT_ANCHOR_COLUMN_GRANTS: dict[str, tuple[str, ...]] = {
         "object_id",
         "occurred_at",
         "detail",
+        # origin_role is a chain-v2 CANONICAL field. AuditStore.verify() rebuilds
+        # the canonical payload from the row's own columns and compares, so a
+        # column it cannot read is a column it cannot bind — and this role's whole
+        # job is tamper detection. Without this grant an origin_role-only rewrite
+        # was invisible to the anchor's verification (verify() falls back to the
+        # recorded canonical text for readers lacking the column, which is exactly
+        # the value an attacker editing columns would leave untouched).
+        # It is read-only and strictly less sensitive than actor/action/detail,
+        # which this role already reads. See
+        # docs/design/AUDIT-CHAIN-INTEGRITY-2026-09.md.
+        "origin_role",
         "prev_hash",
         "event_hash",
         "nonce",
