@@ -152,6 +152,20 @@ gh api --method PUT repos/ELDSRQ/kingphisher-phoenix/environments/azure-nightly-
 
 ### Step 2A — least-privilege Azure identity (recommended)
 
+> **Two things were learned running this for real on 2026-09-07:**
+>
+> 1. **You need BOTH federated-credential subject forms.** This repo has GitHub's
+>    immutable-ID subject claims enabled, so Actions actually presents
+>    `repo:ELDSRQ@172863608/kingphisher-phoenix@1321890015:environment:azure-nightly-shutdown`,
+>    not the plain `repo:ELDSRQ/kingphisher-phoenix:...` form. Registering only the plain form
+>    fails with `AADSTS700213: No matching federated identity record`. `kp-phoenix-deploy-staging`
+>    already carries both, for the same reason. Create both (commands below).
+> 2. **The role below is sufficient only because the script avoids
+>    `az vm list --show-details`.** That flag shells out to network commands for IP addresses and
+>    would additionally require `Microsoft.Network/networkInterfaces/read` and
+>    `publicIPAddresses/read`. `azure-nightly-shutdown.sh` reads power state from the instance
+>    view instead, and a contract test now asserts `--show-details` is never reintroduced.
+
 ```bash
 SUBSCRIPTION="$(az account show --query id -o tsv)"
 ```
@@ -198,6 +212,16 @@ az role assignment create \
   --assignee-principal-type ServicePrincipal \
   --role "KingPhisher nightly power-down" \
   --scope "/subscriptions/$SUBSCRIPTION/resourceGroups/rg-kp-staging"
+```
+
+```bash
+az ad app federated-credential create --id "$NIGHTLY_APP_ID" --parameters '{
+  "name": "azure-nightly-shutdown-environment-immutable",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:ELDSRQ@172863608/kingphisher-phoenix@1321890015:environment:azure-nightly-shutdown",
+  "description": "Immutable-ID subject form GitHub actually presents",
+  "audiences": ["api://AzureADTokenExchange"]
+}'
 ```
 
 ```bash

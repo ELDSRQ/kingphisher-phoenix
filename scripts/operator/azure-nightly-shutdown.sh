@@ -306,9 +306,65 @@ done <<< "$(selected_rows "Container Apps" "$CA_ROWS" minReplicas)"
 # 3. CI runner VM — deallocate (not delete). Deallocated compute bills nothing;
 #    the OS disk survives, so `az vm start` brings the same runner back.
 # ---------------------------------------------------------------------------
+# Deliberately NOT `az vm list --show-details`. That convenience flag shells out to
+# network commands to report IP addresses, so it needs
+# Microsoft.Network/networkInterfaces/read and Microsoft.Network/publicIPAddresses/read —
+# permissions the least-privilege nightly role does not hold, and does not need in order
+# to power a VM down. (Verified against real Azure: --show-details fails for this role
+# with "could not list virtual machines".) Power state comes from the instance view,
+# which Microsoft.Compute/virtualMachines/instanceView/read does grant.
+vm_rows_with_power_state() {
+  python3 - "$RESOURCE_GROUP" <<'PYVM'
+import json
+import subprocess
+import sys
+
+resource_group = sys.argv[1]
+
+
+def _az(args: list[str]) -> tuple[int, str]:
+    try:
+        done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["az", *args], capture_output=True, text=True, timeout=120
+        )
+    except Exception:
+        return 1, ""
+    return done.returncode, done.stdout or ""
+
+
+code, listed = _az(
+    [
+        "vm", "list", "--resource-group", resource_group, "-o", "json",
+        "--query", "[].{name:name,application:tags.application,environment:tags.environment}",
+    ]
+)
+if code != 0:
+    sys.exit(1)
+try:
+    rows = json.loads(listed or "[]")
+except ValueError:
+    sys.exit(1)
+for row in rows:
+    name = row.get("name") or ""
+    power = ""
+    if name:
+        got_code, got = _az(
+            [
+                "vm", "get-instance-view", "--resource-group", resource_group, "--name", name,
+                "--query",
+                "instanceView.statuses[?starts_with(code, 'PowerState/')].displayStatus | [0]",
+                "-o", "tsv",
+            ]
+        )
+        if got_code == 0:
+            power = got.strip()
+    row["powerState"] = power
+print(json.dumps(rows))
+PYVM
+}
+
 step "CI runner virtual machines"
-if ! VM_ROWS="$(az vm list --resource-group "$RESOURCE_GROUP" --show-details -o json \
-    --query "[].{name:name,powerState:powerState,application:tags.application,environment:tags.environment}" 2>/dev/null)"; then
+if ! VM_ROWS="$(vm_rows_with_power_state)"; then
   die "could not list virtual machines in $RESOURCE_GROUP"
 fi
 require_bounded_output "Virtual machine listing" "$VM_ROWS"

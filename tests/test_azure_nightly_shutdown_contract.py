@@ -129,7 +129,20 @@ if args[:2] == ["containerapp", "list"]:
     print(json.dumps(inventory["containerapp"]))
     raise SystemExit(0)
 if args[:2] == ["vm", "list"]:
-    print(json.dumps(inventory["vm"]))
+    # The script deliberately does NOT pass --show-details (that needs
+    # Microsoft.Network reads the least-privilege role does not hold), so the
+    # listing carries no powerState; it is fetched per VM from the instance view.
+    assert "--show-details" not in args, "vm list must not use --show-details"
+    print(json.dumps([
+        {k: v for k, v in row.items() if k != "powerState"} for row in inventory["vm"]
+    ]))
+    raise SystemExit(0)
+if args[:2] == ["vm", "get-instance-view"]:
+    wanted = args[args.index("--name") + 1] if "--name" in args else ""
+    for row in inventory["vm"]:
+        if row.get("name") == wanted:
+            print(row.get("powerState", ""))
+            break
     raise SystemExit(0)
 if args[:3] == ["postgres", "flexible-server", "stop"] or args[:2] in (
     ["containerapp", "update"],
