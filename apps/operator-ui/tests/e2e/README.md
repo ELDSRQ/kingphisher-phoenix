@@ -28,11 +28,12 @@ so reach the console through an SSH tunnel rather than `localhost` directly:
 
 ```
 # 0. Tunnel the console from .105 to the Mac (leave this running in its own shell):
-ssh -N -o ControlMaster=no -o ControlPath=none -L 8000:127.0.0.1:8000 -L 8001:127.0.0.1:8001 erikd@192.168.1.105
+# High local ports: 8000 commonly collides with another tunnel on the operator's Mac
+ssh -N -o ControlMaster=no -o ControlPath=none -L 18000:127.0.0.1:8000 -L 18001:127.0.0.1:8001 erikd@192.168.1.105
 
 # 1. In a second shell, point the suite at the tunnelled console and say how to
 #    authenticate:
-export OPERATOR_CONSOLE_URL=http://localhost:8000
+export OPERATOR_CONSOLE_URL=http://localhost:18000
 export OPERATOR_CONSOLE_PASSWORD="$KP_CONSOLE_PASSWORD"   # local-stack dev login
 #    (managed Azure disables password login — supply a pre-authenticated
 #     session instead: export OPERATOR_CONSOLE_STORAGE_STATE=/path/to/state.json)

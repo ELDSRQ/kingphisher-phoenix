@@ -42,7 +42,8 @@ const EXPECTED_NAV_LABELS = [
 ];
 
 async function ensureAuthenticated(page) {
-  await page.goto("/");
+  // The SPA is mounted at /console/ — the root path 404s.
+  await page.goto("/console/");
   const password = page.locator("#console-password");
   // With a pre-supplied storageState the login form never appears.
   if (await password.count()) {
