@@ -188,6 +188,54 @@ then
   exit 2
 fi
 
+# SERVER-level guard, not just database-level. The gate provisions least-privilege
+# roles via scripts/azure_migrate.py, which issues `ALTER ROLE <role> LOGIN PASSWORD
+# ...` with test values (e.g. test_grant_matrix_effect sets AUDIT_WRITER_PASSWORD=
+# "effect-audit-writer"). PostgreSQL ROLES ARE CLUSTER-WIDE, so those password
+# rewrites hit every database on the server — including a live application database
+# that merely happens to share the cluster. Running this gate against the local
+# .105 stack once silently repointed the running app's audit_writer credential and
+# started failing its audit writes. The existing checks above only prove the
+# DATABASE is disposable; this proves the SERVER is too.
+if [ "${KP_POSTGRES_GATE_ALLOW_SHARED_SERVER:-0}" != "1" ]; then
+  if ! DATABASE_URL_TEST="$DATABASE_URL_TEST" uv run --frozen --no-sync python - <<'PY'
+import os
+import sys
+
+import psycopg
+from sqlalchemy.engine import make_url
+
+url = make_url(os.environ["DATABASE_URL_TEST"])
+dsn = (
+    f"host={url.host} port={url.port or 5432} user={url.username} "
+    f"password={url.password} dbname={url.database}"
+)
+LIVE_NAMES = {"kingphisher", "kingphisher_prod", "kingphisher_staging"}
+try:
+    with psycopg.connect(dsn, connect_timeout=8) as conn:
+        present = {
+            row[0]
+            for row in conn.execute("SELECT datname FROM pg_database WHERE NOT datistemplate").fetchall()
+        }
+except Exception as exc:  # noqa: BLE001 - a probe failure must not mask the guard
+    print(f"could not inspect the target server: {exc}", file=sys.stderr)
+    raise SystemExit(2) from exc
+shared = sorted(present & LIVE_NAMES)
+if shared:
+    print(", ".join(shared), file=sys.stderr)
+    raise SystemExit(3)
+PY
+  then
+    printf '%s\n' \
+      'error: the target PostgreSQL server also hosts a live application database (listed above).' \
+      '       This gate rewrites CLUSTER-WIDE role passwords via scripts/azure_migrate.py, so running' \
+      '       it here would repoint the running application'"'"'s credentials and break its audit writes.' \
+      '       Use a disposable server (the CI service container, or a throwaway local instance).' \
+      '       Set KP_POSTGRES_GATE_ALLOW_SHARED_SERVER=1 only if you accept rewriting those roles.' >&2
+    exit 2
+  fi
+fi
+
 clear_test_queue() {
   REDIS_URL="$REDIS_URL_POSTGRES_TEST" uv run --frozen --no-sync python -c '
 import os
