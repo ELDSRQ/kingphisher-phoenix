@@ -145,10 +145,12 @@ with open(path, "a", encoding="utf-8") as target:
 PYRECORD
 }
 
-# Defense in depth. This script is permitted exactly three mutating Azure
+# Defense in depth. This script is permitted exactly four mutating Azure
 # operations. Anything else is a bug and is refused before it can reach Azure.
+# (backup create is a WRITE, but it only ever adds a restore point.)
 az_write() {
   case "$*" in
+    "postgres flexible-server backup create "*) ;;
     "postgres flexible-server stop "*) ;;
     "containerapp update "*" --min-replicas 0") ;;
     "vm deallocate "*) ;;
@@ -241,6 +243,25 @@ while IFS=$'\t' read -r name state; do
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
       ;;
     Ready)
+      # A STOPPED Azure PostgreSQL flexible server takes NO automated backups.
+      # Observed directly on this server: dailies ran 2026-09-01..09-05, then
+      # ceased the moment it was stopped. With 7-day retention, stopping it every
+      # night would quietly age the restore window out to nothing. So take an
+      # on-demand backup FIRST, and if that does not succeed leave the server
+      # RUNNING — an unstopped server costs money, an unbacked one costs data.
+      backup_name="nightly-$(date -u +%Y%m%dT%H%M%SZ)"
+      log "BACKUP $name -> $backup_name (before stopping)"
+      if ! az_write postgres flexible-server backup create --resource-group "$RESOURCE_GROUP" \
+          --server-name "$name" --name "$backup_name"; then
+        log "REFUSING to stop $name — pre-stop backup failed; leaving it running"
+        record postgres "$name" backup failed \
+          "pre-stop on-demand backup failed; server deliberately left running"
+        FAILED_COUNT=$((FAILED_COUNT + 1))
+        continue
+      fi
+      record postgres "$name" backup \
+        "$([ "$DRY_RUN" -eq 1 ] && echo would_backup || echo backed_up)" \
+        "on-demand restore point $backup_name taken before stop"
       log "STOP $name (state=$state)"
       if az_write postgres flexible-server stop --resource-group "$RESOURCE_GROUP" --name "$name"; then
         record postgres "$name" stop "$([ "$DRY_RUN" -eq 1 ] && echo would_stop || echo stopped)" "was $state"

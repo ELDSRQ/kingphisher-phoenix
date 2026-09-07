@@ -144,6 +144,8 @@ if args[:2] == ["vm", "get-instance-view"]:
             print(row.get("powerState", ""))
             break
     raise SystemExit(0)
+if args[:4] == ["postgres", "flexible-server", "backup", "create"]:
+    raise SystemExit(7 if os.environ.get("KP_TEST_FAIL_BACKUP", "") == "1" or failing else 0)
 if args[:3] == ["postgres", "flexible-server", "stop"] or args[:2] in (
     ["containerapp", "update"],
     ["vm", "deallocate"],
@@ -159,6 +161,7 @@ def _run_script(
     *arguments: str,
     inventory: dict[str, list[dict[str, object]]] | None = None,
     fail_writes: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     shim_dir = tmp_path / "bin"
     shim_dir.mkdir(exist_ok=True)
@@ -174,6 +177,7 @@ def _run_script(
             "KP_TEST_CALL_LOG": str(call_log),
             "KP_TEST_INVENTORY": json.dumps(inventory if inventory is not None else DEFAULT_INVENTORY),
             "KP_TEST_FAIL_WRITES": "1" if fail_writes else "0",
+            **(extra_env or {}),
         },
         capture_output=True,
         text=True,
@@ -187,7 +191,14 @@ def _writes(calls: list[str]) -> list[str]:
     return [
         call
         for call in calls
-        if call.startswith(("postgres flexible-server stop", "containerapp update", "vm deallocate"))
+        if call.startswith(
+            (
+                "postgres flexible-server backup create",
+                "postgres flexible-server stop",
+                "containerapp update",
+                "vm deallocate",
+            )
+        )
     ]
 
 
@@ -200,7 +211,12 @@ def test_script_powers_down_exactly_the_cheap_reversible_tier(tmp_path: Path) ->
     result, calls = _run_script(tmp_path)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _writes(calls) == [
+    # The on-demand restore point is timestamped; normalise it so the expected
+    # sequence stays exact. Its position matters: it must PRECEDE the stop.
+    normalised = [re.sub(r"nightly-\d{8}T\d{6}Z", "nightly-<TS>", call) for call in _writes(calls)]
+    assert normalised == [
+        "postgres flexible-server backup create --resource-group rg-kp-staging "
+        "--server-name psql-kp-staging --name nightly-<TS>",
         "postgres flexible-server stop --resource-group rg-kp-staging --name psql-kp-staging",
         "containerapp update --name ca-kp-staging-operator --resource-group rg-kp-staging --min-replicas 0",
         "containerapp update --name ca-kp-staging-tracking --resource-group rg-kp-staging --min-replicas 0",
@@ -328,7 +344,12 @@ def test_json_action_log_records_every_decision(tmp_path: Path) -> None:
     records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{"action"')]
     assert {record["kind"] for record in records} == {"postgres", "containerapp", "vm"}
     assert all(record["reason"] for record in records)
-    assert {record["result"] for record in records} == {"stopped", "scaled_to_zero", "deallocated"}
+    assert {record["result"] for record in records} == {
+        "backed_up",
+        "stopped",
+        "scaled_to_zero",
+        "deallocated",
+    }
 
 
 def test_deeper_operator_idle_is_left_alone() -> None:
@@ -629,3 +650,59 @@ def test_an_unreadable_deploy_state_fails_safe(tmp_path: Path) -> None:
 def test_a_workflow_that_never_ran_is_not_treated_as_in_flight(tmp_path: Path) -> None:
     decision = _run_deploy_gate(tmp_path, {"azure-deploy.yml": [{"status": "completed", "run_number": 1}]})
     assert decision["proceed"] == "true"
+
+
+def test_a_failed_pre_stop_backup_leaves_postgres_running(tmp_path: Path) -> None:
+    """No backup => no stop. An unstopped server costs money; an unbacked one costs data.
+
+    A STOPPED Azure PostgreSQL flexible server takes NO automated backups — observed
+    on the live server, where dailies ran 2026-09-01..09-05 and ceased the moment it
+    was stopped. With 7-day retention, stopping nightly without a fresh restore point
+    would quietly age the recovery window out to nothing, so the on-demand backup is a
+    PRECONDITION of the stop, not a nicety.
+    """
+    result, calls = _run_script(
+        tmp_path,
+        inventory={
+            "postgres": [
+                {
+                    "name": "psql-kp-staging-6117w",
+                    "state": "Ready",
+                    "application": PROJECT_TAG,
+                    "environment": "staging",
+                },
+            ],
+            "containerapp": [],
+            "vm": [],
+        },
+        extra_env={"KP_TEST_FAIL_BACKUP": "1"},
+    )
+
+    joined = " ".join(calls)
+    assert "backup create" in joined, "it must at least attempt the pre-stop backup"
+    assert "flexible-server stop" not in joined, "it must NOT stop a server it could not back up"
+    assert "leaving it running" in result.stdout
+
+
+def test_the_pre_stop_backup_precedes_the_stop(tmp_path: Path) -> None:
+    """Ordering matters: a restore point taken after the stop would be useless."""
+    _, calls = _run_script(
+        tmp_path,
+        inventory={
+            "postgres": [
+                {
+                    "name": "psql-kp-staging-6117w",
+                    "state": "Ready",
+                    "application": PROJECT_TAG,
+                    "environment": "staging",
+                },
+            ],
+            "containerapp": [],
+            "vm": [],
+        },
+    )
+
+    writes = _writes(calls)
+    backup = next(i for i, c in enumerate(writes) if "backup create" in c)
+    stop = next(i for i, c in enumerate(writes) if "flexible-server stop" in c)
+    assert backup < stop, f"backup must precede stop, got {writes}"

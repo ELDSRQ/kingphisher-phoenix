@@ -175,11 +175,12 @@ cat > /tmp/kp-nightly-shutdown-role.json <<JSON
 {
   "Name": "KingPhisher nightly power-down",
   "IsCustom": true,
-  "Description": "Stop Postgres, scale Container Apps to zero, deallocate the CI runner. No delete, no create.",
+  "Description": "Back up then stop Postgres, scale Container Apps to zero, deallocate the CI runner. No delete.",
   "Actions": [
     "Microsoft.Resources/subscriptions/resourceGroups/read",
     "Microsoft.DBforPostgreSQL/flexibleServers/read",
     "Microsoft.DBforPostgreSQL/flexibleServers/stop/action",
+    "Microsoft.DBforPostgreSQL/flexibleServers/backups/write",
     "Microsoft.App/containerApps/read",
     "Microsoft.App/containerApps/write",
     "Microsoft.Compute/virtualMachines/read",
