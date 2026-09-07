@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
-import kp_operator_api.routers as routers_module
+import kp_operator_api.routes.recipients as recipient_routes
 import pytest
 from fastapi import Request
 from fastapi.routing import APIRoute
@@ -136,10 +136,10 @@ def test_status_fails_closed_without_durable_worker_readiness() -> None:
 def test_integration_action_missing_state_never_depends_on_runtime_asserts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(routers_module, "_integration_action_reason", lambda state, *, kind: None)
+    monkeypatch.setattr(recipient_routes, "_integration_action_reason", lambda state, *, kind: None)
 
     with pytest.raises(ConflictError, match="state is unavailable"):
-        routers_module._require_integration_action(cast(Session, _Session()), kind="directory")
+        recipient_routes._require_integration_action(cast(Session, _Session()), kind="directory")
 
 
 def test_status_uses_only_non_secret_durable_readiness_metadata() -> None:

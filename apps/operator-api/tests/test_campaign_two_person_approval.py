@@ -11,6 +11,7 @@ from kp_authorization.rbac import Principal, Role
 from kp_database.models import Campaign, CampaignApproval, CampaignLaunchGate
 from kp_domain_models import models as dm
 from kp_operator_api import routers
+from kp_operator_api.routes import campaigns as campaign_routes
 from kp_telemetry.errors import PermissionDeniedError
 
 
@@ -122,9 +123,9 @@ def _request() -> SimpleNamespace:
 @pytest.fixture
 def approval_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     lesson = SimpleNamespace(training_resource_id=uuid4())
-    monkeypatch.setattr(routers, "require_bound_training_resource", lambda *_args: lesson)
-    monkeypatch.setattr(routers, "_require_current_frozen_audience", lambda *_args: None)
-    monkeypatch.setattr(routers, "campaign_launch_gate_error", lambda *_args: None)
+    monkeypatch.setattr(campaign_routes, "require_bound_training_resource", lambda *_args: lesson)
+    monkeypatch.setattr(campaign_routes, "_require_current_frozen_audience", lambda *_args: None)
+    monkeypatch.setattr(campaign_routes, "campaign_launch_gate_error", lambda *_args: None)
 
 
 def _approve(

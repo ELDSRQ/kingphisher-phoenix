@@ -17,6 +17,7 @@ from kp_authorization.rbac import Principal, Role
 from kp_domain_models import models as dm
 from kp_domain_models.policy import ApprovalPolicy
 from kp_operator_api import routers
+from kp_operator_api.routes import campaigns as campaign_routes
 
 _LAUNCH_HASH = "c" * 64
 
@@ -179,8 +180,8 @@ def _run_queue(principal: Principal, campaigns, audiences, gates, approvals) -> 
 
 
 def test_queue_returns_only_campaigns_with_a_lane_open_for_me(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(routers, "training_binding_error", lambda *_a: None)
-    monkeypatch.setattr(routers, "campaign_launch_gate_error", lambda *_a: None)
+    monkeypatch.setattr(campaign_routes, "training_binding_error", lambda *_a: None)
+    monkeypatch.setattr(campaign_routes, "campaign_launch_gate_error", lambda *_a: None)
 
     reviewer_id = uuid4()
     reviewer = Principal(str(reviewer_id), {Role.SECURITY_APPROVER, Role.PRIVACY_APPROVER})
@@ -208,7 +209,7 @@ def test_queue_returns_only_campaigns_with_a_lane_open_for_me(monkeypatch: pytes
 
 
 def test_queue_is_empty_when_no_campaigns_are_pending(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(routers, "training_binding_error", lambda *_a: None)
-    monkeypatch.setattr(routers, "campaign_launch_gate_error", lambda *_a: None)
+    monkeypatch.setattr(campaign_routes, "training_binding_error", lambda *_a: None)
+    monkeypatch.setattr(campaign_routes, "campaign_launch_gate_error", lambda *_a: None)
     reviewer = Principal(str(uuid4()), {Role.SECURITY_APPROVER})
     assert _run_queue(reviewer, [], [], [], []) == []

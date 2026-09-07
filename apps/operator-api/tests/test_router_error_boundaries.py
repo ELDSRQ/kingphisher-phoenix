@@ -4,7 +4,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, cast
 
-import kp_operator_api.routers as routers_module
+import kp_operator_api.routes.campaigns as campaign_routes
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -71,7 +71,7 @@ def test_audience_validation_uses_only_allowlisted_feedback(
 ) -> None:
     campaign_id = uuid.uuid4()
     monkeypatch.setattr(
-        routers_module,
+        campaign_routes,
         "_get_campaign",
         lambda _session, _campaign_id: SimpleNamespace(campaign_id=campaign_id),
     )
@@ -79,7 +79,7 @@ def test_audience_validation_uses_only_allowlisted_feedback(
     def fail_configuration(*_args: object, **_kwargs: object) -> None:
         raise ValueError(backend_message)
 
-    monkeypatch.setattr(routers_module, "configure_campaign_audience", fail_configuration)
+    monkeypatch.setattr(campaign_routes, "configure_campaign_audience", fail_configuration)
     with pytest.raises(ValidationError_) as captured:
         update_campaign_audience(
             campaign_id,
