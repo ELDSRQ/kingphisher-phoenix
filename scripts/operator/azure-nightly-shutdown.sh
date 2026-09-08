@@ -191,6 +191,16 @@ for row in payload:
     print(f"{name}\t{'' if state is None else state}")
 PYSELECT
 
+# The `supervise` worker deployment. Terraform names it "ca-<suffix>-worker"
+# (for_each key "worker"); the separated delivery consumer is "...-delivery" and
+# is NOT always-on, so match the exact suffix rather than a substring.
+is_always_on_worker() {
+  case "$1" in
+    *-worker) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Discovery must fail loudly. A malformed listing that silently produced zero
 # rows would look identical to "everything is already off".
 selected_rows() {
@@ -311,16 +321,39 @@ while IFS=$'\t' read -r name minimum; do
       # script deliberately does not deactivate revisions (that is a destructive,
       # deploy-history-mutating action an unattended timer should not take), but it
       # must never again say "already scaled down" while replicas are running.
-      # Count replicas held by active revisions OTHER than the current one. The
-      # live revision legitimately scaling up (a queue rule waking a worker) is not
-      # this bug and must not cry wolf every night; replicas pinned on SUPERSEDED
-      # revisions always are.
+      # Count replicas held by active revisions OTHER than the current one.
+      #
+      # This used to exclude the current revision on the reasoning that "the live
+      # revision legitimately scaling up (a queue rule waking a worker) is not this
+      # bug and must not cry wolf every night". That reasoning was WRONG, and it hid
+      # a real replica: verified 2026-09-08, no container app in this resource group
+      # has ANY scale rule (`properties.template.scale.rules` is null on all four)
+      # and there is no scale_rule/KEDA configuration anywhere in
+      # infrastructure/terraform. There is no queue rule to wake anything. Meanwhile
+      # ca-kp-staging-worker had been holding a replica on its ACTIVE revision since
+      # 2026-09-06 while this script reported "already at min-replicas 0" every
+      # night. Count the current revision too — at min-replicas 0 with no scale
+      # rules, a running replica is an anomaly wherever it sits.
       current_rev="$(az containerapp show --resource-group "$RESOURCE_GROUP" --name "$name" \
         --query "properties.latestRevisionName" -o tsv 2>/dev/null)"
       orphan_replicas="$(az containerapp revision list --resource-group "$RESOURCE_GROUP" \
         --name "$name" --query \
         "[?properties.active && name!='${current_rev}'].properties.replicas" -o tsv 2>/dev/null \
         | awk '{s+=$1} END {print s+0}')"
+      current_replicas="$(az containerapp revision list --resource-group "$RESOURCE_GROUP" \
+        --name "$name" --query \
+        "[?properties.active && name=='${current_rev}'].properties.replicas" -o tsv 2>/dev/null \
+        | awk '{s+=$1} END {print s+0}')"
+      if [ "${current_replicas:-0}" -gt 0 ]; then
+        log "WARNING $name — ${current_replicas} replica(s) BILLING on the CURRENT revision"
+        log "         despite min-replicas 0, and no scale rule exists that could have"
+        log "         woken them. For the supervise worker this is load-bearing (see"
+        log "         main.tf); for anything else it is a stuck replica worth chasing."
+        record containerapp "$name" none billing_replicas_remain \
+          "${current_replicas} replicas on the current revision despite min-replicas 0 and no scale rule"
+        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        continue
+      fi
       if [ "${orphan_replicas:-0}" -gt 0 ]; then
         log "WARNING $name — ${orphan_replicas} replica(s) BILLING on superseded revisions"
         log "         orphaned active revisions are holding them; see docs/design/AZURE-RESIDENCY-AUDIT-2026-09.md"
@@ -335,6 +368,26 @@ while IFS=$'\t' read -r name minimum; do
       ;;
     *)
       log "SCALE $name to min-replicas 0 (was ${minimum:-unknown})"
+      # The `supervise` worker is NOT a queue consumer that can be woken on demand.
+      # Its retention, audit-anchor, ingestion and mailbox roles publish their own
+      # trigger messages from wall-clock timers inside the running process, so at
+      # zero replicas the interval elapses, nothing is enqueued, and nothing can
+      # scale it back up. The window is dropped, not deferred — including the
+      # audit-chain anchor. Terraform pins it at min_replicas=1 for exactly this
+      # reason (see the comment on the worker template in main.tf).
+      #
+      # Scaling it down overnight is still correct: PostgreSQL is stopped moments
+      # later, so the worker could do none of that work anyway. What is NOT safe is
+      # leaving min-replicas 0 in place once the database is running again. This
+      # script only ever powers down, so the restore belongs to the resume path —
+      # and `az postgres flexible-server start` ALONE DOES NOT RESTORE IT. Only a
+      # terraform apply (`azure-idle.sh start --workloads`, or a deploy) puts
+      # min_replicas back to 1. Say so, every night, in the log and in the record.
+      if is_always_on_worker "$name"; then
+        log "         NOTE $name is the always-on supervise worker."
+        log "         Retention + audit anchoring stay SUSPENDED until a terraform"
+        log "         apply restores min_replicas=1. Starting PostgreSQL is not enough."
+      fi
       if az_write containerapp update --name "$name" --resource-group "$RESOURCE_GROUP" --min-replicas 0; then
         record containerapp "$name" scale_to_zero \
           "$([ "$DRY_RUN" -eq 1 ] && echo would_scale_to_zero || echo scaled_to_zero)" \

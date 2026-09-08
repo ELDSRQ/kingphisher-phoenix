@@ -1678,6 +1678,28 @@ resource "azurerm_container_app" "worker" {
     }
   }
   template {
+    # DO NOT set this to 0, and do NOT "fix" it by adding a queue-depth KEDA scale
+    # rule. The `supervise` bundle is not a pure queue consumer: four of its roles
+    # generate their own work from wall-clock timers INSIDE the running process.
+    #
+    #   retention     every retention_interval_seconds        (default 86400)
+    #   audit-anchor  every audit_anchor_interval_seconds     (default 3600)
+    #   ingestion     every 86400s   (_SOURCE_INGESTION_SCHEDULE_INTERVAL_SECONDS)
+    #   mailbox       every 60s
+    #
+    # See supervisor.py `_poll_role` and retention_jobs.maybe_publish_retention,
+    # whose comment is explicit: "Nothing else publishes to the retention topic;
+    # without this the retention worker would idle forever."
+    #
+    # So the trigger message exists only because a live supervisor put it there. At
+    # zero replicas the interval elapses, nothing is enqueued, and a queue-depth
+    # rule therefore has nothing to react to and never scales back up. The window is
+    # not delayed, it is DROPPED — silently, including the audit-chain anchor that
+    # AUD-003 exists to guarantee.
+    #
+    # Only `delivery` is a pure consumer (operator-api and the generation job
+    # publish to it), which is why isolate_delivery_worker splits it out. If a
+    # scale-to-zero posture is ever wanted, it belongs on that deployment alone.
     min_replicas = 1
     max_replicas = each.key == "delivery" ? (local.production ? 5 : 2) : 1
     container {

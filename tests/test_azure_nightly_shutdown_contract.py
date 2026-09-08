@@ -134,11 +134,17 @@ if args[:2] == ["containerapp", "show"]:
     print(f"{wanted}--current")
     raise SystemExit(0)
 if args[:3] == ["containerapp", "revision", "list"]:
-    # replicas pinned on SUPERSEDED revisions; default inventory has none
+    # Two distinct probes share this verb and differ only by --query: one sums
+    # replicas on SUPERSEDED revisions (name!=current), the other on the CURRENT
+    # one (name==current). Dispatch on the query so a test can model each
+    # independently -- the current-revision probe exists because a replica was
+    # found billing there while the script reported "already at min-replicas 0".
     wanted = args[args.index("--name") + 1] if "--name" in args else ""
+    query = args[args.index("--query") + 1] if "--query" in args else ""
+    field = "currentReplicas" if "name=='" in query else "orphanReplicas"
     for row in inventory["containerapp"]:
         if row.get("name") == wanted:
-            for count in row.get("orphanReplicas", []):
+            for count in row.get(field, []):
                 print(count)
             break
     raise SystemExit(0)
@@ -756,3 +762,122 @@ def test_orphaned_replicas_on_superseded_revisions_are_reported_not_silently_ski
     assert "already at min-replicas 0" not in result.stdout, (
         "it must not claim the app is scaled down while replicas are billing"
     )
+
+
+def test_a_replica_on_the_current_revision_is_reported_not_called_scaled_down(tmp_path: Path) -> None:
+    """min-replicas 0 while a replica runs on the CURRENT revision must not read as success.
+
+    The orphan probe originally excluded the current revision, reasoning that "the
+    live revision legitimately scaling up (a queue rule waking a worker)" would
+    otherwise cry wolf nightly. No such rule exists: verified 2026-09-08, every
+    container app in the group has `properties.template.scale.rules == null` and
+    there is no scale_rule/KEDA configuration anywhere in infrastructure/terraform.
+    Meanwhile ca-kp-staging-worker held a replica on its ACTIVE revision from
+    2026-09-06 while the nightly run logged "already at min-replicas 0".
+    """
+    result, _calls = _run_script(
+        tmp_path,
+        inventory={
+            "postgres": [],
+            "containerapp": [
+                {
+                    "name": "ca-kp-staging-worker",
+                    "minReplicas": 0,
+                    "application": PROJECT_TAG,
+                    "environment": "staging",
+                    "currentReplicas": [1],
+                },
+            ],
+            "vm": [],
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "BILLING on the CURRENT revision" in result.stdout
+    assert "already at min-replicas 0" not in result.stdout, (
+        "a running replica must never be reported as a completed scale-down"
+    )
+
+
+def test_scaling_the_supervise_worker_down_warns_that_starting_postgres_is_not_a_resume(
+    tmp_path: Path,
+) -> None:
+    """The supervise worker's timer-driven roles cannot be woken by a queue.
+
+    retention, audit-anchor, ingestion and mailbox publish their own trigger
+    messages from wall-clock timers inside the running process, so at zero replicas
+    the interval elapses, nothing is enqueued, and nothing can scale it back up --
+    the window is dropped rather than deferred. Only a terraform apply restores
+    min_replicas=1, so the nightly log must say that starting PostgreSQL alone
+    leaves retention and audit anchoring suspended.
+    """
+    result, _calls = _run_script(
+        tmp_path,
+        inventory={
+            "postgres": [],
+            "containerapp": [
+                {
+                    "name": "ca-kp-staging-worker",
+                    "minReplicas": 1,
+                    "application": PROJECT_TAG,
+                    "environment": "staging",
+                },
+            ],
+            "vm": [],
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "always-on supervise worker" in result.stdout
+    assert "Starting PostgreSQL is not enough" in result.stdout
+
+
+def test_the_delivery_worker_is_not_treated_as_always_on(tmp_path: Path) -> None:
+    """Only the `supervise` bundle is always-on; the separated delivery consumer is not.
+
+    `isolate_delivery_worker` splits delivery into its own deployment precisely
+    because it IS a pure queue consumer -- operator-api and the generation job
+    publish to it. It must not inherit the supervise worker's warning.
+    """
+    result, _calls = _run_script(
+        tmp_path,
+        inventory={
+            "postgres": [],
+            "containerapp": [
+                {
+                    "name": "ca-kp-staging-delivery",
+                    "minReplicas": 1,
+                    "application": PROJECT_TAG,
+                    "environment": "staging",
+                },
+            ],
+            "vm": [],
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "always-on supervise worker" not in result.stdout
+
+
+def test_terraform_pins_the_supervise_worker_above_zero_replicas() -> None:
+    """min_replicas on the worker template must never be 0, and no scale rule may appear.
+
+    A queue-depth KEDA rule would be worse than the status quo, not better: it
+    guarantees scale-to-zero, and the timer-driven roles then never emit the
+    message such a rule would need in order to scale back up.
+    """
+    main_tf = (REPO_ROOT / "infrastructure" / "terraform" / "main.tf").read_text(encoding="utf-8")
+
+    worker_block = main_tf.split('resource "azurerm_container_app" "worker"', 1)[1]
+    template = worker_block.split("template {", 1)[1].split("container {", 1)[0]
+    assert "min_replicas = 1" in template, (
+        "the supervise worker must stay always-on; retention and audit anchoring "
+        "are driven by in-process wall-clock timers, not by queue depth"
+    )
+    assert "min_replicas = 0" not in template
+
+    for forbidden in ("custom_scale_rule", "azure_queue_scale_rule", "tcp_scale_rule"):
+        assert forbidden not in worker_block.split('resource "azurerm_container_app"', 2)[0], (
+            f"{forbidden} on the supervise worker would let it scale to zero, "
+            "silently dropping retention sweeps and audit-chain anchors"
+        )
