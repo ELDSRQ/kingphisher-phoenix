@@ -95,6 +95,5 @@ jobs:
       - name: Verify idle plan
         shell: bash
         run: |
-          cd infrastructure/terraform
           echo "=== Verifying idle plan ==="
           scripts/operator/azure-idle.sh plan-idle
