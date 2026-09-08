@@ -380,6 +380,31 @@ idle *empties* it, it does not remove it. It is now in `PROTECTED_NAMED`, verifi
 replaying run 34172986678's exact plan shape through the guard (exit 3, refused) and a clean idle
 plan (exit 0, allowed).
 
+### Verified by the first refreshed plan — run 34175307493
+
+Planned against a **running** PostgreSQL (so terraform refreshed from Azure rather than falling
+back to state) on `4498ecb`:
+
+```
+Plan: 0 to add, 1 to change, 22 to destroy
+destroy guard: create 0 / update 1 / replace 0 / DESTROY 22
+guard OK — no protected resource is destroyed or replaced.
+```
+
+`replace: 0`. The environment is untouched, and the destroy set is exactly the documented
+"Container Apps + ACR + Redis" plus the four ACS resources the guard flags as beyond it (system
+topic, receipt subscription, role definition, role assignment — all gated on `deploy_workloads`
+and recreated by the next workloads deploy).
+
+**The `1 to change` was a third instance of the same drift**, surfaced only because this plan
+refreshed. Azure populates
+`actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]` on the
+`Microsoft.App/environments` delegation of `snet-container-apps`; the configuration declared only
+the delegation `name`, so every refreshed plan proposed removing an action that is intrinsic to
+the delegation type. Now declared explicitly. Declared rather than ignored because `actions` is an
+in-place attribute, not ForceNew — a wrong value fails an update instead of destroying a subnet,
+which is why the environment's ForceNew attributes get `ignore_changes` and this one does not.
+
 ### `-refresh=false` plans are advisory, not authoritative
 
 A stopped PostgreSQL rejects child-resource reads with `400 ServerStoppedError`, so `run_plan`

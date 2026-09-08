@@ -280,6 +280,18 @@ resource "azurerm_subnet" "container_apps" {
     name = "container-apps"
     service_delegation {
       name = "Microsoft.App/environments"
+      # Azure populates this action for the Microsoft.App/environments delegation
+      # whether or not the configuration asks. Leaving it undeclared meant every
+      # refreshed plan proposed REMOVING it -- the `1 to change` in idle plan run
+      # 34175307493, and a no-op modify on every deploy before that, since Azure
+      # re-adds an action intrinsic to the delegation type. Same class of drift as
+      # the container app environment's workload_profile above.
+      #
+      # Declared rather than ignored because `actions` is an in-place attribute,
+      # not ForceNew: if this value were ever wrong the result is a failed update,
+      # not a destroyed subnet. The environment's ForceNew attributes get
+      # ignore_changes instead, where a wrong guess would be unrecoverable.
+      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
     }
   }
 }
