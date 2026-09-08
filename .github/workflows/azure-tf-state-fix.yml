@@ -76,51 +76,24 @@ jobs:
           echo "=== Current terraform state ==="
           terraform state list
 
-      - name: Check which resources exist in Azure
+      - name: Sync state with reality
         shell: bash
         run: |
           cd infrastructure/terraform
-          echo "=== Checking ACR ==="
-          az acr show -n acrkpstaging -g ${KP_RG} --query "name" -o tsv 2>/dev/null || echo "ACR NOT FOUND"
-          
-          echo "=== Checking Redis ==="
-          az redis show -n redis-kp-staging-6117w -g ${KP_RG} --query "name" -o tsv 2>/dev/null || echo "Redis NOT FOUND"
-          
-          echo "=== Checking Redis private endpoint ==="
-          az network private-endpoint show -n pep-kp-staging-redis -g ${KP_RG} --query "name" -o tsv 2>/dev/null || echo "Redis PE NOT FOUND"
-          
-          echo "=== Checking ACR private endpoint ==="
-          az network private-endpoint show -n pep-kp-staging-acr -g ${KP_RG} --query "name" -o tsv 2>/dev/null || echo "ACR PE NOT FOUND"
-
-      - name: Remove missing resources from state
-        shell: bash
-        run: |
-          cd infrastructure/terraform
-          
-          # Resources that should exist (not being destroyed by idle)
-          KEEP_RESOURCES=(
-            "azurerm_container_registry.main[0]"
-            "azurerm_private_endpoint.acr[0]"
-          )
-          
-          # Check each resource and remove from state if it doesn't exist in Azure
-          for resource in "${KEEP_RESOURCES[@]}"; do
-            echo "Checking $resource..."
-            # Try to refresh the resource from Azure
-            if terraform refresh -target="$resource" 2>&1 | grep -q "not found\|Error"; then
-              echo "  Resource $resource not found in Azure, removing from state..."
-              terraform state rm "$resource" 2>&1 || true
-            else
-              echo "  Resource $resource exists in Azure, keeping in state."
-            fi
-          done
-          
-          echo "=== Updated terraform state ==="
+          echo "=== Current state ==="
           terraform state list
 
-      - name: Verify plan
+          echo ""
+          echo "=== Refreshing state from Azure (may take a few minutes) ==="
+          terraform apply -refresh-only -auto-approve 2>&1 || true
+
+          echo ""
+          echo "=== State after refresh ==="
+          terraform state list
+
+      - name: Verify idle plan
         shell: bash
         run: |
           cd infrastructure/terraform
-          echo "=== Verifying terraform plan ==="
-          terraform plan -var-file=environments/idle.tfvars -out=.idle-fix.tfplan 2>&1 | tail -30
+          echo "=== Verifying idle plan ==="
+          terraform plan -var-file=environments/idle.tfvars 2>&1 | tail -30
