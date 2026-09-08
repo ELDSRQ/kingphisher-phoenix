@@ -1,0 +1,126 @@
+# Fix terraform state drift — remove resources that were destroyed outside terraform.
+#
+# WHY THIS EXISTS
+#   When idle.tfvars is applied, it destroys resources (ACR, Redis, etc.).
+#   If the state isn't updated properly, terraform thinks those resources still exist
+#   and fails when trying to create resources that depend on them.
+#
+# USAGE
+#   gh workflow run azure-tf-state-fix.yml --ref main
+
+name: Fix terraform state drift
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-staging
+  cancel-in-progress: false
+
+jobs:
+  fix-state:
+    name: Fix terraform state on VNet runner
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ${{ fromJSON('["self-hosted","linux","azure-vnet"]') }}
+    timeout-minutes: 30
+    env:
+      KP_RG: rg-kp-staging
+      KP_NETWORK_MODE: private
+      KP_INSIDE_VNET: "1"
+      TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
+      TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
+      TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Authenticate to Azure
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Initialize terraform
+        shell: bash
+        run: |
+          cd infrastructure/terraform
+          terraform init \
+            -backend-config="resource_group_name=${TF_STATE_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${TF_STATE_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${TF_STATE_CONTAINER}" \
+            -backend-config="key=staging/kingphisher.tfstate"
+
+      - name: List current state
+        shell: bash
+        run: |
+          cd infrastructure/terraform
+          echo "=== Current terraform state ==="
+          terraform state list
+
+      - name: Check which resources exist in Azure
+        shell: bash
+        run: |
+          cd infrastructure/terraform
+          echo "=== Checking ACR ==="
+          az acr show -n acrkpstaging -g ${KP_RG} --query "name" -o tsv 2>/dev/null || echo "ACR NOT FOUND"
+          
+          echo "=== Checking Redis ==="
+          az redis show -n redis-kp-staging-6117w -g ${KP_RG} --query "name" -o tsv 2>/dev/null || echo "Redis NOT FOUND"
+          
+          echo "=== Checking Redis private endpoint ==="
+          az network private-endpoint show -n pep-kp-staging-redis -g ${KP_RG} --query "name" -o tsv 2>/dev/null || echo "Redis PE NOT FOUND"
+          
+          echo "=== Checking ACR private endpoint ==="
+          az network private-endpoint show -n pep-kp-staging-acr -g ${KP_RG} --query "name" -o tsv 2>/dev/null || echo "ACR PE NOT FOUND"
+
+      - name: Remove missing resources from state
+        shell: bash
+        run: |
+          cd infrastructure/terraform
+          
+          # Resources that should exist (not being destroyed by idle)
+          KEEP_RESOURCES=(
+            "azurerm_container_registry.main[0]"
+            "azurerm_private_endpoint.acr[0]"
+          )
+          
+          # Check each resource and remove from state if it doesn't exist in Azure
+          for resource in "${KEEP_RESOURCES[@]}"; do
+            echo "Checking $resource..."
+            # Try to refresh the resource from Azure
+            if terraform refresh -target="$resource" 2>&1 | grep -q "not found\|Error"; then
+              echo "  Resource $resource not found in Azure, removing from state..."
+              terraform state rm "$resource" 2>&1 || true
+            else
+              echo "  Resource $resource exists in Azure, keeping in state."
+            fi
+          done
+          
+          echo "=== Updated terraform state ==="
+          terraform state list
+
+      - name: Verify plan
+        shell: bash
+        run: |
+          cd infrastructure/terraform
+          echo "=== Verifying terraform plan ==="
+          terraform plan -var-file=environments/idle.tfvars -out=.idle-fix.tfplan 2>&1 | tail -30
