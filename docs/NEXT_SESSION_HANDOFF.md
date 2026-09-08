@@ -1,5 +1,52 @@
 # Next-session handoff
 
+## Addendum 2026-09-08 — idle path VERIFIED; local gate was lying; head `a56162d`
+
+**Read `docs/design/INCIDENT-IDLE-PLAN-DRIFT-2026-09-08.md` first.** The short version: the idle
+workflow's first *successful* plan (run `34172986678`) proposed **destroying and recreating the
+container app environment**, and the destroy guard printed `replace: 1` and let it through. Nothing
+was applied — it was `mode=plan` and the plan was read. Three instances of one bug (Azure populates
+attributes the config does not declare; terraform then plans to remove them), all fixed in
+`703a424` + `a56162d`.
+
+**The idle path is now verified end to end.** Run `34175307493`, planned against a *running*
+PostgreSQL so terraform refreshed from Azure rather than falling back to state:
+
+```
+Plan: 0 to add, 1 to change, 22 to destroy
+destroy guard: create 0 / update 1 / replace 0 / DESTROY 22 — guard OK
+```
+
+`replace: 0`, and the destroy set is exactly the documented "Container Apps + ACR + Redis" plus the
+four `deploy_workloads`-gated ACS resources the guard flags as beyond it. **`idle.tfvars` has still
+never been APPLIED** — the plan is proven, the apply is a live decision that has not been made. See
+"Open decision" below.
+
+**The local test gate was red on macOS the whole time and nobody noticed** because CI is green:
+CI runs Linux and never reaches the 12 retired-`.140` remote-checkpoint tests. `run-hermetic-tests.sh
+all` was therefore useless as a pre-push check on the machine it is run from — the same blind spot
+that let several wave failures through behind a `make test` that runs none of the three gates.
+Cause was not a broken contract: the helpers now print a retirement banner unless
+`KP_ALLOW_LEGACY_MAC140=1`, so every assertion matched the banner. Fixed by opting in (`4498ecb`);
+the contracts still pin the script-hash check, archive-path escape rejection and no-identity-leak
+property. **Local gate now: 3136 passed, 0 failed.** CI green on both jobs.
+
+**Also landed since the last addendum:** AUD-004 (migration `0035` stripped `audit_writer` on any
+existing install — proven fixed by a test that upgrades *through* 0035); branch protection now
+requires the two real job names; nightly Azure shutdown armed (`NIGHTLY_AZURE_SHUTDOWN=enabled`)
+with a backup-before-stop that fails safe; local WORM audit anchor deployed on `.105` and producing
+anchors.
+
+**Open decision — whether to apply idle at all.** It saves ~$101/mo and **destroys ACR**, so the
+next deploy re-pushes images. With the ~$889/mo orphaned-replica leak already fixed, Azure is
+mostly idle as-is, so this is the smaller remaining lever; with real-send work still ahead, keeping
+ACR may be worth more than the $101. The value already banked is having a *working, guarded* idle
+path to pull whenever you want it.
+
+**Housekeeping:** `.claude/worktrees/` is now in `.gitignore`. A `git add -A` recorded nine agent
+worktrees as gitlinks (caught before push, amended out). Never `git add -A` in this repo without
+reading what it staged.
+
 ## Addendum 2026-09-07 — AZURE WAS NOT ACTUALLY IDLE
 
 An audit on 2026-09-07 measured `rg-kp-staging` at **~$1,085/mo**, HIGHER than the

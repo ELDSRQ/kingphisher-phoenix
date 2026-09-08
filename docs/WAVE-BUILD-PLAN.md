@@ -562,6 +562,30 @@ Before an internal RSA staff pilot, the GUI must prove: Entra role separation; e
 | UX-011 | Console usability for a security-analyst operator | Operator UI/API (no safety gate touched); `docs/design/REVIEW-FINDINGS-2026-09.md` | Recipient pickers show masked display names (e.g. "Jane in Finance"), not 8-char UUIDs; rendered HTML preview + send-to-self before approval; emergency stop is reachable for the operator role (not buried under Audit); clone-campaign with re-sign-RoE; an approver "needs my decision" queue; send-time spread/scheduling; `report.csv` + evidence-bundle export wired from the GUI; no capability gate, approval, or kill-switch behavior changed | UX-001, OPS-001, ANA-001 | CAMPAIGN-UX | P1 | **Landed** 93695b4 (masked recipient names, needs-my-decision queue, emergency-stop nav, clone→re-sign-RoE, report.csv+evidence.zip export, ARC-002 nav-hide). No gate/approval/RoE/kill-switch behavior changed. DEFERRED (out-of-allowlist follow-ups): §2a HTML preview reverted for the no-live-HTML safety invariant → needs a SERVER-side HTML-structure summary; §2b proof send-to-self (worker jobs.py); send-time spread (models.py+Alembic+worker) |
 | TST-002 | Test-effect uplift | Postgres/Redis/browser test fixtures; `docs/design/REVIEW-FINDINGS-2026-09.md` | Postgres tests run against the migrated schema (not `drop_all`/`create_all`); the queue Lua runs against live Redis; regex-over-source UI assertions are replaced by a Playwright smoke test; the gates run in CI (OPS-002) and prove effect, not text | TST-001, REL-001 | TEST-INFRA | P2 | **Landed** d192516; Playwright console smoke PROMOTED to the standing `make test-e2e-console` gate 2026-09-07 (433154b) after its first real-browser run — green, 2 passed. Postgres fixtures build from real migrations |
 
+### Status refresh 2026-09-08 (head `a56162d`) — read `docs/STATE-2026-09-08.md`
+
+The canonical current-state inventory is now **`docs/STATE-2026-09-08.md`**: environments, power
+model, the built-but-not-wired list, the deselected-test breakdown, remaining work, and the known
+traps. The list below is preserved as the 2026-09-06 record; where the two disagree, STATE wins.
+
+Changes since `e47570f` that affect this section:
+
+- **CI is green** on both jobs, and branch protection now requires the two real job names
+  (`Hermetic lint, type, and no-skip test gates`, `PostgreSQL and Redis integration gates`).
+  The earlier "CI IS RED and has never passed" note is resolved; the postgres gate went 15 → 0.
+- **The local gate was red on macOS the whole time** — 12 retired-`.140` remote-checkpoint tests
+  failing on a retirement banner, deselected on Linux CI so CI never saw them. Fixed `4498ecb`
+  (opt in via `KP_ALLOW_LEGACY_MAC140=1`, keeping the contracts). Local gate: 3136 passed, 0 failed.
+- **AUD-004 landed** (`fe305be`) — `0035` re-grants `audit_writer` after taking ownership; proven by
+  a test that upgrades *through* 0035. The scope question `0035` flags for a reviewer (whether local
+  should reach parity with `azure_migrate.py`) is **still open**.
+- **The idle path is verified but never applied.** See
+  `docs/design/INCIDENT-IDLE-PLAN-DRIFT-2026-09-08.md`: its first green plan proposed destroying the
+  container app environment and the guard passed it. Fixed in `703a424` + `a56162d`; re-planned
+  clean at `replace: 0`.
+- **UX-011 §2b proof send-to-self** is marked LANDED below (`ffb0a91`) but still sits under the
+  "Deferred" heading — the heading is stale, the entry is correct.
+
 ### Follow-ups from the 2026-09 wave build (state as of head `e47570f`)
 
 All 11 REVIEW-FINDINGS-2026-09 tasks above are **landed**. The follow-ups those
