@@ -312,6 +312,12 @@ _SETUP_GUIDANCE: dict[str, tuple[str, dict[str, str]]] = {
         "and verify that completion callbacks reach this application.",
         {},
     ),
+    "webhook": (
+        "The allowed webhook domain is the hostname of an approved HTTPS application that receives signed "
+        "operational alerts. It is not an email destination and does not require an MTA or mail relay. "
+        "Test reachability and configure the receiver to verify the platform's HMAC signature.",
+        {},
+    ),
 }
 
 
