@@ -151,6 +151,9 @@ init_db() {
   echo "applying database migrations..."
   uv run --frozen --no-sync alembic -c packages/database/alembic.ini upgrade head \
     || die "database migration failed; the application stack was not started"
+  echo "closing local/production audit parity gap..."
+  uv run --frozen --no-sync python scripts/bootstrap_local_parity.py \
+    || die "local audit parity bootstrap failed; the application stack was not started"
   echo "verifying and initializing the local audit integrity root..."
   uv run --frozen --no-sync python scripts/bootstrap_local_audit.py \
     || die "local audit integrity bootstrap failed; the application stack was not started"

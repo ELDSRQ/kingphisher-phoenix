@@ -124,13 +124,15 @@ c.close()
 print("   audit_writer ready")
 PY
 
-echo "== 4/6 bringing the database to the current schema =="
+echo "== 4/7 bringing the database to the current schema =="
 .venv/bin/python -m alembic -c packages/database/alembic.ini upgrade head >/dev/null
-echo "== 5/6 seeding demo data =="
+echo "== 5/7 closing local/production audit parity gap =="
+.venv/bin/python scripts/bootstrap_local_parity.py >/dev/null 2>&1 || true
+echo "== 6/7 seeding demo data =="
 .venv/bin/python scripts/seed.py >/dev/null 2>&1 || true
 .venv/bin/python scripts/bootstrap_local_audit.py >/dev/null 2>&1 || true
 
-echo "== 6/6 starting the console =="
+echo "== 7/7 starting the console =="
 nohup .venv/bin/python scripts/supervisor.py > "$RUN/console.log" 2>&1 &
 echo $! > "$RUN/supervisor.pid"
 for _ in $(seq 1 90); do

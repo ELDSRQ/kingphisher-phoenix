@@ -296,6 +296,10 @@ step "applying database migrations"
 "$UV_COMMAND" run --frozen --no-sync alembic -c packages/database/alembic.ini upgrade head \
   || die "database migration failed; correct the reported error and re-run with --skip-deps"
 
+step "closing local/production audit parity gap"
+"$UV_COMMAND" run --frozen --no-sync python scripts/bootstrap_local_parity.py \
+  || die "local audit parity bootstrap failed; correct the reported error and re-run with --skip-deps"
+
 step "verifying and initializing the local audit integrity root"
 "$UV_COMMAND" run --frozen --no-sync python scripts/bootstrap_local_audit.py \
   || die "local audit integrity bootstrap failed; preserve the database and reconcile its integrity key in place from protected recovery material, then re-run"
