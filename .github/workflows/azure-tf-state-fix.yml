@@ -67,7 +67,8 @@ jobs:
             -backend-config="resource_group_name=${TF_STATE_RESOURCE_GROUP}" \
             -backend-config="storage_account_name=${TF_STATE_STORAGE_ACCOUNT}" \
             -backend-config="container_name=${TF_STATE_CONTAINER}" \
-            -backend-config="key=staging/kingphisher.tfstate"
+            -backend-config="key=staging/kingphisher.tfstate" \
+            -backend-config="use_azuread_auth=true"
 
       - name: List current state
         shell: bash
