@@ -168,9 +168,9 @@ def test_directory_and_mailbox_use_distinct_explicit_identity_client_ids() -> No
 
 
 def test_provider_identities_get_no_key_vault_or_image_pull_access() -> None:
-    # Path B gates the data plane (ACR+Redis) behind local.data_plane; AcrPull is still
-    # scoped to exactly local.image_pull_identities when the plane is deployed.
-    assert "for_each             = local.data_plane ? local.image_pull_identities : toset([])" in MAIN
+    # Path B gates ACR behind local.acr; AcrPull is still scoped to exactly
+    # local.image_pull_identities when the registry is deployed.
+    assert "for_each             = local.acr ? local.image_pull_identities : toset([])" in MAIN
     assert (
         "toset(values(local.provider_identity_names))"
         not in MAIN.split('resource "azurerm_role_assignment" "acr_pull"', maxsplit=1)[1].split(

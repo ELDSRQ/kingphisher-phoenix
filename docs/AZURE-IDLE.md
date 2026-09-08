@@ -1,8 +1,8 @@
 # Deep Azure idle — `scripts/operator/azure-idle.sh`
 
 The deliberate, operator-driven, plan-reviewed idle. It stops PostgreSQL and applies
-`infrastructure/terraform/environments/idle.tfvars`, which **destroys the container
-registry, the Enterprise Redis and the Container Apps**.
+`infrastructure/terraform/environments/idle.tfvars`, which **destroys the Enterprise Redis
+and the Container Apps** while preserving the Premium container registry (ACR).
 
 It is *not* the nightly job. `scripts/operator/azure-nightly-shutdown.sh`
 (docs/NIGHTLY-AZURE-SHUTDOWN.md) is the cheap, fast-reversible power-down that runs on a
@@ -14,8 +14,9 @@ platform is going quiet for a while.
 | trigger | scheduled, unattended | manual, interactive |
 | Postgres | stopped | stopped |
 | Container Apps | `--min-replicas 0` | **destroyed** |
-| ACR / Redis | untouched | **destroyed** |
-| images | keep | **gone — must be rebuilt and re-pushed** |
+| ACR | untouched | **preserved** (avoids image rebuild) |
+| Redis | untouched | **destroyed** |
+| images | keep | **kept** (ACR preserved) |
 | terraform | never | plan + typed `yes` + apply |
 
 ---
@@ -37,7 +38,7 @@ scripts/operator/azure-idle.sh guard-plan plan.json   # read-only: the destroy g
 ```
 
 There is deliberately no `--yes`, no `--auto-approve` and no environment variable that
-skips it. That confirmation is the only local gate in front of a destroy of ACR, Redis and
+skips it. That confirmation is the only local gate in front of a destroy of Redis and
 the Container Apps.
 
 > **In private mode these commands cannot actually reach Azure from your machine.** Key
@@ -48,22 +49,18 @@ the Container Apps.
 > unreachable outside an Actions run and which move the typed confirmation into the
 > workflow's own `confirm=IDLE` dispatch input rather than removing it.
 
-### ACR is destroyed — images must be re-pushed
+### ACR is preserved — images remain available
 
-`stop` deletes the container registry. Every image in it — operator-api, tracking-api,
-worker, migration, ai-gateway, ai-llama — is **permanently gone**, digests included. The
-resume path is therefore not "apply the workloads back"; it is "rebuild and re-push", which
-is what the deploy workflow does:
+`stop` preserves the Premium container registry. All images (operator-api, tracking-api,
+worker, migration, ai-gateway, ai-llama) remain available, so the resume path is simply
+to re-apply the workloads — no rebuild or re-push needed:
 
 ```bash
 scripts/operator/deployment-preflight/dispatch-staging-workloads.sh
 ```
 
-`azure-idle.sh start` deliberately brings back only ACR + Redis (empty) and leaves
-`deploy_workloads=false`, because Container Apps pointing at deleted images come up broken.
-`start --workloads` exists for the case where the images are already back in ACR, and it
-refuses to run unless all four of `KP_OPERATOR_IMAGE`, `KP_TRACKING_IMAGE`,
-`KP_WORKER_IMAGE` and `KP_MIGRATION_IMAGE` are set to digest-pinned references.
+`azure-idle.sh start` brings back Redis and re-enables `deploy_workloads`, which
+recreates the Container Apps pointing at the preserved images.
 
 ---
 
@@ -392,7 +389,7 @@ guard OK — no protected resource is destroyed or replaced.
 ```
 
 `replace: 0`. The environment is untouched, and the destroy set is exactly the documented
-"Container Apps + ACR + Redis" plus the four ACS resources the guard flags as beyond it (system
+"Container Apps + Redis" (ACR preserved) plus the four ACS resources the guard flags as beyond it (system
 topic, receipt subscription, role definition, role assignment — all gated on `deploy_workloads`
 and recreated by the next workloads deploy).
 

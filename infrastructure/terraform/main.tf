@@ -144,7 +144,10 @@ locals {
   # Gates the freely-destroyable expensive data-plane infra (ACR + managed Redis).
   # Postgres/audit-storage are NOT gated (prevent_destroy / locked WORM) — idle those
   # via `az postgres flexible-server stop`. See docs/HYBRID-AZURE-LOCAL-PLAN.md.
+  # ACR is separately gated by deploy_acr so the idle posture can keep images while
+  # destroying Redis (avoids a full rebuild on the next deploy).
   data_plane = var.deploy_data_plane
+  acr        = var.deploy_acr
 }
 
 # A starter-mode production environment would put real recipient data behind
@@ -613,7 +616,7 @@ moved {
   to   = azurerm_container_registry.main[0]
 }
 resource "azurerm_container_registry" "main" {
-  count                         = local.data_plane ? 1 : 0
+  count                         = local.acr ? 1 : 0
   name                          = replace("acr${local.suffix}", "-", "")
   resource_group_name           = azurerm_resource_group.main.name
   location                      = azurerm_resource_group.main.location
@@ -634,7 +637,7 @@ resource "azurerm_user_assigned_identity" "workload" {
 }
 
 resource "azurerm_role_assignment" "acr_pull" {
-  for_each             = local.data_plane ? local.image_pull_identities : toset([])
+  for_each             = local.acr ? local.image_pull_identities : toset([])
   scope                = azurerm_container_registry.main[0].id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_user_assigned_identity.workload[each.key].principal_id
@@ -973,7 +976,7 @@ resource "azurerm_private_endpoint" "vault" {
 }
 
 resource "azurerm_private_endpoint" "acr" {
-  count               = local.private_network && local.data_plane ? 1 : 0
+  count               = local.private_network && local.acr ? 1 : 0
   name                = "pep-${local.suffix}-acr"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name

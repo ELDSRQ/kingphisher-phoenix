@@ -108,7 +108,7 @@ destroy guard: create 0 / update 1 / replace 0 / DESTROY 22
 guard OK — no protected resource is destroyed or replaced.
 ```
 
-`replace: 0`. The destroy set is exactly the documented "Container Apps + ACR + Redis" plus the
+`replace: 0`. The destroy set is exactly the documented "Container Apps + Redis" (ACR preserved) plus the
 four ACS resources the guard flags as beyond it (system topic, receipt subscription, role
 definition, role assignment — all `deploy_workloads`-gated and recreated by the next workloads
 deploy).

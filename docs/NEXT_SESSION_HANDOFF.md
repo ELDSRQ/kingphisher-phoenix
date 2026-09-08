@@ -1,5 +1,69 @@
 # Next-session handoff
 
+## Addendum 2026-09-08 (PM) — idle.tfvars refined: ACR preserved; head `603fd8e`
+
+**idle.tfvars refined: ACR preserved, Redis only destroyed.** Added new `deploy_acr` variable
+to `variables.tf` (default `true`); ACR resources (`azurerm_container_registry.main`,
+`azurerm_role_assignment.acr_pull`, `azurerm_private_endpoint.acr`) now gated by `local.acr`
+instead of `local.data_plane`. This allows the idle posture to keep the Premium ACR while
+destroying Redis, avoiding a full image rebuild on the next deploy.
+
+**Changes:**
+- `infrastructure/terraform/variables.tf`: new `deploy_acr` variable with validation
+- `infrastructure/terraform/main.tf`: added `local.acr = var.deploy_acr`, updated ACR resource counts
+- `infrastructure/terraform/environments/idle.tfvars`: `deploy_acr = true`, `deploy_data_plane = false`
+- `infrastructure/terraform/tests/test_runtime_contract.py`: updated assertion for `local.acr`
+
+**New idle savings breakdown:**
+- Redis (~$45/mo) — destroyed
+- Container Apps (~$36/mo) — destroyed  
+- ACR (~$20/mo) — **preserved**
+- CI runner (~$25/mo when running) — already stopped
+- PostgreSQL (~$125/mo) — stopped separately via `az postgres flexible-server stop`
+- **Total idle: ~$81/mo** (down from ~$101/mo, but no image rebuild needed)
+
+**Verification:** `terraform validate` passes; 51 terraform tests pass; ruff lint clean.
+
+## Addendum 2026-09-08 (PM) — audit parity gap CLOSED; head `603fd8e`
+
+**Audit parity gap is now closed.** `scripts/bootstrap_local_parity.py` applies the same
+ownership/grant/probe logic as `azure_migrate.py` for local development. It runs after Alembic
+migrations and before `bootstrap_local_audit.py` in all three bootstrap paths:
+
+- `scripts/run_console.sh`
+- `scripts/install.sh`
+- `scripts/operator/dep010/start-console.sh`
+
+**What it does:** transfers ownership of `transactional_outbox`, `audit_integrity_secret`, and
+7 functions to the NOLOGIN `audit_owner` role; creates all 11 LOGIN roles with a shared dev
+password; applies the full `TABLE_GRANTS` matrix from `kp_database.grants` (single source of
+truth); grants column-scoped outbox INSERT/SELECT and audit-anchor SELECT; revokes PUBLIC
+privileges; and optionally runs the KP-008 runtime privilege probe (`KP_LOCAL_PARITY_VERIFY=1`).
+
+**Suppressions admin override landed (`603fd8e`):** new `MANAGE_SUPPRESSIONS` capability
+(available to `administrator`, `campaign_operator`, `privacy_approver`); new endpoints
+`GET/POST /recipients/{id}/suppression/deactivate`; console "Manage suppressions" dialog;
+audit event `recipient.suppression.deactivate`. Soft-delete only (`active=False`), provider
+evidence preserved.
+
+**All four test gates pass at head `603fd8e`:**
+
+| Gate | Result |
+|---|---|
+| `make test` hermetic (Mac) | **3140 passed** |
+| postgres (`.105` `run-postgres-tests.sh`) | **99 passed** |
+| redis (`.105` `run-redis-tests.sh`) | **2 passed** |
+| e2e (`.105` `test -m e2e`) | **8 passed** |
+
+**Open items:**
+1. **idle.tfvars plan/apply** — blocked on Azure access (CI runner VM deallocated). Plan
+   verified (replace: 0, 22 destroy), never applied. **Refined to keep ACR** — now destroys
+   ~$81/mo (Redis + Container Apps only). Need to run a new plan via GitHub Actions to verify.
+2. **OPS-003** — nightly shutdown sets `min_replicas=0`, nothing restores it. Deferred;
+   replica still running by luck since 2026-09-06.
+3. **Temp diagnostics to remove:** `audit_intent_write_failed_detail` logging in
+   `packages/database/src/kp_database/audit_store.py`.
+
 ## Addendum 2026-09-08 (PM) — e2e gate FULLY GREEN; two probe fixes landed; head `ac92e4b`
 
 **All four test gates now pass at head `ac92e4b`:**
@@ -45,7 +109,7 @@ Plan: 0 to add, 1 to change, 22 to destroy
 destroy guard: create 0 / update 1 / replace 0 / DESTROY 22 — guard OK
 ```
 
-`replace: 0`, and the destroy set is exactly the documented "Container Apps + ACR + Redis" plus the
+`replace: 0`, and the destroy set is exactly the documented "Container Apps + Redis" (ACR preserved) plus the
 four `deploy_workloads`-gated ACS resources the guard flags as beyond it. **`idle.tfvars` has still
 never been APPLIED** — the plan is proven, the apply is a live decision that has not been made. See
 "Open decision" below.

@@ -2,11 +2,12 @@
 #
 # WHAT THIS IS
 #   An opt-in OVERRIDE var-file layered ON TOP of environments/staging.tfvars.
-#   It drives the expensive on-demand tier (Container Apps, ACR, Enterprise Redis,
+#   It drives the expensive on-demand tier (Container Apps, Enterprise Redis,
 #   ai-gateway, CI runner VM) to ~$0 while leaving the real-send slice
-#   (ACS / verified domain / public DNS / Entra app) untouched and up. It exists so
-#   the idle posture is ONE reproducible `terraform apply` instead of a pile of ad-hoc
-#   `az` commands that the next deploy silently undoes.
+#   (ACS / verified domain / public DNS / Entra app) and the container registry
+#   untouched and up. It exists so the idle posture is ONE reproducible
+#   `terraform apply` instead of a pile of ad-hoc `az` commands that the next
+#   deploy silently undoes.
 #
 # HOW TO APPLY — use the wrapper, not a bare terraform command:
 #
@@ -27,11 +28,10 @@
 #       prevent_destroy) drop to count 0 and terraform refuses the whole plan.
 #   azure-idle.sh does all three, then shows the plan and waits for you to type 'yes'.
 #
-#   Review the plan: it must destroy ONLY Container Apps + ACR + Redis (+ their private
-#   endpoints / role / secret / ACR-pull role assignments, the ACS delivery Event Grid
-#   system topic and the custom ACS sender role) and show NO destroy/replace of Postgres,
-#   the Key Vault, the audit storage or the ACS email domain. The exact 20-resource
-#   destroy set is listed in docs/AZURE-IDLE.md.
+#   Review the plan: it must destroy ONLY Container Apps + Redis (+ their private
+#   endpoints / secret / Event Grid system topic / custom ACS sender role) and show
+#   NO destroy/replace of ACR, Postgres, the Key Vault, the audit storage or the
+#   ACS email domain. The exact destroy set is listed in docs/AZURE-IDLE.md.
 #
 # PREVIOUSLY BLOCKED, NOW FIXED (2026-09-07). `deploy_data_plane=false` could not even be
 #   planned: local.secret_values correctly drops `redis-url`, but local.common_secrets and the
@@ -47,15 +47,19 @@
 #   (as above / azure-idle.sh), never by dispatching the workloads workflow. Keeping it
 #   in a committed var-file is what makes the idle posture reproducible and reviewable.
 
-# App tier: destroy the operator/tracking/worker/migration Container Apps (and, with the
-# ACR/Redis below gone, they cannot run anyway). Removes the always-on replica charge —
+# App tier: destroy the operator/tracking/worker/migration Container Apps (and, with
+# Redis below gone, they cannot run anyway). Removes the always-on replica charge —
 # operator/tracking never scale to zero.
 deploy_workloads = false
 
-# Freely-destroyable data infra (Path B): drop the Premium container registry + Enterprise
-# managed Redis (+ their private endpoints, the redis-url secret, and the ACR-pull role).
-# Required to be false here because deploy_workloads=false alone would still keep ACR+Redis.
-# (Validation: deploy_workloads=true would REQUIRE this be true, so keep both false together.)
+# Keep the Premium container registry (ACR) — avoids rebuilding all images on next
+# deploy. Workloads require the registry, so deploy_workloads=true would REQUIRE
+# deploy_acr=true.
+deploy_acr = true
+
+# Freely-destroyable data infra: drop Enterprise managed Redis (+ its private
+# endpoint, the redis-url secret). ACR is separately gated by deploy_acr so the
+# idle posture can keep images while destroying Redis.
 deploy_data_plane = false
 
 # Internal Qwen generation gateway (kp-ai-gateway + baked ai-llama sidecar): off. It is a
@@ -67,26 +71,3 @@ deploy_ai_gateway = false
 # so this always-on VM is pure idle cost. (Note: the CI runner flag is normally supplied via
 # TF_VAR_deploy_ci_runner from the workflow; pinning it here keeps a direct apply idle too.)
 deploy_ci_runner = false
-
-# ---------------------------------------------------------------------------------------
-# NOT gated by any flag — do these SEPARATELY to reach true idle:
-#
-#   PostgreSQL carries lifecycle { prevent_destroy = true } (data protection), so it is
-#   NOT gated by deploy_data_plane and this file cannot idle it. Stop it out-of-band —
-#   this removes the D2ds_v5 compute charge (the single biggest lever) while retaining data
-#   (~7-day auto-restart):
-#       az postgres flexible-server stop -g <rg> -n <server>
-#
-#   Audit-anchor storage is locked WORM (immutable by design) and is intentionally retained
-#   (cheap Standard LRS blob) — do not attempt to destroy it.
-#
-# Tier 1 stays ON: this file does NOT touch acs_resource_mode, acs_* , acs_dns_zone_id, or
-# entra_* — the verified ACS domain / public DNS / Entra app remain up at ~$0 so the next
-# real send skips all SPF/DKIM re-verification.
-#
-# RESUME: `scripts/operator/azure-idle.sh start` re-applies without this file and starts
-# Postgres, bringing back ACR + Redis (empty) but NOT the workloads — this file destroys
-# the container registry, so every image is gone and the Container Apps have nothing to
-# run. Rebuild and re-push them, which also deploys the workloads:
-#     scripts/operator/deployment-preflight/dispatch-staging-workloads.sh
-# ---------------------------------------------------------------------------------------

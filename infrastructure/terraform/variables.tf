@@ -141,23 +141,41 @@ variable "deploy_workloads" {
   default     = true
 }
 
+variable "deploy_acr" {
+  description = <<-EOT
+    Create the Azure Container Registry. Set false to idle the Premium ACR to ~$0.
+    Default true = current behavior. Workloads require the registry, so
+    deploy_workloads=true forces deploy_acr=true.
+
+    NOTE: This is separate from deploy_data_plane (which controls Redis) so the
+    idle posture can keep ACR while destroying Redis, avoiding a full image
+    rebuild on the next deploy.
+  EOT
+  type        = bool
+  default     = true
+  validation {
+    condition     = var.deploy_acr || !var.deploy_workloads
+    error_message = "deploy_workloads=true requires deploy_acr=true (workloads need the container registry)."
+  }
+}
+
 variable "deploy_data_plane" {
   description = <<-EOT
-    Create the freely-destroyable expensive data-plane infra (container registry +
-    managed Redis). Set false to idle those to ~$0 when running local-only or between
-    real sends (see docs/HYBRID-AZURE-LOCAL-PLAN.md). Default true = current behavior.
+    Create the freely-destroyable expensive data-plane infra (managed Redis).
+    Set false to idle Redis to ~$0 when running local-only or between real sends
+    (see docs/HYBRID-AZURE-LOCAL-PLAN.md). Default true = current behavior.
 
     NOTE: PostgreSQL is intentionally NOT gated by this flag — it carries
     prevent_destroy to protect data, so idle it with `az postgres flexible-server stop`
     (retains data), not by destroying it. The audit-anchor storage is likewise retained
-    (locked WORM immutability). Workloads require the data plane, so deploy_workloads=true
+    (locked WORM immutability). Workloads require Redis, so deploy_workloads=true
     forces deploy_data_plane=true.
   EOT
   type        = bool
   default     = true
   validation {
     condition     = var.deploy_data_plane || !var.deploy_workloads
-    error_message = "deploy_workloads=true requires deploy_data_plane=true (workloads need the registry and Redis)."
+    error_message = "deploy_workloads=true requires deploy_data_plane=true (workloads need Redis)."
   }
 }
 
