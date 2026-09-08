@@ -125,6 +125,17 @@ done
             "KP_FAKE_REMOTE_IDENTITY": str(remote_identity),
             "KP_FAKE_SSH_LOG": str(ssh_log),
             "KP_FAKE_SCP_LOG": str(scp_log),
+            # The .140 macOS/Colima worker is retired, so the helper this suite
+            # exercises now refuses to run and prints a retirement banner unless
+            # this flag is set. Without it all 12 of these tests fail on the
+            # banner instead of on the behaviour they assert -- which is exactly
+            # what happened: `run-hermetic-tests.sh all` was red on macOS while
+            # CI stayed green, because CI runs on Linux and never reaches them.
+            # The contracts themselves are still worth holding (they pin the
+            # script-hash check, the archive-path escape rejection and the
+            # no-identity-leak property), so opt in to the legacy path here
+            # rather than skipping or deleting the coverage.
+            "KP_ALLOW_LEGACY_MAC140": "1",
         }
     )
     return environment, remote_identity, ssh_log, scp_log
