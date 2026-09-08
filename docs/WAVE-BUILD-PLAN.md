@@ -562,6 +562,42 @@ Before an internal RSA staff pilot, the GUI must prove: Entra role separation; e
 | UX-011 | Console usability for a security-analyst operator | Operator UI/API (no safety gate touched); `docs/design/REVIEW-FINDINGS-2026-09.md` | Recipient pickers show masked display names (e.g. "Jane in Finance"), not 8-char UUIDs; rendered HTML preview + send-to-self before approval; emergency stop is reachable for the operator role (not buried under Audit); clone-campaign with re-sign-RoE; an approver "needs my decision" queue; send-time spread/scheduling; `report.csv` + evidence-bundle export wired from the GUI; no capability gate, approval, or kill-switch behavior changed | UX-001, OPS-001, ANA-001 | CAMPAIGN-UX | P1 | **Landed** 93695b4 (masked recipient names, needs-my-decision queue, emergency-stop nav, clone→re-sign-RoE, report.csv+evidence.zip export, ARC-002 nav-hide). No gate/approval/RoE/kill-switch behavior changed. DEFERRED (out-of-allowlist follow-ups): §2a HTML preview reverted for the no-live-HTML safety invariant → needs a SERVER-side HTML-structure summary; §2b proof send-to-self (worker jobs.py); send-time spread (models.py+Alembic+worker) |
 | TST-002 | Test-effect uplift | Postgres/Redis/browser test fixtures; `docs/design/REVIEW-FINDINGS-2026-09.md` | Postgres tests run against the migrated schema (not `drop_all`/`create_all`); the queue Lua runs against live Redis; regex-over-source UI assertions are replaced by a Playwright smoke test; the gates run in CI (OPS-002) and prove effect, not text | TST-001, REL-001 | TEST-INFRA | P2 | **Landed** d192516; Playwright console smoke PROMOTED to the standing `make test-e2e-console` gate 2026-09-07 (433154b) after its first real-browser run — green, 2 passed. Postgres fixtures build from real migrations |
 
+### OPS-003 — restore the supervise worker to min_replicas=1 (OPEN, operator-gated)
+
+| Field | Value |
+|---|---|
+| **Outcome** | Azure `ca-kp-staging-worker` runs at the `min_replicas=1` terraform declares, restoring retention sweeps and audit-chain anchoring |
+| **Owner files** | none — this is an apply, not a code change (the code fix landed in `528bdd9`) |
+| **Acceptance** | `az containerapp show -g rg-kp-staging -n ca-kp-staging-worker --query properties.template.scale.minReplicas -o tsv` returns `1` |
+| **Lane** | RED (live Azure mutation, needs the staging reviewer gate) |
+| **Priority** | P1 |
+| **Status** | **OPEN — deliberately deferred to the next deploy** |
+
+**Why it is open.** The nightly job sets every container app to `min-replicas 0`. That is correct
+overnight (PostgreSQL stops moments later, so the work could not run anyway) but **nothing restores
+it**, and `az postgres flexible-server start` alone does not — only a terraform apply does. So
+between a nightly run and the next deploy there is a window where the database is up and
+retention + audit anchoring are suspended.
+
+**Why it is not urgent right now.** A replica has been running on the active revision since
+2026-09-06 and is doing that work today. It survives only because nothing scaled it down, which is
+luck rather than design — but it means nothing is currently being missed.
+
+**Do NOT "fix" this with a queue-depth KEDA scale rule.** `kp-worker supervise` runs every role in
+one polling process, and retention (86400s), audit-anchor (3600s), ingestion (86400s) and mailbox
+(60s) publish their own trigger messages from wall-clock timers *inside* that process. At zero
+replicas the interval elapses, nothing is enqueued, and a queue-depth rule has nothing to react to,
+so it never scales back up — the window is dropped, not deferred. `main.tf` now carries this as a
+comment on the worker template and `test_azure_nightly_shutdown_contract.py` pins it. Only
+`delivery` is a pure consumer; a scale-to-zero posture belongs on that deployment alone if ever.
+
+**The apply** (either of these; the second is the natural moment):
+
+```bash
+scripts/operator/azure-idle.sh start --workloads     # needs digest-pinned images in ACR
+scripts/operator/deployment-preflight/dispatch-staging-workloads.sh   # rebuild + push + deploy
+```
+
 ### Status refresh 2026-09-08 (head `a56162d`) — read `docs/STATE-2026-09-08.md`
 
 The canonical current-state inventory is now **`docs/STATE-2026-09-08.md`**: environments, power

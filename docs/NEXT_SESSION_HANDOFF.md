@@ -43,6 +43,26 @@ mostly idle as-is, so this is the smaller remaining lever; with real-send work s
 ACR may be worth more than the $101. The value already banked is having a *working, guarded* idle
 path to pull whenever you want it.
 
+**The supervise worker cannot scale to zero — and an investigation into why it was still running
+reversed the fix that was about to be made** (`528bdd9`). `kp-worker supervise` runs every role in
+one polling process, and retention (86400s), audit-anchor (3600s), ingestion (86400s) and mailbox
+(60s) publish their own trigger messages from wall-clock timers *inside* that process. At zero
+replicas the interval elapses, nothing is enqueued, and a queue-depth KEDA rule — the "obvious"
+fix — would have nothing to react to, so it never wakes: the window is **dropped, not deferred**,
+including the audit-chain anchor. Terraform's `min_replicas = 1` was right; it just never said why.
+It does now, and a mutation-proven test pins it.
+
+Two real defects came out of that:
+
+- **The resume path, not the replica, is the gap.** The nightly job sets every app to
+  `min-replicas 0` (correct overnight — PostgreSQL stops moments later) but **nothing restores it**,
+  and `az postgres flexible-server start` alone does not. Only a terraform apply does. Tracked as
+  **OPS-003**; deferred because a replica is running today, so nothing is being missed.
+- **The orphan detector's excuse was false.** It skipped the current revision because "a queue rule
+  legitimately waking a worker" must not cry wolf. There are no scale rules at all — verified on all
+  four apps and across `infrastructure/terraform`. That assumption hid a replica running on the
+  ACTIVE revision since 2026-09-06 while the job logged success four nights running.
+
 **Housekeeping:** `.claude/worktrees/` is now in `.gitignore`. A `git add -A` recorded nine agent
 worktrees as gitlinks (caught before push, amended out). Never `git add -A` in this repo without
 reading what it staged.
