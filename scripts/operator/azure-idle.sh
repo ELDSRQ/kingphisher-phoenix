@@ -541,6 +541,14 @@ PROTECTED_NAMED = {
     # remove it, and if a plan ever proposes to, that is a bug worth stopping on
     # rather than discovering afterwards.
     ("azurerm_key_vault", "main"),
+    # The environment is NOT count-gated on deploy_workloads: idle empties it, it
+    # does not remove it. Run 34172986678 nonetheless planned to REPLACE it (a
+    # ForceNew diff on an Azure-managed attribute, manufactured by the
+    # -refresh=false fallback below) and this guard passed it — `replace: 1` was
+    # printed and nothing stopped. Recreating the environment changes
+    # default_domain and forces every container app to be rebuilt, which is the
+    # opposite of an idle posture, so it is protected now.
+    ("azurerm_container_app_environment", "main"),
 }
 WHY = {
     "azurerm_postgresql_flexible_server": "the PostgreSQL server holds the data; idle STOPS it, never removes it",
@@ -549,6 +557,7 @@ WHY = {
     "azurerm_storage_container": "the audit anchor is WORM/immutable and is retained on purpose",
     "azurerm_storage_container_immutability_policy": "removing the immutability policy would unlock the audit anchor",
     "azurerm_linux_virtual_machine": "this VM is the self-hosted runner executing the job",
+    "azurerm_container_app_environment": "idle empties the environment; replacing it changes default_domain and rebuilds every app",
 }
 # Beyond the documented "Container Apps + ACR + Redis". Both are gated on
 # deploy_workloads and the next workloads deploy recreates them.
@@ -664,6 +673,14 @@ run_plan() {
   if [ "$pg_now" = "Stopped" ]; then
     note "PostgreSQL is already Stopped — terraform cannot refresh its child resources"
     note "planning with -refresh=false; the destroy guard still runs on the real plan"
+    # An unrefreshed plan is computed against whatever the last apply wrote to
+    # state, so a diff here can be a stale-state artifact rather than real drift.
+    # Run 34172986678 was exactly that: a ForceNew on an Azure-managed attribute
+    # that a refreshed plan does not produce, which read as "replace the container
+    # app environment". Say so, so no one reads this plan as authoritative.
+    note "NOTE: this plan is computed from STATE, not from Azure. Treat any"
+    note "      create/replace in it as suspect — start PostgreSQL and re-plan"
+    note "      before believing one."
     set -- "$@" -refresh=false
   fi
   step "terraform plan ($label) in $TF_DIR"

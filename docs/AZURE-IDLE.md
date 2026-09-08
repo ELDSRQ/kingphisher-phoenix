@@ -347,6 +347,48 @@ cannot force it to be replaced; the value only has to exist.
 
 ---
 
+## RESOLVED: the first green plan proposed replacing the container app environment
+
+**Run 34172986678 (2026-09-08) was the first `azure-idle.yml` run to plan successfully.** It
+reported `1 to add, 0 to change, 23 to destroy` — and the single "add" was
+`azurerm_container_app_environment.main` **being replaced**. That is the opposite of an idle
+posture: recreating the environment changes `default_domain` and forces every container app to
+be rebuilt on resume. The destroy guard printed `replace: 1` and **allowed it**.
+
+Two independent defects, both fixed:
+
+**1. The environment had undeclared, Azure-managed attributes.** Azure creates a Consumption
+workload profile and a managed infrastructure resource group
+(`ME_cae-kp-staging_rg-kp-staging_eastus2`) for every VNet-integrated environment, whether or not
+the configuration asks. `main.tf` declared neither, which cost us twice:
+
+- On the **deploy** path, every run refreshed them into state, saw config say `null`, and planned
+  an in-place removal of the `workload_profile` block. Azure ignores the removal, so the identical
+  no-op modify was planned and applied on every single run — twice within run 33970611034 alone.
+  Permanent drift, and noise that hides real diffs.
+- On the **idle** path, `infrastructure_resource_group_name` is ForceNew. Under `-refresh=false`
+  the stale state value survives while config still says `null`, so terraform plans to replace the
+  environment outright.
+
+Fixed with `lifecycle { ignore_changes = [workload_profile, infrastructure_resource_group_name] }`.
+`ignore_changes` rather than declaring the live values is deliberate — it cannot itself provoke a
+replacement, whereas a hand-copied value that disagrees with the provider would, and there is no
+way to plan-verify that from the controller.
+
+**2. The guard did not protect the environment.** It is not count-gated on `deploy_workloads`:
+idle *empties* it, it does not remove it. It is now in `PROTECTED_NAMED`, verified load-bearing by
+replaying run 34172986678's exact plan shape through the guard (exit 3, refused) and a clean idle
+plan (exit 0, allowed).
+
+### `-refresh=false` plans are advisory, not authoritative
+
+A stopped PostgreSQL rejects child-resource reads with `400 ServerStoppedError`, so `run_plan`
+falls back to `-refresh=false` whenever the server is already `Stopped` — the state every re-run
+after a nightly shutdown lands in. Such a plan is computed **from state, not from Azure**, so a
+diff in it may be a stale-state artifact rather than real drift; the replacement above was exactly
+that. The script now says so in its output. **Before believing any create/replace in an idle plan,
+start PostgreSQL and re-plan.**
+
 ## RESOLVED blocker: redis-url was indexed unconditionally
 
 **FIXED 2026-09-07 — `deploy_data_plane=false` now plans.** It was a configuration bug, not a

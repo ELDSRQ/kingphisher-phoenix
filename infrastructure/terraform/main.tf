@@ -1158,6 +1158,36 @@ resource "azurerm_container_app_environment" "main" {
   internal_load_balancer_enabled = false
   zone_redundancy_enabled        = local.production
   tags                           = local.tags
+
+  lifecycle {
+    # Azure creates a Consumption workload profile and its managed infrastructure
+    # resource group for every VNet-integrated environment, whether or not the
+    # configuration asks for one. Live values as of 2026-09-07:
+    #
+    #   workload_profile             = { name = "Consumption", min = 0, max = 0 }
+    #   infrastructure_resource_group_name = "ME_cae-kp-staging_rg-kp-staging_eastus2"
+    #
+    # Leaving them undeclared cost us twice:
+    #
+    #  1. Every deploy refreshed them into state, saw config say null, and planned
+    #     an in-place REMOVAL of the workload_profile block. Azure ignores the
+    #     removal, so the same no-op modify was planned and applied on every single
+    #     run (twice within run 33970611034 alone) — permanent drift that adds noise
+    #     to every plan and hides real diffs behind it.
+    #  2. `infrastructure_resource_group_name` is ForceNew. Under `-refresh=false`
+    #     (which azure-idle.sh must use once PostgreSQL is Stopped) the stale state
+    #     value survives, config still says null, and terraform plans to REPLACE the
+    #     whole environment. Run 34172986678 planned exactly that: a destroy+create
+    #     of cae-kp-staging — new default_domain, every container app recreated —
+    #     inside what is supposed to be a scale-to-nothing idle.
+    #
+    # These are Azure-managed for a Consumption environment; we never set them, so
+    # ignoring them is the truthful description. `ignore_changes` (rather than
+    # declaring the values) is deliberate: it cannot itself provoke a replacement,
+    # whereas a hand-copied value that disagrees with the provider would. Adding a
+    # Dedicated profile later means removing this and planning the change on purpose.
+    ignore_changes = [workload_profile, infrastructure_resource_group_name]
+  }
 }
 
 locals {

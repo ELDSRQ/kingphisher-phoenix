@@ -57,3 +57,8 @@ infrastructure/containers/ai-llama/models/
 # Playwright run artifacts from the standing console smoke gate
 apps/operator-ui/test-results/
 apps/operator-ui/playwright-report/
+
+# Ephemeral per-agent git worktrees created by the wave build. These are real
+# nested repositories; `git add -A` records each as a gitlink, which breaks any
+# clone. Never tracked.
+.claude/worktrees/
