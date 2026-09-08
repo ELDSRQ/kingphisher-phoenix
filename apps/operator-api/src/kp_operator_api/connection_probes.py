@@ -553,6 +553,7 @@ _DEV_LOOPBACK_PORTS: dict[str, frozenset[int]] = {
     "KP_WORKER_MAILPIT_SMTP": frozenset({1025}),
     "KP_WORKER_SMTP_ADDRESS": frozenset({1025}),
     "OPERATOR_API_TRAINING_BASE_URL": frozenset({8001}),
+    "KP_WORKER_AI_BASE_URL": frozenset({8090}),
 }
 
 
