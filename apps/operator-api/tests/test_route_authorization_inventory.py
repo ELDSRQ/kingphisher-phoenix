@@ -173,6 +173,13 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
         ),
     ),
     (
+        frozenset({"manage:suppressions"}),
+        _routes(
+            "GET /api/v1/recipients/{recipient_id}/suppression",
+            "POST /api/v1/recipients/{recipient_id}/suppression/deactivate",
+        ),
+    ),
+    (
         frozenset({"subscribe:alerts"}),
         _routes(
             "POST /api/v1/alerts/subscriptions",

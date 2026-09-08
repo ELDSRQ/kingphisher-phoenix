@@ -45,7 +45,7 @@ def test_exclusion_history_and_controls_are_manage_exclusions_only() -> None:
 
 def test_exclusion_mutations_are_bounded_scoped_and_explicit() -> None:
     assert "const eligibleCampaigns = campaigns.slice(0, 100);" in HELPER
-    assert HELPER.count("maxLength: 500") == 2
+    assert HELPER.count("maxLength: 500") == 3
     assert 'values.exclusion_type === "campaign_specific"' in HELPER
     assert "campaignSpecific !== Boolean(values.campaign_id)" in HELPER
     assert 'localDateTimeToIso(values.expires_at, "Expiry")' in HELPER
@@ -71,7 +71,7 @@ def test_exclusion_lifecycle_has_fail_closed_and_honest_states() -> None:
     assert "result.created" in HELPER
     assert "result.changed" in HELPER
     assert HELPER.count("await render();") == 2
-    assert HELPER.count(".trim();") == 2
+    assert HELPER.count(".trim();") == 3
 
 
 def test_exclusion_history_does_not_expand_recipient_identity() -> None:

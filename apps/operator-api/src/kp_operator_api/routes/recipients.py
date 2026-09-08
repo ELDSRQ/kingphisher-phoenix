@@ -21,6 +21,7 @@ from kp_database.models import (
     Microsoft365IntegrationState,
     Recipient,
     RecipientAssignment,
+    RecipientDeliverySuppression,
     RecipientExclusion,
 )
 from kp_database.outbox import dispatch_after_commit, enqueue_queue
@@ -465,6 +466,100 @@ def revoke_recipient_exclusion(
         "active": False,
         "changed": changed,
         "revoked_at": exclusion.revoked_at,
+    }
+
+
+# --- Delivery suppression admin override ---
+
+
+class SuppressionDeactivate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: StrictBool
+    rationale: str = Field(min_length=1, max_length=500)
+
+    @field_validator("rationale")
+    @classmethod
+    def normalize_rationale(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("suppression deactivation rationale cannot be blank")
+        return normalized
+
+
+@router.get(
+    "/recipients/{recipient_id}/suppression",
+    status_code=status.HTTP_200_OK,
+)
+def get_recipient_suppression(
+    recipient_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(require_capability(Capability.MANAGE_SUPPRESSIONS)),
+) -> dict[str, Any]:
+    suppression = session.scalar(
+        select(RecipientDeliverySuppression).where(
+            RecipientDeliverySuppression.recipient_id == recipient_id,
+        )
+    )
+    if suppression is None:
+        raise NotFoundError("no delivery suppression recorded for this recipient")
+    return {
+        "recipient_id": str(suppression.recipient_id),
+        "provider": suppression.provider,
+        "reason": suppression.reason,
+        "active": suppression.active,
+        "source_event_hash": suppression.source_event_hash,
+        "created_at": suppression.created_at.isoformat(),
+        "updated_at": suppression.updated_at.isoformat(),
+    }
+
+
+@router.post(
+    "/recipients/{recipient_id}/suppression/deactivate",
+    status_code=status.HTTP_200_OK,
+)
+def deactivate_recipient_suppression(
+    recipient_id: uuid.UUID,
+    body: SuppressionDeactivate,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_SUPPRESSIONS)),
+) -> dict[str, Any]:
+    if not body.confirm:
+        raise ValidationError_("suppression deactivation requires explicit confirmation (confirm=true)")
+    recipient = session.get(Recipient, recipient_id)
+    if recipient is None or recipient.status == dm.RecipientStatus.DEPARTED:
+        raise NotFoundError("recipient not found")
+    suppression = session.scalar(
+        select(RecipientDeliverySuppression)
+        .where(RecipientDeliverySuppression.recipient_id == recipient_id)
+        .with_for_update()
+    )
+    if suppression is None:
+        raise NotFoundError("no delivery suppression recorded for this recipient")
+    changed = suppression.active
+    if changed:
+        suppression.active = False
+        suppression.updated_at = datetime.now(UTC)
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="recipient.suppression.deactivate",
+        object_type="recipient",
+        object_id=str(recipient_id),
+        detail={
+            "provider": suppression.provider,
+            "reason": suppression.reason,
+            "changed": changed,
+            "rationale_length": len(body.rationale),
+        },
+    )
+    session.commit()
+    return {
+        "recipient_id": str(suppression.recipient_id),
+        "active": False,
+        "changed": changed,
+        "deactivated_at": suppression.updated_at.isoformat() if changed else None,
     }
 
 

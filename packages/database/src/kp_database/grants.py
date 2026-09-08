@@ -100,6 +100,10 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
             "microsoft365_integration_states",
             "delivery_report_correlations",
         ),
+        # The operator reads suppression state and can deactivate (toggle
+        # active). INSERT and DELETE remain delivery-worker-only; provider
+        # evidence is never created or removed by the console.
+        "SELECT, UPDATE": ("recipient_delivery_suppressions",),
     },
     "tracking": {
         "SELECT": ("tracking_tokens", "training_resources", "campaigns"),

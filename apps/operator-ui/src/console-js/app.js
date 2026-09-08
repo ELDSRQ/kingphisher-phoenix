@@ -35,6 +35,7 @@ const CAPABILITY = Object.freeze({
   VIEW_AUDIT: "view:audit",
   MANAGE_RECIPIENTS: "manage:recipients",
   MANAGE_EXCLUSIONS: "manage:exclusions",
+  MANAGE_SUPPRESSIONS: "manage:suppressions",
   HANDLE_PRIVACY: "handle:privacy_requests",
   DELETE_DATA: "delete:data",
   APPROVE_PATTERN: "approve:pattern",
@@ -1077,7 +1078,7 @@ const NAV_CAPABILITIES = Object.freeze({
   programs: [CAPABILITY.VIEW_AGGREGATE],
   trends: [CAPABILITY.VIEW_AGGREGATE],
   sending: [CAPABILITY.VERIFY_DOMAIN, CAPABILITY.SIGN_ROE],
-  recipients: [CAPABILITY.VIEW_NAMED_RESULTS, CAPABILITY.MANAGE_RECIPIENTS, CAPABILITY.MANAGE_EXCLUSIONS],
+  recipients: [CAPABILITY.VIEW_NAMED_RESULTS, CAPABILITY.MANAGE_RECIPIENTS, CAPABILITY.MANAGE_EXCLUSIONS, CAPABILITY.MANAGE_SUPPRESSIONS],
   sources: [CAPABILITY.MANAGE_SOURCES],
   patterns: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_PATTERN],
   templates: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE],
@@ -5244,6 +5245,62 @@ const EXCLUSION_TYPE_LABELS = Object.freeze({
   test_account: "Test-account policy",
 });
 
+async function manageRecipientSuppression(recipient) {
+  if (!hasCapability(CAPABILITY.MANAGE_SUPPRESSIONS)) return;
+  const reference = String(recipient.recipient_id || "").slice(0, 8);
+  let suppression;
+  try {
+    suppression = await api(`/recipients/${encodeURIComponent(recipient.recipient_id)}/suppression`);
+  } catch (err) {
+    toast(err.message, "error");
+    return;
+  }
+  if (!suppression.active) {
+    toast("This recipient has no active delivery suppression.", "info");
+    return;
+  }
+  const values = await promptDialog({
+    title: "Deactivate delivery suppression",
+    description: "Deactivating a suppression allows future campaigns to include this recipient. The provider evidence is preserved.",
+    fields: [{
+      name: "rationale", label: "Rationale", type: "textarea", required: true,
+      maxLength: 500, placeholder: "Why this suppression should be cleared",
+      help: "Required and audited. Do not include a mailbox address, employee key, or credentials.",
+    }],
+    submitLabel: "Review deactivation",
+  });
+  if (!values) return;
+  const rationale = values.rationale.trim();
+  if (!rationale || rationale.length > 500) {
+    toast("Enter a rationale between 1 and 500 characters.", "error");
+    return;
+  }
+  const confirmed = await confirmDialog({
+    title: "Deactivate this delivery suppression?",
+    message: "The provider evidence is preserved. Future campaigns may include this recipient unless another active suppression applies.",
+    detail: {
+      "Recipient reference": reference,
+      Provider: suppression.provider,
+      Reason: suppression.reason,
+    },
+    confirmLabel: "Deactivate suppression",
+    danger: true,
+  });
+  if (!confirmed) return;
+  try {
+    const result = await api(
+      `/recipients/${encodeURIComponent(recipient.recipient_id)}/suppression/deactivate`,
+      { method: "POST", body: JSON.stringify({ confirm: true, rationale }) },
+    );
+    toast(
+      result.changed
+        ? "Suppression cleared; future campaigns may include this recipient."
+        : "Suppression was already inactive; no change was made.",
+      "success",
+    );
+  } catch (err) { toast(err.message, "error"); }
+}
+
 async function manageRecipientExclusions(recipient, campaigns, campaignsLoaded) {
   if (!hasCapability(CAPABILITY.MANAGE_EXCLUSIONS)) return;
   const reference = String(recipient.recipient_id || "").slice(0, 8);
@@ -5446,6 +5503,7 @@ views.recipients = async (root) => {
   if (!requireAnyCapability(root, CAPABILITY.VIEW_NAMED_RESULTS, CAPABILITY.MANAGE_RECIPIENTS)) return;
   const canManageRecipients = hasCapability(CAPABILITY.MANAGE_RECIPIENTS);
   const canManageExclusions = hasCapability(CAPABILITY.MANAGE_EXCLUSIONS);
+  const canManageSuppressions = hasCapability(CAPABILITY.MANAGE_SUPPRESSIONS);
   root.appendChild(el("h2", { text: "Recipients" }));
   root.appendChild(el("p", { class: "sub", text: "Import recipients, manage explicit canary and exclusion controls, or review and apply a bounded Microsoft 365 directory preview." }));
   let recipientPage;
@@ -5824,6 +5882,15 @@ views.recipients = async (root) => {
           onclick: async (event) => {
             event.currentTarget.disabled = true;
             try { await manageRecipientExclusions(r, campaigns, campaignsLoaded); }
+            finally { if (event.currentTarget.isConnected) event.currentTarget.disabled = false; }
+          },
+        })] : []),
+        ...(canManageSuppressions ? [el("button", {
+          class: "btn", type: "button", text: "Manage suppressions",
+          "aria-label": `Manage delivery suppressions for recipient ${String(r.recipient_id || "").slice(0, 8)}`,
+          onclick: async (event) => {
+            event.currentTarget.disabled = true;
+            try { await manageRecipientSuppression(r); }
             finally { if (event.currentTarget.isConnected) event.currentTarget.disabled = false; }
           },
         })] : []),

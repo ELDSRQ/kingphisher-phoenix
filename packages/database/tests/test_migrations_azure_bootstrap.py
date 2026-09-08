@@ -424,13 +424,16 @@ def test_acs_receipt_and_pacing_grants_are_delivery_only_and_non_destructive() -
     for table in ("recipient_delivery_suppressions", "delivery_pacing_states"):
         assert _table_privileges(script, "delivery", table) == {"SELECT", "INSERT", "UPDATE"}
 
-    for workload in script.TABLE_GRANTS.keys() - {"delivery"}:
+    for workload in script.TABLE_GRANTS.keys() - {"delivery", "operator"}:
         for table in (
             "delivery_provider_events",
             "recipient_delivery_suppressions",
             "delivery_pacing_states",
         ):
             assert _table_privileges(script, workload, table) == set(), (workload, table)
+
+    # The operator role reads suppression state and can deactivate (toggle active).
+    assert _table_privileges(script, "operator", "recipient_delivery_suppressions") == {"SELECT", "UPDATE"}
 
 
 def test_microsoft365_worker_roles_deny_cross_workload_mutations() -> None:

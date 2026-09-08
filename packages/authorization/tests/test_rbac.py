@@ -46,6 +46,7 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
             "view_named:results",
             "view_aggregate:results",
             "manage:exclusions",
+            "manage:suppressions",
         }
     ),
     Role.CAMPAIGN_OPERATOR: frozenset(
@@ -60,6 +61,7 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
             "verify:sending_domain",
             "sign:rules_of_engagement",
             "manage:job_queue",
+            "manage:suppressions",
         }
     ),
     Role.AUDITOR: frozenset({"view:audit", "view_named:results", "view_aggregate:results"}),
@@ -89,6 +91,7 @@ ROLE_CAPABILITY_STRINGS: dict[Role, frozenset[str]] = {
             "verify:sending_domain",
             "sign:rules_of_engagement",
             "manage:job_queue",
+            "manage:suppressions",
         }
     ),
 }

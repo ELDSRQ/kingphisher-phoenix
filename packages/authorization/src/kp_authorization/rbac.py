@@ -56,6 +56,7 @@ class Capability:
     VERIFY_DOMAIN: ClassVar[Capability]
     SIGN_ROE: ClassVar[Capability]
     MANAGE_QUEUE: ClassVar[Capability]
+    MANAGE_SUPPRESSIONS: ClassVar[Capability]
 
     def __post_init__(self) -> None:
         if not isinstance(self.action, str) or _CAPABILITY_PART.fullmatch(self.action) is None:
@@ -91,6 +92,7 @@ Capability.SUBSCRIBE_ALERTS = Capability("subscribe", "alerts")
 Capability.VERIFY_DOMAIN = Capability("verify", "sending_domain")
 Capability.SIGN_ROE = Capability("sign", "rules_of_engagement")
 Capability.MANAGE_QUEUE = Capability("manage", "job_queue")
+Capability.MANAGE_SUPPRESSIONS = Capability("manage", "suppressions")
 
 APPROVE_SECURITY = Capability.APPROVE_SECURITY
 APPROVE_PRIVACY = Capability.APPROVE_PRIVACY
@@ -116,6 +118,7 @@ SUBSCRIBE_ALERTS = Capability.SUBSCRIBE_ALERTS
 VERIFY_DOMAIN = Capability.VERIFY_DOMAIN
 SIGN_ROE = Capability.SIGN_ROE
 MANAGE_QUEUE = Capability.MANAGE_QUEUE
+MANAGE_SUPPRESSIONS = Capability.MANAGE_SUPPRESSIONS
 
 _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.SOURCE_CURATOR: frozenset([SUBMIT_SOURCE, MANAGE_SOURCES, APPROVE_PATTERN, VIEW_AGGREGATE]),
@@ -131,6 +134,7 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             VIEW_NAMED_RESULTS,
             VIEW_AGGREGATE,
             MANAGE_EXCLUSIONS,
+            MANAGE_SUPPRESSIONS,
         ]
     ),
     Role.CAMPAIGN_OPERATOR: frozenset(
@@ -145,6 +149,7 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             VERIFY_DOMAIN,
             SIGN_ROE,
             MANAGE_QUEUE,
+            MANAGE_SUPPRESSIONS,
         ]
     ),
     Role.AUDITOR: frozenset([VIEW_AUDIT, VIEW_NAMED_RESULTS, VIEW_AGGREGATE]),
@@ -174,6 +179,7 @@ _ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
             VERIFY_DOMAIN,
             SIGN_ROE,
             MANAGE_QUEUE,
+            MANAGE_SUPPRESSIONS,
         ]
     ),
 }
