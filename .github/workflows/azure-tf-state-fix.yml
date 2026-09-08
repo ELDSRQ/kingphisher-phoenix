@@ -95,6 +95,14 @@ jobs:
           echo "=== State after refresh ==="
           terraform state list
 
+          echo ""
+          echo "=== Removing CI runner VM from state (destroyed in previous idle) ==="
+          terraform state rm azurerm_linux_virtual_machine.ci_runner[0] 2>/dev/null || true
+
+          echo ""
+          echo "=== State after rm ==="
+          terraform state list
+
       - name: Verify idle plan
         shell: bash
         run: |
