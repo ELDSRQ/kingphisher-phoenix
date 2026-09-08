@@ -655,6 +655,17 @@ run_plan() {
   # $1 = human label, remaining args = extra terraform plan flags
   local label="$1"; shift
   local planlog; planlog="$WORKDIR/plan.log"
+  # An ALREADY-stopped Postgres cannot be refreshed either (400 ServerStoppedError
+  # on its database/configuration children), which is the state every re-run after
+  # a previous idle lands in. Plan without refresh in that case: the idle plan
+  # destroys a known set from state, and the structured destroy guard below still
+  # inspects the real plan document, so nothing protected can slip through.
+  local pg_now; pg_now="$(pg_state "$(pg_server 2>/dev/null)" 2>/dev/null || echo unknown)"
+  if [ "$pg_now" = "Stopped" ]; then
+    note "PostgreSQL is already Stopped — terraform cannot refresh its child resources"
+    note "planning with -refresh=false; the destroy guard still runs on the real plan"
+    set -- "$@" -refresh=false
+  fi
   step "terraform plan ($label) in $TF_DIR"
   if ! ( cd "$TF_DIR" && terraform plan -input=false "$@" -out="$PLAN_FILE" 2>&1 | tee "$planlog" ); then
     explain_plan_failure "$planlog"
@@ -866,11 +877,18 @@ idle_epilogue() {
 
 cmd_stop() {
   run_preflight "$IDLE_PREFLIGHT_VARS"
-  stop_postgres
   local -a flags
   while IFS= read -r flag; do flags+=("$flag"); done < <(idle_plan_flags)
   note_ci_runner_retention
+  # Terraform FIRST, Postgres last. `terraform plan` refreshes
+  # azurerm_postgresql_flexible_server_database and _configuration, and the Azure
+  # API rejects those reads with 400 ServerStoppedError while the server is
+  # stopped. Stopping first therefore broke the plan that follows it — observed
+  # on the first real dispatch (run 34167461147). The server is not part of the
+  # idle plan (it carries prevent_destroy and is not gated by any flag), so
+  # stopping it afterwards changes nothing about what is applied.
   confirm_apply "idle: ACR+Redis+workloads OFF" "${flags[@]}"
+  stop_postgres
   echo "==> IDLED. Tier-1 (ACS/domain/DNS) stays up at ~\$0. Resume with: $0 start"
   idle_epilogue
 }

@@ -563,7 +563,7 @@ def test_the_generated_var_file_never_survives_the_run(tmp_path: Path) -> None:
 
 
 def test_an_already_stopped_postgres_is_a_logged_no_op(tmp_path: Path) -> None:
-    result, calls = _run_script(tmp_path, "stop", azure={"postgres_state": "Stopped"}, stdin="no\n")
+    result, calls = _run_script(tmp_path, "stop", azure={"postgres_state": "Stopped"}, stdin="yes\n")
 
     assert "already not running (state=Stopped)" in result.stdout
     assert not [call for call in calls if call.startswith("az postgres flexible-server stop")]
@@ -572,8 +572,40 @@ def test_an_already_stopped_postgres_is_a_logged_no_op(tmp_path: Path) -> None:
     assert [call for call in calls if call.startswith("terraform plan")]
 
 
-def test_a_running_postgres_is_stopped(tmp_path: Path) -> None:
+def test_declining_the_plan_leaves_postgres_running(tmp_path: Path) -> None:
+    """Aborting must change NOTHING — including not stopping the database.
+
+    The original order stopped PostgreSQL and only then asked for confirmation,
+    so answering "no" still left the server stopped: a partial, unrequested
+    change from a run the operator explicitly declined.
+    """
     _, calls = _run_script(tmp_path, "stop", azure={"postgres_state": "Ready"}, stdin="no\n")
+
+    assert not [call for call in calls if call.startswith("az postgres flexible-server stop")], (
+        "declining the plan must not stop the database"
+    )
+    assert not [call for call in calls if call.startswith("terraform apply")]
+
+
+def test_postgres_is_stopped_only_after_the_apply(tmp_path: Path) -> None:
+    """Order matters: terraform plan refreshes the server's child resources.
+
+    `azurerm_postgresql_flexible_server_database` and `..._configuration` cannot
+    be read while the server is stopped — Azure returns 400 ServerStoppedError —
+    so stopping first breaks the plan that follows. Observed on the first real
+    dispatch of azure-idle.yml (run 34167461147).
+    """
+    _, calls = _run_script(tmp_path, "stop", azure={"postgres_state": "Ready"}, stdin="yes\n")
+
+    apply_at = next(i for i, call in enumerate(calls) if call.startswith("terraform apply"))
+    stop_at = next(
+        i for i, call in enumerate(calls) if call.startswith("az postgres flexible-server stop")
+    )
+    assert apply_at < stop_at, f"the apply must precede the Postgres stop, got {calls}"
+
+
+def test_a_running_postgres_is_stopped(tmp_path: Path) -> None:
+    _, calls = _run_script(tmp_path, "stop", azure={"postgres_state": "Ready"}, stdin="yes\n")
     assert [call for call in calls if call.startswith("az postgres flexible-server stop")]
 
 
