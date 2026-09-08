@@ -598,9 +598,7 @@ def test_postgres_is_stopped_only_after_the_apply(tmp_path: Path) -> None:
     _, calls = _run_script(tmp_path, "stop", azure={"postgres_state": "Ready"}, stdin="yes\n")
 
     apply_at = next(i for i, call in enumerate(calls) if call.startswith("terraform apply"))
-    stop_at = next(
-        i for i, call in enumerate(calls) if call.startswith("az postgres flexible-server stop")
-    )
+    stop_at = next(i for i, call in enumerate(calls) if call.startswith("az postgres flexible-server stop"))
     assert apply_at < stop_at, f"the apply must precede the Postgres stop, got {calls}"
 
 
