@@ -97,4 +97,4 @@ jobs:
         run: |
           cd infrastructure/terraform
           echo "=== Verifying idle plan ==="
-          terraform plan -var-file=environments/idle.tfvars 2>&1 | tail -30
+          scripts/operator/azure-idle.sh plan-idle
