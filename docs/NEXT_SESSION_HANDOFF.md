@@ -1,5 +1,33 @@
 # Next-session handoff
 
+## Addendum 2026-09-08 (PM) — e2e gate FULLY GREEN; two probe fixes landed; head `ac92e4b`
+
+**All four test gates now pass at head `ac92e4b`:**
+
+| Gate | Result |
+|---|---|
+| `make test` hermetic (Mac) | **3140 passed** |
+| postgres (`.105` `run-postgres-tests.sh`) | **99 passed** |
+| redis (`.105` `run-redis-tests.sh`) | **2 passed** |
+| e2e (`.105` `test -m e2e`) | **8 passed** (was 6/8) |
+
+**Two fixes landed this session:**
+
+1. **`e5364ac` — connection_probes.py: allow `KP_WORKER_AI_BASE_URL` loopback.** The AI gateway
+   on port 8090 was blocked by outbound safety policy because `KP_WORKER_AI_BASE_URL` was missing
+   from `_DEV_LOOPBACK_PORTS`. `_allow_development_loopback()` returned `False`, causing
+   `_resolve_pinned_target()` to reject the loopback address as non-public. Added the entry to the
+   allowlist. This fixed `test_onboarding_contract_and_local_connectors`.
+
+2. **`ac92e4b` — AI gateway: add webhook guidance to `_SETUP_GUIDANCE`.** The AI gateway's
+   setup-assist endpoint had no `webhook` entry, so it returned generic fallback text instead of the
+   expected MTA/mail-relay guidance. Added the webhook entry (matching the operator-api's curated
+   fallback). This fixed `test_setup_help_and_assistant`.
+
+**Note on .105 deployment:** the code was piped via `cat | ssh wsl cat` (no git repo on .105).
+The AI gateway container was rebuilt via `docker compose build ai-gateway` and restarted. The
+supervisor runs in a tmux session (`tmux attach -t kp-supervisor`).
+
 ## Addendum 2026-09-08 — idle path VERIFIED; local gate was lying; head `a56162d`
 
 **Read `docs/design/INCIDENT-IDLE-PLAN-DRIFT-2026-09-08.md` first.** The short version: the idle
