@@ -88,19 +88,27 @@ jobs:
           terraform state list
 
           echo ""
-          echo "=== Refreshing state from Azure (may take a few minutes) ==="
-          terraform apply -refresh-only -auto-approve 2>&1 || true
-
-          echo ""
-          echo "=== State after refresh ==="
-          terraform state list
-
-          echo ""
-          echo "=== Removing CI runner VM from state (destroyed in previous idle) ==="
+          echo "=== Removing stale resources from state ==="
+          terraform state rm azurerm_container_registry.main[0] 2>/dev/null || true
+          terraform state rm azurerm_private_endpoint.acr[0] 2>/dev/null || true
+          terraform state rm azurerm_role_assignment.acr_pull 2>/dev/null || true
+          terraform state rm azurerm_private_endpoint.redis[0] 2>/dev/null || true
+          terraform state rm azurerm_role_definition.acs_email_sender[0] 2>/dev/null || true
+          terraform state rm azurerm_managed_redis.main[0] 2>/dev/null || true
+          terraform state rm azurerm_key_vault_secret.runtime["redis-url"] 2>/dev/null || true
           terraform state rm azurerm_linux_virtual_machine.ci_runner[0] 2>/dev/null || true
 
           echo ""
           echo "=== State after rm ==="
+          terraform state list
+
+          echo ""
+          echo "=== Importing CI runner VM back into state ==="
+          terraform import azurerm_linux_virtual_machine.ci_runner[0] \
+            "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.Compute/virtualMachines/vm-kp-staging-runner" 2>&1 || true
+
+          echo ""
+          echo "=== State after import ==="
           terraform state list
 
       - name: Verify idle plan
