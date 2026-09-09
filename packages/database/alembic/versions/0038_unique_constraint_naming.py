@@ -93,7 +93,7 @@ def _rename(table: str, old: str, new: str) -> None:
             END IF;
         END
         $rename$;
-        """
+        """  # nosec B608
     )
 
 

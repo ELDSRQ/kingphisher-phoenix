@@ -316,7 +316,7 @@ def _parse_blob_list(body: bytes) -> tuple[list[str], str]:
     """
 
     try:
-        root = ElementTree.fromstring(body)  # noqa: S314 - Azure control-plane XML, size-bounded above
+        root = ElementTree.fromstring(body)  # noqa: S314 - Azure control-plane XML, size-bounded above  # nosec B314
     except ElementTree.ParseError:
         raise AuditAnchorError("Azure Blob list response is not valid XML") from None
     prefix = f"{_ANCHOR_LAYOUT_PREFIX}/"

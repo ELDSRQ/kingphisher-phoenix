@@ -380,7 +380,7 @@ class AuditStore:
                         # of two module constants selected above by privilege, never
                         # caller data. The single caller-supplied value in this
                         # statement (the timestamp format) travels as a bind param.
-                        "SELECT actor, action, object_type, object_id, occurred_at, detail, prev_hash, "  # noqa: S608
+                        "SELECT actor, action, object_type, object_id, occurred_at, detail, prev_hash, "  # noqa: S608  # nosec B608
                         "event_hash, nonce, canonical_payload, chain_version, "
                         f"canonical_payload IS NOT DISTINCT FROM {canonical_from_columns} "
                         "AS canonical_binds_columns FROM audit_events"
