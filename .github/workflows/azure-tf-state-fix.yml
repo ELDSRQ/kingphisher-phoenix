@@ -104,7 +104,7 @@ jobs:
 
           echo ""
           echo "=== Importing CI runner VM back into state ==="
-          terraform import azurerm_linux_virtual_machine.ci_runner[0] \
+          terraform import -input=false azurerm_linux_virtual_machine.ci_runner[0] \
             "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.Compute/virtualMachines/vm-kp-staging-runner" 2>&1 || true
 
           echo ""
