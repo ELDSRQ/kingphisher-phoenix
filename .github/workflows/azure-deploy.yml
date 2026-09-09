@@ -2396,6 +2396,9 @@ jobs:
           -var="worker_image=$IMAGE_REGISTRY/worker@$WORKER_DIGEST"
           -var="migration_image=$IMAGE_REGISTRY/migration@$MIGRATION_DIGEST"
           -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
+          -var="ai_foundry_endpoint=${{ vars.AI_FOUNDRY_ENDPOINT || '' }}"
+          -var="ai_foundry_resource_id=${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}"
+          -var="ai_foundry_model=${{ vars.AI_FOUNDRY_MODEL || 'gpt-oss-120b' }}"
           -var="ai_gateway_image=$IMAGE_REGISTRY/ai-gateway@$AI_GATEWAY_DIGEST"
           -var="ai_llama_image=${{ vars.AI_LLAMA_IMAGE }}"
       - name: Refuse destructive workload changes
@@ -2711,6 +2714,9 @@ jobs:
           -var="worker_image=$IMAGE_REGISTRY/worker@$WORKER_DIGEST"
           -var="migration_image=$IMAGE_REGISTRY/migration@$MIGRATION_DIGEST"
           -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
+          -var="ai_foundry_endpoint=${{ vars.AI_FOUNDRY_ENDPOINT || '' }}"
+          -var="ai_foundry_resource_id=${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}"
+          -var="ai_foundry_model=${{ vars.AI_FOUNDRY_MODEL || 'gpt-oss-120b' }}"
           -var="ai_gateway_image=$IMAGE_REGISTRY/ai-gateway@$AI_GATEWAY_DIGEST"
           -var="ai_llama_image=${{ vars.AI_LLAMA_IMAGE }}"
       - name: Refuse unrelated changes in receipt activation plan
