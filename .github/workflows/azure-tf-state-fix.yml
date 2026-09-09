@@ -1,12 +1,33 @@
-# Fix terraform state drift — remove resources that were destroyed outside terraform.
+# Reconcile terraform state with Azure reality after an interrupted idle apply.
 #
 # WHY THIS EXISTS
-#   When idle.tfvars is applied, it destroys resources (ACR, Redis, etc.).
-#   If the state isn't updated properly, terraform thinks those resources still exist
-#   and fails when trying to create resources that depend on them.
+#   An idle apply was interrupted mid-flight: some resources were created in
+#   Azure (ACR, ACR private endpoint, 5 AcrPull role assignments) or survived
+#   (Enterprise Redis), while the terraform state entries for them were removed
+#   by earlier recovery attempts. Terraform then plans to CREATE resources that
+#   already exist and fails with "already exists ... needs to be imported".
+#
+# WHAT IT DOES
+#   Reality-driven: for each affected resource, if it EXISTS in Azure but is
+#   absent from state, IMPORT it. Nothing is removed from state here and no
+#   Azure resource is created, changed or destroyed. Redis is imported WITH
+#   deploy_data_plane=true (so its address resolves in configuration) purely so
+#   the next idle apply can destroy it properly through terraform.
+#
+#   The imports need the same 13 no-default variables every plan needs, so this
+#   workflow generates a var-file from the reviewed CONFIG line in
+#   scripts/operator/deployment-preflight/dispatch-staging-workloads.sh using
+#   the same deterministic transforms as azure-idle.sh (integer coercion for the
+#   ACS pacing values, graph/reported-mailbox endpoint pops). The live ACS
+#   readback is intentionally NOT replicated: imported state is authoritative
+#   for attributes, and the verification plan below uses azure-idle.sh, which
+#   does the full readback itself.
 #
 # USAGE
+#   az vm start -g rg-kp-staging -n vm-kp-staging-runner
 #   gh workflow run azure-tf-state-fix.yml --ref main
+#   # approve the staging environment review, read the verification plan, then
+#   # dispatch azure-idle.yml mode=apply confirm=IDLE to finish the idle.
 
 name: Fix terraform state drift
 
@@ -16,13 +37,15 @@ on:
 permissions:
   contents: read
 
+# Deliberately the SAME group azure-deploy.yml and azure-idle.yml use, so state
+# surgery can never interleave with a deployment or an idle apply.
 concurrency:
   group: azure-staging
   cancel-in-progress: false
 
 jobs:
   fix-state:
-    name: Fix terraform state on VNet runner
+    name: Reconcile state on VNet runner
     environment: staging
     permissions:
       contents: read
@@ -33,6 +56,10 @@ jobs:
       KP_RG: rg-kp-staging
       KP_NETWORK_MODE: private
       KP_INSIDE_VNET: "1"
+      # Keep the runner VM in the verification plan, exactly like azure-idle.yml
+      # does: idle.tfvars pins deploy_ci_runner=false, and without this override
+      # the plan would propose destroying the VM the job is running on.
+      KP_KEEP_CI_RUNNER: "1"
       KP_TF_STATE_RESOURCE_GROUP: ${{ vars.TF_STATE_RESOURCE_GROUP }}
       KP_TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
       KP_TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
@@ -43,6 +70,9 @@ jobs:
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # main.tf validates that deploy_ci_runner=true is accompanied by a
+      # non-empty registration token; the import below passes that flag.
+      TF_VAR_ci_runner_registration_token: ${{ secrets.CI_RUNNER_REGISTRATION_TOKEN }}
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -73,67 +103,115 @@ jobs:
             -backend-config="key=staging/kingphisher.tfstate" \
             -backend-config="use_azuread_auth=true"
 
-      - name: List current state
+      - name: Reconcile state with Azure reality
         shell: bash
         run: |
           cd infrastructure/terraform
-          echo "=== Current terraform state ==="
+          SUB="${ARM_SUBSCRIPTION_ID}"
+          RG="${KP_RG}"
+
+          echo "=== Azure reality (control-plane inventory) ==="
+          az resource list -g "$RG" --query "[].name" -o tsv | sort
+
+          echo ""
+          echo "=== State before ==="
           terraform state list
 
-      - name: Sync state with reality
-        shell: bash
-        run: |
-          cd infrastructure/terraform
-          echo "=== Current state ==="
-          terraform state list
+          # Var-file from the reviewed CONFIG, with the same transforms
+          # azure-idle.sh applies. Secret-free by construction (the dispatch
+          # script is committed).
+          python3 - <<'PYEOF'
+          import json, re
+          src = open("../../scripts/operator/deployment-preflight/dispatch-staging-workloads.sh", encoding="utf-8").read()
+          m = re.search(r"^CONFIG='(\{.*\})'$", src, re.MULTILINE)
+          if m is None:
+              raise SystemExit("no CONFIG line found in the dispatch script")
+          cfg = json.loads(m.group(1))
+          for k in ("acs_daily_message_limit", "acs_messages_per_minute",
+                    "acs_ramp_batch_size", "acs_ramp_interval_seconds"):
+              cfg[k] = int(cfg[k])
+          cfg["graph_endpoint"] = "https://graph.microsoft.com/v1.0" if cfg.pop("enable_directory_sync", "false") == "true" else ""
+          cfg["reported_mailbox_endpoint"] = "https://graph.microsoft.com/v1.0" if cfg.pop("enable_reported_mailbox", "false") == "true" else ""
+          with open(".state-fix.tfvars.json", "w", encoding="utf-8") as f:
+              json.dump(cfg, f, separators=(",", ":"), sort_keys=True)
+          PYEOF
 
-          echo ""
-          echo "=== Removing stale resources from state ==="
-          terraform state rm azurerm_container_registry.main[0] 2>/dev/null || true
-          terraform state rm azurerm_private_endpoint.acr[0] 2>/dev/null || true
-          terraform state rm azurerm_role_assignment.acr_pull 2>/dev/null || true
-          terraform state rm azurerm_private_endpoint.redis[0] 2>/dev/null || true
-          terraform state rm azurerm_role_definition.acs_email_sender[0] 2>/dev/null || true
-          terraform state rm azurerm_managed_redis.main[0] 2>/dev/null || true
-          terraform state rm azurerm_key_vault_secret.runtime["redis-url"] 2>/dev/null || true
-          terraform state rm azurerm_linux_virtual_machine.ci_runner[0] 2>/dev/null || true
+          # deploy_data_plane=true so the managed-redis address resolves for
+          # import; the idle apply itself layers idle.tfvars on top, which sets
+          # it back to false and thereby plans Redis's destruction.
+          COMMON_ARGS=(
+            -input=false
+            -var-file=environments/staging.tfvars
+            -var-file=.state-fix.tfvars.json
+            -var=environment=staging
+            -var=network_mode=private
+            -var=acs_deployment_stage=workloads
+            -var=deploy_workloads=false
+            -var=deploy_acr=true
+            -var=deploy_data_plane=true
+            -var=deploy_ci_runner=true
+          )
 
-          echo ""
-          echo "=== State after rm ==="
-          terraform state list
-
-          echo ""
-          echo "=== Importing CI runner VM back into state ==="
-          terraform import -input=false azurerm_linux_virtual_machine.ci_runner[0] \
-            "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.Compute/virtualMachines/vm-kp-staging-runner" 2>&1 || true
-
-          echo ""
-          echo "=== Importing ACR back into state (created by previous apply) ==="
-          terraform import -input=false azurerm_container_registry.main[0] \
-            "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.ContainerRegistry/registries/acrkpstaging" 2>&1 || true
-
-          echo ""
-          echo "=== Importing ACR private endpoint back into state ==="
-          terraform import -input=false azurerm_private_endpoint.acr[0] \
-            "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.Network/privateEndpoints/pep-kp-staging-acr" 2>&1 || true
-
-          echo ""
-          echo "=== Importing ACR pull role assignments back into state ==="
-          for role in operator tracking worker migration ai-gateway; do
-            role_id=$(az role assignment list --scope "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.ContainerRegistry/registries/acrkpstaging" --role "AcrPull" --query "[?principalName=='id-${role}-kp-staging'].id" -o tsv 2>/dev/null | head -1)
-            if [ -n "$role_id" ]; then
-              echo "  Importing acr_pull[$role] ($role_id)..."
-              terraform import -input=false "azurerm_role_assignment.acr_pull[\"$role\"]" \
-                "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.ContainerRegistry/registries/acrkpstaging/providers/Microsoft.Authorization/roleAssignments/$role_id" 2>&1 || true
+          import_arm() {
+            local address="$1" resource_id="$2"
+            if terraform state list | grep -qxF "$address"; then
+              echo "   already in state: $address"
+              return 0
             fi
+            if ! az resource show --ids "$resource_id" >/dev/null 2>&1; then
+              echo "   absent in Azure, skipping: $address"
+              return 0
+            fi
+            echo "   importing: $address"
+            terraform import "${COMMON_ARGS[@]}" "$address" "$resource_id" \
+              || echo "   !! IMPORT FAILED: $address (see output above)"
+          }
+
+          echo ""
+          echo "=== Importing resources that exist in Azure ==="
+          import_arm 'azurerm_linux_virtual_machine.ci_runner[0]' \
+            "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Compute/virtualMachines/vm-kp-staging-runner"
+          import_arm 'azurerm_container_registry.main[0]' \
+            "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/acrkpstaging"
+          import_arm 'azurerm_private_endpoint.acr[0]' \
+            "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Network/privateEndpoints/pep-kp-staging-acr"
+          import_arm 'azurerm_managed_redis.main[0]' \
+            "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Cache/redisEnterprise/redis-kp-staging-6117w"
+
+          # AcrPull role assignments are not ARM `az resource show` resources;
+          # existence is proven by discovery. Match each workload identity to
+          # its assignment on the registry scope, then import by assignment ID.
+          ACR_ID="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/acrkpstaging"
+          for key in operator tracking worker migration ai-gateway; do
+            address="azurerm_role_assignment.acr_pull[\"$key\"]"
+            if terraform state list | grep -qxF "$address"; then
+              echo "   already in state: $address"
+              continue
+            fi
+            principal="$(az identity show -n "id-kp-staging-$key" -g "$RG" --query principalId -o tsv 2>/dev/null || true)"
+            if [ -z "$principal" ]; then
+              echo "   !! identity not found: id-kp-staging-$key"
+              continue
+            fi
+            ra_id="$(az role assignment list --scope "$ACR_ID" --role AcrPull \
+              --query "[?principalId=='$principal'].id" -o tsv 2>/dev/null | head -1)"
+            if [ -z "$ra_id" ]; then
+              echo "   !! no AcrPull assignment found for id-kp-staging-$key"
+              continue
+            fi
+            echo "   importing: $address"
+            terraform import "${COMMON_ARGS[@]}" "$address" "$ra_id" \
+              || echo "   !! IMPORT FAILED: $address (see output above)"
           done
 
+          rm -f .state-fix.tfvars.json
+
           echo ""
-          echo "=== State after import ==="
+          echo "=== State after ==="
           terraform state list
 
       - name: Verify idle plan
         shell: bash
         run: |
-          echo "=== Verifying idle plan ==="
+          echo "=== Verifying idle plan (expect: create 0, destroy Redis only, guard OK) ==="
           scripts/operator/azure-idle.sh plan-idle
