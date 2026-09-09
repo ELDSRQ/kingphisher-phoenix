@@ -10,9 +10,16 @@
 # WHAT IT DOES
 #   Reality-driven: for each affected resource, if it EXISTS in Azure but is
 #   absent from state, IMPORT it. Nothing is removed from state here and no
-#   Azure resource is created, changed or destroyed. Redis is imported WITH
-#   deploy_data_plane=true (so its address resolves in configuration) purely so
-#   the next idle apply can destroy it properly through terraform.
+#   Azure resource is created, changed or destroyed by this workflow.
+#
+#   Redis is deliberately NOT imported: it was orphaned in Azure by an
+#   interrupted destroy (its private endpoint, its Key Vault secret and its
+#   state entries are already gone). Importing it is impossible anyway — with
+#   deploy_data_plane=true the locals reference the destroyed redis-url secret
+#   and every terraform command fails with "Invalid index" — so it is removed
+#   out-of-band with `az resource delete` before this workflow runs, which is
+#   exactly what the approved idle plan intended for it. The next workloads
+#   deploy recreates Redis, its secret and its private endpoint cleanly.
 #
 #   The imports need the same 13 no-default variables every plan needs, so this
 #   workflow generates a var-file from the reviewed CONFIG line in
@@ -136,9 +143,11 @@ jobs:
               json.dump(cfg, f, separators=(",", ":"), sort_keys=True)
           PYEOF
 
-          # deploy_data_plane=true so the managed-redis address resolves for
-          # import; the idle apply itself layers idle.tfvars on top, which sets
-          # it back to false and thereby plans Redis's destruction.
+          # deploy_data_plane=false: the 2026-09-07 fix made this posture
+          # evaluable (no redis-url secret reference anywhere), which is what
+          # imports need. Redis itself is NOT imported — it was orphaned by an
+          # interrupted destroy and is removed out-of-band; the idle posture
+          # wants it gone anyway, and the next workloads deploy recreates it.
           COMMON_ARGS=(
             -input=false
             -var-file=environments/staging.tfvars
@@ -148,7 +157,7 @@ jobs:
             -var=acs_deployment_stage=workloads
             -var=deploy_workloads=false
             -var=deploy_acr=true
-            -var=deploy_data_plane=true
+            -var=deploy_data_plane=false
             -var=deploy_ci_runner=true
           )
 
@@ -164,8 +173,9 @@ jobs:
             fi
             echo "   importing: $address"
             terraform import "${COMMON_ARGS[@]}" "$address" "$resource_id" \
-              || echo "   !! IMPORT FAILED: $address (see output above)"
+              || { echo "   !! IMPORT FAILED: $address"; FAILED_IMPORTS=1; }
           }
+          FAILED_IMPORTS=0
 
           echo ""
           echo "=== Importing resources that exist in Azure ==="
@@ -175,8 +185,6 @@ jobs:
             "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.ContainerRegistry/registries/acrkpstaging"
           import_arm 'azurerm_private_endpoint.acr[0]' \
             "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Network/privateEndpoints/pep-kp-staging-acr"
-          import_arm 'azurerm_managed_redis.main[0]' \
-            "/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Cache/redisEnterprise/redis-kp-staging-6117w"
 
           # AcrPull role assignments are not ARM `az resource show` resources;
           # existence is proven by discovery. Match each workload identity to
@@ -191,17 +199,19 @@ jobs:
             principal="$(az identity show -n "id-kp-staging-$key" -g "$RG" --query principalId -o tsv 2>/dev/null || true)"
             if [ -z "$principal" ]; then
               echo "   !! identity not found: id-kp-staging-$key"
+              FAILED_IMPORTS=1
               continue
             fi
             ra_id="$(az role assignment list --scope "$ACR_ID" --role AcrPull \
               --query "[?principalId=='$principal'].id" -o tsv 2>/dev/null | head -1)"
             if [ -z "$ra_id" ]; then
               echo "   !! no AcrPull assignment found for id-kp-staging-$key"
+              FAILED_IMPORTS=1
               continue
             fi
             echo "   importing: $address"
             terraform import "${COMMON_ARGS[@]}" "$address" "$ra_id" \
-              || echo "   !! IMPORT FAILED: $address (see output above)"
+              || { echo "   !! IMPORT FAILED: $address"; FAILED_IMPORTS=1; }
           done
 
           rm -f .state-fix.tfvars.json
@@ -209,6 +219,11 @@ jobs:
           echo ""
           echo "=== State after ==="
           terraform state list
+
+          if [ "$FAILED_IMPORTS" != "0" ]; then
+            echo "::error::one or more imports failed — see the !! lines above."
+            exit 1
+          fi
 
       - name: Verify idle plan
         shell: bash
