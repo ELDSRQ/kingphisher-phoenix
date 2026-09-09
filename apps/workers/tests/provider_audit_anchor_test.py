@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 import pytest
 from kp_workers.providers.audit_anchor import (
+    _ANCHOR_LAYOUT_PREFIX,
+    _ANCHOR_SCHEMA_VERSION,
     AuditAnchor,
     AuditAnchorError,
     AuditAnchorMismatchError,
@@ -45,6 +47,20 @@ def _provider(handler: Any, credential: FakeCredential | None = None) -> AzureBl
     )
 
 
+def test_layout_prefix_tracks_the_document_schema() -> None:
+    """A document-schema change must move the blob layout prefix.
+
+    The blob key is derived only from ``<sequence>-<event_hash>``, so two
+    documents for the same event that differ in any other field (chaining,
+    schema version) collide on one immutable key and can never be reconciled.
+    AUD-003 raised the document schema to 2 while the prefix stayed at v1, so
+    re-publishing any event anchored by the previous schema dead-lettered the
+    job as a content mismatch instead of simply writing under a new layout.
+    """
+
+    assert f"v{_ANCHOR_SCHEMA_VERSION}" == _ANCHOR_LAYOUT_PREFIX
+
+
 def test_anchor_is_minimal_canonical_and_non_pii() -> None:
     anchor = _anchor()
     document = json.loads(anchor.canonical_bytes())
@@ -56,7 +72,7 @@ def test_anchor_is_minimal_canonical_and_non_pii() -> None:
         "sequence": 42,
         "signed_at": "2026-08-27T12:00:00.000000Z",
     }
-    assert anchor.blob_name == f"v1/{42:020d}-{'ab' * 32}.json"
+    assert anchor.blob_name == f"v2/{42:020d}-{'ab' * 32}.json"
     assert anchor.leaf_name == f"{42:020d}-{'ab' * 32}.json"
 
 
@@ -217,7 +233,7 @@ def test_container_url_rejects_non_azure_or_secret_bearing_endpoints(url: str) -
 
 
 def _list_xml(leaf_names: list[str], next_marker: str = "") -> bytes:
-    blobs = "".join(f"<Blob><Name>v1/{name}</Name></Blob>" for name in leaf_names)
+    blobs = "".join(f"<Blob><Name>v2/{name}</Name></Blob>" for name in leaf_names)
     marker = f"<NextMarker>{next_marker}</NextMarker>" if next_marker else "<NextMarker/>"
     return (
         f'<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Blobs>{blobs}</Blobs>{marker}</EnumerationResults>'
@@ -251,7 +267,7 @@ def test_read_recent_ignores_objects_outside_the_layout_prefix() -> None:
             body = (
                 '<?xml version="1.0"?><EnumerationResults><Blobs>'
                 "<Blob><Name>unrelated.txt</Name></Blob>"
-                "<Blob><Name>v1/nested/x.json</Name></Blob>"
+                "<Blob><Name>v2/nested/x.json</Name></Blob>"
                 f"<Blob><Name>{_stored(5).blob_name}</Name></Blob>"
                 "</Blobs><NextMarker/></EnumerationResults>"
             ).encode("ascii")

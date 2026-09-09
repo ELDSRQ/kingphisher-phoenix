@@ -33,9 +33,21 @@ _MAX_ANCHOR_BYTES = 4096
 #: re-publish of an existing anchor raise, which dead-lettered the job and left
 #: the audit-anchor role permanently "configured_unproven" in managed deployments.
 _EXISTING_ANCHOR_STATUSES = frozenset({409, 412})
-#: Storage-layout version. This is the on-disk/blob path prefix and is
-#: independent of the JSON ``schema_version`` inside each anchor document.
-_ANCHOR_LAYOUT_PREFIX = "v1"
+#: Storage-layout version: the on-disk/blob path prefix anchors are written under.
+#:
+#: This must move whenever the anchor document gains or changes a field, because
+#: the blob key is derived only from ``<sequence>-<event_hash>``. Two documents
+#: for the same event that differ in any other field (chaining, schema version)
+#: therefore collide on one key — and since anchors are immutable, that collision
+#: is unresolvable: the stored bytes can never be rewritten to match.
+#:
+#: AUD-003 raised ``_ANCHOR_SCHEMA_VERSION`` to 2 (adding ``previous_anchor_hash``
+#: chaining) while this prefix stayed at "v1", so re-publishing any event already
+#: anchored before the change hit HTTP 409 and then failed the collision check as
+#: "immutable audit anchor key contains different content" — a non-retryable
+#: integrity failure that dead-lettered every anchor job and left the audit-anchor
+#: role permanently unproven. Keep this in step with the document schema.
+_ANCHOR_LAYOUT_PREFIX = "v2"
 #: Current anchor document schema. v2 chains anchors via ``previous_anchor_hash``;
 #: v1 (no chaining) is still parseable so a mixed history reads back cleanly.
 _ANCHOR_SCHEMA_VERSION = 2
