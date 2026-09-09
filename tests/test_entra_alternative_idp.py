@@ -20,15 +20,17 @@ import pytest
 REALM_FILE = Path(__file__).parents[1] / "infrastructure" / "idp" / "realm-kingphisher.json"
 
 # Expected realm roles from the design doc / rbac.py enum
-EXPECTED_REALM_ROLES = frozenset([
-    "source_curator",
-    "campaign_author",
-    "security_approver",
-    "privacy_approver",
-    "campaign_operator",
-    "auditor",
-    "administrator",
-])
+EXPECTED_REALM_ROLES = frozenset(
+    [
+        "source_curator",
+        "campaign_author",
+        "security_approver",
+        "privacy_approver",
+        "campaign_operator",
+        "auditor",
+        "administrator",
+    ]
+)
 
 # Role aliases accepted by _claims_to_principal (auth.py:_ROLE_ALIASES)
 ROLE_ALIASES = {
@@ -88,8 +90,7 @@ def test_realm_roles_match_rbac_enum() -> None:
 
     for role in realm_roles:
         assert role in valid_names, (
-            f"Realm role '{role}' is not a valid Role enum value "
-            f"or alias. Valid: {sorted(valid_names)}"
+            f"Realm role '{role}' is not a valid Role enum value or alias. Valid: {sorted(valid_names)}"
         )
 
 
@@ -105,9 +106,7 @@ def test_realm_has_required_clients() -> None:
 def test_console_client_has_correct_config() -> None:
     """The console client must be configured for auth-code flow with PKCE."""
     realm = _load_realm()
-    console_client = next(
-        c for c in realm.get("clients", []) if c["clientId"] == "kp-operator-console"
-    )
+    console_client = next(c for c in realm.get("clients", []) if c["clientId"] == "kp-operator-console")
 
     assert console_client["enabled"] is True
     assert console_client["protocol"] == "openid-connect"
@@ -137,13 +136,12 @@ def test_console_client_has_audience_mapper() -> None:
     never lands in the token (verified empirically against KC 26.0.8).
     """
     realm = _load_realm()
-    console_client = next(
-        c for c in realm.get("clients", []) if c["clientId"] == "kp-operator-console"
-    )
+    console_client = next(c for c in realm.get("clients", []) if c["clientId"] == "kp-operator-console")
 
     mappers = console_client.get("protocolMappers", [])
     audience_mappers = [
-        m for m in mappers
+        m
+        for m in mappers
         if m.get("protocolMapper") == "oidc-audience-mapper"
         and m.get("config", {}).get("included.client.audience") == "kp-operator-api"
     ]
@@ -160,9 +158,7 @@ def test_console_client_has_audience_mapper() -> None:
 def test_api_client_exists_as_audience_reference() -> None:
     """The API client must exist so it can be referenced as an audience."""
     realm = _load_realm()
-    api_client = next(
-        c for c in realm.get("clients", []) if c["clientId"] == "kp-operator-api"
-    )
+    api_client = next(c for c in realm.get("clients", []) if c["clientId"] == "kp-operator-api")
 
     assert api_client["enabled"] is True
     assert api_client["protocol"] == "openid-connect"
@@ -201,9 +197,7 @@ def test_no_groups_or_identity_providers() -> None:
     """
     realm = _load_realm()
     assert realm.get("groups", []) == [], "Realm should not have groups configured"
-    assert realm.get("identityProviders", []) == [], (
-        "Realm should not have identity providers configured"
-    )
+    assert realm.get("identityProviders", []) == [], "Realm should not have identity providers configured"
 
 
 def test_ssl_required_none_for_loopback_idp() -> None:
@@ -234,15 +228,14 @@ def test_verify_email_disabled() -> None:
 
 # --- Provisioning script structure tests ---
 
+
 def test_provision_script_imports() -> None:
     """The provisioning script must be importable without Keycloak."""
     script_path = Path(__file__).parents[1] / "infrastructure" / "idp" / "provision_idp.py"
     assert script_path.exists()
 
     # Verify it can be imported (dry-run mode doesn't need Keycloak)
-    spec = __import__("importlib.util").util.spec_from_file_location(
-        "provision_idp", script_path
-    )
+    spec = __import__("importlib.util").util.spec_from_file_location("provision_idp", script_path)
     __import__("importlib.util").util.module_from_spec(spec)
     # Don't actually execute, just verify syntax
     compile(script_path.read_text(), str(script_path), "exec")
@@ -281,6 +274,7 @@ def test_provision_script_dry_run_flag() -> None:
 
 # --- Integration with operator API auth module ---
 
+
 def test_operator_api_accepts_keycloak_claim_shape() -> None:
     """Verify the operator API's _claims_to_principal accepts Keycloak claims.
 
@@ -293,9 +287,7 @@ def test_operator_api_accepts_keycloak_claim_shape() -> None:
     # Simulate a Keycloak-issued token with realm_access.roles
     claims = {
         "sub": "12345678-1234-4123-8123-123456789012",  # valid UUID
-        "realm_access": {
-            "roles": ["campaign_operator", "security_approver"]
-        },
+        "realm_access": {"roles": ["campaign_operator", "security_approver"]},
         "iss": "http://localhost:8443/realms/kingphisher",
         "aud": "kp-operator-api",
         "exp": 9999999999,
@@ -316,9 +308,7 @@ def test_operator_api_rejects_unknown_realm_roles() -> None:
 
     claims = {
         "sub": "12345678-1234-4123-8123-123456789012",
-        "realm_access": {
-            "roles": ["campaign_operator", "unknown-role", "another-invalid"]
-        },
+        "realm_access": {"roles": ["campaign_operator", "unknown-role", "another-invalid"]},
     }
 
     principal = _claims_to_principal(claims)

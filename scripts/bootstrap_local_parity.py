@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from typing import Any
 """Close the local/production audit parity gap.
 
 Runs AFTER Alembic migrations (tables exist) and BEFORE bootstrap_local_audit.py
@@ -18,6 +17,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote
 
 from dotenv import load_dotenv
@@ -58,9 +58,7 @@ def _require_local_database(database_url: str) -> None:
     host = (url.host or "").lower()
     database = unquote(url.database or "")
     if host not in {"localhost", "127.0.0.1", "::1"} or database != "kingphisher":
-        raise RuntimeError(
-            "local parity bootstrap is restricted to the loopback kingphisher development database"
-        )
+        raise RuntimeError("local parity bootstrap is restricted to the loopback kingphisher development database")
 
 
 def _create_or_alter_role(connection: Any, role_name: str, password: str) -> None:
@@ -91,19 +89,13 @@ def _grant_workload(connection: Any, workload: str, role_name: str) -> None:
     connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role_name}"))
     if workload == "audit-anchor":
         for table, columns in AUDIT_ANCHOR_COLUMN_GRANTS.items():
-            connection.execute(
-                text(f"GRANT SELECT ({', '.join(columns)}) ON TABLE {table} TO {role_name}")
-            )
+            connection.execute(text(f"GRANT SELECT ({', '.join(columns)}) ON TABLE {table} TO {role_name}"))
         return
     for privileges, tables in TABLE_GRANTS[workload].items():
-        connection.execute(
-            text(f"GRANT {privileges} ON TABLE {', '.join(tables)} TO {role_name}")
-        )
+        connection.execute(text(f"GRANT {privileges} ON TABLE {', '.join(tables)} TO {role_name}"))
     for privilege, table_columns in WORKLOAD_COLUMN_GRANTS.get(workload, {}).items():
         for table, columns in table_columns.items():
-            connection.execute(
-                text(f"GRANT {privilege} ({', '.join(columns)}) ON TABLE {table} TO {role_name}")
-            )
+            connection.execute(text(f"GRANT {privilege} ({', '.join(columns)}) ON TABLE {table} TO {role_name}"))
 
 
 def _grant_outbox_as_audit_owner(connection: Any, workload: str, role_name: str) -> None:
@@ -113,17 +105,11 @@ def _grant_outbox_as_audit_owner(connection: Any, workload: str, role_name: str)
         if workload != "audit-anchor":
             outbox_insert_columns = ", ".join(OUTBOX_INSERT_COLUMNS)
             connection.execute(
-                text(
-                    f"GRANT INSERT ({outbox_insert_columns}) "
-                    f"ON TABLE public.transactional_outbox TO {role_name}"
-                )
+                text(f"GRANT INSERT ({outbox_insert_columns}) ON TABLE public.transactional_outbox TO {role_name}")
             )
             outbox_conflict_columns = ", ".join(OUTBOX_CONFLICT_SELECT_COLUMNS)
             connection.execute(
-                text(
-                    f"GRANT SELECT ({outbox_conflict_columns}) "
-                    f"ON TABLE public.transactional_outbox TO {role_name}"
-                )
+                text(f"GRANT SELECT ({outbox_conflict_columns}) ON TABLE public.transactional_outbox TO {role_name}")
             )
         else:
             anchor_functions = ", ".join(AUDIT_ANCHOR_FUNCTIONS)
@@ -213,16 +199,12 @@ def main() -> int:
             try:
                 outbox_insert_columns = ", ".join(OUTBOX_INSERT_COLUMNS)
                 connection.execute(
-                    text(
-                        f"GRANT INSERT ({outbox_insert_columns}) "
-                        f"ON TABLE public.transactional_outbox TO audit_writer"
-                    )
+                    text(f"GRANT INSERT ({outbox_insert_columns}) ON TABLE public.transactional_outbox TO audit_writer")
                 )
                 outbox_conflict_columns = ", ".join(OUTBOX_CONFLICT_SELECT_COLUMNS)
                 connection.execute(
                     text(
-                        f"GRANT SELECT ({outbox_conflict_columns}) "
-                        f"ON TABLE public.transactional_outbox TO audit_writer"
+                        f"GRANT SELECT ({outbox_conflict_columns}) ON TABLE public.transactional_outbox TO audit_writer"
                     )
                 )
             finally:
@@ -267,9 +249,7 @@ def _probe_runtime_privileges(database_url: str, password: str) -> None:
             engine.dispose()
 
     if failures:
-        raise RuntimeError(
-            "KP-008 runtime privilege probe FAILED: " + " | ".join(failures)
-        )
+        raise RuntimeError("KP-008 runtime privilege probe FAILED: " + " | ".join(failures))
     print("KP-008 runtime privilege probe passed")
 
 

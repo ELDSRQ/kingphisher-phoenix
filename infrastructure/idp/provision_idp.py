@@ -473,14 +473,17 @@ def provision(
         created_users = []
         if create_test_users:
             for user_def in TEST_USERS:
-                user_id = client.create_user(realm, {
-                    "username": user_def["username"],
-                    "email": user_def["email"],
-                    "firstName": user_def["firstName"],
-                    "lastName": user_def["lastName"],
-                    "enabled": True,
-                    "emailVerified": True,
-                })
+                user_id = client.create_user(
+                    realm,
+                    {
+                        "username": user_def["username"],
+                        "email": user_def["email"],
+                        "firstName": user_def["firstName"],
+                        "lastName": user_def["lastName"],
+                        "enabled": True,
+                        "emailVerified": True,
+                    },
+                )
                 client.set_user_password(realm, user_id, test_user_password, temporary=False)
                 client.assign_realm_roles(realm, user_id, list(user_def["roles"]))
                 created_users.append(str(user_def["username"]))
@@ -507,8 +510,11 @@ def main() -> int:
     parser.add_argument("--redirect-uri", default=DEFAULT_REDIRECT_URI)
     parser.add_argument("--create-test-users", action="store_true")
     parser.add_argument("--test-user-password", default="TestPass123!")
-    parser.add_argument("--rotate-secrets", action="store_true",
-                        help="Rotate the console client secret instead of reading the existing one")
+    parser.add_argument(
+        "--rotate-secrets",
+        action="store_true",
+        help="Rotate the console client secret instead of reading the existing one",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate structure without connecting to Keycloak")
     args = parser.parse_args()
 

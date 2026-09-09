@@ -40,7 +40,10 @@ def test_navigation_is_filtered_by_server_derived_capabilities() -> None:
         "programs: [CAPABILITY.VIEW_AGGREGATE]",
         "trends: [CAPABILITY.VIEW_AGGREGATE]",
         "sending: [CAPABILITY.VERIFY_DOMAIN, CAPABILITY.SIGN_ROE]",
-        ("recipients: [CAPABILITY.VIEW_NAMED_RESULTS, CAPABILITY.MANAGE_RECIPIENTS, CAPABILITY.MANAGE_EXCLUSIONS, CAPABILITY.MANAGE_SUPPRESSIONS]"),
+        (
+            "recipients: [CAPABILITY.VIEW_NAMED_RESULTS, CAPABILITY.MANAGE_RECIPIENTS,"
+            " CAPABILITY.MANAGE_EXCLUSIONS, CAPABILITY.MANAGE_SUPPRESSIONS]"
+        ),
         "sources: [CAPABILITY.MANAGE_SOURCES]",
         "privacy: [CAPABILITY.HANDLE_PRIVACY]",
         "queues: [CAPABILITY.MANAGE_QUEUE]",
