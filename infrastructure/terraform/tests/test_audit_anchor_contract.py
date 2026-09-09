@@ -41,7 +41,7 @@ def test_retention_defaults_preserve_production_and_bound_disposable_cleanup() -
     assert 'immutability_policy   = "locked_container_time_based_worm"' in readiness
 
 
-def test_anchor_identity_has_only_create_and_read_data_actions_at_container_scope() -> None:
+def test_anchor_identity_has_only_create_read_and_list_data_actions_at_container_scope() -> None:
     role = MAIN.split('resource "azurerm_role_definition" "audit_anchor_writer"', maxsplit=1)[1].split(
         'resource "azurerm_role_assignment" "audit_anchor_writer"', maxsplit=1
     )[0]
@@ -54,6 +54,9 @@ def test_anchor_identity_has_only_create_and_read_data_actions_at_container_scop
     # behind blobs/write; overwrite and delete are prevented by the container's
     # locked immutability (WORM) policy, not by withholding write.
     assert "containers/blobs/write" in role
+    # AUD-003 read-back enumerates recent anchors (List Blobs) before each
+    # publish; without list the anchor job 403s and never proves itself live.
+    assert "containers/blobs/list/action" in role
     assert "containers/blobs/delete" not in role
     assert "runAsSuperUser" not in role
     assert "azurerm_storage_container.audit_anchor.id" in assignment

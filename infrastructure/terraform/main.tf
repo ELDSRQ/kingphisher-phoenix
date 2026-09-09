@@ -858,6 +858,11 @@ resource "azurerm_role_definition" "audit_anchor_writer" {
       "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
       "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/add/action",
       "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
+      # AUD-003 read-back verification enumerates the newest published anchors
+      # before writing a new one. That is a List Blobs call, gated behind
+      # blobs/list/action; without it every anchor job 403s, can never prove
+      # itself live, and the worker's audit-anchor role stays not-ready.
+      "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/list/action",
     ]
     not_data_actions = []
   }
