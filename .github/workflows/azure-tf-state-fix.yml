@@ -108,6 +108,27 @@ jobs:
             "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.Compute/virtualMachines/vm-kp-staging-runner" 2>&1 || true
 
           echo ""
+          echo "=== Importing ACR back into state (created by previous apply) ==="
+          terraform import -input=false azurerm_container_registry.main[0] \
+            "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.ContainerRegistry/registries/acrkpstaging" 2>&1 || true
+
+          echo ""
+          echo "=== Importing ACR private endpoint back into state ==="
+          terraform import -input=false azurerm_private_endpoint.acr[0] \
+            "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.Network/privateEndpoints/pep-kp-staging-acr" 2>&1 || true
+
+          echo ""
+          echo "=== Importing ACR pull role assignments back into state ==="
+          for role in operator tracking worker migration ai-gateway; do
+            role_id=$(az role assignment list --scope "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.ContainerRegistry/registries/acrkpstaging" --role "AcrPull" --query "[?principalName=='id-${role}-kp-staging'].id" -o tsv 2>/dev/null | head -1)
+            if [ -n "$role_id" ]; then
+              echo "  Importing acr_pull[$role] ($role_id)..."
+              terraform import -input=false "azurerm_role_assignment.acr_pull[\"$role\"]" \
+                "/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.ContainerRegistry/registries/acrkpstaging/providers/Microsoft.Authorization/roleAssignments/$role_id" 2>&1 || true
+            fi
+          done
+
+          echo ""
           echo "=== State after import ==="
           terraform state list
 
