@@ -49,8 +49,8 @@ def _stub_llama(monkeypatch, *, content: str) -> list[dict]:
         async def __aexit__(self, *a) -> None:
             return None
 
-        async def post(self, url: str, json: dict) -> _StubResponse:  # noqa: A002
-            captured.append({"url": url, "json": json})
+        async def post(self, url: str, json: dict, headers: dict[str, str] | None = None) -> _StubResponse:  # noqa: A002
+            captured.append({"url": url, "json": json, "headers": headers or {}})
             return _StubResponse()
 
     monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _StubClient)
@@ -315,7 +315,13 @@ def test_propose_200_when_auth_required_and_correct_bearer(monkeypatch) -> None:
 
 
 def _clear_gateway_env(monkeypatch) -> None:
-    for name in ("KP_AI_GATEWAY_API_KEY", "KP_AI_GATEWAY_REQUIRE_AUTH"):
+    for name in (
+        "KP_AI_GATEWAY_API_KEY",
+        "KP_AI_GATEWAY_REQUIRE_AUTH",
+        "KP_AI_GATEWAY_UPSTREAM_AUTH_MODE",
+        "KP_AI_GATEWAY_UPSTREAM_MANAGED_IDENTITY_CLIENT_ID",
+        "KP_AI_GATEWAY_UPSTREAM_TOKEN_SCOPE",
+    ):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -484,3 +490,144 @@ def test_propose_502_on_malformed_backend_json_shape(monkeypatch) -> None:
     monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _BadShapeClient)
     resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
     assert resp.status_code == 502
+
+
+# --- AI-015 (Path D): outbound auth to a managed upstream -------------------
+#
+# The gateway's INBOUND caller auth (AI-016) is unchanged by this: these tests
+# pin the separate, outbound leg — local llama.cpp gets no Authorization header
+# at all, a managed Azure AI Foundry endpoint gets an Entra managed-identity
+# bearer and never an API key.
+
+
+#: Non-secret stand-in values for the hermetic managed-path tests.
+_ENTRA_TOKEN = "entra-token-abc"
+_GATEWAY_IDENTITY_CLIENT_ID = "11111111-1111-1111-1111-111111111111"
+
+
+class _StubAccessToken:
+    def __init__(self, token: str) -> None:
+        self.token = token
+
+
+class _StubCredential:
+    """Stands in for ``ManagedIdentityCredential``: records the scope and can be
+    told to fail so the token-failure path is covered hermetically."""
+
+    def __init__(self, token: str | None) -> None:
+        self._token = token
+        self.scopes: list[str] = []
+
+    def get_token(self, scope: str) -> _StubAccessToken:
+        self.scopes.append(scope)
+        if self._token is None:
+            raise RuntimeError("no managed identity available")
+        return _StubAccessToken(self._token)
+
+
+def _use_entra(monkeypatch, *, token: str | None = _ENTRA_TOKEN) -> tuple[_StubCredential, list[str]]:
+    """Switch the settings into the managed (Foundry) posture with a stub credential."""
+
+    client_ids: list[str] = []
+    credential = _StubCredential(token)
+
+    def _factory(client_id: str) -> _StubCredential:
+        client_ids.append(client_id)
+        return credential
+
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "entra")
+    monkeypatch.setattr(gateway_main.settings, "upstream_managed_identity_client_id", _GATEWAY_IDENTITY_CLIENT_ID)
+    # Reset the cached credential so each test gets its own stub.
+    monkeypatch.setattr(gateway_main, "_UPSTREAM_CREDENTIAL", None)
+    monkeypatch.setattr(gateway_main, "_managed_identity_credential", _factory)
+    return credential, client_ids
+
+
+def test_propose_sends_no_authorization_header_to_the_local_backend(monkeypatch) -> None:
+    # The local llama.cpp path must be byte-for-byte unchanged: no header at all.
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "none")
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["headers"] == {}
+    assert "authorization" not in {k.lower() for k in captured[0]["headers"]}
+
+
+def test_propose_sends_an_entra_bearer_to_a_managed_upstream(monkeypatch) -> None:
+    credential, client_ids = _use_entra(monkeypatch)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    # Managed identity, not an API key: the header is an Entra bearer.
+    assert captured[0]["headers"] == {"Authorization": "Bearer entra-token-abc"}
+    assert credential.scopes == ["https://cognitiveservices.azure.com/.default"]
+    assert client_ids == ["11111111-1111-1111-1111-111111111111"]
+
+
+def test_propose_502s_when_the_upstream_token_cannot_be_acquired(monkeypatch) -> None:
+    # A token failure is a backend failure to the caller, and the credential's
+    # own error text must never be reflected.
+    _use_entra(monkeypatch, token=None)
+    _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 502
+    serialized = json.dumps(resp.json())
+    assert "no managed identity available" not in serialized
+    assert "entra" not in serialized
+
+
+def test_readyz_does_not_probe_a_managed_upstream(monkeypatch) -> None:
+    # Foundry exposes no /health on the OpenAI-compatible base, and polling a
+    # pay-per-token endpoint from the readiness loop would bill and report a
+    # false negative. Readiness is process-local in the managed posture.
+    _use_entra(monkeypatch)
+
+    class _NoProbeClient:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a) -> None:
+            return None
+
+        async def get(self, url: str):
+            raise AssertionError("the managed upstream must not be probed by /readyz")
+
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _NoProbeClient)
+    resp = TestClient(gateway_main.app).get("/readyz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ready"}
+
+
+def test_upstream_auth_defaults_to_the_unauthenticated_local_stack(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    settings = GatewaySettings()
+    assert settings.upstream_auth_mode == "none"
+    assert settings.upstream_managed_identity_client_id is None
+    assert settings.upstream_token_scope == "https://cognitiveservices.azure.com/.default"
+
+
+def test_upstream_auth_fails_closed_when_entra_has_no_identity(monkeypatch) -> None:
+    # A managed deployment that selected the authenticated upstream but was not
+    # given the workload identity is a misconfiguration, not a licence to call
+    # the endpoint unauthenticated.
+    import pytest
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    with pytest.raises(ValueError, match="UPSTREAM_MANAGED_IDENTITY_CLIENT_ID"):
+        GatewaySettings(upstream_auth_mode="entra")
+
+
+def test_upstream_auth_accepts_entra_with_an_identity(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    settings = GatewaySettings(
+        upstream_auth_mode="entra", upstream_managed_identity_client_id="11111111-1111-1111-1111-111111111111"
+    )
+    assert settings.upstream_auth_mode == "entra"

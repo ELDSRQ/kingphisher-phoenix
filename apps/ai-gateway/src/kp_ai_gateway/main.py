@@ -13,6 +13,13 @@ assistant call:
   is deliberately not used here: setup guidance must be stable and must never
   echo supplied values.
 
+The upstream backend is selected by configuration, not code: locally it is a
+self-hosted ``llama.cpp`` server (unauthenticated), and in managed deployments
+an Azure AI Foundry Serverless endpoint reached with an Entra managed-identity
+bearer (AI-015 "Path D", decision ``D-0001``). Only the base URL and the
+outbound auth mode differ; the contract, safety framing, and pinned ``model_id``
+are identical in both.
+
 The gateway holds no authority: it cannot approve, target, schedule, or send.
 The platform re-runs its own ``SafetyValidator`` on every response and a human
 approves every draft, so this gateway is subordinate by construction.
@@ -20,6 +27,7 @@ approves every draft, so this gateway is subordinate by construction.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
@@ -43,6 +51,74 @@ settings = GatewaySettings()
 #: Emitted at most once so an unauthenticated (local-dev) deployment is visible
 #: in the logs without spamming a line per request.
 _UNAUTH_LOGGED = False
+
+
+class UpstreamAuthError(Exception):
+    """Raised when the gateway cannot mint a credential for its upstream.
+
+    Deliberately carries no detail: the message must never reach the caller, so
+    the token endpoint's own error text (which can echo the identity or
+    endpoint) stays internal. Callers map this to a clean 502.
+    """
+
+
+#: The Entra credential is created once and reused so azure-identity's in-memory
+#: token cache actually caches (a credential per request would re-mint a token on
+#: every ``/propose`` and hammer IMDS). ``None`` until the first entra-mode call,
+#: which is what keeps ``none``-mode deployments from ever importing it.
+_UPSTREAM_CREDENTIAL: Any | None = None
+
+
+def _managed_identity_credential(client_id: str) -> Any:
+    """Build the Entra credential for the gateway's user-assigned identity.
+
+    Imported lazily for two reasons: the local/self-hosted path must not require
+    ``azure-identity`` at import time, and a local misconfiguration can never
+    make the module unimportable. This mirrors the established pattern in
+    ``kp_workers.providers.audit_anchor`` (managed identity, no API key).
+    """
+
+    from azure.identity import ManagedIdentityCredential  # noqa: PLC0415 - lazy by design (see docstring)
+
+    return ManagedIdentityCredential(client_id=client_id)
+
+
+def _acquire_upstream_token() -> str:
+    """Return an Entra bearer for the upstream, or raise ``UpstreamAuthError``.
+
+    Synchronous on purpose (azure-identity's sync credential owns no event-loop
+    resources and caches the token in memory); the caller runs it in a worker
+    thread so an IMDS round-trip cannot block the gateway's event loop.
+    """
+
+    global _UPSTREAM_CREDENTIAL
+    client_id = settings.upstream_managed_identity_client_id or ""
+    if _UPSTREAM_CREDENTIAL is None:
+        _UPSTREAM_CREDENTIAL = _managed_identity_credential(client_id)
+    try:
+        access_token = _UPSTREAM_CREDENTIAL.get_token(settings.upstream_token_scope)
+    except Exception as exc:  # noqa: BLE001 - any failure is "cannot authenticate"; detail stays internal
+        raise UpstreamAuthError("upstream token acquisition failed") from exc
+    token = getattr(access_token, "token", "") or ""
+    if not token:
+        raise UpstreamAuthError("upstream token acquisition returned an empty token")
+    return str(token)
+
+
+async def _upstream_headers() -> dict[str, str]:
+    """Build the outbound headers for the upstream model backend.
+
+    ``none`` (the default, local llama.cpp) returns an empty mapping, so no
+    ``Authorization`` header is sent and the local path is byte-for-byte
+    unchanged. ``entra`` (AI-015 Path D) returns
+    ``Authorization: Bearer <Entra token>`` minted from the gateway's
+    user-assigned managed identity — never an API key.
+    """
+
+    if settings.upstream_auth_mode != "entra":
+        return {}
+    token = await asyncio.to_thread(_acquire_upstream_token)
+    return {"Authorization": f"Bearer {token}"}
 
 
 def require_caller(authorization: str | None = Header(default=None)) -> None:
@@ -213,12 +289,15 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
     }
     endpoint = settings.llama_base_url.rstrip("/") + "/chat/completions"
     try:
+        # Outbound auth for the upstream (AI-015 Path D). In the default local
+        # posture this is an empty mapping, so no header is added.
+        headers = await _upstream_headers()
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            response = await client.post(endpoint, json=payload)
+            response = await client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
             wrapper = response.json()
         content = wrapper["choices"][0]["message"].get("content") or ""
-    except (httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
+    except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         # A backend outage, non-2xx, non-JSON body, or unexpected response
         # shape must surface as a clean 502 — never a raw traceback that could
         # leak the backend URL or internals to the caller.
@@ -275,8 +354,16 @@ async def readyz() -> JSONResponse:
     unlike the operator-api and tracking-api siblings there is nothing local to
     check. Its one dependency is the pinned llama.cpp server, so readiness is a
     bounded, fast probe of that server's ``/health`` endpoint.
+
+    In ``entra`` mode (AI-015 Path D) the upstream is a managed multi-tenant
+    Foundry endpoint: it exposes no ``/health`` on this base URL, and polling a
+    pay-per-token endpoint from the platform's readiness loop would both bill
+    and report a false negative. Readiness there is therefore process-local —
+    the upstream is proven by the request path, not by a probe.
     """
 
+    if settings.upstream_auth_mode == "entra":
+        return JSONResponse(status_code=200, content={"status": "ready"})
     try:
         async with httpx.AsyncClient(timeout=_READYZ_TIMEOUT_SECONDS) as client:
             response = await client.get(_backend_health_url())

@@ -10,6 +10,10 @@ dependencies = [
     "pydantic-settings>=2.4",
     "httpx>=0.27",
     "kp-contracts",
+    # Managed (AI-015 Path D) only: Entra managed identity for the Foundry
+    # upstream. Imported lazily, so the local llama.cpp stack does not need it
+    # at runtime.
+    "azure-identity>=1.17",
 ]
 
 [project.scripts]

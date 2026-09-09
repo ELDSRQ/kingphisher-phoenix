@@ -92,3 +92,58 @@ the worker or the operator-api.
   Path A) is deprioritized for production but **retained as a documented
   fallback** if Foundry cost, quality, or json-schema support proves
   unacceptable.
+
+## D-0002 — AI-015 (Path D) implementation: Foundry model is a Terraform variable, outbound auth is Entra managed identity
+
+- **Date:** 2026-09-09
+- **Status:** Accepted (implemented). Refines `D-0001`; does not change local
+  development.
+- **Deciders:** operator
+- **Relates to:** `D-0001`, `AI-015` (`docs/WAVE-BUILD-PLAN.md`);
+  `docs/design/AI-GATEWAY-WORKLOAD-PLAN.md`.
+
+### Context
+
+`D-0001` chose Azure AI Foundry Serverless (pay-per-token) as the production
+backend but left two implementation choices open: how the gateway authenticates
+outbound, and how the deployed model name is supplied.
+
+### Decision
+
+1. **Outbound auth is Entra managed identity only.** The gateway's
+   user-assigned managed identity is granted `Cognitive Services User` on the
+   Foundry resource and mints a bearer for
+   `https://cognitiveservices.azure.com/.default`. **No API key** is supported
+   or stored, so there is no model credential to rotate, commit, or leak. Local
+   `llama.cpp` sends no `Authorization` header at all —
+   `KP_AI_GATEWAY_UPSTREAM_AUTH_MODE` defaults to `none` and that path is
+   unchanged.
+2. **The model is a Terraform variable, not a literal.** `ai_foundry_model`
+   defaults to `gpt-oss-120b`. Terraform wires the same value to
+   `KP_AI_GATEWAY_MODEL_ID` (what the gateway returns) and to the generation
+   worker's `KP_WORKER_AI_MODEL_ID` pin, so the pin and the gateway can never
+   drift.
+3. **No endpoint means no gateway.** `ai_foundry_endpoint` defaults to empty;
+   with no endpoint the gateway container app is not created (and an opted-in
+   `deploy_ai_gateway` without one fails the plan), so a deployment can never
+   produce a gateway with no reachable backend. The gateway scales
+   `min_replicas = 0`, which is what makes the managed path true zero-idle-cost.
+4. The outbound auth mode is a **separate axis** from the AI-016 inbound
+   caller secret (`api_key` / `require_auth`). The two are never conflated.
+
+### Consequences
+
+- Managed deployments bill per token with zero idle cost; the ai-llama sidecar,
+  its image, and the weights are no longer part of the managed path (the image
+  variable is retained but unused, so the documented fallback and existing
+  tfvars keep working).
+- **Open verification item:** the selected Foundry model must be confirmed to
+  honor the `/propose` JSON-schema structured output
+  (`apps/ai-gateway/src/kp_ai_gateway/main.py`, the `response_format`
+  `json_schema` block) before `deploy_ai_gateway` is enabled in production. This
+  is unverified — no live Foundry call was made as part of this change. A model
+  that ignores the schema returns a clean 502 and must not be papered over by
+  loosening the contract.
+- Also unverified: the exact Foundry endpoint path shape for the chosen
+  deployment, that `gpt-oss-120b` is deployed in the target Foundry resource,
+  and live IMDS token acquisition from a Container App.

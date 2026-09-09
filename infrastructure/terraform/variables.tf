@@ -72,11 +72,14 @@ variable "ci_runner_vm_size" {
 }
 variable "deploy_ai_gateway" {
   description = <<-EOT
-    Deploy the internal Qwen generation gateway (kp-ai-gateway + baked-model
-    ai-llama sidecar) as a workload. Requires deploy_workloads and real,
-    digest-pinned ai_gateway_image and ai_llama_image. Off by default so a
-    workloads deploy that does not use the internal gateway is not forced to
-    build the large ai-llama image.
+    Deploy the internal AI generation gateway (kp-ai-gateway) as a workload.
+    Per decision D-0001 the managed gateway is a single lightweight container
+    that calls an Azure AI Foundry Serverless (pay-per-token) endpoint over an
+    OpenAI-compatible API with Entra managed-identity auth — there is no
+    ai-llama sidecar, no model weights, and no GPU. Requires deploy_workloads,
+    a real digest-pinned ai_gateway_image, and ai_foundry_endpoint. Off by
+    default; when it is on but ai_foundry_endpoint is empty the plan fails
+    closed rather than deploying a gateway with no reachable backend.
   EOT
   type        = bool
   default     = false
@@ -88,15 +91,71 @@ variable "ai_gateway_image" {
 }
 variable "ai_llama_image" {
   description = <<-EOT
-    Immutable digest-pinned ACR reference for the ai-llama sidecar image (a
-    pinned llama.cpp server with the sha256-verified Qwen2.5-7B-Instruct-Q4_K_M
-    GGUF baked in). Built out-of-band by the operator on a host holding the
-    digest-pinned weights (the CI release loop cannot build it: the ~4.7 GB
-    weights are not in the checkout and are never auto-downloaded), then pushed
-    to ACR and pinned here by digest.
+    UNUSED by the supported managed path (D-0001 / AI-015 "Path D"): the
+    gateway now calls Foundry Serverless, so no llama.cpp sidecar is deployed
+    and this image is never pulled. Retained only so the documented local
+    self-host fallback and existing tfvars/state do not break on removal.
+    Historically: the immutable digest-pinned ACR reference for the ai-llama
+    sidecar image (a pinned llama.cpp server with the sha256-verified
+    Qwen2.5-7B-Instruct-Q4_K_M GGUF baked in).
   EOT
   type        = string
   default     = "bootstrap.invalid/ai-llama:pending"
+}
+variable "ai_foundry_endpoint" {
+  description = <<-EOT
+    OpenAI-compatible base URL of the Azure AI Foundry Serverless
+    (pay-per-token) model endpoint the managed ai-gateway calls, e.g.
+    https://<resource>.services.ai.azure.com/models. The gateway appends
+    /chat/completions itself. NOT a secret: it carries no credential —
+    outbound auth is Entra managed identity (see ai_foundry_resource_id).
+
+    Empty (the default) means "no managed AI backend": the ai-gateway container
+    app is then not deployed at all, so a workloads deploy can never produce a
+    gateway with no reachable model. Local development is unaffected — it keeps
+    the self-hosted llama.cpp server.
+  EOT
+  type        = string
+  default     = ""
+}
+variable "ai_foundry_model" {
+  description = <<-EOT
+    Name of the deployed Azure AI Foundry Serverless model the managed gateway
+    calls, e.g. gpt-oss-120b. Exposed as a variable (not hardcoded) so the model
+    can be changed by configuration. Terraform wires this SAME value to both
+    KP_AI_GATEWAY_MODEL_ID (what the gateway returns as model_id) and the
+    generation worker's KP_WORKER_AI_MODEL_ID pin, so the two can never drift.
+
+    OPEN VERIFICATION ITEM: the selected model must be confirmed to honor the
+    /propose JSON-schema structured output before this is enabled in production
+    (apps/ai-gateway/src/kp_ai_gateway/main.py:152-156).
+  EOT
+  type        = string
+  default     = "gpt-oss-120b"
+  validation {
+    condition     = length(trimspace(var.ai_foundry_model)) > 0 && length(var.ai_foundry_model) <= 128
+    error_message = "ai_foundry_model must be 1-128 characters (the worker pins the same value)."
+  }
+}
+variable "ai_foundry_resource_id" {
+  description = <<-EOT
+    ARM resource id of the Azure AI Services (Foundry) resource hosting the
+    serverless deployment, e.g. /subscriptions/<sub>/resourceGroups/<rg>/
+    providers/Microsoft.CognitiveServices/accounts/<account>. Used ONLY as the
+    scope for the "Cognitive Services User" role granted to the gateway's
+    user-assigned identity, so an already-existing Foundry resource can be
+    referenced instead of provisioned here. Empty disables that role
+    assignment; the gateway is still deployed but will fail to authenticate
+    until the role is granted out-of-band.
+  EOT
+  type        = string
+  default     = ""
+  validation {
+    condition = trimspace(var.ai_foundry_resource_id) == "" || can(
+      regex("^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\\.CognitiveServices/accounts/[^/]+$", trimspace(var.ai_foundry_resource_id))
+    )
+    error_message = "ai_foundry_resource_id must be the ARM resource id of a Microsoft.CognitiveServices account (or empty)."
+  }
 }
 
 variable "isolate_delivery_worker" {

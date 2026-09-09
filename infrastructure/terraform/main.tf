@@ -89,10 +89,23 @@ locals {
     },
   )
 
-  # Bake-off-selected model identity the generation worker pins; kept identical
-  # to the ai-gateway's KP_AI_GATEWAY_MODEL_ID. Isolated on its own line so it
-  # does not join the tracking/training alignment group the contract test pins.
-  ai_model_id = "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
+  # AI-015 "Path D" (decision D-0001): the managed gateway calls an Azure AI
+  # Foundry Serverless endpoint instead of a self-hosted llama.cpp sidecar. The
+  # backend therefore exists only when an endpoint is configured; without one
+  # nothing is deployed (a gateway with no reachable model is worse than none).
+  ai_foundry_backend = trimspace(var.ai_foundry_endpoint) != ""
+  # Defense in depth: the guard below fails the plan when deploy_ai_gateway is
+  # set without an endpoint, and every consumer is additionally count-gated on
+  # this local so no resource can index a gateway that was never created.
+  ai_gateway_deployed = var.deploy_workloads && var.deploy_ai_gateway && local.ai_foundry_backend
+
+  # The model identity the generation worker pins, kept IDENTICAL to the
+  # ai-gateway's KP_AI_GATEWAY_MODEL_ID: both sides read this one local, so the
+  # pin and what the gateway returns cannot drift. Local/self-hosted keeps the
+  # bake-off-selected llama.cpp identity; managed/Foundry uses the configured
+  # serverless model. Isolated on its own line so it does not join the
+  # tracking/training alignment group the contract test pins.
+  ai_model_id = local.ai_foundry_backend ? trimspace(var.ai_foundry_model) : "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
 
   tracking_base_url             = "https://${lower(trimspace(var.tracking_fqdn))}"
   training_base_url             = "${local.tracking_base_url}/v1/training/awareness"
@@ -171,11 +184,20 @@ resource "terraform_data" "workload_config_guard" {
       error_message = "deploy_workloads=true requires immutable, published operator, tracking, worker, and migration images; bootstrap.invalid placeholders cannot be deployed."
     }
     precondition {
-      condition = !(var.deploy_workloads && var.deploy_ai_gateway) || alltrue([
-        for image in [var.ai_gateway_image, var.ai_llama_image] :
-        trimspace(image) != "" && !startswith(image, "bootstrap.invalid/")
-      ])
-      error_message = "deploy_ai_gateway=true requires immutable, published ai_gateway_image and ai_llama_image; bootstrap.invalid placeholders cannot be deployed."
+      # AI-015 "Path D": only the lightweight gateway image is required. The
+      # ai-llama sidecar image is no longer pulled (Foundry serves the model),
+      # so demanding it here would force a build that cannot succeed.
+      condition = !(var.deploy_workloads && var.deploy_ai_gateway) || (
+        trimspace(var.ai_gateway_image) != "" && !startswith(var.ai_gateway_image, "bootstrap.invalid/")
+      )
+      error_message = "deploy_ai_gateway=true requires an immutable, published ai_gateway_image; bootstrap.invalid placeholders cannot be deployed."
+    }
+    precondition {
+      # Fail closed: an opted-in gateway with no Foundry endpoint would be an
+      # always-broken app (there is no llama sidecar to fall back to), so the
+      # plan is wrong rather than the deployment silently useless.
+      condition     = !(var.deploy_workloads && var.deploy_ai_gateway) || local.ai_foundry_backend
+      error_message = "deploy_ai_gateway=true requires ai_foundry_endpoint (the Azure AI Foundry Serverless OpenAI-compatible base URL); the self-hosted ai-llama sidecar is no longer deployed. Leave deploy_ai_gateway=false for local/self-hosted AI."
     }
     precondition {
       condition     = !var.deploy_ci_runner || trimspace(var.ci_runner_registration_token) != ""
@@ -1227,7 +1249,10 @@ locals {
 }
 
 resource "azurerm_container_app" "ai_gateway" {
-  count                        = var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0
+  # AI-015 "Path D": only deployed when a Foundry endpoint is configured. With
+  # no endpoint there is no backend to reach (the ai-llama sidecar is gone), so
+  # the honest posture is "not deployed" rather than an app that 502s forever.
+  count                        = local.ai_gateway_deployed ? 1 : 0
   name                         = "ca-${local.suffix}-ai-gateway"
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
@@ -1251,8 +1276,8 @@ resource "azurerm_container_app" "ai_gateway" {
   }
   # Internal only: reached in-cluster by the worker (/propose) and operator-api
   # (/setup-assist). No external ingress. The gateway's only stored secret is
-  # the AI-016 fail-closed auth key above; the model is baked into the ai-llama
-  # sidecar image.
+  # the AI-016 fail-closed auth key above; there is no model secret at all
+  # because outbound auth to Foundry is the workload identity, not an API key.
   ingress {
     external_enabled = false
     target_port      = 8090
@@ -1263,43 +1288,15 @@ resource "azurerm_container_app" "ai_gateway" {
     }
   }
   template {
-    min_replicas = 1
+    # Scale to zero. This is the whole point of Path D: with Foundry billing per
+    # token and no model weights or inference container to keep warm, an idle
+    # gateway costs nothing (local/dev still runs the gateway on the operator's
+    # own hardware). Single revision, so no orphan revision can hold a replica
+    # pinned at min_replicas (see the operator app's comment below).
+    min_replicas = 0
     max_replicas = 1
-    # Pinned llama.cpp Qwen server; the digest-verified GGUF is baked into the
-    # image. Serves an OpenAI-compatible API on loopback :18081 that only the
-    # gateway sidecar calls (no ingress target). CPU inference for Qwen2.5-7B
-    # Q4_K_M is memory-heavy; ACA Consumption caps a replica at 4 vCPU / 8 GiB,
-    # so llama takes 3.5/7Gi and the gateway 0.5/1Gi (4.0 vCPU / 8 GiB total).
-    # The long liveness grace tolerates the multi-second model load on start.
-    container {
-      name   = "ai-llama"
-      image  = var.ai_llama_image
-      cpu    = 3.5
-      memory = "7Gi"
-      # The pinned llama.cpp :server base ships the binary at /app/llama-server;
-      # override the container command so a stale image ENTRYPOINT cannot break
-      # startup. Args match the deterministic decoding contract (temp 0).
-      command = [
-        "/app/llama-server",
-        "--model", "/models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
-        "--host", "0.0.0.0", "--port", "18081",
-        "--temp", "0", "--ctx-size", "8192", "--parallel", "1",
-      ]
-      liveness_probe {
-        transport               = "HTTP"
-        path                    = "/health"
-        port                    = 18081
-        initial_delay           = 30
-        interval_seconds        = 30
-        failure_count_threshold = 30
-      }
-      readiness_probe {
-        transport        = "HTTP"
-        path             = "/health"
-        port             = 18081
-        interval_seconds = 10
-      }
-    }
+    # ONE container: the lightweight gateway. The ai-llama sidecar is gone —
+    # inference happens in Foundry, so 0.5 vCPU / 1 GiB is all this needs.
     container {
       name   = "ai-gateway"
       image  = var.ai_gateway_image
@@ -1317,9 +1314,24 @@ resource "azurerm_container_app" "ai_gateway" {
         name  = "KP_AI_GATEWAY_MODEL_ID"
         value = local.ai_model_id
       }
+      # The OpenAI-compatible upstream base. Named for (and still defaulting to)
+      # the local llama.cpp server, but in managed mode it is the Foundry
+      # Serverless endpoint; the gateway appends /chat/completions itself.
       env {
         name  = "KP_AI_GATEWAY_LLAMA_BASE_URL"
-        value = "http://localhost:18081/v1"
+        value = trimspace(var.ai_foundry_endpoint)
+      }
+      # AI-015 Path D outbound auth: Entra managed identity, never an API key.
+      # The gateway mints a bearer for the Foundry audience using the
+      # user-assigned identity attached above; no model credential is stored,
+      # rotated, or leakable. Local deployments leave this at "none".
+      env {
+        name  = "KP_AI_GATEWAY_UPSTREAM_AUTH_MODE"
+        value = "entra"
+      }
+      env {
+        name  = "KP_AI_GATEWAY_UPSTREAM_MANAGED_IDENTITY_CLIENT_ID"
+        value = azurerm_user_assigned_identity.workload["ai-gateway"].client_id
       }
       # AI-016 fail-closed: the managed gateway rejects any unauthenticated
       # /propose. REQUIRE_AUTH is hard-on here and the key comes from Key Vault.
@@ -1351,6 +1363,19 @@ resource "azurerm_container_app" "ai_gateway" {
   }
   tags       = local.tags
   depends_on = [azurerm_role_assignment.acr_pull]
+}
+
+# AI-015 Path D: let the gateway's user-assigned identity call the Foundry
+# Serverless deployment. "Cognitive Services User" is the least-privilege
+# built-in that grants inference (it cannot create, delete, or manage
+# deployments). Scope is an EXISTING resource supplied by variable, so no
+# Foundry resource is provisioned here — and no API key exists anywhere in the
+# configuration, so there is no model credential to rotate or leak.
+resource "azurerm_role_assignment" "ai_gateway_foundry_user" {
+  count                = local.ai_gateway_deployed && trimspace(var.ai_foundry_resource_id) != "" ? 1 : 0
+  scope                = trimspace(var.ai_foundry_resource_id)
+  role_definition_name = "Cognitive Services User"
+  principal_id         = azurerm_user_assigned_identity.workload["ai-gateway"].principal_id
 }
 
 resource "azurerm_container_app" "operator" {

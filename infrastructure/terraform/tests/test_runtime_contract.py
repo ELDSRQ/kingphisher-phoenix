@@ -556,25 +556,26 @@ def test_ciphertext_recovery_is_bounded_and_foundation_fails_closed() -> None:
     assert "foundation plans cannot add recovery keys" in guard
 
 
-def test_ai_gateway_workload_is_internal_two_container_and_opt_in() -> None:
+def test_ai_gateway_workload_is_internal_single_container_and_opt_in() -> None:
     gateway = MAIN.split('resource "azurerm_container_app" "ai_gateway"', maxsplit=1)[1].split(
         'resource "azurerm_container_app" "operator"', maxsplit=1
     )[0]
-    # Opt-in and gated on workloads; never deployed by a plain foundation plan.
-    assert "var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0" in gateway
+    # Opt-in, gated on workloads AND on a configured Foundry backend; never
+    # deployed by a plain foundation plan, and never as a gateway with no model
+    # to call (the ai-llama sidecar is gone — see AI-015 "Path D").
+    assert "count                        = local.ai_gateway_deployed ? 1 : 0" in gateway
     # Internal ingress only on the gateway port; reached in-cluster by the
     # worker (/propose) and operator-api (/setup-assist).
     assert "external_enabled = false" in gateway
     assert "target_port      = 8090" in gateway
-    # Two containers: the baked-model llama.cpp sidecar and the gateway. The
-    # gateway reaches the sidecar over loopback only.
-    assert 'name   = "ai-llama"' in gateway
-    assert "image  = var.ai_llama_image" in gateway
+    # ONE container: the lightweight gateway. No ai-llama sidecar, no weights,
+    # no inference compute — Foundry serves the model (decision D-0001).
+    assert gateway.count("container {") == 1
     assert 'name   = "ai-gateway"' in gateway
     assert "image  = var.ai_gateway_image" in gateway
-    assert "http://localhost:18081/v1" in gateway
+    assert 'name   = "ai-llama"' not in gateway
+    assert "ai_llama_image" not in gateway
     assert "/livez" in gateway and "/readyz" in gateway
-    assert "18081" in gateway
     # AI-016 fail-closed auth: the managed gateway's ONLY stored secret is the
     # shared bearer key, resolved by the gateway's own workload identity.
     assert gateway.count("key_vault_secret_id") == 1
@@ -586,8 +587,10 @@ def test_ai_gateway_workload_is_internal_two_container_and_opt_in() -> None:
     assert 'value = "true"' in gateway
     assert 'name        = "KP_AI_GATEWAY_API_KEY"' in gateway
     assert 'secret_name = "ai-gateway-auth-key"' in gateway
-    # Opt-in requires real, published images (no bootstrap.invalid placeholders).
-    assert "deploy_ai_gateway=true requires immutable, published ai_gateway_image and ai_llama_image" in MAIN
+    # Opt-in requires a real, published gateway image (no bootstrap.invalid
+    # placeholders). The ai-llama image is deliberately NOT required: Path D
+    # never pulls it.
+    assert "deploy_ai_gateway=true requires an immutable, published ai_gateway_image" in MAIN
     # Uses its own workload identity, mirroring operator/tracking.
     assert 'identity_ids = [azurerm_user_assigned_identity.workload["ai-gateway"].id]' in gateway
     # Internal URL is exposed so the operator can point ai_endpoint at it.

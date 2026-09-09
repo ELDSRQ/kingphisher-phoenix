@@ -5,8 +5,12 @@ output "operator_default_hostname" { value = var.deploy_workloads ? azurerm_cont
 output "tracking_default_hostname" { value = var.deploy_workloads ? azurerm_container_app.tracking[0].ingress[0].fqdn : null }
 output "migration_job_name" { value = var.deploy_workloads ? azurerm_container_app_job.migration[0].name : null }
 output "ai_gateway_internal_url" {
-  description = "Internal base URL of the Qwen generation gateway. Set the reviewed ai_endpoint to this value so the worker /propose and operator /setup-assist reach it in-cluster."
-  value       = var.deploy_workloads && var.deploy_ai_gateway ? "https://${azurerm_container_app.ai_gateway[0].ingress[0].fqdn}" : null
+  description = "Internal base URL of the AI generation gateway. Set the reviewed ai_endpoint to this value so the worker /propose and operator /setup-assist reach it in-cluster. Null when the gateway is not deployed (no Foundry endpoint)."
+  value       = local.ai_gateway_deployed ? "https://${azurerm_container_app.ai_gateway[0].ingress[0].fqdn}" : null
+}
+output "ai_model_id" {
+  description = "Model identity the managed gateway returns and the generation worker pins (identical by construction). The local/self-hosted Qwen identity when no Foundry endpoint is configured."
+  value       = local.ai_model_id
 }
 output "log_analytics_workspace_customer_id" {
   description = "Non-secret workspace identity used by the deployment workflow for bounded worker-readiness queries."

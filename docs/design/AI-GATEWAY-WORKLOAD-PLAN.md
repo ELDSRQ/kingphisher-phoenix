@@ -4,9 +4,11 @@ Goal: deploy the Qwen generation gateway (`kp-ai-gateway`, now a release image)
 as an Azure Container App in the `workloads` phase, so worker `/propose` and
 operator-api `/setup-assist` reach real Qwen in Azure instead of the mock.
 
-Status: PLAN. Terraform not yet written pending the backend decision below.
-Building the terraform is agent-runnable; the live `workloads` deploy stays
-operator-gated.
+Status: **Path D (Foundry Serverless) IMPLEMENTED** for managed/production as
+`AI-015` (decision `D-0001`, implementation details in `D-0002`). Local/dev is
+unchanged and still self-hosted Qwen. No live `workloads` deploy has been run:
+the live enablement stays operator-gated, and one verification item is still
+open (below).
 
 ## Fixed pieces (decision-independent, mirror existing pattern)
 
@@ -56,15 +58,16 @@ the terraform very differently:
   new infra, but no in-Azure inference — defers the actual serving.
 
 - **Path D — Azure AI Foundry Serverless backend (production, preferred per
-  D-0001).** The gateway points at a Foundry Serverless (pay-per-token)
-  OpenAI-compatible model endpoint instead of a `llama.cpp` server. No model
-  weights, no inference container, no GPU/CPU compute — **zero idle cost**; the
-  bill scales with actual drafting volume. Requires teaching the gateway an
-  authenticated backend mode (Foundry API key or Entra bearer + the deployed
-  model name; llama.cpp needs neither) and confirming the chosen Foundry model
-  honors the `/propose` json-schema structured output
-  (`apps/ai-gateway/src/kp_ai_gateway/main.py:152-156`). The gateway governance
-  layer is unchanged. Tracked as `AI-015`.
+  D-0001). IMPLEMENTED.** The gateway points at a Foundry Serverless
+  (pay-per-token) OpenAI-compatible model endpoint instead of a `llama.cpp`
+  server. No model weights, no inference container, no GPU/CPU compute —
+  **zero idle cost**; the bill scales with actual drafting volume. Required
+  teaching the gateway an authenticated backend mode (Entra bearer + the
+  deployed model name; llama.cpp needs neither) and confirming the chosen
+  Foundry model honors the `/propose` json-schema structured output
+  (`apps/ai-gateway/src/kp_ai_gateway/main.py:152-156`) — see "Path D
+  implementation" below. The gateway governance layer is unchanged. Tracked as
+  `AI-015`.
 
 ## Recommendation
 
@@ -91,3 +94,65 @@ occasional drafting workload.
 2. Backend per the chosen path (A: image + sidecar; B: storage + mount; C: var).
 3. Wire worker/operator-api `KP_WORKER_AI_BASE_URL` to the gateway FQDN.
 4. Runtime-contract test updates; no live deploy (operator-gated).
+
+## Path D implementation (AI-015)
+
+Local and managed differ **only** in the gateway's upstream base URL and its
+outbound auth. The contract, safety framing, placeholder guarantee, and pinned
+`model_id` are identical in both.
+
+### Gateway (`apps/ai-gateway`)
+
+| Setting (env `KP_AI_GATEWAY_*`) | Local default | Managed (Foundry) |
+| --- | --- | --- |
+| `LLAMA_BASE_URL` (upstream base; name kept for existing wiring) | `http://127.0.0.1:18081/v1` | `ai_foundry_endpoint` (Foundry Serverless) |
+| `UPSTREAM_AUTH_MODE` | `none` | `entra` |
+| `UPSTREAM_MANAGED_IDENTITY_CLIENT_ID` | unset | the `ai-gateway` UAMI client id |
+| `UPSTREAM_TOKEN_SCOPE` | `https://cognitiveservices.azure.com/.default` | same (default) |
+| `MODEL_ID` | `llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M` | `ai_foundry_model` (default `gpt-oss-120b`) |
+
+- `none` sends **no** `Authorization` header, so the local path is
+  byte-for-byte unchanged.
+- `entra` mints a bearer with `ManagedIdentityCredential(client_id=...)` and
+  sends `Authorization: Bearer <token>`; the credential is created once and
+  cached, and a token failure surfaces as a clean 502 with no internal detail.
+  No API key is supported.
+- `/readyz` probes the local backend's `/health` only. In `entra` mode it is
+  process-local: Foundry exposes no `/health` on this base URL, and polling a
+  pay-per-token endpoint from the readiness loop would bill and report a false
+  negative.
+- `UPSTREAM_AUTH_MODE=entra` without a client id fails closed at startup
+  (mirrors the AI-016 `require_auth` rule).
+
+### Terraform (`infrastructure/terraform`)
+
+- New variables: `ai_foundry_endpoint` (default `""`), `ai_foundry_model`
+  (default `gpt-oss-120b`), `ai_foundry_resource_id` (default `""`, scope for
+  the role grant).
+- `azurerm_container_app.ai_gateway` is now **one** container (no `ai-llama`
+  sidecar) with `min_replicas = 0` / `max_replicas = 1`, internal-only ingress
+  unchanged. `ai_llama_image` is retained but unused so the documented fallback
+  and existing tfvars keep working.
+- `local.ai_gateway_deployed = deploy_workloads && deploy_ai_gateway &&
+  trimspace(ai_foundry_endpoint) != ""`. With no endpoint nothing is deployed
+  and the internal-URL output is `null`; an opted-in `deploy_ai_gateway`
+  without an endpoint **fails the plan** rather than creating a gateway that can
+  only 502.
+- `local.ai_model_id` is `ai_foundry_model` when a Foundry endpoint is set and
+  the local Qwen identity otherwise. It feeds **both**
+  `KP_AI_GATEWAY_MODEL_ID` and the worker's `KP_WORKER_AI_MODEL_ID`, so the
+  worker's pin matches what the gateway returns.
+- `azurerm_role_assignment.ai_gateway_foundry_user` grants the gateway's UAMI
+  `Cognitive Services User` on `ai_foundry_resource_id` (existing resource, not
+  provisioned here).
+- Contract tests: `infrastructure/terraform/tests/test_ai_foundry_backend_contract.py`
+  plus the reshaped gateway assertions in `test_runtime_contract.py`.
+
+### Open verification item (blocks production enablement)
+
+The selected Foundry model must be confirmed to honor the `/propose`
+JSON-schema structured output (`response_format: json_schema`, strict). No live
+Foundry call has been made: this is unverified. Until it is proven, keep
+`deploy_ai_gateway=false` in production. Also unverified live: the exact
+Foundry endpoint path shape, that `gpt-oss-120b` is deployed in the target
+Foundry resource, and IMDS token acquisition from a Container App.

@@ -8,10 +8,28 @@ than trusting the model's self-report (see docs/ai010-worker-parity.md #3).
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: How the gateway authenticates OUTBOUND to its model backend. This is
+#: deliberately a separate axis from ``api_key``/``require_auth`` below, which
+#: authenticate INBOUND callers of ``/propose`` (AI-016). The two must never be
+#: conflated: the inbound secret proves the caller is the platform's worker,
+#: while this proves the gateway is allowed to call the model backend.
+#:
+#: * ``none`` — the local/self-hosted ``llama.cpp`` server, which needs no
+#:   credential. This is the default, so the existing local stack is unchanged.
+#: * ``entra`` — an Azure AI Foundry Serverless (pay-per-token) endpoint
+#:   (AI-015 "Path D"), reached with an Entra bearer minted from the gateway's
+#:   User-Assigned Managed Identity. No API key is supported or stored: managed
+#:   identity is the only managed posture, so no key can be leaked or rotated.
+UpstreamAuthMode = Literal["none", "entra"]
+
+#: Default Entra audience for Azure AI Foundry / Azure AI Services endpoints.
+#: Foundry Serverless accepts a Cognitive Services audience token.
+_DEFAULT_UPSTREAM_SCOPE = "https://cognitiveservices.azure.com/.default"
 
 
 class GatewaySettings(BaseSettings):
@@ -19,9 +37,15 @@ class GatewaySettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="KP_AI_GATEWAY_", extra="ignore", env_ignore_empty=True)
 
-    #: OpenAI-compatible base URL of the pinned llama.cpp server, e.g.
-    #: http://127.0.0.1:18081/v1. Never a public secretless promise: the gateway
-    #: is what the worker treats as its provider.
+    #: OpenAI-compatible base URL of the UPSTREAM model backend. The name is
+    #: historical and kept for the existing env wiring: locally it is the pinned
+    #: llama.cpp server (http://127.0.0.1:18081/v1) and in managed deployments
+    #: it is the Azure AI Foundry Serverless endpoint
+    #: (https://<resource>.services.ai.azure.com/models). Only this value and
+    #: the outbound auth mode change between the two — the gateway's contract
+    #: and governance layer are identical (see docs/DECISIONS.md D-0001).
+    #: Never a public secretless promise: the gateway is what the worker treats
+    #: as its provider.
     llama_base_url: str = "http://127.0.0.1:18081/v1"
 
     #: The exact model identity the AI-010 bake-off selected. This value is
@@ -53,6 +77,48 @@ class GatewaySettings(BaseSettings):
     #: Azure-only dependency. Managed sets ``KP_AI_GATEWAY_REQUIRE_AUTH=true``
     #: alongside ``KP_AI_GATEWAY_API_KEY``.
     require_auth: bool = False
+
+    #: Outbound auth mode for the upstream model backend (see
+    #: ``UpstreamAuthMode``). ``none`` (the default) keeps the local llama.cpp
+    #: path byte-for-byte unchanged: no ``Authorization`` header is sent.
+    #: ``entra`` is the managed/Foundry posture and requires
+    #: ``upstream_managed_identity_client_id``.
+    upstream_auth_mode: UpstreamAuthMode = "none"
+
+    #: Client id of the User-Assigned Managed Identity the gateway uses to mint
+    #: an Entra bearer for the upstream (AI-015 Path D). Required when
+    #: ``upstream_auth_mode == "entra"``; a managed deployment that forgets it
+    #: fails closed at construction rather than silently calling unauthenticated
+    #: (which Foundry would reject, and which would otherwise look like a
+    #: backend outage).
+    upstream_managed_identity_client_id: str | None = None
+
+    #: Entra token scope (audience) requested for the upstream. The default is
+    #: the Azure AI Foundry / Cognitive Services audience; the value is
+    #: overridable so a different OpenAI-compatible Entra-protected backend can
+    #: be targeted without a code change.
+    upstream_token_scope: str = _DEFAULT_UPSTREAM_SCOPE
+
+    @model_validator(mode="after")
+    def _upstream_auth_config_is_coherent(self) -> Self:
+        """Fail closed when an authenticated upstream is selected but not configured.
+
+        Mirrors the inbound ``require_auth`` rule: a half-configured managed
+        posture must be a boot-time error, not a request-time surprise.
+        ``none`` (the default) is untouched, so the local stack still boots with
+        no identity configured.
+        """
+
+        if self.upstream_auth_mode == "entra" and not self.upstream_managed_identity_client_id:
+            raise ValueError(
+                "KP_AI_GATEWAY_UPSTREAM_AUTH_MODE=entra requires "
+                "KP_AI_GATEWAY_UPSTREAM_MANAGED_IDENTITY_CLIENT_ID; set it to the client id of the "
+                "gateway's user-assigned managed identity, or select upstream_auth_mode=none for local "
+                "development."
+            )
+        if not self.upstream_token_scope.strip():
+            raise ValueError("KP_AI_GATEWAY_UPSTREAM_TOKEN_SCOPE must not be empty")
+        return self
 
     @model_validator(mode="after")
     def _auth_config_is_coherent(self) -> Self:

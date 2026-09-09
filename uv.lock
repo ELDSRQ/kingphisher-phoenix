@@ -739,6 +739,7 @@ name = "kp-ai-gateway"
 version = "0.1.0"
 source = { editable = "apps/ai-gateway" }
 dependencies = [
+    { name = "azure-identity" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "kp-contracts" },
@@ -749,6 +750,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "azure-identity", specifier = ">=1.17" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "kp-contracts", editable = "packages/contracts" },
