@@ -1,5 +1,58 @@
 # Next-session handoff
 
+## Addendum 2026-09-09 — IDLE POSTURE APPLIED AND LANDED; head `263e2dd`
+
+**The refined idle posture (ACR preserved) is applied to Azure.** Run `34299083815`
+(mode=apply, confirm=IDLE, staging env approved): `Apply complete! Resources: 0 added,
+0 changed, 0 destroyed`, guard OK, Postgres already stopped. Staging now: Redis
+DESTROYED, Container Apps destroyed, redis-url secret + redis PE + ACS email-sender
+role destroyed, **ACR + ACR PE + 5 AcrPull assignments PRESERVED and in terraform
+state**, CI runner VM in state then deallocated, Postgres stopped. Savings ~$81/mo
+with no image rebuild needed on resume (resume = `azure-idle.sh start --workloads`
+or the workloads dispatch — Redis/secret/PE recreate cleanly because they are absent
+from state, not orphaned).
+
+**How it got there (read this before touching tfstate again).** Three earlier apply
+attempts were interrupted mid-flight, leaving Azure and state out of sync in BOTH
+directions (ACR-side resources existing but untracked; redis destroyed-but-tracked,
+then untracked by over-broad `state rm` recovery). Recovery was landed via a new
+`.github/workflows/azure-tf-state-fix.yml` (state surgery on the VNet runner, same
+`azure-staging` concurrency group):
+
+1. **Out-of-band redis removal.** Redis was orphaned in Azure by an interrupted
+   destroy (its PE, secret and state entries already gone). Importing it was
+   impossible — with `deploy_data_plane=true` the locals reference the destroyed
+   `redis-url` secret and every terraform command dies with `Invalid index`
+   (main.tf:1224, the mirror image of the 2026-09-07 fix). It was destroyed with
+   `az resource delete` — exactly what the approved idle plan intended — leaving
+   no orphan: the next workloads deploy recreates Redis + secret + PE cleanly.
+2. **Imports with `deploy_data_plane=false`** (the posture the 2026-09-07 fix made
+   evaluable): ci_runner VM, ACR, ACR PE, and the 5 AcrPull assignments matched by
+   managed identity → role-assignment ID. The imports need the 13 no-default
+   variables; the workflow generates the var-file from the reviewed CONFIG line in
+   `dispatch-staging-workloads.sh` with the same transforms as `azure-idle.sh`.
+3. **Verification then apply**, both through the normal reviewed path.
+
+**Traps relearned (add to the known-traps list):**
+- A terraform step that ends in `|| true` or `|| echo` is a step that can silently
+  no-op; the first state-fix "passed" while every import failed. The workflow now
+  fails the step on any failed import.
+- `terraform import`/`plan`/`apply -refresh-only` ALL evaluate the full config —
+  the 13 no-default variables must be supplied or the command prompts/dies. Never
+  run bare terraform against this root module.
+- Interrupted applies leave state wrong in BOTH directions. Inventory Azure reality
+  (`az resource list`) BEFORE writing state-recovery logic; two of my rm's removed
+  entries for resources that actually existed.
+- The idle workflow's job RUNS ON the runner VM: never deallocate it while a run is
+  queued/running (one apply sat 43 minutes "in progress" on a deallocated VM).
+
+**Open items now:**
+1. **OPS-003** — nightly shutdown sets `min_replicas=0`, nothing restores it. Moot
+   while workloads are destroyed; revisit on resume.
+2. Real browser / WCAG evidence; AMD64 cross-build/registry evidence — unchanged.
+3. `infrastructure/idp/` and `tests/test_entra_alternative_idp.py` are ANOTHER
+   project's files (separate AI, separate app) — do not commit or modify them.
+
 ## Addendum 2026-09-08 (PM) — idle.tfvars refined: ACR preserved; head `603fd8e`
 
 **idle.tfvars refined: ACR preserved, Redis only destroyed.** Added new `deploy_acr` variable
@@ -56,11 +109,10 @@ evidence preserved.
 | e2e (`.105` `test -m e2e`) | **8 passed** |
 
 **Open items:**
-1. **idle.tfvars plan/apply** — blocked on Azure access (CI runner VM deallocated). Plan
-   verified (replace: 0, 22 destroy), never applied. **Refined to keep ACR** — now destroys
-   ~$81/mo (Redis + Container Apps only). Need to run a new plan via GitHub Actions to verify.
-2. **OPS-003** — nightly shutdown sets `min_replicas=0`, nothing restores it. Deferred;
-   replica still running by luck since 2026-09-06.
+1. ~~**idle.tfvars plan/apply**~~ — **DONE 2026-09-09**: applied via run `34299083815`
+   (see top addendum). ACR-preserving posture, ~$81/mo savings.
+2. **OPS-003** — nightly shutdown sets `min_replicas=0`, nothing restores it. Moot
+   while workloads are destroyed; revisit on resume.
 3. **Temp diagnostics to remove:** `audit_intent_write_failed_detail` logging in
    `packages/database/src/kp_database/audit_store.py`.
 

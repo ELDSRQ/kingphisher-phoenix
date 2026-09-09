@@ -14,10 +14,19 @@ platform is going quiet for a while.
 | trigger | scheduled, unattended | manual, interactive |
 | Postgres | stopped | stopped |
 | Container Apps | `--min-replicas 0` | **destroyed** |
-| ACR | untouched | **preserved** (avoids image rebuild) |
+| ACR | untouched | **preserved** (avoids re-provisioning the registry) |
 | Redis | untouched | **destroyed** |
-| images | keep | **kept** (ACR preserved) |
 | terraform | never | plan + typed `yes` + apply |
+
+> **Applied state, 2026-09-09 (run `34299083815`).** The ACR-preserving idle posture is
+> live on staging. One caveat from the landing: the registry itself was destroyed by the
+> interrupted first attempts and recreated by the recovery, so it is **empty** — images
+> must be re-pushed before the next workloads deploy even though the registry resource
+> was preserved from then on. Redis was removed out-of-band after an interrupted destroy
+> orphaned it (its state entries were already gone, making a terraform destroy
+> impossible); the next workloads deploy recreates Redis, its `redis-url` secret and its
+> private endpoint cleanly. Full story: `docs/NEXT_SESSION_HANDOFF.md`, top addendum, and
+> `.github/workflows/azure-tf-state-fix.yml`.
 
 ---
 
@@ -49,18 +58,20 @@ the Container Apps.
 > unreachable outside an Actions run and which move the typed confirmation into the
 > workflow's own `confirm=IDLE` dispatch input rather than removing it.
 
-### ACR is preserved — images remain available
+### ACR is preserved — the registry, not necessarily its contents
 
-`stop` preserves the Premium container registry. All images (operator-api, tracking-api,
-worker, migration, ai-gateway, ai-llama) remain available, so the resume path is simply
-to re-apply the workloads — no rebuild or re-push needed:
+`stop` preserves the Premium container registry, its private endpoint and the AcrPull
+assignments, so resume never re-provisioning the registry. Whether the IMAGES are still
+in it depends on history: an idle that only ran `stop` keeps them; the 2026-09-09
+landing rebuilt the registry empty after interrupted attempts, so images must be
+re-pushed before the next workloads deploy:
 
 ```bash
-scripts/operator/deployment-preflight/dispatch-staging-workloads.sh
+scripts/operator/deployment-preflight/dispatch-staging-workloads.sh   # re-pushes + deploys
 ```
 
 `azure-idle.sh start` brings back Redis and re-enables `deploy_workloads`, which
-recreates the Container Apps pointing at the preserved images.
+recreates the Container Apps pointing at the images then present in the registry.
 
 ---
 
