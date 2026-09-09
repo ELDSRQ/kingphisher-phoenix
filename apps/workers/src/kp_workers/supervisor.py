@@ -56,6 +56,38 @@ def _exception_code(exc: Exception) -> str:
     return "unexpected"
 
 
+def _is_first_party(exc: BaseException) -> bool:
+    """Whether the failure comes from this codebase rather than a dependency."""
+
+    return type(exc).__module__.startswith("kp_")
+
+
+def _error_type(exc: BaseException) -> str:
+    """Class name for first-party failures only.
+
+    Exception classes raised here are authored by this project, so naming them
+    is safe and is what makes a managed failure diagnosable. A third-party
+    class name is never recorded: it can hint at internals and the instance
+    usually carries caller-supplied text.
+    """
+
+    return type(exc).__name__ if _is_first_party(exc) else ""
+
+
+def _error_detail(exc: BaseException, limit: int = 200) -> str:
+    """Bounded text for first-party failures only.
+
+    These messages are authored by this project — for example the Azure Blob
+    status inside an anchor failure — so recording them is safe. Third-party
+    exception text can echo attacker-controlled input (a recipient address, a
+    parsed payload), so for those nothing at all is retained.
+    """
+
+    if not _is_first_party(exc):
+        return ""
+    return str(exc)[:limit]
+
+
 class WorkerSupervisor:
     """Poll each enabled role once per round without cross-role starvation.
 
@@ -306,6 +338,8 @@ class WorkerSupervisor:
                         "worker_role_processing_failed",
                         role=spec.name,
                         error_code=_exception_code(exc),
+                        error_type=_error_type(exc),
+                        error_detail=_error_detail(exc),
                         retryable=not non_retryable,
                     )
                     return True

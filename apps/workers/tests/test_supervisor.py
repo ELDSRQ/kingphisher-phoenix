@@ -9,7 +9,7 @@ from kp_telemetry.errors import SafetyRejectionError
 from kp_telemetry.logging import get_logger
 from kp_workers.__main__ import WORKERS, _context, _enabled_roles, _install_shutdown_handlers, _role_settings
 from kp_workers.config import WorkerSettings
-from kp_workers.supervisor import RoleSpec, WorkerSupervisor
+from kp_workers.supervisor import RoleSpec, WorkerSupervisor, _error_detail, _error_type
 
 
 class FakeQueue:
@@ -180,6 +180,23 @@ def test_supervisor_failure_logs_are_bounded_to_event_role_and_exception_type(
     assert secret not in output
     assert "provider.invalid" not in output
     assert "Traceback" not in output
+
+
+def test_failure_diagnostics_are_recorded_for_first_party_exceptions_only() -> None:
+    """First-party text is authored here; third-party text may echo caller input."""
+
+    from kp_workers.providers.audit_anchor import AuditAnchorError
+
+    anchor = AuditAnchorError("Azure Blob list failed with status 403")
+    assert _error_type(anchor) == "AuditAnchorError"
+    assert _error_detail(anchor) == "Azure Blob list failed with status 403"
+
+    class ThirdPartyFailure(RuntimeError):
+        pass
+
+    third_party = ThirdPartyFailure("password=hunter2 https://provider.invalid/x")
+    assert _error_type(third_party) == ""
+    assert _error_detail(third_party) == ""
 
 
 def test_failed_safety_rejection_keeps_role_unready_and_logs_only_fixed_codes() -> None:
