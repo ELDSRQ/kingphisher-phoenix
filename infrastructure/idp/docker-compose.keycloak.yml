@@ -1,0 +1,122 @@
+# Self-hosted Keycloak IdP for Kingphisher — the Entra-INDEPENDENT login option.
+#
+# WHY A SEPARATE COMPOSE FILE: the dev stack's mock-idp already owns
+# 127.0.0.1:8443 and emulates this exact Keycloak issuer for e2e tests.
+# Real Keycloak deliberately takes 127.0.0.1:8444 so BOTH can run at once —
+# the mock keeps serving the dev/e2e stack while this serves real
+# operator login. Selecting it is an operator API config change:
+#
+#   OPERATOR_API_OIDC_MODE=oidc
+#   OPERATOR_API_OIDC_ISSUER=http://localhost:8444/realms/kingphisher
+#   OPERATOR_API_OIDC_AUDIENCE=kp-operator-api
+#   OPERATOR_API_OIDC_CLIENT_ID=kp-operator-console
+#   OPERATOR_API_OIDC_CLIENT_SECRET=<printed by provision_idp.py>
+#   OPERATOR_API_OIDC_REDIRECT_URI=http://localhost:8000/api/v1/console/oidc/callback
+#   OPERATOR_API_OIDC_SCOPES=openid profile
+#
+# The operator API's OIDC egress policy permits plain HTTP only for
+# loopback issuers (auth.py _LOCAL_OIDC_HTTP_HOSTS), which is exactly this
+# deployment: the port publishes on 127.0.0.1 only.
+#
+# Usage:
+#   docker compose -p kingphisher-idp -f infrastructure/idp/docker-compose.keycloak.yml up -d
+#   python infrastructure/idp/provision_idp.py --keycloak-url http://localhost:8444 ...
+#
+# NO --import-realm ON PURPOSE: the committed realm JSON contains a
+# placeholder client secret, and importing it would make that literal
+# string the live secret. provision_idp.py is the canonical setup path —
+# it creates the realm/clients/roles with generated secrets. The realm
+# JSON stays as the reviewed, contract-tested definition.
+#
+# NO --optimized ON PURPOSE: with --optimized, KC_DB* and KC_HEALTH_ENABLED
+# are build-time options and run-time values are IGNORED (Keycloak exits
+# with code 2 refusing the mismatched build). Plain `start` re-augments at
+# boot so the Postgres storage and health endpoints actually take effect;
+# that is also why the root filesystem is not read-only.
+
+services:
+  keycloak-db:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
+    volumes:
+      - keycloak-db-data:/var/lib/postgresql/data
+    networks: [keycloak]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858
+    # start-dev, not start: KC 26's production profile marks AUTH_SESSION_ID
+    # cookies Secure unconditionally, which plain HTTP cannot carry — the
+    # authorization-code flow then dies with "Cookie not found". This IdP is
+    # loopback-only (port published on 127.0.0.1, its own docker network),
+    # so the dev profile's relaxed posture is the honest choice. A PUBLIC
+    # deployment must not reuse this file: it must sit behind HTTPS via the
+    # public-issuer path in the README.
+    command: ["start-dev"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:-keycloak}
+      # No KC_HOSTNAME on purpose. Hostname v2 treats an explicitly set
+      # hostname as "behind a reverse proxy" and then marks auth cookies
+      # SameSite=None (which forces Secure) — plain HTTP cannot carry those,
+      # and the browser login flow dies with "Cookie not found". Without it,
+      # Keycloak derives the issuer from the request Host header, which is
+      # localhost:8444 for every documented client. Clients MUST address this
+      # IdP as http://localhost:8444 (not 127.0.0.1) so the advertised issuer
+      # matches OPERATOR_API_OIDC_ISSUER exactly.
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8444"
+      KC_HEALTH_ENABLED: "true"
+      # KC 25+ renamed KEYCLOAK_ADMIN -> KC_BOOTSTRAP_ADMIN_USERNAME. The old
+      # names are removed in KC 26 and silently do nothing. Bootstrap runs on
+      # first boot against the empty DB; the account persists in Postgres.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    networks: [keycloak]
+    ports:
+      - "127.0.0.1:8444:8444"
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:noexec,nosuid,nodev
+    pids_limit: 256
+    healthcheck:
+      # Management port 9000 inside the container serves /health when
+      # KC_HEALTH_ENABLED=true (200 iff status UP, 503 when DOWN). The
+      # ubi-micro image ships no curl/wget, so the probe is bash's /dev/tcp
+      # with a printf HTTP request. Exec-form CMD avoids nested shell
+      # quoting; \\r reaches printf as a literal it expands to CR LF.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+volumes:
+  keycloak-db-data:
+    name: kingphisher-idp-keycloak-db-data
+
+networks:
+  keycloak:
+    name: kingphisher-idp-keycloak

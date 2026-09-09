@@ -1,0 +1,116 @@
+{
+  "realm": "kingphisher",
+  "displayName": "Kingphisher Phishing Awareness Platform",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "rememberMe": true,
+  "verifyEmail": false,
+  "loginTheme": "keycloak",
+  "accountTheme": "keycloak",
+  "emailTheme": "keycloak",
+  "clients": [
+    {
+      "clientId": "kp-operator-console",
+      "name": "Kingphisher Operator Console",
+      "description": "Confidential browser client for operator login. Issues access tokens for the kp-operator-api audience.",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "REPLACE_WITH_GENERATED_SECRET",
+      "redirectUris": [
+        "http://localhost:8000/api/v1/console/oidc/callback"
+      ],
+      "webOriginUris": [
+        "http://localhost:8000"
+      ],
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontChannelLogout": true,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "Audience Mapper - kp-operator-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "kp-operator-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "kp-operator-api",
+      "name": "Kingphisher Operator API",
+      "description": "API audience for access token validation. Confidential client used as audience reference.",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "REPLACE_WITH_GENERATED_SECRET",
+      "redirectUris": [],
+      "webOriginUris": [],
+      "protocol": "openid-connect",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontChannelLogout": false,
+      "fullScopeAllowed": false
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "source_curator",
+        "description": "Can curate threat intelligence sources and manage source configurations"
+      },
+      {
+        "name": "campaign_author",
+        "description": "Can author and edit phishing campaign content and templates"
+      },
+      {
+        "name": "security_approver",
+        "description": "Can approve campaigns from a security perspective"
+      },
+      {
+        "name": "privacy_approver",
+        "description": "Can approve campaigns from a privacy/compliance perspective"
+      },
+      {
+        "name": "campaign_operator",
+        "description": "Can schedule, send, and manage campaign execution (stop/kill-switch/verify-domain/sign-roe)"
+      },
+      {
+        "name": "auditor",
+        "description": "Can view audit logs, campaign reports, and compliance evidence"
+      },
+      {
+        "name": "administrator",
+        "description": "Full platform administration capabilities"
+      }
+    ]
+  },
+  "groups": [],
+  "defaultRoles": [],
+  "requiredActions": [],
+  "identityProviders": [],
+  "identityProviderMappers": [],
+  "authenticationFlows": [],
+  "defaultDefaultClientScopes": [
+    "web-origins",
+    "role_list",
+    "profile",
+    "roles",
+    "email"
+  ],
+  "optionalClientScopes": [
+    "address",
+    "phone",
+    "offline_access",
+    "microprofile-jwt"
+  ]
+}

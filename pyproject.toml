@@ -62,6 +62,9 @@ ignore = ["S101"]  # assert allowed in tests
 # is a literal written into the migration, never input, so S608 has no reachable
 # injection path here. Application query code is NOT exempt.
 "packages/database/alembic/versions/**" = ["S608"]
+# Dev-only IdP provisioning tool: the default is the documented password for the
+# throwaway LOCAL test users it creates (never a production credential).
+"infrastructure/idp/provision_idp.py" = ["S107"]
 
 [tool.mypy]
 python_version = "3.13"
