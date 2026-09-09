@@ -136,6 +136,36 @@ def test_same_content_collision_is_idempotent() -> None:
     assert methods == ["PUT", "GET"]
 
 
+def test_blob_already_exists_collision_is_idempotent() -> None:
+    """Azure answers a create-if-not-exists on a taken key with 409 as well as 412.
+
+    Both mean the immutable anchor was published before, so both must fall through
+    to the content comparison. Treating 409 as a failure dead-lettered every
+    re-publish and left the audit-anchor role permanently unproven in Azure.
+    """
+
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "PUT":
+            return httpx.Response(409)
+        return httpx.Response(200, content=_anchor().canonical_bytes())
+
+    assert _provider(handler).publish(_anchor()) == "exists"
+    assert methods == ["PUT", "GET"]
+
+
+def test_blob_already_exists_with_different_content_fails_closed() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PUT":
+            return httpx.Response(409)
+        return httpx.Response(200, content=b'{"event_hash":"different"}\n')
+
+    with pytest.raises(AuditAnchorMismatchError, match="different content"):
+        _provider(handler).publish(_anchor())
+
+
 def test_different_content_collision_fails_closed() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "PUT":

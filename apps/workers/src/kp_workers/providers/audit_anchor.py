@@ -23,6 +23,16 @@ _AZURE_STORAGE_SCOPE = "https://storage.azure.com/.default"
 _AZURE_STORAGE_API_VERSION = "2023-11-03"
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_ANCHOR_BYTES = 4096
+
+#: Statuses meaning "an anchor already exists at this immutable key". A create
+#: guarded by ``If-None-Match: *`` is answered with 201 when it created the blob.
+#: When the key is already taken Azure answers either 412 (Precondition Failed)
+#: or 409 (BlobAlreadyExists) depending on the service version and request path.
+#: Both mean the same thing here — the anchor was published before — so both must
+#: fall through to the collision check. Treating 409 as a hard failure made every
+#: re-publish of an existing anchor raise, which dead-lettered the job and left
+#: the audit-anchor role permanently "configured_unproven" in managed deployments.
+_EXISTING_ANCHOR_STATUSES = frozenset({409, 412})
 #: Storage-layout version. This is the on-disk/blob path prefix and is
 #: independent of the JSON ``schema_version`` inside each anchor document.
 _ANCHOR_LAYOUT_PREFIX = "v1"
@@ -215,7 +225,7 @@ class AzureBlobAuditAnchorProvider:
                 status = response.status_code
             if status == 201:
                 return "created"
-            if status != 412:
+            if status not in _EXISTING_ANCHOR_STATUSES:
                 raise AuditAnchorError(f"Azure Blob create failed with status {status}")
 
             with self._client.stream("GET", url, headers=self._headers()) as response:
