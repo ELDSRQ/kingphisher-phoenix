@@ -2467,6 +2467,25 @@ jobs:
       - name: Checkpoint non-destructive workload plan
         if: inputs.deployment_phase == 'workloads'
         run: python3 "$KP_CHECKPOINT_HELPER" --stage workload_plan_safe --status passed
+      - name: Import existing Foundry role assignment if it exists
+        if: inputs.deployment_phase == 'workloads'
+        working-directory: infrastructure/terraform
+        env:
+          TF_VAR_deploy_ai_gateway: ${{ vars.DEPLOY_AI_GATEWAY || 'false' }}
+          TF_VAR_ai_foundry_resource_id: ${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TF_VAR_ai_foundry_resource_id}" ]; then
+            ROLE_ID=$(az role assignment list \
+              --scope "${TF_VAR_ai_foundry_resource_id}" \
+              --role "Cognitive Services User" \
+              --assignee "$(terraform -chdir=infrastructure/terraform output -raw ai_gateway_identity_client_id 2>/dev/null || echo '')" \
+              --query "[0].id" -o tsv 2>/dev/null || echo "")
+            if [ -n "${ROLE_ID}" ]; then
+              echo "Importing existing role assignment: ${ROLE_ID}"
+              terraform import azurerm_role_assignment.ai_gateway_foundry_user[0] "${ROLE_ID}" || true
+            fi
+          fi
       - name: Apply workloads
         if: inputs.deployment_phase == 'workloads'
         working-directory: infrastructure/terraform

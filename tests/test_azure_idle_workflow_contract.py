@@ -57,7 +57,7 @@ RUNBOOK = REPO_ROOT / "docs" / "AZURE-IDLE.md"
 
 # azure-deploy.yml is SHA-256 pinned across the deployment orchestration; this is
 # the value the operator API refuses to dispatch without.
-EXPECTED_DEPLOY_WORKFLOW_SHA256 = "091f468bd35dd203cc990c2407ba2cbb323a3a02e4286408174301c8d0aa5ae8"
+EXPECTED_DEPLOY_WORKFLOW_SHA256 = "04734c36018d2faffc616513564f84d2a60559e3e4916cd8b19d42d54be20bd5"
 
 RUNNER_LABELS = ("self-hosted", "linux", "azure-vnet")
 
