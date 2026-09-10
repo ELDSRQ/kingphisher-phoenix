@@ -1,5 +1,123 @@
 # Next-session handoff
 
+## Addendum 2026-09-10 — AZURE RESUMED; FOUNDRY WIRED; 409 LOOP ROOT-CAUSED AND CLEARED; head `37a171b`
+
+**Read this before re-running any deploy.** The 24-hour deploy loop is explained
+and cleared below; do not repeat the failed fixes.
+
+### Verified state
+
+- **Azure workloads fully deployed once** (run `34411518158`, all 3 jobs green):
+  operator/tracking `/readyz` = `{"status":"ready"}`, migration applied, **all 7
+  worker roles ready incl. `audit-anchor` (reason=live)**, ACS receipt
+  subscription activated. The gateway app, its KV secret, and the Foundry
+  role assignment are **in terraform state** from later partial applies.
+- **ACS is DONE**: domain `mail.floridamanevolved.us` Verified (Domain/SPF/DKIM/
+  DKIM2 all *Verified*), sender `awareness@mail.floridamanevolved.us` exists
+  ("Security Awareness"). DMARC `NotStarted` (non-blocking for ACS sends).
+  Remaining for a campaign: recipients import → canary → launch.
+- **Foundry (AI-015 Path D) wired**: `ais-kp-staging-6117w` (AIServices S0,
+  custom subdomain enabled — required, default is null), `gpt-oss-120b`
+  deployed GlobalStandard pay-per-token. Inference verified 200 OK at
+  `https://ais-kp-staging-6117w.cognitiveservices.azure.com/openai/v1` (Entra
+  bearer, scope `https://cognitiveservices.azure.com/.default`). GitHub env
+  vars set: `AI_FOUNDRY_ENDPOINT`, `AI_FOUNDRY_RESOURCE_ID`,
+  `AI_FOUNDRY_MODEL=gpt-oss-120b`, `DEPLOY_AI_GATEWAY=true`.
+- **AI-015 landed** (`b9284c9`): gateway has no ai-llama sidecar, entra
+  upstream auth (fail-closed), `min_replicas=0`, single-source model pin
+  (`local.ai_model_id` feeds both gateway MODEL_ID and worker `ai_model_id`).
+
+### The 409 loop — root cause and the fix that actually worked
+
+Every `Apply workloads` 409 (`f2518cb3…`, `12977418fb…`) was **two per-secret
+Key Vault role assignments** (`workload_secret["ai-gateway:ai-gateway-auth-key"]`,
+`workload_secret["worker:ai-gateway-auth-key"]`, scope
+`…/secrets/ai-gateway-auth-key`) that the 2026-09-09 "drop the gateway" state
+surgery removed from **state** but left in **Azure**. They survive even a KV
+secret purge (RBAC is at the secret-name scope). Re-adding the gateway →
+terraform re-creates → 409 forever. **Fix (applied 2026-09-10 ~12:58 UTC):
+deleted both from Azure** (`az role assignment delete --ids …` at the secret
+scope, verified 0 remain). Next apply re-creates them and records them in
+state — loop broken permanently. Deploy `34479747420` was in flight with this
+fix when this addendum was written; **check its result first**.
+
+**LESSON (do not regress): state surgery must reconcile the Azure side too.**
+`state rm` alone orphans the cloud resource; a later re-add then 409s. Either
+`terraform import` or delete the Azure resource in the same operation.
+
+### Persistent blockers / known bugs (OPEN)
+
+1. **gpt-oss-120b structured-output quality — OPEN, empirical.** It accepts
+   `response_format json_schema` (HTTP 200, schema-shaped) but leaks
+   reasoning-channel text into fields (`"final"`, `"analysis…"` observed).
+   The model list does not advertise `jsonSchemaResponse` for it. **Validate
+   `/propose` end-to-end through the deployed gateway before generating
+   campaign content**; if quality is unacceptable, switch `AI_FOUNDRY_MODEL`
+   to one advertising `jsonSchemaResponse` (e.g. gpt-4.1 family) — it's a
+   variable, no code change.
+2. **Dead no-op workflow steps — CLEANUP NEEDED.** `fedbd75` (import step) and
+   `ea51330` (delete step, which replaced it) in `azure-deploy.yml` query
+   `terraform output -raw ai_gateway_identity_client_id`, **which does not
+   exist** → both silently no-op. Harmless but misleading; remove both steps
+   now that the 409 root cause is fixed. Any `azure-deploy.yml` edit requires
+   re-pinning `EXPECTED_DEPLOY_WORKFLOW_SHA256` in **both**
+   `tests/test_azure_idle_workflow_contract.py` and
+   `apps/operator-api/src/kp_operator_api/deployment_common.py` (3× forgotten
+   this session → 3 wasted cycles), and the carve-out in
+   `tests/test_azure_onboarding.py` (no-cleanup contract) becomes removable
+   with the steps.
+3. **`2bf685f` `lifecycle ignore_changes` on `ai_gateway_foundry_user` is
+   ineffective for creates** (kept; harmless) — remove with the steps above.
+4. **DMARC NotStarted** on the sending domain — deliverability best-practice,
+   not an ACS blocker. DNS record needed if inbox-placement matters.
+5. **Recipients + canary + launch remain** (the actual campaign goal). Allowed
+   recipient domains currently `erikdierksgmail.onmicrosoft.com,gmail.com`
+   (config). Import via console CSV endpoints
+   `/api/v1/recipients/import/preview` + `/apply`; operator API auth is Entra
+   OIDC (client `97466174-d0ac-460c-94e8-7b6ff3c83da5`).
+
+### Hard-won operational gotchas
+
+- **ACR build window**: `az acr build` runs on Microsoft agents **outside the
+  VNet**; private posture (publicNetworkAccess=Disabled) blocks them. The
+  workflow now opens ACR **only for the build** and an `always()` step closes
+  it right after (runner reaches ACR via its private endpoint, verified 401
+  reachable). If a run fails *before* apply, ACR stays Enabled until the next
+  successful apply — check `az acr show -n acrkpstaging --query
+  publicNetworkAccess` and disable manually if a run aborted early.
+- **Transient external failures happen**: GitHub attestation API 500 (×2) and
+  Chainguard registry 500 (×1) each wasted a full 30–45 min cycle this
+  session. A failure in `Attest …` or `Build and start every release image`
+  with a 5xx = retry, don't debug.
+- **Key Vault data plane is private**: Mac gets `Forbidden` (RBAC) then
+  `Public network access is disabled`. To touch KV secrets: grant the runner
+  VM's system identity (`6bbed361-371e-48ab-bdad-e43d18fa770d`) or yourself
+  `Key Vault Secrets Officer` on the vault, act via `az vm run-command` +
+  `az login --identity --allow-no-subscriptions`, then **revoke the grant**
+  (done this session; both grants revoked).
+- **Local terraform state access**: backend SAS is embedded at `init` time and
+  **expires** (2h default used). Symptom: `state list` says state doesn't
+  exist. Fix: regenerate SAS and `terraform init -reconfigure` with
+  `-backend-config="sas_token=…"` (key auth is blocked on the tfstate
+  account). `terraform import`/`plan` from the Mac also needs ARM provider
+  creds (ARM_USE_CLI unverified) — prefer doing provider-touching work via the
+  workflow on the VNet runner.
+- **ACR `ai-llama` image is gone** (only ai-gateway, migration, operator-api,
+  tracking-api, worker remain) and no GGUF shards exist in Azure — the
+  self-hosted sidecar path is dead by design (D-0002). Don't try to rebuild it.
+
+### Resume here
+
+1. `gh run view 34479747420` — if green, verify
+   `az containerapp list -g rg-kp-staging` (expect 4 apps incl.
+   `ca-kp-staging-ai-gateway`), then `/readyz` on operator from the VNet VM,
+   then test `/propose` end-to-end (blocker #1).
+2. If it failed: get the failed step + error **before** re-triggering
+   (`gh run view <id> --log-failed`); transient 5xx → just retry; anything
+   else → diagnose once, fix once (see lessons above).
+3. Then recipients (CSV import, allowed domains) → canary send to a test
+   mailbox → launch review.
+
 ## Addendum 2026-09-09 — IDLE POSTURE APPLIED AND LANDED; head `263e2dd`
 
 **The refined idle posture (ACR preserved) is applied to Azure.** Run `34299083815`
