@@ -2108,6 +2108,20 @@ jobs:
           KP_MIGRATION_RESULT: not_applicable
           KP_HEALTH_RESULT: not_applicable
         run: python3 "$KP_CHECKPOINT_HELPER" --stage foundation_finalize_readback --status passed
+      - name: Open the registry to ACR Tasks for the image build
+        if: inputs.deployment_phase == 'workloads'
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="$(terraform -chdir=infrastructure/terraform output -raw container_registry_name)"
+          # `az acr build` executes on Microsoft-managed ACR Tasks agents outside
+          # the VNet, so the hardened private posture (publicNetworkAccess=Disabled)
+          # rejects their login and the build fails. Open the registry to public
+          # traffic only for the build window; the always() step right after it
+          # restores the private posture. Every later step reaches the registry
+          # through its private endpoint, and terraform's private-mode plan stays
+          # clean because the live value is back to Disabled before it is built.
+          az acr update --name "$registry" --set publicNetworkAccess=Enabled >/dev/null
       - name: Build immutable images in the registry
         if: inputs.deployment_phase == 'workloads'
         id: images
@@ -2157,6 +2171,16 @@ jobs:
           done
           echo "registry=$login_server" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Restore the registry private network posture
+        if: always() && inputs.deployment_phase == 'workloads'
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="$(terraform -chdir=infrastructure/terraform output -raw container_registry_name)"
+          # Close the public window opened for the ACR Tasks build again, whether
+          # the build succeeded or failed. Failing loudly here is preferred over
+          # silently leaving the registry open to the public internet.
+          az acr update --name "$registry" --set publicNetworkAccess=Disabled >/dev/null
       - name: Authenticate supply-chain tools to ACR
         if: inputs.deployment_phase == 'workloads'
         env:
