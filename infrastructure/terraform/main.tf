@@ -1376,6 +1376,15 @@ resource "azurerm_role_assignment" "ai_gateway_foundry_user" {
   scope                = trimspace(var.ai_foundry_resource_id)
   role_definition_name = "Cognitive Services User"
   principal_id         = azurerm_user_assigned_identity.workload["ai-gateway"].principal_id
+
+  lifecycle {
+    # The Cognitive Services User role assignment on the Foundry resource may
+    # already exist from a previous partial apply (e.g. when the gateway was
+    # created but a later step failed). Ignore changes to the principal and
+    # role definition so that Terraform adopts the existing assignment rather
+    # than trying to re-create it and failing with 409 Conflict.
+    ignore_changes = [principal_id, role_definition_name]
+  }
 }
 
 resource "azurerm_container_app" "operator" {
