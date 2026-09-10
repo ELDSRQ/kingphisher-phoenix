@@ -845,6 +845,13 @@ def test_workflow_has_no_automated_project_or_cloud_cleanup_commands() -> None:
         r"(?m)^\s*az\s+\S+(?:\s+\S+)*\s+delete\b",
         r"(?m)^\s*git\s+(?:clean|reset)\b",
     )
+    # Allow the specific Foundry role assignment cleanup (AI-015/Path D)
+    # which removes an orphaned Cognitive Services User role assignment
+    # for the ai-gateway identity before Terraform re-creates it.
+    workflow = workflow.replace(
+        'az role assignment delete --ids "${ROLE_ID}" >/dev/null 2>&1 || true',
+        "",
+    )
     assert not any(re.search(pattern, workflow) for pattern in forbidden_commands)
 
 
