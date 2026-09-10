@@ -141,6 +141,17 @@ def anchor_verified_head(ctx: WorkerContext, provider: _AnchorProvider) -> str:
     recent = list(provider.read_recent(_READ_BACK_ANCHORS))
     _assert_recent_anchors_consistent(ctx, recent)
 
+    # The newest published anchor already witnesses this exact head.
+    # Rebuilding it would chain the anchor to itself (previous_anchor_hash =
+    # digest of the anchor for this same head), producing the same immutable
+    # key with different content — a permanent, non-retryable collision.
+    # An unchanged head is a successful verified anchoring pass, so record
+    # the freshness heartbeat and return the idempotent "exists" outcome.
+    if recent and recent[0].sequence == head.sequence and hmac.compare_digest(recent[0].event_hash, head.event_hash):
+        logger.info("audit_anchor_published", outcome="exists")
+        _record_anchor_heartbeat(ctx)
+        return "exists"
+
     # Chain the new anchor to the newest existing one so the anchors themselves
     # form a tamper-evident sequence (``None`` for the very first anchor).
     previous_anchor_hash = _anchor_digest(recent[0]) if recent else None

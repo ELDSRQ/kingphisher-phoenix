@@ -191,6 +191,22 @@ def test_broken_anchor_chain_blocks_publication() -> None:
     assert provider.anchors == []
 
 
+def test_unchanged_head_is_an_idempotent_no_op_not_a_self_chain() -> None:
+    """The newest published anchor already witnesses this exact head.
+
+    Re-publishing would rebuild the same immutable key chained to itself and
+    collide as a content mismatch; the job must recognise it is already
+    witnessed.
+    """
+    head = _head()  # sequence=3, event_hash="ab" * 32
+    ctx = _ctx(positions={3: "ab" * 32})
+    provider = FakeProvider(recent=[head])
+
+    assert anchor_verified_head(ctx, provider) == "exists"
+    assert provider.anchors == []
+    assert len(ctx.queue.heartbeats) == 1
+
+
 @pytest.mark.parametrize("provider_result", ["created", "exists"])
 def test_heartbeat_is_written_on_every_successful_anchor(provider_result: str) -> None:
     # The heartbeat write lives in the shared anchor_verified_head path, so it
