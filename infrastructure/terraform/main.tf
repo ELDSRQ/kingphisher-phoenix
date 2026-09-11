@@ -1444,6 +1444,7 @@ resource "azurerm_container_app" "operator" {
         tracking-token-hmac     = azurerm_key_vault_secret.runtime["tracking-token-hmac"].versionless_id
         training-token-hmac     = azurerm_key_vault_secret.runtime["training-token-hmac"].versionless_id
         acs-receipt-signing-key = azurerm_key_vault_secret.runtime["acs-receipt-signing-key"].versionless_id
+        recipient-import-digest = azurerm_key_vault_secret.runtime["recipient-import-digest"].versionless_id
       },
       local.deployment_orchestration_enabled ? {
         deployment-github-token = local.deployment_github_token_versionless_uri
