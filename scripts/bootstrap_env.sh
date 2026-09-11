@@ -390,6 +390,10 @@ bootstrap_env() {
     _set_line OPERATOR_API_CONSOLE_JWT_SECRET "$JWT_SECRET"
   fi
   _generate_if_absent OPERATOR_API_RECIPIENT_HASH_SALT "$(openssl rand -hex 32)"  # mailbox_sha256 salt (WS-12)
+  # RCP-011: binds an import preview to its apply. Its own key, so the standalone
+  # stack matches the managed posture where the operator is never granted the
+  # audit signing root. Absent, the API falls back to the audit HMAC key.
+  _generate_if_absent OPERATOR_API_RECIPIENT_IMPORT_DIGEST_KEY "$(openssl rand -hex 32)"
   if [ -z "$(_env_value KP_WORKER_RECIPIENT_HASH_SALT)" ]; then
     _set_line KP_WORKER_RECIPIENT_HASH_SALT "$(_env_value OPERATOR_API_RECIPIENT_HASH_SALT)"
   fi
