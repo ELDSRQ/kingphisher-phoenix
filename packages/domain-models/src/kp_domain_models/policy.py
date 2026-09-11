@@ -26,8 +26,19 @@ class ApprovalPolicy(StrEnum):
 
     #: Scheduling requires completed security AND privacy approvals.
     ENFORCE = "enforce"
-    #: Legacy/offline behaviour: a single admin may schedule unilaterally.
-    #: Only permitted when the operator API runs in dev-auth mode.
+    #: Supported small-team posture: one operator may submit, schedule and
+    #: publish a campaign without a second approver. Intended for organisations
+    #: where two independent approvers do not exist (a two-person IT team), and
+    #: permitted in hardened and managed deployments — unlike SINGLE_ADMIN it is
+    #: NOT a dev relaxation and it does NOT unlock the empty-allowlist allow-all.
+    #: Every action is still recorded in the audit trail, and the recipient
+    #: domain allowlist is still enforced, so the control that bounds who can be
+    #: mailed is untouched.
+    SINGLE_OPERATOR = "single-operator"
+    #: Legacy/offline behaviour: a single admin may schedule unilaterally AND an
+    #: empty recipient allowlist becomes allow-all (jobs.py). That second effect
+    #: is why this stays confined to a throwaway dev stack; choose
+    #: SINGLE_OPERATOR for a real single-operator deployment.
     SINGLE_ADMIN = "single-admin"
 
 

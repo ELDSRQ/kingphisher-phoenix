@@ -131,6 +131,29 @@ def test_single_admin_rejected_in_managed_and_production(runtime_mode: str) -> N
         )
 
 
+# --- single-operator posture (small-team, supported) --------------------------------
+
+
+@pytest.mark.parametrize("runtime_mode", ["development", "managed", "production"])
+def test_single_operator_is_permitted_in_every_runtime_mode(runtime_mode: str) -> None:
+    # Supported posture, not a dev relaxation: it needs no KP_DEV_STACK marker
+    # and is allowed in the hardened and managed runtimes single-admin is barred
+    # from, because it drops only the second approver.
+    settings = _settings(
+        worker_name="ingestion",
+        runtime_mode=runtime_mode,
+        approval_policy="single-operator",
+    )
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_OPERATOR
+    assert settings.dev_stack is False
+
+
+@pytest.mark.parametrize("profile", ["local-hardened", "azure"])
+def test_single_operator_is_permitted_under_hardened_profiles(profile: str) -> None:
+    settings = _settings(kp_profile=profile, worker_name="ingestion", approval_policy="single-operator")
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_OPERATOR
+
+
 # --- KP_PROFILE presets ------------------------------------------------------------
 
 
