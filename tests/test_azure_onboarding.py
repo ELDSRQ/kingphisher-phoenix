@@ -845,9 +845,11 @@ def test_workflow_has_no_automated_project_or_cloud_cleanup_commands() -> None:
         r"(?m)^\s*az\s+\S+(?:\s+\S+)*\s+delete\b",
         r"(?m)^\s*git\s+(?:clean|reset)\b",
     )
-    # Allow the specific Foundry role assignment cleanup (AI-015/Path D)
-    # which removes an orphaned Cognitive Services User role assignment
-    # for the ai-gateway identity before Terraform re-creates it.
+    # Allow the two pre-apply role-assignment cleanups, which remove orphaned
+    # assignments that Terraform then re-creates: the Foundry "Cognitive
+    # Services User" grant for the ai-gateway identity (AI-015/Path D), and the
+    # "Key Vault Secrets User" grants on the ai-gateway-auth-key secret that
+    # otherwise 409 on re-apply. Both use this exact delete line.
     workflow = workflow.replace(
         'az role assignment delete --ids "${ROLE_ID}" >/dev/null 2>&1 || true',
         "",
