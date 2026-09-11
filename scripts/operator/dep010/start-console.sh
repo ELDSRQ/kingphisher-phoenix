@@ -136,13 +136,13 @@ echo "== 7/7 starting the console =="
 nohup .venv/bin/python scripts/supervisor.py > "$RUN/console.log" 2>&1 &
 echo $! > "$RUN/supervisor.pid"
 for _ in $(seq 1 90); do
-  curl -sf --max-time 2 http://127.0.0.1:8000/readyz >/dev/null 2>&1 && break
+  curl -sf --max-time 2 "http://127.0.0.1:${OPERATOR_API_PORT:-8000}/readyz" >/dev/null 2>&1 && break
   sleep 1
 done
 
 echo
 echo "================ OPEN THIS ================"
-echo " URL      : http://127.0.0.1:8000/console/"
+echo " URL      : http://127.0.0.1:${OPERATOR_API_PORT:-8000}/console/"
 echo " Username : admin"
 echo " Password : ${KP_CONSOLE_PASSWORD}"
 echo "==========================================="

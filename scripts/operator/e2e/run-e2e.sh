@@ -46,8 +46,16 @@ trap teardown EXIT
 echo "== bringing up the full local stack (start-console) =="
 "$START"
 
-echo "== waiting for operator :8000 and tracking :8001 to be ready =="
-for url in http://127.0.0.1:8000/readyz http://127.0.0.1:8001/readyz; do
+# The ports come from .env (start-console reads them from there too), so an
+# operator who moved the stack off a port already taken on this host -- 8000 is a
+# popular one -- does not also have to edit this script.
+_env_port() {
+  python3 "$PWD/scripts/operator/e2e/_env_port.py" "$1" "$2"
+}
+OP_PORT="${OPERATOR_API_PORT:-$(_env_port OPERATOR_API_PORT 8000)}"
+TR_PORT="${TRACKING_API_PORT:-$(_env_port TRACKING_API_PORT 8001)}"
+echo "== waiting for operator :$OP_PORT and tracking :$TR_PORT to be ready =="
+for url in "http://127.0.0.1:$OP_PORT/readyz" "http://127.0.0.1:$TR_PORT/readyz"; do
   ready=""
   for _ in $(seq 1 60); do
     if curl -sf --max-time 2 "$url" >/dev/null 2>&1; then ready=1; break; fi
@@ -75,8 +83,8 @@ echo "== running the live E2E gate (make test-e2e) =="
 set +e
 KP_E2E_PASSWORD="$CONSOLE_PW" \
 KP_E2E_LIFECYCLE=1 \
-KP_E2E_OPERATOR_URL="http://127.0.0.1:8000" \
-KP_E2E_TRACKING_URL="http://127.0.0.1:8001" \
+KP_E2E_OPERATOR_URL="http://127.0.0.1:$OP_PORT" \
+KP_E2E_TRACKING_URL="http://127.0.0.1:$TR_PORT" \
   make test-e2e
 rc=$?
 set -e
