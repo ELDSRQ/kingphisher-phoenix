@@ -1,14 +1,14 @@
 # Standalone Readiness Assessment
 **Date:** 2026-09-10 | **Head:** `3b8cd47` | **Deploy:** `34479747420` ✅
 
-> **Addendum 2026-09-11 (head `656b3e2`)** — the assessment below still holds; three
+> **Addendum 2026-09-11** — the assessment below still holds; three
 > things changed. The standalone campaign-lifecycle E2E now **passes 8/8** run by a
 > single operator; a supported **`single-operator`** approval posture was added so a
 > 2-person IT team is not blocked by a 3-approver control; and two real bugs that only
 > ever surfaced on the standalone path were fixed (IPv4 loopback probing, audit-anchor
 > provider default). See `AI_HANDOFF_2026-09-11.md` for the full picture.
 > 
-> **Addendum 2026-09-11 (end of session, head `656b3e2`)** — Azure live E2E is gated by
+> **Addendum 2026-09-11 (end of session)** — Azure live E2E is gated by
 > a Terraform apply that is **blocked on Azure provider auth (403 on
 > management.azure.com)** while the `az` CLI itself works. DMARC for
 > `mail.floridamanevolved.us` is in place.

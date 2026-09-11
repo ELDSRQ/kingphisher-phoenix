@@ -1,6 +1,9 @@
 # AI Handoff — Phishing Awareness Platform
 **Date:** 2026-09-11 (updated end of session)
-**Head:** `656b3e2` (main, pushed, CI green)
+**Head:** `e41e3e9` or later on `main` — confirm with `git log --oneline -3`.
+A doc cannot name its own commit, so the docs commits at the top of the log will be
+newer than any sha written here. Verify **state**, not equality: tree clean, nothing
+unpushed, CI green.
 **Repo:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 
 > **SESSION STATE (2026-09-11 end of day):** Azure staging infrastructure is healthy. Terraform changes for missing env vars are ready to apply but **blocked on Terraform Azure provider auth (403 on management.azure.com)**. DMARC is in place. On-prem E2E passes 8/8. Next AI must fix Terraform auth, apply changes, verify env vars, then execute the campaign launch sequence.
@@ -35,7 +38,7 @@ works; DMARC is the remaining gate (see Next Steps).
 
 ---
 
-## What Changed This Session (12 commits, `a84582e`..`656b3e2`)
+## What Changed This Session (16 commits, `a84582e`..`e41e3e9`)
 
 | Commit | Change |
 |---|---|
@@ -51,8 +54,12 @@ works; DMARC is the remaining gate (see Next Steps).
 | `165fee4` | E2E takes API ports from `.env` instead of hardcoding 8000/8001 |
 | `4b59812` | Probes prefer the IPv4 answer for an explicitly loopback host |
 | `656b3e2` | Backfill audit-anchor defaults into an existing `.env` |
+| `eb32c56` | Rewrite this handoff against the session's end state |
+| `59010b9` | Terraform: define `recipient-import-digest` in the operator `secret` block |
+| `9f41b3f` | Terraform: pin the staging recipient allowlist in tfvars |
+| `e41e3e9` | Retract the `audit-hmac` plan across four docs |
 
-CI green on `656b3e2`: *Hermetic lint, type, and no-skip test gates* + *PostgreSQL and
+CI green on `e41e3e9`: *Hermetic lint, type, and no-skip test gates* + *PostgreSQL and
 Redis integration gates*. Local gates: lint, mypy, **3210** unit tests, Terraform
 `fmt`/`validate` + contract tests.
 
@@ -439,7 +446,9 @@ bash scripts/operator/azure-idle.sh     # idle / resume
 ## Resume Instructions for Next AI
 
 1. Read this handoff; `docs/NEXT_SESSION_HANDOFF.md` has the longer history.
-2. `git log --oneline -12` — head should be `656b3e2`, tree clean, CI green.
+2. `git log --oneline -20` — the docs commit at the top is expected to be newer than
+   any sha named in this file. What matters: **tree clean, nothing unpushed, CI green**
+   (`git status --short` empty; `git rev-list --count origin/main..HEAD` = 0).
 3. Confirm `.env` exists and carries the deltas in the table above. If it is missing,
    **do not let `bootstrap_env` mint fresh credentials** while Postgres volumes exist —
    restore from DR on Alice instead. Fresh keys would orphan the database permanently,

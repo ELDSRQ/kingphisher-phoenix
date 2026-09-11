@@ -1,6 +1,6 @@
 # Next-session handoff
 
-## Addendum 2026-09-11 (end of session, head `656b3e2`) — CURRENT STATE
+## Addendum 2026-09-11 (end of session, head `e41e3e9` or later) — CURRENT STATE
 
 **Azure staging:** Infrastructure healthy, token auth working. **Blocked on Terraform Azure provider auth (403 on management.azure.com)** — Terraform changes for missing env vars are ready in `main.tf` + `staging.tfvars` but cannot be applied.
 
