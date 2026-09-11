@@ -355,6 +355,15 @@ bootstrap_env() {
   _generate_if_absent OPERATOR_API_OIDC_REDIRECT_URI "http://localhost:8000/api/v1/console/oidc/callback"
   _generate_if_absent OPERATOR_API_OIDC_SCOPES "openid profile"
   _generate_if_absent KP_WORKER_MAILPIT_SMTP "localhost:1025"
+  # AUD-003: without a provider the anchor worker defaults to azure_blob, finds no
+  # container URL, never reports ready, and the operator API then refuses every
+  # privileged change with audit_integrity_unhealthy. Filled here rather than only
+  # in .env.example because ensure_env_file copies the example ONLY when .env is
+  # absent, so a restored or hand-assembled .env never picks up keys added later.
+  _generate_if_absent KP_WORKER_AUDIT_ANCHOR_PROVIDER "local_worm"
+  _generate_if_absent KP_WORKER_AUDIT_ANCHOR_LOCAL_DIR "data/audit-anchors"
+  _generate_if_absent AUDIT_ANCHOR_INTERVAL_SECONDS "3600"
+  _generate_if_absent OPERATOR_API_AUDIT_ANCHOR_GATE_ENABLED "true"
   _generate_if_absent KP_WORKER_MAILPIT_API_URL "http://localhost:8025"
 
   # Generate secrets once, preserving any value already present in .env.
