@@ -72,17 +72,24 @@ ACS_DOMAIN="mail.floridamanevolved.us"
 ### 1. Complete Azure Live E2E — Campaign Launch
 **Prerequisites:** Azure CLI auth + Entra token for console client
 
-```bash
-# On machine with az CLI:
-az login
-az account set --subscription <staging-sub>
+RESOLVED 2026-09-11 — both halves below are already done; these commands now work as-is.
 
-# Get token (admin consent needed on app registration 97466174-d0ac-460c-94e8-7b6ff3c83da5)
+```bash
+az login --tenant "808f2f63-5b2c-46e6-ace7-d133a2df35f8"
+
 TOKEN=$(az account get-access-token --resource "api://97466174-d0ac-460c-94e8-7b6ff3c83da5" --query accessToken -o tsv)
 
-# Verify
-curl -H "Authorization: Bearer $TOKEN" "$OPERATOR_CONSOLE_URL/readyz"
+curl -s -H "Authorization: Bearer $TOKEN" "$OPERATOR_CONSOLE_URL/api/v1/campaigns"
 ```
+
+Do NOT use `az login --use-device-code` in this tenant: Security Defaults block
+that flow (AADSTS530035). Use the browser flow. Run it in a terminal OUTSIDE
+Claude Code — `!` runs it inside the session and blocks the session while the
+browser handoff waits.
+
+Health endpoints are `/livez`, `/readyz`, `/healthz` (there is no `/health`), and
+they are unauthenticated — they never exercise the token. Use an `/api/v1/*` route
+to prove auth actually works.
 
 **Campaign flow:**
 1. Import recipients via `/api/v1/recipients/import/preview` → `/apply`
@@ -175,11 +182,46 @@ gh workflow run azure-tf-state-fix.yml
 
 1. **Read this handoff** + `docs/NEXT_SESSION_HANDOFF.md` (full history)
 2. **Verify Azure state:** `az containerapp list -g rg-kp-staging -o table`
-3. **Get Entra token** (admin consent required on console client app)
+3. **Get Entra token** (RESOLVED — pre-authorization + audience both fixed; see below)
 4. **Run campaign launch sequence** using API endpoints above
 5. **Validate live delivery** → inbox receipt → tracking events → campaign report
 
-**If blocked on token:** The console app registration `97466174-d0ac-460c-94e8-7b6ff3c83da5` needs "Grant admin consent" in Azure Portal → Entra ID → App registrations → API permissions. This is a one-time manual step.
+**Token blocker — RESOLVED 2026-09-11.** The earlier diagnosis in this document was
+wrong and cost a session; recording the correct one.
+
+It was never admin consent. `requiredResourceAccess` on the console app is `[]`, so
+the **API permissions** blade has nothing to consent to and "Grant admin consent"
+there is a no-op. There were two separate faults:
+
+1. **`api.preAuthorizedApplications` was `[]`.** The Azure CLI
+   (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) was not authorized to request the
+   `console` scope, so token acquisition failed with AADSTS65001, and
+   `az login --scope api://.../.default` failed with AADSTS650057 ("List of valid
+   resources from app registration:" — empty). That second error is structural: the
+   resource has to be added from the *resource* side, because the client is a
+   Microsoft first-party app nobody can edit.
+
+   Fixed in **Expose an API → Authorized client applications** (not API permissions):
+   client `04b07795-8ddb-461a-bbee-02f9e1bf7b46`, scope
+   `api://97466174-d0ac-460c-94e8-7b6ff3c83da5/console`
+   (scope id `6cb5627f-88ef-4858-910a-93eebd45fd64`).
+
+2. **`OPERATOR_API_OIDC_AUDIENCE` was the placeholder `kp-operator-api`** while Entra
+   issues tokens with `aud = 97466174-...`, so a structurally valid token still failed
+   with `KP-002: invalid or expired token`. Root cause was
+   `infrastructure/terraform/variables.tf` defaulting `oidc_audience` to
+   `kp-operator-api` while the dispatch configs never pass it — every apply rewrote the
+   value, which is the "OIDC-env-reverts-each-deploy" symptom. Fixed durably in
+   `149ba5b` (`local.oidc_audience` falls back to `var.entra_client_id`).
+
+   `kp-operator-api` is still CORRECT for the on-prem/Keycloak posture — it comes from
+   the audience mapper in `infrastructure/idp/realm-kingphisher.json` and is asserted by
+   `tests/test_entra_alternative_idp.py`. Do not "fix" that path by changing the shared
+   default; the Azure and on-prem deployments are both first-class and are configured
+   through Terraform and `.env` respectively.
+
+Verified: `GET /api/v1/campaigns` returns `200 []` with `aud=97466174-...`,
+`scp=console`, `roles=['administrator']`.
 
 ---
 
