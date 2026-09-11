@@ -598,6 +598,27 @@ variable "allow_starter_in_production" {
   default     = false
 }
 
+variable "operator_approval_policy" {
+  description = <<-EOT
+    Approval posture for the operator API and the workers. "enforce" (the
+    default) requires three distinct identities to publish a campaign:
+    the submitter cannot approve, and the security and privacy facets cannot
+    be approved by the same person. "single-operator" is the supported
+    small-team posture — a two-person IT team cannot field three identities —
+    and drops only the second approver: it is permitted in hardened and
+    managed deployments, keeps the recipient allowlist fail-closed, and every
+    action is still audit-logged. "single-admin" is refused here because it is
+    a disposable-dev relaxation that also unlocks the empty-allowlist
+    allow-all path.
+  EOT
+  type        = string
+  default     = "enforce"
+  validation {
+    condition     = contains(["enforce", "single-operator"], var.operator_approval_policy)
+    error_message = "operator_approval_policy must be enforce or single-operator; single-admin is a dev-only relaxation and must not be used in a managed deployment."
+  }
+}
+
 variable "allowed_recipient_domains" {
   description = <<-EOT
     Comma-separated mail domains this deployment may target; subdomains are

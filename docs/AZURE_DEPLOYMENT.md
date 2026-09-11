@@ -827,12 +827,17 @@ consent-aware tracking, and ACS-side open tracking would double-count.
 Two controls are always on in an Azure deployment and cannot be disabled from
 the console:
 
-- **Two-person approval.** `OPERATOR_APPROVAL_POLICY` is pinned to `enforce`. A
+- **Approval posture.** `OPERATOR_APPROVAL_POLICY` is set from the validated
+  `operator_approval_policy` Terraform variable, whose default is `enforce`: a
   campaign cannot be scheduled or delivered until one independent operator
   holding both capabilities completes the separately recorded security and
-  privacy facets. The campaign creator cannot approve either facet. The
-  operator API refuses to start under OIDC if this is set to `single-admin`, so
-  the offline stack's relaxed mode cannot reach a real tenant.
+  privacy facets. The campaign creator cannot approve either facet. Staging may
+  instead pin `single-operator` — the supported small-team posture for a
+  two-person IT department that cannot field the three distinct identities
+  `enforce` needs to publish — which drops only the second approver: the
+  recipient allowlist stays fail-closed, and every action is still audit-logged.
+  The operator API refuses to start under OIDC if this is set to `single-admin`,
+  so the offline stack's relaxed mode cannot reach a real tenant.
 - **Recipient-domain allowlist.** `KP_ALLOWED_RECIPIENT_DOMAINS` gates both
   recipient import and delivery, and is re-checked in the delivery worker so a
   message queued before the policy tightened cannot go out under the old rules.

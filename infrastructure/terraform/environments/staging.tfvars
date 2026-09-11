@@ -11,3 +11,9 @@ audit_anchor_interval_seconds = 120
 
 # Required: recipient allowlist (platform fails closed without it)
 allowed_recipient_domains = "erikdierksgmail.onmicrosoft.com,gmail.com,floridamanevolved.us"
+
+# Staging matches the on-prem posture: a two-person IT team cannot field the
+# three distinct identities `enforce` needs to publish. single-operator drops
+# only the second approver; the allowlist stays fail-closed and everything is
+# still audit-logged.
+operator_approval_policy = "single-operator"

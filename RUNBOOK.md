@@ -614,7 +614,7 @@ enforced twice — once at the operator API and again in the delivery worker.
 
 | Setting | Default | Effect |
 |---|---|---|
-| `OPERATOR_APPROVAL_POLICY` | `single-admin` (dev-auth) | `enforce` requires separate security and privacy approval facets from one independent dual-capability operator before a campaign can be scheduled or delivered. The creator cannot self-approve. `single-admin` lets one administrator schedule directly. |
+| `OPERATOR_APPROVAL_POLICY` | `single-admin` (dev-auth) | `enforce` requires separate security and privacy approval facets from one independent dual-capability operator before a campaign can be scheduled or delivered. The creator cannot self-approve. `single-operator` is the supported small-team posture: one operator may submit, schedule, and publish without a second approver, while the allowlist stays fail-closed and every action is still audit-logged. `single-admin` lets one administrator schedule directly but is a dev-stack-only relaxation. |
 | `KP_ALLOWED_RECIPIENT_DOMAINS` | empty | Comma-separated domains this deployment may mail; subdomains included. Gates CSV import **and** delivery. |
 | `KP_WORKER_QUEUED_STALE_HOURS` | `24` | QUEUED assignments older than this on a closed campaign are settled to FAILED. |
 | `KP_WORKER_SOURCE_FAILURE_THRESHOLD` | `10` | Consecutive ingestion failures before a source is disabled. |

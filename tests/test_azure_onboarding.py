@@ -526,12 +526,18 @@ def test_workflow_propagates_native_graph_role_configuration_without_tokens() ->
     assert "REPORTED_MAILBOX_BEARER_TOKEN" not in workflow
 
 
-def test_terraform_pins_enforce_policy_for_azure() -> None:
+def test_terraform_pins_approval_policy_through_a_validated_variable() -> None:
     # Azure runs under OIDC, where the operator API refuses to start with the
-    # single-admin policy. Without this pin every deployment crash-loops.
+    # single-admin policy. Without an explicit pin every deployment crash-loops.
+    # The posture travels through a validated variable so staging can use the
+    # supported single-operator small-team posture while production keeps the
+    # enforce default; single-admin stays impossible to reach from Terraform.
     main_tf = (REPO_ROOT / "infrastructure/terraform/main.tf").read_text(encoding="utf-8")
+    variables_tf = (REPO_ROOT / "infrastructure/terraform/variables.tf").read_text(encoding="utf-8")
     assert "OPERATOR_APPROVAL_POLICY" in main_tf
-    assert '"enforce"' in main_tf
+    assert "value = var.operator_approval_policy" in main_tf
+    assert 'contains(["enforce", "single-operator"], var.operator_approval_policy)' in variables_tf
+    assert 'default     = "enforce"' in variables_tf
 
 
 def test_terraform_requires_a_recipient_allowlist() -> None:

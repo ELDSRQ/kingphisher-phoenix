@@ -1523,7 +1523,7 @@ resource "azurerm_container_app" "operator" {
           KP_WORKER_ALERT_WEBHOOK_DOMAINS           = { value = var.alert_webhook_domains, secret = null }
           # OIDC mode refuses "single-admin" at startup, so this must be set
           # explicitly here or the container crash-loops on boot.
-          OPERATOR_APPROVAL_POLICY     = { value = "enforce", secret = null }
+          OPERATOR_APPROVAL_POLICY     = { value = var.operator_approval_policy, secret = null }
           KP_ALLOWED_RECIPIENT_DOMAINS = { value = var.allowed_recipient_domains, secret = null }
           # Container Apps filesystems are ephemeral and there is no local
           # supervisor: console endpoints that would edit .env or signal
@@ -1978,7 +1978,7 @@ resource "azurerm_container_app" "worker" {
       # so they must agree on the same values.
       env {
         name  = "OPERATOR_APPROVAL_POLICY"
-        value = "enforce"
+        value = var.operator_approval_policy
       }
       env {
         name  = "KP_ALLOWED_RECIPIENT_DOMAINS"
