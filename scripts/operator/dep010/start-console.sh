@@ -25,8 +25,11 @@ RUN=.dep010-run; mkdir -p "$RUN"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/docker-worker.sh"
 WORKER="$(kp_worker_target)"
 PG_IMAGE='postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777'
-PG_CONTAINER=kp-console-postgres
-PG_VOLUME=kp_console_postgres_data
+# Overridable so a drifted or unreadable console database can be replaced with a
+# clean one WITHOUT destroying the old volume: point these at new names, and the
+# previous container/volume are left intact for recovery or inspection.
+PG_CONTAINER="${KP_CONSOLE_PG_CONTAINER:-kp-console-postgres}"
+PG_VOLUME="${KP_CONSOLE_PG_VOLUME:-kp_console_postgres_data}"
 PG_REMOTE_PORT=5434
 
 # Remote worker: publish the console DB on 5434 to avoid clashing with the

@@ -165,6 +165,17 @@ def _resolve_pinned_target(host: str, port: int, *, allow_loopback: bool = False
         elif not address.is_global or address.is_multicast or address.is_unspecified or address.is_reserved:
             raise _EndpointPolicyError("endpoint must resolve only to public addresses")
         resolved.append(_ResolvedTarget(family, cast(tuple[Any, ...], sockaddr), str(address)))
+    if loopback_host:
+        # "localhost" resolves to ::1 before 127.0.0.1 on a dual-stack host, but
+        # the development services these probes reach bind IPv4 only -- both
+        # `docker run -p 127.0.0.1:PORT:PORT` and `ssh -L 127.0.0.1:PORT:...`.
+        # Pinning the first answer therefore reported "refused" for a connector
+        # that curl reaches happily. Prefer the IPv4 answer for an explicitly
+        # loopback host; every candidate here has already passed the policy
+        # checks above, so choosing between them weakens nothing.
+        for candidate in resolved:
+            if candidate.family == socket.AF_INET:
+                return candidate
     return resolved[0]
 
 
