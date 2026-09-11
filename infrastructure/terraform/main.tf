@@ -118,6 +118,14 @@ locals {
   # tracking/training alignment group the contract test pins.
   oidc_audience = trimspace(var.oidc_audience) != "" ? trimspace(var.oidc_audience) : var.entra_client_id
 
+  # The console browser login sends these scopes to Entra's authorize endpoint. The
+  # application-default "openid profile" alone yields a token audienced at Microsoft
+  # Graph rather than this API, so console SSO failed with KP-002 while a CLI token
+  # (which names the resource explicitly) worked. The custom scope must be requested
+  # by name. Keycloak needs only "openid profile" because its audience mapper adds
+  # aud server-side; that posture is configured through .env, not here.
+  oidc_scopes = "openid profile api://${var.entra_client_id}/console"
+
   tracking_base_url             = "https://${lower(trimspace(var.tracking_fqdn))}"
   training_base_url             = "${local.tracking_base_url}/v1/training/awareness"
   acs_receipt_subscription_name = "acs-delivery-receipts"
@@ -1495,6 +1503,7 @@ resource "azurerm_container_app" "operator" {
           OPERATOR_API_OIDC_ISSUER                  = { value = "https://login.microsoftonline.com/${var.entra_tenant_id}/v2.0", secret = null }
           OPERATOR_API_OIDC_CLIENT_ID               = { value = var.entra_client_id, secret = null }
           OPERATOR_API_OIDC_AUDIENCE                = { value = local.oidc_audience, secret = null }
+          OPERATOR_API_OIDC_SCOPES                  = { value = local.oidc_scopes, secret = null }
           OPERATOR_API_OIDC_REDIRECT_URI            = { value = "https://${var.operator_fqdn}/api/v1/console/oidc/callback", secret = null }
           OPERATOR_API_EVENT_GRID_TENANT_ID         = { value = var.entra_tenant_id, secret = null }
           OPERATOR_API_EVENT_GRID_AUDIENCE          = { value = var.entra_client_id, secret = null }
