@@ -271,8 +271,16 @@ variable "tracking_fqdn" {
 variable "entra_tenant_id" { type = string }
 variable "entra_client_id" { type = string }
 variable "oidc_audience" {
-  type    = string
-  default = "kp-operator-api"
+  description = <<-EOT
+    Audience the operator API validates on console access tokens. Leave empty on
+    Azure: Entra issues tokens with aud = entra_client_id, and that is what
+    local.oidc_audience falls back to. Set this only when a customer exposes the
+    API under a different identifier URI. It must not default to the Keycloak
+    audience ("kp-operator-api") — that belongs to the on-prem/disconnected
+    posture, which configures it through .env rather than Terraform.
+  EOT
+  type        = string
+  default     = ""
 }
 
 variable "communication_data_location" {

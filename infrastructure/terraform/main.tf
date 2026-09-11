@@ -107,6 +107,17 @@ locals {
   # tracking/training alignment group the contract test pins.
   ai_model_id = local.ai_foundry_backend ? trimspace(var.ai_foundry_model) : "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
 
+  # Entra issues console access tokens with aud = the client (application) id, so
+  # that is the only audience the operator API can validate in this deployment.
+  # oidc_audience stays overridable for a customer-supplied identifier URI, but it
+  # must not default to the Keycloak audience ("kp-operator-api"): Terraform only
+  # ever deploys the Azure/Entra posture, and that default silently rewrote a
+  # hand-corrected container app env var on every apply, failing every token with
+  # KP-002. The on-prem/Keycloak path keeps its own audience via .env and is not
+  # touched here. Isolated on its own line so it does not join the
+  # tracking/training alignment group the contract test pins.
+  oidc_audience = trimspace(var.oidc_audience) != "" ? trimspace(var.oidc_audience) : var.entra_client_id
+
   tracking_base_url             = "https://${lower(trimspace(var.tracking_fqdn))}"
   training_base_url             = "${local.tracking_base_url}/v1/training/awareness"
   acs_receipt_subscription_name = "acs-delivery-receipts"
@@ -1483,7 +1494,7 @@ resource "azurerm_container_app" "operator" {
           OPERATOR_API_OIDC_MODE                    = { value = "oidc", secret = null }
           OPERATOR_API_OIDC_ISSUER                  = { value = "https://login.microsoftonline.com/${var.entra_tenant_id}/v2.0", secret = null }
           OPERATOR_API_OIDC_CLIENT_ID               = { value = var.entra_client_id, secret = null }
-          OPERATOR_API_OIDC_AUDIENCE                = { value = var.oidc_audience, secret = null }
+          OPERATOR_API_OIDC_AUDIENCE                = { value = local.oidc_audience, secret = null }
           OPERATOR_API_OIDC_REDIRECT_URI            = { value = "https://${var.operator_fqdn}/api/v1/console/oidc/callback", secret = null }
           OPERATOR_API_EVENT_GRID_TENANT_ID         = { value = var.entra_tenant_id, secret = null }
           OPERATOR_API_EVENT_GRID_AUDIENCE          = { value = var.entra_client_id, secret = null }
