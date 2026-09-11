@@ -8,3 +8,6 @@ log_daily_quota_gb = 5
 # complete an anchor cycle and prove audit-anchor readiness within the
 # worker-qualify gate window (fresh revisions reset in-memory proven_live).
 audit_anchor_interval_seconds = 120
+
+# Required: recipient allowlist (platform fails closed without it)
+allowed_recipient_domains = "erikdierksgmail.onmicrosoft.com,gmail.com,floridamanevolved.us"
