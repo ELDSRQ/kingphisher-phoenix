@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from enum import StrEnum
 from typing import Literal
 
 from kp_database.awareness_ledger import (
@@ -26,6 +27,19 @@ _ACS_TOPIC = re.compile(
 )
 _CIPHERTEXT_KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
 _MAX_CIPHERTEXT_PRIOR_KEYS = 4
+
+
+class KPProfile(StrEnum):
+    """Deployment profile that expands into concrete settings.
+
+    - local-dev: disposable local stack (dev-auth, relaxed approvals, .env config)
+    - local-hardened: production-like local stack (OIDC, strict approvals, env_file)
+    - azure: managed Azure Container Apps deployment (managed config, OIDC, Key Vault)
+    """
+
+    LOCAL_DEV = "local-dev"
+    LOCAL_HARDENED = "local-hardened"
+    AZURE = "azure"
 
 
 class OperatorApiSettings(BaseSettings):
@@ -52,6 +66,10 @@ class OperatorApiSettings(BaseSettings):
     ciphertext_prior_keys: str = Field(default="", max_length=512)
     console_jwt_secret: str = ""
     recipient_hash_salt: str = ""
+    kp_profile: KPProfile = Field(
+        default=KPProfile.LOCAL_DEV,
+        validation_alias=AliasChoices("KP_PROFILE", "OPERATOR_API_PROFILE"),
+    )
     #: Stable key and governed version for the PII-free awareness ledger
     #: (RET-005). Must match the retention worker's key so named drill-down
     #: resolves the pseudonyms the worker projected; like the RoE key, a shared
@@ -229,8 +247,67 @@ class OperatorApiSettings(BaseSettings):
         """
         return self.dev_auth_mode and self.dev_stack
 
+    def _apply_profile_defaults(self) -> None:
+        """Expand KP_PROFILE into concrete settings.
+
+        The profile is a presets layer, not an override: it only fills fields
+        the operator did not set explicitly (``model_fields_set`` carries every
+        field supplied by env, .env, or init kwargs). It is also strictly
+        opt-in — when KP_PROFILE is unset the historical safe defaults stand
+        (ENFORCE, dev_stack off, env_file, dev auth), so a missing profile can
+        never relax the posture.
+        """
+        if "kp_profile" not in self.model_fields_set:
+            return
+        # setattr() below grows model_fields_set, so snapshot what the operator
+        # actually supplied before the presets touch anything.
+        explicit = set(self.model_fields_set)
+
+        presets: dict[KPProfile, dict[str, object]] = {
+            # Disposable local stack: dev-auth, single-admin approvals, .env config.
+            KPProfile.LOCAL_DEV: {
+                "dev_stack": True,
+                "oidc_mode": "dev",
+                "approval_policy": ApprovalPolicy.SINGLE_ADMIN,
+                "config_store": "env_file",
+                "receipts_provider": "none",
+            },
+            # Production-like local stack: real OIDC, two-person approval, .env config.
+            KPProfile.LOCAL_HARDENED: {
+                "dev_stack": False,
+                "oidc_mode": "oidc",
+                "approval_policy": ApprovalPolicy.ENFORCE,
+                "config_store": "env_file",
+                "receipts_provider": "none",
+            },
+            # Managed Azure Container Apps: Key Vault config, OIDC, ACS receipts.
+            KPProfile.AZURE: {
+                "dev_stack": False,
+                "oidc_mode": "oidc",
+                "approval_policy": ApprovalPolicy.ENFORCE,
+                "config_store": "managed",
+                "receipts_provider": "acs_eventgrid",
+            },
+        }
+        for field, value in presets[self.kp_profile].items():
+            if field not in explicit:
+                setattr(self, field, value)
+
+        # A preset must never be the thing that relaxes approvals: if the
+        # operator hardened the posture explicitly (managed config or real
+        # OIDC), single-admin from the preset is upgraded back to ENFORCE.
+        if (
+            "approval_policy" not in explicit
+            and self.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+            and (self.config_store == "managed" or self.oidc_mode == "oidc")
+        ):
+            self.approval_policy = ApprovalPolicy.ENFORCE
+
     @model_validator(mode="after")
     def validate_approval_policy(self) -> OperatorApiSettings:
+        # Apply profile defaults FIRST so they take effect before validation
+        self._apply_profile_defaults()
+
         # SINGLE_ADMIN is a disposable-dev relaxation. It is refused unless the
         # stack is explicitly marked dev (KP_DEV_STACK=1) AND runs dev-auth. The
         # message keeps the historical "is not permitted" prefix so existing
@@ -268,6 +345,13 @@ class OperatorApiSettings(BaseSettings):
                 raise ValueError("managed ACS receipt ingress requires a bounded Event Grid subscription name")
             if _ACS_TOPIC.fullmatch(self.event_grid_topic.strip()) is None:
                 raise ValueError("managed ACS receipt ingress requires the exact ACS Communication Service topic")
+        # PLT-002: reject SINGLE_ADMIN under real OIDC (oidc_mode=oidc)
+        if self.oidc_mode == "oidc" and self.approval_policy is ApprovalPolicy.SINGLE_ADMIN:
+            raise ValueError(
+                "OPERATOR_API_APPROVAL_POLICY=single-admin is not permitted under real OIDC; "
+                "it requires the dev-auth stack explicitly marked with KP_DEV_STACK=1. "
+                "Use 'enforce' (two-person approval) for production deployments."
+            )
         return self
 
     def require_acs_receipt_signing_key(self) -> bytes:

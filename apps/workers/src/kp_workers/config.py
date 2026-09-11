@@ -9,6 +9,7 @@ from kp_database.awareness_ledger import (
     LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
 )
 from kp_domain_models.policy import ApprovalPolicy, parse_domain_allowlist
+from kp_operator_api.config import KPProfile
 from kp_telemetry.settings import local_dotenv_file
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -234,6 +235,10 @@ class WorkerSettings(BaseSettings):
     #: ``model_id`` must match this constant-time identity or the call fails
     #: closed: a swapped model cannot silently change what the human reviews.
     ai_model_id: str | None = Field(default=None, min_length=1, max_length=128)
+    kp_profile: KPProfile = Field(
+        default=KPProfile.LOCAL_DEV,
+        validation_alias=AliasChoices("KP_PROFILE", "KP_WORKER_PROFILE"),
+    )
     smtp_address: str | None = None
     smtp_username: str | None = None
     smtp_password: str | None = None
@@ -392,6 +397,24 @@ class WorkerSettings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_send_safety_posture(self) -> "WorkerSettings":
+        # Presets run FIRST so every guard below sees the posture the worker
+        # will actually run with. Applying them afterwards let a profile flip
+        # dev_stack off *after* the single-admin guard had already accepted it,
+        # leaving SINGLE_ADMIN live in a managed/production profile.
+        self._apply_profile_defaults()
+
+        # A hardened or managed profile refuses SINGLE_ADMIN outright, whatever
+        # dev_stack says: the dev relaxation has no meaning in those postures.
+        if (
+            self.kp_profile in (KPProfile.LOCAL_HARDENED, KPProfile.AZURE)
+            and self.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+        ):
+            raise ValueError(
+                f"KP_WORKER_APPROVAL_POLICY=single-admin is not permitted under KP_PROFILE="
+                f"{self.kp_profile.value}; it requires the development runtime explicitly marked "
+                "with KP_DEV_STACK=1. Use 'enforce' (two-person approval)"
+            )
+
         # SINGLE_ADMIN is the disposable-dev relaxation; it is also what turns
         # an empty allowlist into allow-all at delivery (jobs.py:1447). Refuse it
         # unless the worker is explicitly marked as a dev stack.
@@ -402,6 +425,42 @@ class WorkerSettings(BaseSettings):
                 "managed and production runtime modes"
             )
         return self
+
+    def _apply_profile_defaults(self) -> None:
+        """Expand KP_PROFILE into concrete settings.
+
+        A presets layer, not an override: it fills only fields the operator did
+        not supply explicitly, and is strictly opt-in — with KP_PROFILE unset
+        the historical defaults stand, so a missing profile cannot relax the
+        posture. Mirrors OperatorApiSettings._apply_profile_defaults.
+        """
+        if "kp_profile" not in self.model_fields_set:
+            return
+        # setattr() below grows model_fields_set, so snapshot what the operator
+        # actually supplied before the presets touch anything.
+        explicit = set(self.model_fields_set)
+
+        presets: dict[KPProfile, dict[str, object]] = {
+            # Disposable local stack: dev relaxations available (the approval
+            # policy itself is still the operator's explicit choice).
+            KPProfile.LOCAL_DEV: {
+                "dev_stack": True,
+                "runtime_mode": "development",
+            },
+            # Production-like local stack: no dev relaxations.
+            KPProfile.LOCAL_HARDENED: {
+                "dev_stack": False,
+                "runtime_mode": "managed",
+            },
+            # Managed Azure Container Apps deployment.
+            KPProfile.AZURE: {
+                "dev_stack": False,
+                "runtime_mode": "production",
+            },
+        }
+        for field, value in presets[self.kp_profile].items():
+            if field not in explicit:
+                setattr(self, field, value)
 
     def _validate_managed_role_providers(self) -> None:
         if self.worker_name == "audit-anchor":

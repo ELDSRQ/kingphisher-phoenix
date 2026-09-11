@@ -131,6 +131,54 @@ def test_single_admin_rejected_in_managed_and_production(runtime_mode: str) -> N
         )
 
 
+# --- KP_PROFILE presets ------------------------------------------------------------
+
+
+def test_profile_is_opt_in_and_never_relaxes_the_default_posture() -> None:
+    # No KP_PROFILE must mean exactly the historical posture.
+    unprofiled = _settings()
+    assert unprofiled.approval_policy is ApprovalPolicy.ENFORCE
+    assert unprofiled.dev_stack is False
+    assert unprofiled.runtime_mode == "development"
+
+
+def test_local_dev_profile_marks_the_dev_stack() -> None:
+    settings = _settings(kp_profile="local-dev", approval_policy="single-admin")
+    assert settings.dev_stack is True
+    assert settings.runtime_mode == "development"
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+
+
+@pytest.mark.parametrize(
+    ("profile", "expected_runtime_mode"),
+    [("local-hardened", "managed"), ("azure", "production")],
+)
+def test_hardened_profiles_clear_the_dev_stack(profile: str, expected_runtime_mode: str) -> None:
+    settings = _settings(kp_profile=profile, worker_name="ingestion")
+    assert settings.dev_stack is False
+    assert settings.runtime_mode == expected_runtime_mode
+    assert settings.approval_policy is ApprovalPolicy.ENFORCE
+
+
+@pytest.mark.parametrize("profile", ["local-hardened", "azure"])
+def test_hardened_profiles_refuse_single_admin_even_with_the_dev_marker(profile: str) -> None:
+    # Regression: presets used to be applied AFTER these guards, so a hardened
+    # profile with KP_DEV_STACK=1 passed validation and only then had dev_stack
+    # flipped off — leaving SINGLE_ADMIN live in a managed/production worker.
+    with pytest.raises(ValidationError, match="single-admin is not permitted"):
+        _settings(
+            kp_profile=profile,
+            worker_name="ingestion",
+            approval_policy="single-admin",
+            dev_stack=True,
+        )
+
+
+def test_explicit_runtime_mode_wins_over_the_profile_preset() -> None:
+    settings = _settings(kp_profile="azure", worker_name="ingestion", runtime_mode="managed")
+    assert settings.runtime_mode == "managed"
+
+
 @pytest.mark.parametrize("worker_name", ["ingestion", "alert"])
 def test_managed_workers_do_not_require_unrelated_provider_configuration(worker_name: str) -> None:
     settings = _settings(worker_name=worker_name, runtime_mode="managed")

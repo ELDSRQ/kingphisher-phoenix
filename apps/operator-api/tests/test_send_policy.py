@@ -71,6 +71,60 @@ def test_default_policy_is_enforce() -> None:
     assert _settings(oidc_mode="dev", dev_stack=True).approval_policy is ApprovalPolicy.ENFORCE
 
 
+# --- KP_PROFILE presets ------------------------------------------------------------
+
+
+def test_profile_is_opt_in_and_never_relaxes_the_default_posture() -> None:
+    # The presets layer must not change what an unprofiled deployment gets: a
+    # missing KP_PROFILE still means two-person approval and no dev stack.
+    unprofiled = _settings()
+    assert unprofiled.approval_policy is ApprovalPolicy.ENFORCE
+    assert unprofiled.dev_stack is False
+    assert unprofiled.config_store == "env_file"
+    assert unprofiled.oidc_mode == "dev"
+
+
+def test_local_dev_profile_relaxes_only_when_explicitly_requested() -> None:
+    settings = _settings(kp_profile="local-dev")
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+    assert settings.dev_stack is True
+
+
+def test_local_hardened_profile_is_oidc_and_two_person() -> None:
+    settings = _settings(kp_profile="local-hardened")
+    assert settings.approval_policy is ApprovalPolicy.ENFORCE
+    assert settings.dev_stack is False
+    assert settings.oidc_mode == "oidc"
+    assert settings.config_store == "env_file"
+    # A hardened local stack is not asked to configure Event Grid.
+    assert settings.receipts_provider == "none"
+
+
+def test_explicit_settings_win_over_the_profile_preset() -> None:
+    # The profile fills gaps; it never overrides what the operator supplied.
+    settings = _settings(kp_profile="local-dev", approval_policy="enforce")
+    assert settings.approval_policy is ApprovalPolicy.ENFORCE
+
+
+def test_explicit_dev_stack_false_is_honored_under_local_dev() -> None:
+    # Regression: an earlier preset implementation could not tell an explicit
+    # dev_stack=False from the field default and flipped it back to True,
+    # silently re-enabling the dev relaxations the operator had turned off.
+    with pytest.raises(ValidationError, match="single-admin is not permitted"):
+        _settings(kp_profile="local-dev", dev_stack=False)
+
+
+def test_local_dev_preset_cannot_relax_approvals_under_real_oidc() -> None:
+    # Pointing the dev profile at real OIDC must not carry single-admin along.
+    settings = _settings(kp_profile="local-dev", oidc_mode="oidc")
+    assert settings.approval_policy is ApprovalPolicy.ENFORCE
+
+
+def test_single_admin_is_refused_under_real_oidc_even_with_a_profile() -> None:
+    with pytest.raises(ValidationError, match="single-admin is not permitted"):
+        _settings(kp_profile="local-dev", oidc_mode="oidc", approval_policy="single-admin")
+
+
 def test_managed_config_refuses_dev_auth() -> None:
     # PLT-002: a managed (hardened) posture must run real OIDC; managed+dev-auth
     # used to silently skip every managed check, now it refuses to start.
