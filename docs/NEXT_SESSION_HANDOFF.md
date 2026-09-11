@@ -1,5 +1,36 @@
 # Next-session handoff
 
+## Addendum 2026-09-11 (end of session, head `656b3e2`) — CURRENT STATE
+
+**Azure staging:** Infrastructure healthy, token auth working. **Blocked on Terraform Azure provider auth (403 on management.azure.com)** — Terraform changes for missing env vars are ready in `main.tf` + `staging.tfvars` but cannot be applied.
+
+**On-prem E2E:** 8/8 passing, single-operator posture works.
+
+**DMARC:** In place for `mail.floridamanevolved.us`.
+
+**CORRECTION (same day):** an earlier version of this addendum listed
+`OPERATOR_API_AUDIT_HMAC_KEY` and `KP_WORKER_AUDIT_HMAC_KEY` as "missing env vars" to be
+added from the `audit-hmac` secret. **That is wrong and those hunks were removed.**
+`audit-hmac` is the audit signing root and belongs to the migration identity alone;
+`test_audit_signing_root_is_exposed_only_to_migration_identity` asserts
+`"AUDIT_HMAC_KEY" not in operator + workers`, so the change fails CI. The import 500 was
+diagnosed against a container image predating `3ea6fb5`, which gave the import digest its
+own key (`recipient-import-digest`). The fix is to deploy a current image, not to grant
+the signing root.
+
+**Terraform changes actually pending (blocked on auth):**
+- `main.tf` — define `recipient-import-digest` in the operator container's `secret`
+  block (completes `3ea6fb5`; the env var referenced a secret that was never defined)
+- `staging.tfvars` — `allowed_recipient_domains`
+
+**Terraform auth error:** `403 Server failed to authenticate the request` on `management.azure.com`. `az login` works but Terraform Azure provider cannot authenticate. Fix options: set `ARM_SUBSCRIPTION_ID`/`ARM_TENANT_ID`/`ARM_CLIENT_ID`/`ARM_CLIENT_SECRET` for service principal, or ensure Azure CLI auth is picked up by provider.
+
+**On-prem E2E:** 8/8 passing, `single-operator` posture works.
+
+**Next AI must:** Fix Terraform auth → apply changes → verify env vars → test import → run campaign launch sequence.
+
+---
+
 ## Addendum 2026-09-10 — AZURE RESUMED; FOUNDRY WIRED; 409 LOOP ROOT-CAUSED AND CLEARED; head `37a171b`
 
 **Read this before re-running any deploy.** The 24-hour deploy loop is explained

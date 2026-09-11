@@ -3,6 +3,8 @@
 **Head:** `656b3e2` (main, pushed, CI green)
 **Repo:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 
+> **SESSION STATE (2026-09-11 end of day):** Azure staging infrastructure is healthy. Terraform changes for missing env vars are ready to apply but **blocked on Terraform Azure provider auth (403 on management.azure.com)**. DMARC is in place. On-prem E2E passes 8/8. Next AI must fix Terraform auth, apply changes, verify env vars, then execute the campaign launch sequence.
+
 ---
 
 ## Executive Summary
@@ -61,7 +63,7 @@ Redis integration gates*. Local gates: lint, mypy, **3210** unit tests, Terrafor
 
 ---
 
-## Azure Staging — RESOLVED, working
+## Azure Staging — INFRASTRUCTURE HEALTHY; APP LAYER MISSING ENV VARS
 
 ### Token acquisition (was THE blocker)
 
@@ -73,39 +75,60 @@ curl -s -H "Authorization: Bearer $TOKEN" "$OPERATOR_CONSOLE_URL/api/v1/campaign
 
 Verified: returns `200 []` with `aud=97466174-…`, `scp=console`, `roles=['administrator']`.
 
-**The earlier diagnosis in this document was wrong and cost a session.** It was never
-admin consent — `requiredResourceAccess` on the console app is `[]`, so that blade has
-nothing to consent to. Two separate faults:
+### Current env var status (operator container app)
 
-1. **`api.preAuthorizedApplications` was `[]`.** The Azure CLI
-   (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) could not request the `console` scope →
-   `AADSTS65001`; and `az login --scope api://.../.default` → `AADSTS650057` ("List of
-   valid resources from app registration:" — empty). That second one is *structural*:
-   the resource must be added from the **resource** side, because the client is a
-   Microsoft first-party app nobody can edit.
-   Fixed via portal → **Expose an API → Authorized client applications** (NOT API
-   permissions): client `04b07795-…`, scope id `6cb5627f-88ef-4858-910a-93eebd45fd64`.
+| Variable | Status | Source |
+|---|---|---|
+| `OPERATOR_API_AUDIT_HMAC_KEY` | ✅ **CORRECTLY ABSENT — do not add** | signing root; migration identity only |
+| `OPERATOR_API_RECIPIENT_IMPORT_DIGEST_KEY` | ⏳ in Terraform, not yet applied | `recipient-import-digest` secret (`3ea6fb5`) |
+| `KP_ALLOWED_RECIPIENT_DOMAINS` | ✅ Set (`erikdierksgmail.onmicrosoft.com,gmail.com`) | GitHub env; now also pinned in `staging.tfvars` |
+| `OPERATOR_API_RECIPIENT_HASH_SALT` | ✅ Set | `recipient-salt` secret |
+| `OPERATOR_API_OIDC_MODE` | ✅ `oidc` | Terraform |
+| `OPERATOR_API_OIDC_AUDIENCE` | ✅ `97466174-...` | Terraform (fixed in `149ba5b`) |
+| `OPERATOR_API_OIDC_SCOPES` | ✅ Set | Terraform (fixed in `c78a673`) |
 
-2. **`OPERATOR_API_OIDC_AUDIENCE` was the placeholder `kp-operator-api`** while Entra
-   issues `aud = 97466174-…` → `KP-002: invalid or expired token`. Root cause:
-   `variables.tf` defaulted `oidc_audience` to `kp-operator-api` and the dispatch
-   configs never pass it, so **every apply rewrote it** — the
-   "OIDC-env-reverts-each-deploy" symptom. Fixed durably in `149ba5b`.
+### Worker container app status
 
-`OPERATOR_API_OIDC_SCOPES` was the *other* half: Terraform never set it, so the app fell
-back to `"openid profile"` and browser SSO got a token audienced at Microsoft Graph.
-Fixed in `c78a673`.
+| Variable | Status |
+|---|---|
+| `KP_WORKER_AUDIT_HMAC_KEY` | ✅ **CORRECTLY ABSENT — do not add** (signing root) |
+| `KP_WORKER_RECIPIENT_HASH_SALT` | ✅ Conditional on `directory` role |
+
+### Import endpoint 500 root cause — CORRECTED
+
+An earlier revision of this document said the 500 was
+`OPERATOR_API_AUDIT_HMAC_KEY` missing → `require_audit_hmac_key()` failing in
+`resolve_recipient_policy`, and proposed granting the operator and worker the
+`audit-hmac` secret. **That is wrong on every point and must not be done.**
+
+- `resolve_recipient_policy` uses no key or HMAC at all — it is pure allowlist logic.
+- `require_audit_hmac_key()` does not exist anywhere in the codebase.
+- The import path calls `require_recipient_import_digest_key()` (changed in `3ea6fb5`).
+
+The diagnosis was made against the **running container**, whose image predates
+`3ea6fb5`. That older code did call `require_secret_key()` and did need the audit
+HMAC — so the observation was real, but the conclusion inverted the fix.
+
+**The actual fix is to deploy, not to grant the signing root.** `3ea6fb5` gave the
+import digest its own key (`recipient-import-digest`), already created, granted to the
+operator, and wired into the operator's container secret block. Applying Terraform and
+rolling a current image resolves the 500.
+
+Granting `audit-hmac` to the operator or workers also **fails CI**:
+`test_audit_signing_root_is_exposed_only_to_migration_identity` asserts
+`"AUDIT_HMAC_KEY" not in operator + workers`, and
+`test_anchor_uses_private_blob_networking_and_non_secret_worker_configuration` fails
+too. It would not have worked regardless — `audit-hmac` is in neither the operator's
+granted secret list nor its container `secret` block, so the env var would reference a
+secret that does not exist.
 
 ### Gotchas that will waste your time again
 
-- `az login --use-device-code` is **blocked in this tenant** by Security Defaults
-  (`AADSTS530035`). Use the browser flow.
-- Run `az login` in a terminal **outside Claude Code** — `!` runs it inside the session
-  and blocks the session during the browser handoff.
-- Health endpoints are `/livez`, `/readyz`, `/healthz` (**no** `/health`) and are
-  **unauthenticated** — they prove nothing about the token. Use an `/api/v1/*` route.
-- The two live `az containerapp update` calls made this session are now **redundant**
-  with Terraform; the next deploy sets the same values instead of reverting them.
+- `az login --use-device-code` is **blocked in this tenant** by Security Defaults (`AADSTS530035`). Use the browser flow.
+- Run `az login` in a terminal **outside Claude Code** — `!` runs it inside the session and blocks the session during the browser handoff.
+- Health endpoints are `/livez`, `/readyz`, `/healthz` (**no** `/health`) and are **unauthenticated** — they prove nothing about the token. Use an `/api/v1/*` route.
+- The two live `az containerapp update` calls made this session are now **redundant** with Terraform; the next deploy sets the same values instead of reverting them.
+- **Terraform Azure provider auth is currently broken** (403 on management.azure.com). Fix auth before running plan/apply.
 
 ---
 
@@ -211,32 +234,75 @@ cannot be published there. Staging is still `OPERATOR_APPROVAL_POLICY=enforce`.
 
 ## Next Steps (priority order)
 
-### 1. DMARC — the only thing gating a live Azure send
+### 0. Fix Terraform Azure provider auth (BLOCKER)
+Terraform returns `403` on `management.azure.com` despite valid `az login`. Fix options:
+
+```bash
+# Option 1: Explicit ARM_* env vars (service principal)
+export ARM_SUBSCRIPTION_ID="169644fd-c81d-4935-af55-5770f8271022"
+export ARM_TENANT_ID="808f2f63-5b2c-46e6-ace7-d133a2df35f8"
+export ARM_CLIENT_ID="<sp-app-id>"
+export ARM_CLIENT_SECRET="<sp-secret>"
+
+# Option 2: Azure CLI auth with explicit subscription (if supported by provider version)
+az account set --subscription 169644fd-c81d-4935-af55-5770f8271022
+
+# Then:
+cd infrastructure/terraform
+terraform plan -var-file="environments/staging.tfvars" -out=tfplan
+terraform apply tfplan
 ```
-_dmarc.mail.floridamanevolved.us  TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@floridamanevolved.us; ruf=mailto:dmarc@floridamanevolved.us; fo=1"
+
+### 1. Apply Terraform changes (after auth fixed)
+```bash
+cd infrastructure/terraform
+terraform plan -var-file="environments/staging.tfvars" -out=tfplan
+terraform apply tfplan
 ```
-`onmicrosoft.com` cannot serve as an ACS sending domain, so this must be
-`mail.floridamanevolved.us`.
 
-### 2. Azure live campaign launch (not yet run)
-Auth works, so this is unblocked apart from approvals and DMARC:
-1. `POST /api/v1/recipients/import/preview` → `/apply`
-2. `POST /api/v1/campaigns`
-3. `PUT /campaigns/{id}/audience` → `POST /campaigns/{id}/audience/freeze`
-4. `POST /campaigns/{id}/submit`
-5. approvals — **needs 3 identities under `enforce`**, or set staging to `single-operator`
-6. `POST /campaigns/{id}/schedule`
-7. poll `GET /campaigns/{id}/review` until `gate.state="canary_succeeded"`
-8. `POST /campaigns/{id}/publish`
+**Verify env vars post-apply:**
+```bash
+# recipient-import-digest MUST be present; AUDIT_HMAC must stay ABSENT.
+az containerapp show -g rg-kp-staging -n ca-kp-staging-operator \
+  --query "properties.template.containers[0].env[].name" -o tsv | grep -E 'RECIPIENT_IMPORT_DIGEST|AUDIT_HMAC'
+```
+Expected: one line, `OPERATOR_API_RECIPIENT_IMPORT_DIGEST_KEY`. If `AUDIT_HMAC` appears,
+someone reinstated the removed hunks — revert them.
 
-### 3. Decide the staging approval posture
-Either add a third Entra identity with approver roles, or set staging to
-`single-operator` to match the on-prem posture and the 2-person IT reality.
+### 2. Roll a current image, then test recipient import
 
-### 4. Open / lower priority
-- `gpt-oss-120b` structured output leaks reasoning channels → consider
-  `AI_FOUNDRY_MODEL=gpt-4.1-mini`
-- Branch protection bypass (above)
+The deployed image predates `3ea6fb5`, so the import path still calls the old code that
+demanded the audit HMAC. Terraform alone will not fix the 500 — deploy a current image.
+
+```bash
+TOKEN=$(az account get-access-token --resource "api://97466174-d0ac-460c-94e8-7b6ff3c83da5" --query accessToken -o tsv | tr -d '\n\r')
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "https://ca-kp-staging-operator.calmflower-9463bfc2.eastus2.azurecontainerapps.io/api/v1/recipients/import/preview" \
+  -d '{"csv_text":"email\nuser1@gmail.com"}'
+# Expect 200 with a preview_digest
+```
+
+Note the recipient domain must be inside `KP_ALLOWED_RECIPIENT_DOMAINS`
+(`erikdierksgmail.onmicrosoft.com,gmail.com` deployed today; `floridamanevolved.us` is
+added by the pending `staging.tfvars` change) — otherwise the import fails closed on the
+allowlist, which is correct behaviour and not a bug.
+
+### 3. Azure live campaign launch
+1. Import recipients: `POST /recipients/import/preview` → `/apply`
+2. Create campaign: `POST /campaigns`
+3. Configure audience: `PUT /campaigns/{id}/audience` → `POST /campaigns/{id}/audience/freeze`
+4. Submit for review: `POST /campaigns/{id}/submit` (creates canary)
+5. Approvals — needs 3 identities under `enforce`, or set staging to `single-operator`
+6. Schedule: `POST /campaigns/{id}/schedule`
+7. Poll review until `gate.state="canary_succeeded"` with `canary_evidence_hash`
+8. Publish: `POST /campaigns/{id}/publish`
+
+### 4. Decide staging approval posture
+Either add a third Entra identity with approver roles, or set staging to `single-operator` to match on-prem posture and 2-person IT reality.
+
+### 5. Open / lower priority
+- `gpt-oss-120b` structured output leaks reasoning channels → consider `AI_FOUNDRY_MODEL=gpt-4.1-mini`
+- Branch protection bypass (3 pushes bypassed protection; CI passed after merge)
 - Old `kp_console_postgres_data` volume: recover via `PRIOR_KEYS` or remove
 
 ---
@@ -256,6 +322,72 @@ KEY_VAULT="kvkpstaging6117w"
 ACS_DOMAIN="mail.floridamanevolved.us"
 CONSOLE_SCOPE_ID="6cb5627f-88ef-4858-910a-93eebd45fd64"
 AZURE_CLI_APP_ID="04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+```
+
+---
+
+## Terraform Changes Pending Apply (BLOCKED on provider auth)
+
+| File | Change | Purpose |
+|---|---|---|
+| `infrastructure/terraform/main.tf` | Define `recipient-import-digest` in the **operator container's `secret` block** | Completes `3ea6fb5`; without it the env var references a secret that does not exist |
+| `infrastructure/terraform/environments/staging.tfvars` | `allowed_recipient_domains = "erikdierksgmail.onmicrosoft.com,gmail.com,floridamanevolved.us"` | Pins the allowlist in Terraform instead of only GitHub env |
+
+> **Two earlier hunks were REMOVED, not applied:** `OPERATOR_API_AUDIT_HMAC_KEY` and
+> `KP_WORKER_AUDIT_HMAC_KEY` → `audit-hmac`. See "Import endpoint 500 root cause —
+> CORRECTED" above. They fail two contract tests, target a root cause that no longer
+> exists, and reference a secret that is in neither the operator's granted list nor its
+> container `secret` block. Do not reinstate them.
+
+Validation: `terraform fmt -check` and `terraform validate` clean; terraform contract
+tests, lint, mypy and 3210 unit tests all pass.
+
+### Blocker: Terraform Azure provider 403
+
+`403 Server failed to authenticate the request` on `management.azure.com` while the
+`az` CLI itself works (it can read the container apps). A CLI-works/Terraform-403 split
+usually means the provider is not using the CLI credential — most often stale or partial
+`ARM_*` environment variables taking precedence.
+
+Diagnose before reaching for a service principal:
+
+```bash
+env | grep -E '^ARM_|^AZURE_' || echo "no ARM_/AZURE_ vars set"
+az account show --query "{user:user.name,tenant:tenantId,sub:id}" -o json
+```
+
+If any `ARM_CLIENT_ID` / `ARM_CLIENT_SECRET` / `ARM_TENANT_ID` are set but incomplete or
+stale, unset them so the provider falls back to the CLI credential:
+
+```bash
+unset ARM_CLIENT_ID ARM_CLIENT_SECRET ARM_TENANT_ID ARM_SUBSCRIPTION_ID ARM_USE_CLI
+az account set --subscription 169644fd-c81d-4935-af55-5770f8271022
+terraform -chdir=infrastructure/terraform plan -var-file=environments/staging.tfvars -out=tfplan
+```
+
+Note the remote state backend needs its own credential — a SAS token that expires in ~2h
+(see STANDALONE-READINESS "Local Terraform State Access"); a 403 can come from the
+backend rather than the provider. `terraform init -reconfigure` with a fresh SAS is the
+fix for that case. All state mutations normally happen in CI, where OIDC is configured;
+local Terraform is read-only for planning.
+
+### After apply, verify
+
+```bash
+# Expect recipient-import-digest present, and AUDIT_HMAC absent (absence is correct)
+az containerapp show -g rg-kp-staging -n ca-kp-staging-operator \
+  --query "properties.template.containers[0].env[].name" -o tsv | grep -E 'RECIPIENT_IMPORT_DIGEST|AUDIT_HMAC'
+```
+
+A current image must also be rolled — the deployed one predates `3ea6fb5`, so the import
+path still calls the old code regardless of env vars.
+
+Then test import:
+```bash
+TOKEN=$(az account get-access-token --resource "api://97466174-d0ac-460c-94e8-7b6ff3c83da5" --query accessToken -o tsv | tr -d '\n\r')
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  "https://ca-kp-staging-operator.calmflower-9463bfc2.eastus2.azurecontainerapps.io/api/v1/recipients/import/preview" \
+  -d '{"csv_text":"email\nuser1@gmail.com"}'
 ```
 
 ---

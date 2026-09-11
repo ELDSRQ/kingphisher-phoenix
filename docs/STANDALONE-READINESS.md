@@ -7,6 +7,19 @@
 > 2-person IT team is not blocked by a 3-approver control; and two real bugs that only
 > ever surfaced on the standalone path were fixed (IPv4 loopback probing, audit-anchor
 > provider default). See `AI_HANDOFF_2026-09-11.md` for the full picture.
+> 
+> **Addendum 2026-09-11 (end of session, head `656b3e2`)** — Azure live E2E is gated by
+> a Terraform apply that is **blocked on Azure provider auth (403 on
+> management.azure.com)** while the `az` CLI itself works. DMARC for
+> `mail.floridamanevolved.us` is in place.
+>
+> An earlier version of this addendum listed `OPERATOR_API_AUDIT_HMAC_KEY` and
+> `KP_WORKER_AUDIT_HMAC_KEY` among the missing env vars. **That was wrong** — `audit-hmac`
+> is the audit signing root, held by the migration identity only, and granting it to the
+> operator or workers fails
+> `test_audit_signing_root_is_exposed_only_to_migration_identity`. The pending changes are
+> `recipient-import-digest` in the operator's container `secret` block (completing
+> `3ea6fb5`) and `allowed_recipient_domains` in staging tfvars.
 
 ---
 
