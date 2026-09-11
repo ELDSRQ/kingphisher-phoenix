@@ -307,7 +307,7 @@ def _recipient_import_plan(
         update_rows=tuple(update_rows),
         deactivate_rows=tuple(deactivate_rows),
         counts=counts,
-        digest=recipient_import_digest(settings.require_secret_key(), digest_payload),
+        digest=recipient_import_digest(settings.require_recipient_import_digest_key(), digest_payload),
         can_apply=deactivation_safe,
     )
 

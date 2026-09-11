@@ -61,6 +61,15 @@ class OperatorApiSettings(BaseSettings):
     database_url: str = "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher"
     audit_database_url: str = "postgresql+psycopg://audit_writer:audit_writer@localhost:5432/kingphisher"
     audit_hmac_key: str = ""
+    #: HMAC key binding a recipient-import preview to its apply (RCP-011). The
+    #: operator API is deliberately denied the audit signing root — "API replicas
+    #: stage intent only; they never receive the key" (main.py) — so the import
+    #: digest cannot borrow audit_hmac_key in a managed deployment: it is not
+    #: provisioned there, and granting it would let the API forge audit entries.
+    #: This is the operator's own key, provisioned alongside its other secrets.
+    #: Falls back to audit_hmac_key only where that key is already present (the
+    #: on-prem .env posture), so existing standalone stacks keep working.
+    recipient_import_digest_key: str = ""
     ciphertext_kek: str = ""
     ciphertext_key_id: str = "primary"
     ciphertext_prior_keys: str = Field(default="", max_length=512)
@@ -359,6 +368,24 @@ class OperatorApiSettings(BaseSettings):
         if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
             raise RuntimeError("OPERATOR_API_ACS_RECEIPT_SIGNING_KEY must be 64 lowercase hexadecimal characters")
         return bytes.fromhex(value)
+
+    def require_recipient_import_digest_key(self) -> bytes:
+        """Return the key binding an import preview to its apply.
+
+        Prefers the operator's own key. Falls back to audit_hmac_key where it is
+        configured (on-prem .env) so standalone stacks are unaffected, and fails
+        closed when neither is set rather than silently weakening the binding.
+        """
+        configured = self.recipient_import_digest_key or self.audit_hmac_key
+        if not configured:
+            raise RuntimeError("OPERATOR_API_RECIPIENT_IMPORT_DIGEST_KEY is required to import recipients")
+        try:
+            key = bytes.fromhex(configured)
+        except ValueError:
+            raise RuntimeError("OPERATOR_API_RECIPIENT_IMPORT_DIGEST_KEY must be a hex string") from None
+        if len(key) != 32:
+            raise RuntimeError("OPERATOR_API_RECIPIENT_IMPORT_DIGEST_KEY must be a 256-bit hex key (64 hex chars)")
+        return key
 
     def require_secret_key(self) -> bytes:
         if not self.audit_hmac_key:

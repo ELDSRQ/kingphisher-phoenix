@@ -735,6 +735,10 @@ resource "random_password" "ai_gateway_auth" {
   special = false
 }
 resource "random_id" "audit_hmac" { byte_length = 32 }
+# RCP-011: the operator API binds a recipient-import preview to its apply with
+# an HMAC. It cannot use the audit root for this — API replicas are deliberately
+# never given that key — so it gets its own.
+resource "random_id" "recipient_import_digest" { byte_length = 32 }
 resource "random_id" "ciphertext_kek" {
   byte_length = 32
   keepers = {
@@ -1077,6 +1081,7 @@ locals {
     domain-verify-key       = random_id.domain_verification.hex
     acs-receipt-signing-key = random_id.acs_receipt_signing.hex
     awareness-pseudonym-key = random_id.awareness_pseudonym.hex
+    recipient-import-digest = random_id.recipient_import_digest.hex
     },
     # redis-url only exists when the data plane (Redis) is deployed.
     local.data_plane ? { redis-url = local.redis_url } : {},
@@ -1109,6 +1114,7 @@ locals {
     {
       operator = toset([
         "operator-database-url",
+        "recipient-import-digest",
         "audit-database-url",
         "redis-url",
         "ciphertext-kek",
@@ -1492,6 +1498,7 @@ resource "azurerm_container_app" "operator" {
           OPERATOR_API_CIPHERTEXT_KEK               = { value = null, secret = "ciphertext-kek" }
           OPERATOR_API_CIPHERTEXT_KEY_ID            = { value = trimspace(var.ciphertext_active_key_id), secret = null }
           OPERATOR_API_RECIPIENT_HASH_SALT          = { value = null, secret = "recipient-salt" }
+          OPERATOR_API_RECIPIENT_IMPORT_DIGEST_KEY  = { value = null, secret = "recipient-import-digest" }
           OPERATOR_API_CONSOLE_JWT_SECRET           = { value = null, secret = "console-jwt" }
           OPERATOR_API_ROE_SIGNING_KEY              = { value = null, secret = "roe-signing-key" }
           OPERATOR_API_DOMAIN_VERIFY_KEY            = { value = null, secret = "domain-verify-key" }

@@ -71,6 +71,66 @@ def test_default_policy_is_enforce() -> None:
     assert _settings(oidc_mode="dev", dev_stack=True).approval_policy is ApprovalPolicy.ENFORCE
 
 
+# --- single-operator posture (small-team, supported) --------------------------------
+
+
+def test_single_operator_is_permitted_under_real_oidc() -> None:
+    # Unlike single-admin, this is a supported posture for a real deployment:
+    # an organisation with a two-person IT team has no second approver.
+    settings = _settings(oidc_mode="oidc", approval_policy="single-operator")
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_OPERATOR
+
+
+def test_single_operator_is_permitted_without_a_dev_stack() -> None:
+    settings = _settings(approval_policy="single-operator")
+    assert settings.approval_policy is ApprovalPolicy.SINGLE_OPERATOR
+    assert settings.dev_stack is False
+
+
+def test_single_operator_does_not_unlock_the_empty_allowlist() -> None:
+    # The separation-of-duties relaxation must not drag the recipient-domain
+    # control with it: that is what bounds who can actually be mailed.
+    settings = _settings(approval_policy="single-operator", allowed_recipient_domains="")
+    with pytest.raises(ValidationError_):
+        resolve_recipient_policy(settings)
+
+
+def test_single_operator_still_honours_a_configured_allowlist() -> None:
+    settings = _settings(approval_policy="single-operator", allowed_recipient_domains="example.com")
+    allowlist, unrestricted = resolve_recipient_policy(settings)
+    assert allowlist == frozenset({"example.com"})
+    assert unrestricted is False
+
+
+def test_single_admin_remains_dev_only() -> None:
+    # The dev relaxation keeps its old, stricter gate.
+    with pytest.raises(ValidationError, match="single-admin is not permitted"):
+        _settings(approval_policy="single-admin")
+
+
+# --- recipient import digest key ---------------------------------------------------
+
+
+def test_import_digest_key_prefers_the_dedicated_key() -> None:
+    settings = _settings(recipient_import_digest_key="ab" * 32, audit_hmac_key=HMAC)
+    assert settings.require_recipient_import_digest_key() == bytes.fromhex("ab" * 32)
+
+
+def test_import_digest_key_falls_back_to_the_audit_key_on_prem() -> None:
+    # A standalone .env stack sets only OPERATOR_API_AUDIT_HMAC_KEY; it must keep
+    # working without being reconfigured.
+    settings = _settings(audit_hmac_key=HMAC)
+    assert settings.require_recipient_import_digest_key() == bytes.fromhex(HMAC)
+
+
+def test_import_digest_key_fails_closed_when_neither_is_set() -> None:
+    # The managed posture never grants the operator the audit root, so this is
+    # the case that 500'd on Azure before the dedicated key existed.
+    settings = _settings(audit_hmac_key="")
+    with pytest.raises(RuntimeError, match="RECIPIENT_IMPORT_DIGEST_KEY is required"):
+        settings.require_recipient_import_digest_key()
+
+
 # --- KP_PROFILE presets ------------------------------------------------------------
 
 
