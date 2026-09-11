@@ -1,6 +1,13 @@
 # Standalone Readiness Assessment
 **Date:** 2026-09-10 | **Head:** `3b8cd47` | **Deploy:** `34479747420` ✅
 
+> **Addendum 2026-09-11 (head `656b3e2`)** — the assessment below still holds; three
+> things changed. The standalone campaign-lifecycle E2E now **passes 8/8** run by a
+> single operator; a supported **`single-operator`** approval posture was added so a
+> 2-person IT team is not blocked by a 3-approver control; and two real bugs that only
+> ever surfaced on the standalone path were fixed (IPv4 loopback probing, audit-anchor
+> provider default). See `AI_HANDOFF_2026-09-11.md` for the full picture.
+
 ---
 
 ## 1. Is a Process in Place to Prevent the 409 Loop?
@@ -65,7 +72,7 @@
 | **Directory Sync** | Entra ID (Graph) | Keycloak sync provider (Phase 3) / LLDAP | Phase 3 |
 | **Reported Mailbox** | M365 Graph | IMAP provider (Phase 3) + Dovecot | Phase 3 |
 | **Receipts** | Event Grid → ACS | SMTP DSN + relay webhook (Phase 4) | Phase 4 |
-| **Audit Anchor** | Azure Blob (locked, WORM) | MinIO Object Lock (compliance mode) | Phase 5 |
+| **Audit Anchor** | Azure Blob (locked, WORM) | `local_worm` today; MinIO Object Lock (compliance mode) | ✅ local_worm / Phase 5 for MinIO |
 | **Secrets** | Key Vault references | `.env` (dev) / SOPS+age / Vault (Phase 2) | Phase 2 |
 | **AI Backend** | Foundry Serverless (D-0001) | llama.cpp + ai-gateway (local) | ✅ **Already working** |
 | **AI Model** | Foundry Serverless (pay-per-token) | **gpt-oss-120b** (Qwen) local | ⚠️ **Quality risk** |
@@ -81,6 +88,7 @@
 |---|---|
 | Operator console (login, campaign CRUD, recipient CSV import) | ✅ |
 | Campaign creation, preview, approval (ENFORCE two-person) | ✅ |
+| Full campaign lifecycle run by ONE operator (`single-operator`) | ✅ E2E 8/8 (2026-09-11) |
 | Tracking API (open/click pixel, training pages) | ✅ |
 | Worker roles (ingestion, delivery, retention, reminder, etc.) | ✅ |
 | Audit anchor chain (local_worm or MinIO Object Lock) | ✅ |
@@ -126,3 +134,32 @@
 | **Ready for campaign?** | Infrastructure ✅. Next: recipients CSV → canary send → launch. |
 
 **Recommendation:** Proceed to recipients import → canary send → launch. The infrastructure is solid.
+
+---
+
+## Addendum detail — 2026-09-11
+
+### Standalone-only bugs found and fixed
+Both were invisible on Azure and blocked the standalone E2E:
+
+- **IPv4 loopback probing** (`4b59812`). `_resolve_pinned_target` validated every DNS
+  answer then pinned `resolved[0]`. On a dual-stack host `localhost` resolves to `::1`
+  first, but tunnels and Docker bind IPv4 only, so the console reported the identity and
+  AI connectors as *failing configuration* when curl reached them fine.
+- **Audit-anchor provider default** (`656b3e2`). The worker defaults to `azure_blob`;
+  without `KP_WORKER_AUDIT_ANCHOR_PROVIDER=local_worm` it never became ready, and the
+  operator API then refused every privileged change with `audit_integrity_unhealthy` —
+  surfacing as unexplained 503s on campaign creation and directory sync.
+
+### Divergence worth watching
+The standalone `.env` hands the operator API the audit HMAC key; the managed posture
+deliberately does **not** (API replicas stage intent only). That difference masked a real
+defect — recipient import reached for the audit signing root and 500'd on Azure only.
+Fixed in `3ea6fb5` by giving the import digest its own key. **When a capability works
+standalone but not on Azure, suspect the standalone posture is the weaker one.**
+
+### Approval posture
+`single-operator` is now the supported small-team posture: it drops the second approver
+and nothing else. It does **not** unlock the empty-allowlist allow-all that `SINGLE_ADMIN`
+does — the recipient-domain control still fails closed. `ENFORCE` remains the default.
+
