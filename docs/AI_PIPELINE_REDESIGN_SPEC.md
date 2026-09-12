@@ -103,6 +103,13 @@ Conventions for **every** task (the "land" checklist):
 
 ### Phase 0 — Reliability (do first; fixes the live dead-lettering)
 
+> **✅ P0 AS-BUILT (2026-09-12, PR #1) — corrections to the tasks below, learned by benchmarking live Foundry:**
+> - **`gpt-oss-120b` bounds fix *latency* but not *correctness*:** even bounded it is ~20% schema-**invalid** (flaky Preview model). So the model swap is required, not optional — the T0.1 "1.69s valid JSON" grounding proof was a single lucky call.
+> - **`gpt-5.6-terra` config is different from what T0.3 assumed:** terra **rejects `reasoning_effort`** (400) and **rejects any explicit `temperature`** (400). So staging runs terra with `ai_reasoning_effort=""`, `ai_send_temperature=false`, `ai_max_completion_tokens=2000` — **not** `reasoning_effort=low`. A third gateway control, **`KP_AI_GATEWAY_SEND_TEMPERATURE`**, was added to T0.1 to omit temperature. (`reasoning_effort=low` is correct only for gpt-oss-120b, which production still uses via defaults.)
+> - **Benchmarked:** terra (no-temp, 2000-cap) 10/10 valid, p50 4.5s / p95 5.4s, zero timeouts; durable worker timeout pinned at **30s**.
+> - **Model ownership moved to `environments/<env>.tfvars`:** `azure-deploy.yml` passed `-var="ai_foundry_model=..."` which overrides `-var-file`; that line was removed from both plan steps so tfvars owns the model (the `AI_FOUNDRY_MODEL` GitHub var is now unused). The reasoning/token/temperature/timeout vars were never `-var`-passed, so tfvars owns them too.
+> - **Foundry model deployments are out-of-band** (`az cognitiveservices account deployment create`), not Terraform-managed — `gpt-5.6-terra` is already deployed alongside `gpt-oss-120b`. (T0.2's "Terraform" framing is aspirational; the account isn't in IaC.)
+
 **T0.1 — Gateway: add bounded reasoning + output tokens.**
 - Files: `apps/ai-gateway/src/kp_ai_gateway/config.py`, `apps/ai-gateway/src/kp_ai_gateway/main.py`, `apps/ai-gateway/tests/test_gateway.py`.
 - Add `GatewaySettings` fields: `max_completion_tokens: int | None = None` (env `KP_AI_GATEWAY_MAX_COMPLETION_TOKENS`), `reasoning_effort: str | None = None` (env `KP_AI_GATEWAY_REASONING_EFFORT`, validated to one of `minimal|low|medium|high` when set). Keep both optional so the local `llama.cpp` path (which may not accept them) is unchanged when unset.
