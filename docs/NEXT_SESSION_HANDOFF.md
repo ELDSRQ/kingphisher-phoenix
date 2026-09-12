@@ -1,5 +1,9 @@
 # Next-session handoff
 
+> **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-12.md` (repo root) — read that
+> first.** It covers the P0–P3 AI-pipeline redesign (four stacked PRs, not yet
+> merged). Blocker #1 below is resolved there.
+
 ## Addendum 2026-09-11 (end of session, head `e41e3e9` or later) — CURRENT STATE
 
 **Azure staging:** Infrastructure healthy, token auth working. **Blocked on Terraform Azure provider auth (403 on management.azure.com)** — Terraform changes for missing env vars are ready in `main.tf` + `staging.tfvars` but cannot be applied.

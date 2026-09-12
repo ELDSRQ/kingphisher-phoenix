@@ -1,4 +1,10 @@
 # AI Handoff — Phishing Awareness Platform
+
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-12.md`** — read that first. Since this
+> doc: the generation blocker was diagnosed+fixed and a P0–P3 AI-pipeline
+> redesign shipped as four stacked PRs (not yet merged). Content below is kept as
+> history; the `gpt-4.1-mini` suggestion in "Open / lower priority" is retracted.
+
 **Date:** 2026-09-11 (updated end of session)
 **Head:** `e41e3e9` or later on `main` — confirm with `git log --oneline -3`.
 A doc cannot name its own commit, so the docs commits at the top of the log will be
