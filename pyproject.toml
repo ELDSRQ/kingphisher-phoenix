@@ -38,6 +38,7 @@ kp-campaign-patterns = { workspace = true }
 kp-test-fixtures = { workspace = true }
 kp-templating = { workspace = true }
 kp-domain-verification = { workspace = true }
+kp-operator-api = { workspace = true }
 
 [tool.ruff]
 line-length = 120
