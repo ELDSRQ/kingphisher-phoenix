@@ -40,6 +40,9 @@ class _Settings:
     ai_bearer_token = ""
     ai_api_key = ""
     ai_model_id = "normal-model"
+    #: P1 extraction is off by default in these tests, so generation is
+    #: unchanged from the deterministic-pattern baseline.
+    ai_extract_model_id: str | None = None
     provider_timeout_seconds = 2.0
 
     def brand_allowlist_set(self) -> set[str]:
@@ -1056,3 +1059,106 @@ def test_generation_placeholder_stand_in_does_not_hide_other_external_links(
 
     assert session.added == []
     assert session.pending_audits == []
+
+
+# --- P1: model-based campaign extraction/enrichment --------------------------
+
+
+def _extract_settings(model_id: str | None = "extract-model") -> SimpleNamespace:
+    return SimpleNamespace(
+        effective_ai_base_url="https://ai.example",
+        ai_bearer_token="",
+        ai_api_key="",
+        provider_timeout_seconds=2.0,
+        ai_extract_model_id=model_id,
+    )
+
+
+def _record_body(model_id: str = "extract-model") -> bytes:
+    return json.dumps(
+        {
+            "campaign_name": "DocuSign invoice lure",
+            "claimed_brand": "DocuSign",
+            "target_sector": "finance",
+            "target_region": "",
+            "lure_theme": "completed document",
+            "reported_subjects": ["Completed: Invoice for review"],
+            "sender_characteristics": "spoofs docusign-mail[.]com",
+            "body_characteristics": "links to a credential portal",
+            "call_to_action": "review the invoice",
+            "delivery_method": "email",
+            "evidence_excerpt": "DocuSign invoice lure targeting finance",
+            "confidence": 0.8,
+            "model_id": model_id,
+        }
+    ).encode()
+
+
+def test_extraction_disabled_returns_none_without_calling_the_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kp_workers import jobs
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise AssertionError("extraction must not call the gateway when disabled")
+
+    monkeypatch.setattr(httpx, "stream", _boom)
+    # _Ctx().settings.ai_extract_model_id is None.
+    assert jobs._maybe_extract_campaign_record(_Ctx(), _build(_Pattern())) is None
+
+
+def test_extraction_returns_pinned_record_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kp_workers import jobs
+
+    captured: dict[str, Any] = {}
+
+    @contextmanager
+    def stream(*args: object, **kwargs: object) -> Iterator[httpx.Response]:
+        captured["args"] = args
+        captured.update(kwargs)
+        yield _streaming_response(_record_body("extract-model"))
+
+    monkeypatch.setattr(httpx, "stream", stream)
+    record = jobs._maybe_extract_campaign_record(SimpleNamespace(settings=_extract_settings()), _build(_Pattern()))
+    assert record is not None
+    assert record.claimed_brand == "DocuSign"
+    assert record.model_id == "extract-model"
+    # It hit the /extract endpoint (method, url) are positional to httpx.stream.
+    assert str(captured["args"][1]).endswith("/extract")
+
+
+def test_extraction_falls_back_to_none_on_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kp_workers import jobs
+
+    @contextmanager
+    def stream(*_args: object, **_kwargs: object) -> Iterator[httpx.Response]:
+        raise httpx.ConnectError("backend down")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(httpx, "stream", stream)
+    assert (
+        jobs._maybe_extract_campaign_record(SimpleNamespace(settings=_extract_settings()), _build(_Pattern())) is None
+    )
+
+
+def test_extraction_falls_back_to_none_on_model_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kp_workers import jobs
+
+    @contextmanager
+    def stream(*_args: object, **_kwargs: object) -> Iterator[httpx.Response]:
+        yield _streaming_response(_record_body("a-different-model"))
+
+    monkeypatch.setattr(httpx, "stream", stream)
+    assert (
+        jobs._maybe_extract_campaign_record(SimpleNamespace(settings=_extract_settings()), _build(_Pattern())) is None
+    )
+
+
+def test_with_campaign_record_enriches_the_generation_request() -> None:
+    from kp_contracts.generation import CampaignRecord
+    from kp_workers import jobs
+
+    request = _build(_Pattern())
+    assert request.campaign_record is None
+    record = CampaignRecord.model_validate(json.loads(_record_body("extract-model")))
+    enriched = jobs._with_campaign_record(request, record)
+    assert enriched.campaign_record is not None
+    assert enriched.campaign_record.claimed_brand == "DocuSign"

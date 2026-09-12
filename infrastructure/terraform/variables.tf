@@ -191,6 +191,39 @@ variable "ai_max_completion_tokens" {
   }
 }
 
+variable "ai_extract_model" {
+  description = <<-EOT
+    P1 extraction stage. When non-empty, enables the gateway ``/extract`` endpoint
+    and the generation worker's pre-generation enrichment using THIS Foundry model
+    (e.g. gpt-5.6-luna). Wired identically to the gateway's
+    KP_AI_GATEWAY_EXTRACT_MODEL_ID and the worker's KP_WORKER_AI_EXTRACT_MODEL_ID
+    (one value, so the extract pin cannot drift). Empty (the default) disables
+    extraction, so generation uses the deterministic pattern alone — correct for a
+    single-model or offline deployment. The deployment must exist in the Foundry
+    account first (out-of-band, like the generation model).
+  EOT
+  type        = string
+  default     = ""
+  validation {
+    condition     = length(var.ai_extract_model) <= 128
+    error_message = "ai_extract_model must be at most 128 characters (the worker pins the same value)."
+  }
+}
+
+variable "ai_extract_reasoning_effort" {
+  description = <<-EOT
+    Reasoning effort for the extraction model (KP_AI_GATEWAY_EXTRACT_REASONING_EFFORT):
+    none | minimal | low | medium | high, or empty to send no field. For
+    gpt-5.6-luna extraction, ``none`` is correct (fast, reproducible).
+  EOT
+  type        = string
+  default     = "none"
+  validation {
+    condition     = contains(["", "none", "minimal", "low", "medium", "high"], var.ai_extract_reasoning_effort)
+    error_message = "ai_extract_reasoning_effort must be one of: (empty), none, minimal, low, medium, high."
+  }
+}
+
 variable "ai_send_temperature" {
   description = <<-EOT
     Whether the gateway sends an explicit `temperature` (KP_AI_GATEWAY_SEND_TEMPERATURE).

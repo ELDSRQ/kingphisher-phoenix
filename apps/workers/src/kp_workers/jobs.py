@@ -41,6 +41,8 @@ from kp_contracts.generation import (
     MAX_SOURCE_EXCERPT_CHARS,
     MAX_SOURCE_EXCERPTS,
     TRAINING_URL_PLACEHOLDER,
+    CampaignExtractionRequest,
+    CampaignRecord,
     GenerationRequest,
     GenerationResponse,
     PatternContext,
@@ -538,6 +540,11 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
 
         as_of = datetime.now(UTC)
         generation_request = _build_generation_request(ctx, pattern, as_of=as_of)
+        # P1: optionally enrich the evidence with a model-extracted CampaignRecord.
+        # Fail-closed — a None record leaves the deterministic pattern untouched.
+        campaign_record = _maybe_extract_campaign_record(ctx, generation_request)
+        if campaign_record is not None:
+            generation_request = _with_campaign_record(generation_request, campaign_record)
         response = _call_ai(ctx, generation_request)
 
         validator = SafetyValidator(training_domains=ctx.settings.training_domain_set())
@@ -567,6 +574,10 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # feed document here: PatternContext has already enforced the field,
         # collection, nesting, and aggregate request caps.
         proposal["generation_evidence"] = generation_request.pattern.model_dump(mode="json")
+        # P1 provenance: the normalized record the generator was grounded on
+        # (absent when extraction was not configured or fell back).
+        if campaign_record is not None:
+            proposal["campaign_record"] = campaign_record.model_dump(mode="json")
 
         template = TemplateVersion(
             template_version_id=uuid.uuid4(),
@@ -2568,6 +2579,68 @@ def _bounded_ai_json(response: _BoundedResponseLike, *, max_bytes: int = _MAX_AI
         return json.loads(body)
     except (UnicodeDecodeError, ValueError, RecursionError):
         raise AIResponseError("AI response is not valid JSON") from None
+
+
+def _maybe_extract_campaign_record(ctx: WorkerContext, request: GenerationRequest) -> CampaignRecord | None:
+    """P1: normalize the evidence into a ``CampaignRecord`` via the gateway's
+    ``/extract`` endpoint, for richer, more specific generation grounding.
+
+    Enrichment only — it NEVER blocks or fails generation. When extraction is
+    unconfigured, errors, times out, returns an off-contract body, or the pinned
+    extract model id does not match, it returns ``None`` and the worker generates
+    from the deterministic pattern alone (fail-closed to the baseline behaviour).
+    """
+
+    extract_model_id = ctx.settings.ai_extract_model_id
+    if not extract_model_id:
+        return None
+    try:
+        extraction_request = CampaignExtractionRequest(
+            pattern=request.pattern,
+            as_of=request.as_of,
+            context_untrusted=request.context_untrusted,
+            neutralization_reasons=request.neutralization_reasons,
+        )
+        request_payload = extraction_request.model_dump(mode="json")
+        counting = _CountingResponse()
+        with (
+            provider_call("ai", "extract"),
+            httpx.stream(
+                "POST",
+                f"{ctx.settings.effective_ai_base_url.rstrip('/')}/extract",
+                json=request_payload,
+                headers=_provider_headers(ctx.settings.ai_bearer_token, ctx.settings.ai_api_key),
+                timeout=ctx.settings.provider_timeout_seconds,
+            ) as response,
+        ):
+            response.raise_for_status()
+            counting.wrap(response)
+            payload = _bounded_ai_json(counting)
+        record = CampaignRecord.model_validate(payload)
+    except (httpx.HTTPError, PydanticValidationError, AIResponseError, ValueError, TypeError) as exc:
+        # Any failure degrades to "no record"; generation proceeds unchanged.
+        logger.info("campaign extraction unavailable (%s); generating from the pattern alone", type(exc).__name__)
+        return None
+    # AI-010-style pin, soft: a mismatched extract model is ignored (and the
+    # generation pin still fails closed), not fatal — extraction is enrichment.
+    if not secrets.compare_digest(extract_model_id, record.model_id):
+        metrics.increment("kp_worker_ai_model_mismatch_total")
+        logger.info("extract model id did not match the pin; generating from the pattern alone")
+        return None
+    return record
+
+
+def _with_campaign_record(request: GenerationRequest, record: CampaignRecord) -> GenerationRequest:
+    """Return ``request`` enriched with ``record``, or the original unchanged if
+    that would breach the serialized-size boundary (fail-closed to baseline)."""
+
+    try:
+        return GenerationRequest.model_validate(
+            {**request.model_dump(mode="json"), "campaign_record": record.model_dump(mode="json")}
+        )
+    except PydanticValidationError:
+        logger.info("enriched generation request exceeds the size boundary; using the pattern alone")
+        return request
 
 
 def _call_ai(ctx: WorkerContext, request: GenerationRequest) -> GenerationResponse:

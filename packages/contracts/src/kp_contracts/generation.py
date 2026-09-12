@@ -127,6 +127,69 @@ class PatternContext(BaseModel):
         return validated
 
 
+class CampaignRecord(BaseModel):
+    """Normalized, evidence-grounded campaign facts (P1 extraction stage).
+
+    Produced by the extraction model from already-neutralized evidence and
+    folded into the generation request so the generator writes from specific,
+    current facts rather than coarse keyword categories. Strict and bounded, and
+    it MUST NOT carry recipient or internal PII — only public threat-intel facts.
+
+    Every field is required (no defaults) so the strict ``json_schema`` decoder
+    emits all of them; an unsupported field is an empty string / empty list /
+    ``0.0`` rather than an omission. ``model_id`` is the gateway's pinned extract
+    identity (set by the gateway, not the model), mirroring ``GenerationResponse``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_name: ContextText
+    claimed_brand: ContextText
+    target_sector: ContextText
+    target_region: ContextText
+    lure_theme: ContextText
+    reported_subjects: list[ContextListText] = Field(max_length=MAX_PATTERN_LIST_ITEMS)
+    sender_characteristics: ContextText
+    body_characteristics: ContextText
+    call_to_action: ContextText
+    delivery_method: ContextText
+    evidence_excerpt: SourceExcerpt
+    confidence: float
+    model_id: str = Field(min_length=1, max_length=MAX_GENERATED_MODEL_ID_CHARS)
+
+    @field_validator("confidence")
+    @classmethod
+    def clamp_finite_confidence(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("confidence must be finite")
+        return max(0.0, min(1.0, value))
+
+
+class CampaignExtractionRequest(BaseModel):
+    """What the platform sends to a gateway ``/extract`` endpoint.
+
+    The same bounded, already-neutralized evidence as generation, minus the
+    generation-only fields (training placeholder, guidance). The gateway returns
+    a :class:`CampaignRecord`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    pattern: PatternContext
+    as_of: str = Field(min_length=1, max_length=64)
+    context_untrusted: bool = False
+    neutralization_reasons: list[NeutralizationReason] = Field(
+        default_factory=list,
+        max_length=MAX_NEUTRALIZATION_REASONS,
+    )
+
+    @model_validator(mode="after")
+    def require_bounded_serialized_request(self) -> CampaignExtractionRequest:
+        if len(self.model_dump_json().encode("utf-8")) > MAX_GENERATION_REQUEST_BYTES:
+            raise ValueError("extraction request exceeds maximum serialized size")
+        return self
+
+
 class GenerationRequest(BaseModel):
     """What the platform sends to a generation gateway."""
 
@@ -160,6 +223,13 @@ class GenerationRequest(BaseModel):
         ),
         max_length=512,
     )
+
+    #: Optional normalized campaign facts from the P1 extraction stage. When
+    #: present, the gateway folds it into the evidence the generator sees so the
+    #: draft is grounded in specific, current facts rather than coarse keyword
+    #: categories. Absent when extraction is not configured, so the contract and
+    #: behaviour are unchanged in that case.
+    campaign_record: CampaignRecord | None = None
 
     @model_validator(mode="after")
     def require_bounded_serialized_request(self) -> GenerationRequest:

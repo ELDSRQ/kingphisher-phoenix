@@ -235,6 +235,13 @@ class WorkerSettings(BaseSettings):
     #: ``model_id`` must match this constant-time identity or the call fails
     #: closed: a swapped model cannot silently change what the human reviews.
     ai_model_id: str | None = Field(default=None, min_length=1, max_length=128)
+    #: P1 extraction stage. When set, the generation worker first calls the
+    #: gateway ``/extract`` to normalize the evidence into a ``CampaignRecord``
+    #: and folds it into the generation request. Must equal the gateway's
+    #: ``KP_AI_GATEWAY_EXTRACT_MODEL_ID`` (the record's pinned ``model_id`` is
+    #: compared against it, constant-time). ``None`` disables extraction, so the
+    #: worker generates from the deterministic pattern alone (unchanged).
+    ai_extract_model_id: str | None = Field(default=None, min_length=1, max_length=128)
     kp_profile: KPProfile = Field(
         default=KPProfile.LOCAL_DEV,
         validation_alias=AliasChoices("KP_PROFILE", "KP_WORKER_PROFILE"),
@@ -374,6 +381,8 @@ class WorkerSettings(BaseSettings):
         _validate_provider_url("reported mailbox URL", self.reported_mailbox_url)
         if self.ai_model_id and ("\x00" in self.ai_model_id or "\r" in self.ai_model_id or "\n" in self.ai_model_id):
             raise ValueError("AI model ID must be a single line without control characters")
+        if self.ai_extract_model_id and any(c in self.ai_extract_model_id for c in ("\x00", "\r", "\n")):
+            raise ValueError("AI extract model ID must be a single line without control characters")
         _validate_provider_url("tracking base URL", self.tracking_base_url)
         _validate_provider_url("training base URL", self.training_base_url)
         if self.audit_anchor_container_url:
