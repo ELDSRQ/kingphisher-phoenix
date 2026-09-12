@@ -103,6 +103,110 @@ def test_propose_sends_schema_constrained_decoding(monkeypatch) -> None:
     }
 
 
+# --- P0: optional reliability bounds (reasoning_effort + completion tokens) --
+
+
+def test_propose_omits_bounds_when_unset(monkeypatch) -> None:
+    # Default posture: neither bound configured -> the payload is byte-for-byte
+    # unchanged (no token cap, no reasoning_effort).
+    monkeypatch.setattr(gateway_main.settings, "max_completion_tokens", None)
+    monkeypatch.setattr(gateway_main.settings, "reasoning_effort", None)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    sent = captured[0]["json"]
+    assert "max_tokens" not in sent
+    assert "max_completion_tokens" not in sent
+    assert "reasoning_effort" not in sent
+
+
+def test_propose_sends_max_tokens_for_local_backend(monkeypatch) -> None:
+    # Local llama.cpp path (upstream_auth_mode="none") speaks OpenAI max_tokens.
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "none")
+    monkeypatch.setattr(gateway_main.settings, "max_completion_tokens", 2000)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    sent = captured[0]["json"]
+    assert sent["max_tokens"] == 2000
+    assert "max_completion_tokens" not in sent
+
+
+def test_propose_sends_max_completion_tokens_for_managed_backend(monkeypatch) -> None:
+    # Managed/Foundry path requires max_completion_tokens and rejects max_tokens.
+    _use_entra(monkeypatch)
+    monkeypatch.setattr(gateway_main.settings, "max_completion_tokens", 2000)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    sent = captured[0]["json"]
+    assert sent["max_completion_tokens"] == 2000
+    assert "max_tokens" not in sent
+
+
+def test_propose_sends_temperature_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "send_temperature", True)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    assert captured[0]["json"]["temperature"] == gateway_main.settings.temperature
+
+
+def test_propose_omits_temperature_when_disabled(monkeypatch) -> None:
+    # Some current GA models (e.g. gpt-5.6-terra) 400 on any explicit temperature.
+    monkeypatch.setattr(gateway_main.settings, "send_temperature", False)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    assert "temperature" not in captured[0]["json"]
+
+
+def test_propose_sends_reasoning_effort_when_set(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "reasoning_effort", "low")
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    assert captured[0]["json"]["reasoning_effort"] == "low"
+
+
+def test_completion_token_param_name_by_backend(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "entra")
+    assert gateway_main._completion_token_param() == "max_completion_tokens"
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "none")
+    assert gateway_main._completion_token_param() == "max_tokens"
+
+
+def test_settings_reject_invalid_reasoning_effort(monkeypatch) -> None:
+    import pytest
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    with pytest.raises(ValueError, match="REASONING_EFFORT"):
+        GatewaySettings(reasoning_effort="turbo")
+
+
+def test_settings_reject_nonpositive_completion_tokens(monkeypatch) -> None:
+    import pytest
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    with pytest.raises(ValueError, match="MAX_COMPLETION_TOKENS"):
+        GatewaySettings(max_completion_tokens=0)
+
+
+def test_settings_accept_valid_bounds(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    settings = GatewaySettings(reasoning_effort="low", max_completion_tokens=2000)
+    assert settings.reasoning_effort == "low"
+    assert settings.max_completion_tokens == 2000
+
+
+def test_settings_default_has_no_generation_bounds(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    settings = GatewaySettings()
+    assert settings.reasoning_effort is None
+    assert settings.max_completion_tokens is None
+    assert settings.send_temperature is True
+
+
 def test_propose_guarantees_the_training_placeholder_when_the_model_omits_it(monkeypatch) -> None:
     _stub_llama(
         monkeypatch,
