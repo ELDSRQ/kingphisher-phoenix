@@ -2396,6 +2396,34 @@ jobs:
           KP_MIGRATION_DIGEST: ${{ steps.images.outputs.migration_digest }}
           KP_AI_GATEWAY_DIGEST: ${{ steps.images.outputs.ai_gateway_digest }}
         run: python3 "$KP_CHECKPOINT_HELPER" --stage immutable_images_verified --status passed
+      - name: Clean up any existing Key Vault secret role assignments for the gateway
+        # Runs BEFORE Plan workloads: the release plan must see the live
+        # assignments already gone so it schedules their recreation in the same
+        # apply. Running it after the plan (as it previously did) deletes the
+        # assignments after the plan recorded them as no-ops, so the apply never
+        # recreates them and the receipt-activation gate then refuses the
+        # unexpected creates.
+        if: inputs.deployment_phase == 'workloads'
+        working-directory: infrastructure/terraform
+        env:
+          TF_VAR_ai_foundry_resource_id: ${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${TF_VAR_ai_foundry_resource_id}" ]; then
+            KV_NAME="kvkpstaging6117w"
+            SECRET_NAME="ai-gateway-auth-key"
+            SECRET_SCOPE="/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.KeyVault/vaults/${KV_NAME}/secrets/${SECRET_NAME}"
+            ROLE_IDS=$(az role assignment list \
+              --scope "${SECRET_SCOPE}" \
+              --role "Key Vault Secrets User" \
+              --query "[].id" -o tsv 2>/dev/null || echo '')
+            for ROLE_ID in ${ROLE_IDS}; do
+              if [ -n "${ROLE_ID}" ]; then
+                echo "Deleting existing secret-scope role assignment: ${ROLE_ID}"
+                az role assignment delete --ids "${ROLE_ID}" >/dev/null 2>&1 || true
+              fi
+            done
+          fi
       - name: Plan workloads
         if: inputs.deployment_phase == 'workloads'
         env:
@@ -2489,28 +2517,6 @@ jobs:
                 fi
               done
             fi
-          fi
-      - name: Clean up any existing Key Vault secret role assignments for the gateway
-        if: inputs.deployment_phase == 'workloads'
-        working-directory: infrastructure/terraform
-        env:
-          TF_VAR_ai_foundry_resource_id: ${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}
-        run: |
-          set -euo pipefail
-          if [ -n "${TF_VAR_ai_foundry_resource_id}" ]; then
-            KV_NAME="kvkpstaging6117w"
-            SECRET_NAME="ai-gateway-auth-key"
-            SECRET_SCOPE="/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.KeyVault/vaults/${KV_NAME}/secrets/${SECRET_NAME}"
-            ROLE_IDS=$(az role assignment list \
-              --scope "${SECRET_SCOPE}" \
-              --role "Key Vault Secrets User" \
-              --query "[].id" -o tsv 2>/dev/null || echo '')
-            for ROLE_ID in ${ROLE_IDS}; do
-              if [ -n "${ROLE_ID}" ]; then
-                echo "Deleting existing secret-scope role assignment: ${ROLE_ID}"
-                az role assignment delete --ids "${ROLE_ID}" >/dev/null 2>&1 || true
-              fi
-            done
           fi
       - name: Apply workloads
         if: inputs.deployment_phase == 'workloads'
