@@ -126,7 +126,7 @@ Conventions for **every** task (the "land" checklist):
 
 **T0.3 — Point the pipeline at the current model + set the bounds (Terraform, both sides of the pin).**
 - Files: `infrastructure/terraform/*.tf` (worker + gateway container env), `environments/staging.tfvars`.
-- Set `KP_AI_GATEWAY_MODEL_ID = gpt-5.6-terra` **and** `KP_WORKER_AI_MODEL_ID = gpt-5.6-terra` together (AI-010 pin — they must match). Set `KP_AI_GATEWAY_REASONING_EFFORT=low`, `KP_AI_GATEWAY_MAX_COMPLETION_TOKENS=2000`.
+- Set `KP_AI_GATEWAY_MODEL_ID = gpt-5.6-terra` **and** `KP_WORKER_AI_MODEL_ID = gpt-5.6-terra` together (AI-010 pin — they must match; both read `local.ai_model_id`). For terra set `KP_AI_GATEWAY_REASONING_EFFORT=""` (terra 400s on it) and `KP_AI_GATEWAY_SEND_TEMPERATURE=false` (terra 400s on an explicit temperature), plus `KP_AI_GATEWAY_MAX_COMPLETION_TOKENS=2000`. (`reasoning_effort=low` applies only to a reasoning model like gpt-oss-120b — see the as-built note above.)
 - **Durably pin** `KP_WORKER_PROVIDER_TIMEOUT_SECONDS` (supersedes the live `az containerapp update` hotfix, which reverts on deploy). With bounded reasoning, ~20s is ample; keep headroom under the 60s code cap.
 - Tests: terraform gates; post-apply assert both ids equal and reasoning/token envs present.
 - Commit: `feat(terraform): pin generation to gpt-5.6-terra with bounded reasoning and timeout`.
