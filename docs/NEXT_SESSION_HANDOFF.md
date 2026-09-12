@@ -54,6 +54,13 @@ and cleared below; do not repeat the failed fixes.
   bearer, scope `https://cognitiveservices.azure.com/.default`). GitHub env
   vars set: `AI_FOUNDRY_ENDPOINT`, `AI_FOUNDRY_RESOURCE_ID`,
   `AI_FOUNDRY_MODEL=gpt-oss-120b`, `DEPLOY_AI_GATEWAY=true`.
+  > **⚠️ ACTION REQUIRED (P0, 2026-09-12):** P0 pins staging to `gpt-5.6-terra`
+  > in `infrastructure/terraform/environments/staging.tfvars`, but the GitHub env
+  > var `AI_FOUNDRY_MODEL=gpt-oss-120b` above will **override** it if the deploy
+  > workflow passes it as `TF_VAR_ai_foundry_model` — silently reverting staging
+  > to the flaky Preview model. Before/with merging PR #1, update that GitHub env
+  > var to `gpt-5.6-terra` (or remove it so `staging.tfvars` wins). `gpt-5.6-terra`
+  > is already deployed in the Foundry account alongside `gpt-oss-120b`.
 - **AI-015 landed** (`b9284c9`): gateway has no ai-llama sidecar, entra
   upstream auth (fail-closed), `min_replicas=0`, single-source model pin
   (`local.ai_model_id` feeds both gateway MODEL_ID and worker `ai_model_id`).
@@ -78,14 +85,16 @@ fix when this addendum was written; **check its result first**.
 
 ### Persistent blockers / known bugs (OPEN)
 
-1. **gpt-oss-120b structured-output quality — OPEN, empirical.** It accepts
-   `response_format json_schema` (HTTP 200, schema-shaped) but leaks
-   reasoning-channel text into fields (`"final"`, `"analysis…"` observed).
-   The model list does not advertise `jsonSchemaResponse` for it. **Validate
-   `/propose` end-to-end through the deployed gateway before generating
-   campaign content**; if quality is unacceptable, switch `AI_FOUNDRY_MODEL`
-   to one advertising `jsonSchemaResponse` (e.g. gpt-4.1 family) — it's a
-   variable, no code change.
+1. **gpt-oss-120b structured-output quality — RESOLVED 2026-09-12 (P0, PR #1).**
+   The real cause was **unbounded reasoning effort** (generation ran past the
+   worker timeout and dead-lettered), and gpt-oss-120b is a flaky *Preview* model
+   (~20% schema-**invalid** — the `content` field is valid JSON and the gateway
+   ignores the separate `reasoning_content` channel; the earlier "leaks reasoning
+   text into fields" read was wrong). Fix: the gateway now bounds `reasoning_effort`
+   + `max_completion_tokens` and can omit `temperature`, and Azure staging is pinned
+   to **`gpt-5.6-terra`** (benchmarked 10/10 schema-valid, p95 ~5.4s). This is **not**
+   `gpt-4.1-mini` (that earlier suggestion is superseded). See
+   `docs/AI_PIPELINE_REDESIGN_SPEC.md` and `docs/AI_PIPELINE_P1-P3_RESUME.md`.
 2. **Dead no-op workflow steps — CLEANUP NEEDED.** `fedbd75` (import step) and
    `ea51330` (delete step, which replaced it) in `azure-deploy.yml` query
    `terraform output -raw ai_gateway_identity_client_id`, **which does not

@@ -72,7 +72,7 @@
 
 ## 3. Can This Run Fully Independent of Azure/Entra?
 
-**Yes — with one caveat (gpt-oss-120b structured output quality).**
+**Yes.** (The earlier gpt-oss-120b structured-output caveat is resolved — see the AI Model note below and `docs/AI_PIPELINE_REDESIGN_SPEC.md`.)
 
 ### Standalone Mode (`KP_PROFILE=local-dev` or `local-hardened`)
 | Component | Azure Dependency | Standalone Replacement | Status |
@@ -88,13 +88,12 @@
 | **Audit Anchor** | Azure Blob (locked, WORM) | `local_worm` today; MinIO Object Lock (compliance mode) | ✅ local_worm / Phase 5 for MinIO |
 | **Secrets** | Key Vault references | `.env` (dev) / SOPS+age / Vault (Phase 2) | Phase 2 |
 | **AI Backend** | Foundry Serverless (D-0001) | llama.cpp + ai-gateway (local) | ✅ **Already working** |
-| **AI Model** | Foundry Serverless (pay-per-token) | **gpt-oss-120b** (Qwen) local | ⚠️ **Quality risk** |
+| **AI Model** | `gpt-5.6-terra` (Foundry, pay-per-token) | bounded local Qwen2.5 (llama.cpp) | ✅ **Resolved** (see below) |
 
-### Critical Gap: gpt-oss-120b Structured Output Quality
-- **Status:** Accepts `json_schema` (HTTP 200) but **leaks reasoning-channel text** into fields (`"subject": "final", "body": "analysis..."`).
-- **Impact:** `/propose` endpoint returns degraded JSON — not production-ready for campaign content generation.
-- **Mitigation:** Switch `AI_FOUNDRY_MODEL` terraform variable to `gpt-4.1-mini` (has `jsonSchemaResponse: true`) or `gpt-4o-mini`. Cost remains pay-per-token; quality is production-grade.
-- **Recommendation:** Validate `/propose` end-to-end before campaign launch; treat gpt-oss-120b as dev-only until structured output is verified.
+### AI Model Structured Output — RESOLVED (P0, PR #1, 2026-09-12)
+The earlier "gpt-oss-120b quality risk" is fixed. The real cause was **unbounded reasoning effort** (generation ran past the worker timeout), and gpt-oss-120b is a flaky *Preview* model (~20% schema-**invalid** — truncated/invalid JSON; not "reasoning-channel text in fields": the `content` field is valid JSON and the gateway ignores the separate `reasoning_content` channel).
+- **Azure:** pinned to **`gpt-5.6-terra`** (current GA model) with reasoning empty, temperature omitted, and a `max_completion_tokens` cap. Benchmarked 10/10 schema-valid, p95 ~5.4s, zero timeouts (`scripts/operator/ai/benchmark_generation.py`). **Not** `gpt-4.1-mini` — that earlier suggestion is superseded.
+- **Standalone/local:** the gateway now bounds the local Qwen output (`KP_AI_GATEWAY_MAX_COMPLETION_TOKENS`, sent as `max_tokens`); the deterministic `SafetyValidator` rejects unsafe output and a human approves every draft. The planned P2 HTML allow-list sanitizer (see `docs/AI_PIPELINE_REDESIGN_SPEC.md`) further hardens the local path.
 
 ### What Works Fully Standalone Today
 | Capability | Status |
@@ -130,7 +129,7 @@
 | Recipients CSV import + preview | Phase 1 | ✅ API ready; console UI exists | Need operator auth (Entra/Keycloak) |
 | Canary send to test mailbox | Phase 1 | ✅ ACS verified | Need test mailbox |
 | DMARC record for `mail.floridamanevolved.us` | Phase 4 | Optional for ACS; improves deliverability | DNS access |
-| gpt-oss-120b quality gate | Pre-launch | Test `/propose` output; swap to gpt-4.1-mini if needed | Requires Foundry model swap |
+| ~~gpt-oss-120b quality gate~~ | ✅ Done (P0) | Resolved: bounds + `gpt-5.6-terra` (Azure); bounded Qwen (local). See `docs/AI_PIPELINE_REDESIGN_SPEC.md` | — |
 | Phase 3: IMAP provider + Keycloak sync | Phase 3 | ~2 weeks | — |
 | Phase 4: Postfix+DKIM relay + SMTP receipts | Phase 4 | ~2 weeks | DNS access |
 | Phase 5: MinIO Object Lock + S3 audit anchor provider | Phase 5 | 1-2 weeks | Separate volume/host for compliance |
@@ -143,7 +142,7 @@
 |---|---|
 | **Process to prevent 409 loop?** | ✅ Pre-apply cleanup step deletes orphaned role assignments; terraform lifecycle on Foundry assignment |
 | **Too much removed from Azure?** | No — environment is complete and healthy; only orphaned role assignments were cleaned up |
-| **Fully standalone capable?** | **Yes, with one quality caveat:** gpt-oss-120b structured output degrades JSON schema output. Swap to `gpt-4.1-mini` (via `AI_FOUNDRY_MODEL` var) for production campaigns. |
+| **Fully standalone capable?** | **Yes.** The gpt-oss-120b structured-output caveat is resolved (P0, PR #1): Azure uses `gpt-5.6-terra`; the local path uses bounded Qwen with human approval. See `docs/AI_PIPELINE_REDESIGN_SPEC.md`. |
 | **Ready for campaign?** | Infrastructure ✅. Next: recipients CSV → canary send → launch. |
 
 **Recommendation:** Proceed to recipients import → canary send → launch. The infrastructure is solid.

@@ -19,7 +19,7 @@ az cognitiveservices account deployment list -g rg-kp-staging -n ais-kp-staging-
 # after CI deploy, confirm the live gateway/worker carry the new env + matching model id:
 az containerapp show -g rg-kp-staging -n ca-kp-staging-operator --query "properties.template.containers[0].env[?name=='KP_WORKER_AI_MODEL_ID'].value" -o tsv  # (worker app)
 ```
-If a `TF_VAR_ai_foundry_model` exists in the GitHub Actions env it overrides `staging.tfvars` — check and remove it, or terra won't take.
+**CRITICAL — the CI workflow overrides the model tfvar.** `azure-deploy.yml:2453,2794` pass `-var="ai_foundry_model=${{ vars.AI_FOUNDRY_MODEL || 'gpt-oss-120b' }}"`, and a CLI `-var` overrides `-var-file`, so `staging.tfvars`'s `ai_foundry_model = "gpt-5.6-terra"` is **ignored by CI**. Worse: staging.tfvars sets `ai_reasoning_effort=""` (correct for terra), so if the model stays gpt-oss-120b the gateway runs it **unbounded** → the original regression. **Before/with merging PR #1, set the GitHub Actions variable `AI_FOUNDRY_MODEL=gpt-5.6-terra`** (`gh variable set AI_FOUNDRY_MODEL --body gpt-5.6-terra`, at repo or the staging environment scope — check where it lives), OR change the workflow to stop passing `-var ai_foundry_model` and let tfvars own it. The other P0 knobs (`ai_reasoning_effort`, `ai_send_temperature`, `ai_max_completion_tokens`, `worker_provider_timeout_seconds`) are NOT passed as `-var`, so they take effect from tfvars correctly.
 
 ---
 

@@ -308,7 +308,7 @@ allowlist, which is correct behaviour and not a bug.
 Either add a third Entra identity with approver roles, or set staging to `single-operator` to match on-prem posture and 2-person IT reality.
 
 ### 5. Open / lower priority
-- `gpt-oss-120b` structured output leaks reasoning channels → consider `AI_FOUNDRY_MODEL=gpt-4.1-mini`
+- ~~`gpt-oss-120b` structured output leaks reasoning channels → consider `AI_FOUNDRY_MODEL=gpt-4.1-mini`~~ **RESOLVED 2026-09-12 (P0, PR #1):** root cause was unbounded reasoning effort (not a leak); fixed by bounding `reasoning_effort`/`max_completion_tokens` + omitting temperature, and pinning Azure to `gpt-5.6-terra` (benchmarked 10/10 valid). Superseded the `gpt-4.1-mini` idea. See `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
 - Branch protection bypass (3 pushes bypassed protection; CI passed after merge)
 - Old `kp_console_postgres_data` volume: recover via `PRIOR_KEYS` or remove
 

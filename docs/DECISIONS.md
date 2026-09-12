@@ -147,3 +147,14 @@ outbound, and how the deployed model name is supplied.
 - Also unverified: the exact Foundry endpoint path shape for the chosen
   deployment, that `gpt-oss-120b` is deployed in the target Foundry resource,
   and live IMDS token acquisition from a Container App.
+- **VERIFICATION CLOSED 2026-09-12 (P0, PR #1).** Live Foundry calls were made
+  against `ais-kp-staging-6117w` (`/openai/v1/chat/completions`). Findings:
+  `gpt-oss-120b` honors `json_schema` but is a flaky *Preview* model (~20%
+  schema-invalid) and, unbounded, runs past the worker timeout; the managed
+  gateway's user-assigned-identity IMDS/Entra auth and role are confirmed
+  working. **Staging is now pinned to `gpt-5.6-terra`** (current GA model;
+  benchmarked 10/10 schema-valid, p95 ~5.4s). The gateway now sends optional
+  `reasoning_effort` + `max_completion_tokens` and can omit `temperature`
+  (terra rejects both an explicit temperature and `reasoning_effort`). The
+  `ai_foundry_model` variable default stays `gpt-oss-120b`; `staging.tfvars`
+  overrides it. Full design: `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
