@@ -38,6 +38,13 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from kp_contracts.discovery import (
+    DEFAULT_ALLOWED_CITATION_DOMAINS,
+    MAX_DISCOVERY_QUERY_CHARS,
+    DiscoveryQueryError,
+    DiscoveryResult,
+    assert_pii_free_query,
+)
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER, CampaignRecord, GenerationResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -161,6 +168,39 @@ _RESPONSE_SCHEMA = GenerationResponse.model_json_schema()
 # The strict schema for the P1 extraction stage (normalized campaign record).
 _EXTRACT_RESPONSE_SCHEMA = CampaignRecord.model_json_schema()
 
+# The P3 discovery leads schema handed to the Responses API structured-output
+# decoder. All lead fields required (strict mode), model_id pinned by us.
+_DISCOVER_LEAD_PROPS: dict[str, Any] = {
+    key: {"type": "string"}
+    for key in ("title", "claimed_brand", "lure_theme", "target_sector", "summary", "published_date")
+}
+_DISCOVER_LEAD_PROPS["source_urls"] = {"type": "array", "items": {"type": "string"}}
+_DISCOVER_LEAD_PROPS["confidence"] = {"type": "number"}
+_DISCOVER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["leads"],
+    "properties": {
+        "leads": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": list(_DISCOVER_LEAD_PROPS),
+                "properties": _DISCOVER_LEAD_PROPS,
+            },
+        }
+    },
+}
+
+_DISCOVER_GUIDANCE = (
+    "You research CURRENT phishing campaigns for a security-awareness team. Using web search, find "
+    "recently reported phishing campaigns from reputable security-vendor and CERT sources (e.g. "
+    "Microsoft, Proofpoint, Cofense, Unit 42, Talos, Check Point, Mandiant, CISA). Return only facts "
+    "found via search, and cite each lead's source URL(s). Never invent a campaign, brand, or source. "
+    "Respond with the JSON object of leads."
+)
+
 
 @app.exception_handler(RequestValidationError)
 async def _validation_error(_request: Request, _error: RequestValidationError) -> JSONResponse:
@@ -221,6 +261,15 @@ class ExtractRequest(BaseModel):
     as_of: str = ""
     context_untrusted: bool = False
     neutralization_reasons: list[str] = Field(default_factory=list)
+
+
+class DiscoverRequest(BaseModel):
+    """P3 web-search discovery input. Only a public threat-research query — the
+    caller must never put recipient/internal PII here (enforced below)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=MAX_DISCOVERY_QUERY_CHARS)
 
 
 _DEFAULT_GUIDANCE = (
@@ -452,6 +501,76 @@ async def extract(body: ExtractRequest) -> dict[str, Any] | JSONResponse:
     # against its CampaignRecord contract.
     parsed["model_id"] = settings.extract_model_id
     return parsed
+
+
+def _discover_allowlist() -> frozenset[str]:
+    """The approved citation domains: a configured override, else the contract default."""
+
+    raw = settings.discover_citation_domains.strip()
+    if not raw:
+        return DEFAULT_ALLOWED_CITATION_DOMAINS
+    return frozenset(domain.strip().lower() for domain in raw.split(",") if domain.strip())
+
+
+def _discover_message_text(wrapper: dict[str, Any]) -> str:
+    """Extract the final assistant message text from a Responses API payload.
+
+    The output is a sequence of reasoning/web_search_call items followed by a
+    ``message``; only that message carries the schema-constrained JSON.
+    """
+
+    for item in wrapper.get("output", []):
+        if item.get("type") == "message":
+            for content in item.get("content", []):
+                if content.get("type") == "output_text":
+                    return str(content.get("text") or "")
+    return ""
+
+
+@app.post("/discover", response_model=None, dependencies=[Depends(require_caller)])
+async def discover(body: DiscoverRequest) -> dict[str, Any] | JSONResponse:
+    """P3: web-search current phishing campaigns and return cited, allow-listed leads.
+
+    The ONLY path that reaches the public web. Disabled (503) unless a discovery
+    model and Responses base URL are configured. The query is rejected (422) if
+    it could carry PII (spec §10 — nothing boundary-crossing may include
+    recipient/internal data). Leads that cite no approved threat-intel domain are
+    dropped (no source, no campaign). Any backend/parse failure is a clean 502.
+    """
+
+    if not settings.discover_model_id or not settings.responses_base_url:
+        return JSONResponse(status_code=503, content={"detail": "discovery is not configured"})
+    try:
+        query = assert_pii_free_query(body.query)
+    except DiscoveryQueryError:
+        return JSONResponse(status_code=422, content={"detail": "discovery query rejected"})
+
+    payload: dict[str, Any] = {
+        "model": settings.discover_model_id,
+        "input": f"{_DISCOVER_GUIDANCE}\n\nResearch query: {query}",
+        "tools": [{"type": "web_search"}],
+        "text": {"format": {"type": "json_schema", "name": "discovery", "schema": _DISCOVER_SCHEMA, "strict": True}},
+        "max_output_tokens": settings.discover_max_output_tokens,
+    }
+    if settings.discover_reasoning_effort is not None:
+        payload["reasoning"] = {"effort": settings.discover_reasoning_effort}
+    endpoint = settings.responses_base_url.rstrip("/") + "/responses"
+    try:
+        headers = await _upstream_headers()
+        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
+            response = await client.post(endpoint, params={"api-version": "preview"}, json=payload, headers=headers)
+            response.raise_for_status()
+            wrapper = response.json()
+        parsed = json.loads(_discover_message_text(wrapper))
+    except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
+        return JSONResponse(status_code=502, content={"detail": "discovery backend unavailable"})
+    try:
+        result = DiscoveryResult(leads=parsed.get("leads", []), model_id=settings.discover_model_id)
+    except (ValueError, TypeError, AttributeError):
+        return JSONResponse(status_code=502, content={"detail": "discovery returned an off-contract result"})
+    # No source, no campaign: keep only leads citing an approved threat-intel domain.
+    sourced = result.sourced_leads(_discover_allowlist())
+    return {"leads": [lead.model_dump() for lead in sourced], "model_id": settings.discover_model_id}
 
 
 #: Bounded timeout for the readiness probe's backend health check. Deliberately

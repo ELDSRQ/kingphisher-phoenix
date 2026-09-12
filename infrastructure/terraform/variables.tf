@@ -224,6 +224,34 @@ variable "ai_extract_reasoning_effort" {
   }
 }
 
+variable "ai_discover_model" {
+  description = <<-EOT
+    P3 web-search discovery. When non-empty (with ai_responses_base_url),
+    enables the gateway's ``POST /discover`` — a Responses-API ``web_search``
+    call returning cited, allow-listed campaign leads using THIS model (e.g.
+    gpt-5.6-luna). This is the ONLY path that reaches the public web; leave
+    empty (the default) on any deployment without live web egress, including all
+    on-prem. Queries are PII-free by contract; leads must cite an approved
+    threat-intel domain.
+  EOT
+  type        = string
+  default     = ""
+  validation {
+    condition     = length(var.ai_discover_model) <= 128
+    error_message = "ai_discover_model must be at most 128 characters."
+  }
+}
+
+variable "ai_responses_base_url" {
+  description = <<-EOT
+    Azure AI Foundry Responses API base (``.../openai/v1`` on the
+    ``services.ai.azure.com`` host), used ONLY by ``/discover``. Empty disables
+    discovery.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "ai_send_temperature" {
   description = <<-EOT
     Whether the gateway sends an explicit `temperature` (KP_AI_GATEWAY_SEND_TEMPERATURE).

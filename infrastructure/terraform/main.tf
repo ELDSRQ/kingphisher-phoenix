@@ -116,6 +116,9 @@ locals {
   # (env_ignore_empty), leaving generation on the deterministic pattern alone.
   ai_extract_model_id = trimspace(var.ai_extract_model)
 
+  # P3 discovery model id (empty disables /discover; the ONLY public-web path).
+  ai_discover_model_id = trimspace(var.ai_discover_model)
+
   # Entra issues console access tokens with aud = the client (application) id, so
   # that is the only audience the operator API can validate in this deployment.
   # oidc_audience stays overridable for a customer-supplied identifier URI, but it
@@ -1375,6 +1378,17 @@ resource "azurerm_container_app" "ai_gateway" {
       env {
         name  = "KP_AI_GATEWAY_EXTRACT_REASONING_EFFORT"
         value = var.ai_extract_reasoning_effort
+      }
+      # P3 web-search discovery. Empty model id or base URL disables /discover
+      # (env_ignore_empty), so it is inert unless both are set. The ONLY path
+      # that reaches the public web.
+      env {
+        name  = "KP_AI_GATEWAY_DISCOVER_MODEL_ID"
+        value = local.ai_discover_model_id
+      }
+      env {
+        name  = "KP_AI_GATEWAY_RESPONSES_BASE_URL"
+        value = trimspace(var.ai_responses_base_url)
       }
       # The OpenAI-compatible upstream base. Named for (and still defaulting to)
       # the local llama.cpp server, but in managed mode it is the Foundry

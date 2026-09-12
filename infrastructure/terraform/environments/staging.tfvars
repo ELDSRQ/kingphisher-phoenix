@@ -37,6 +37,13 @@ worker_provider_timeout_seconds = 30
 # gpt-5.6-luna deployment must exist in the Foundry account (out-of-band).
 ai_extract_model           = "gpt-5.6-luna"
 ai_extract_reasoning_effort = "none"
+# P3 web-search discovery (ENABLED in staging per operator sign-off). The gateway
+# /discover endpoint uses the Responses API web_search tool via gpt-5.6-luna to
+# return cited, allow-listed campaign leads. This is the ONLY path that reaches
+# the public web; queries are PII-free by contract. Validated live 8 web searches
+# -> parseable cited leads. Leave empty for any deployment without web egress.
+ai_discover_model     = "gpt-5.6-luna"
+ai_responses_base_url = "https://ais-kp-staging-6117w.services.ai.azure.com/openai/v1"
 
 # Staging matches the on-prem posture: a two-person IT team cannot field the
 # three distinct identities `enforce` needs to publish. single-operator drops

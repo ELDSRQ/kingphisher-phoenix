@@ -108,6 +108,30 @@ class GatewaySettings(BaseSettings):
     #: ``None`` sends no field; for gpt-5.6-luna extraction, ``none`` is correct.
     extract_reasoning_effort: str | None = None
 
+    #: P3 web-search discovery. When set (together with ``responses_base_url``),
+    #: enables ``POST /discover`` — a Responses-API ``web_search`` call that
+    #: returns cited, allow-listed campaign leads. ``None`` (default) disables it
+    #: with 503, so any deployment without live web egress (all on-prem) is
+    #: unaffected. This is the ONLY path that reaches the public web.
+    discover_model_id: str | None = None
+
+    #: Base URL of the Azure AI Foundry Responses API (``.../openai/v1``, the
+    #: ``services.ai.azure.com`` host), used ONLY by ``/discover``. Distinct from
+    #: ``llama_base_url`` (chat/completions). Empty disables ``/discover``.
+    responses_base_url: str | None = None
+
+    #: Reasoning effort for the discovery model (``none`` for gpt-5.6-luna).
+    discover_reasoning_effort: str | None = None
+
+    #: Output-token budget for a ``/discover`` call. Web search + reasoning spend
+    #: budget before the final JSON, so this is generous by default.
+    discover_max_output_tokens: int = 6000
+
+    #: Comma-separated override of the approved citation domains a lead must cite
+    #: (a lead with no allow-listed citation is dropped: no source, no campaign).
+    #: Empty uses the contract default (reputable threat-intel vendors/CERTs).
+    discover_citation_domains: str = ""
+
     #: Shared secret a caller must present as ``Authorization: Bearer <key>`` on
     #: ``/propose`` and ``/setup-assist``. The generation worker already sends
     #: this value as its ``ai_bearer_token`` (jobs.py:2088), so the same secret
@@ -205,4 +229,9 @@ class GatewaySettings(BaseSettings):
         if self.extract_reasoning_effort is not None and self.extract_reasoning_effort not in _REASONING_EFFORTS:
             allowed = ", ".join(sorted(_REASONING_EFFORTS))
             raise ValueError(f"KP_AI_GATEWAY_EXTRACT_REASONING_EFFORT must be one of {allowed} when set")
+        if self.discover_reasoning_effort is not None and self.discover_reasoning_effort not in _REASONING_EFFORTS:
+            allowed = ", ".join(sorted(_REASONING_EFFORTS))
+            raise ValueError(f"KP_AI_GATEWAY_DISCOVER_REASONING_EFFORT must be one of {allowed} when set")
+        if self.discover_max_output_tokens < 1:
+            raise ValueError("KP_AI_GATEWAY_DISCOVER_MAX_OUTPUT_TOKENS must be a positive integer")
         return self
