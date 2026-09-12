@@ -54,13 +54,12 @@ and cleared below; do not repeat the failed fixes.
   bearer, scope `https://cognitiveservices.azure.com/.default`). GitHub env
   vars set: `AI_FOUNDRY_ENDPOINT`, `AI_FOUNDRY_RESOURCE_ID`,
   `AI_FOUNDRY_MODEL=gpt-oss-120b`, `DEPLOY_AI_GATEWAY=true`.
-  > **⚠️ ACTION REQUIRED (P0, 2026-09-12):** P0 pins staging to `gpt-5.6-terra`
-  > in `infrastructure/terraform/environments/staging.tfvars`, but the GitHub env
-  > var `AI_FOUNDRY_MODEL=gpt-oss-120b` above will **override** it if the deploy
-  > workflow passes it as `TF_VAR_ai_foundry_model` — silently reverting staging
-  > to the flaky Preview model. Before/with merging PR #1, update that GitHub env
-  > var to `gpt-5.6-terra` (or remove it so `staging.tfvars` wins). `gpt-5.6-terra`
-  > is already deployed in the Foundry account alongside `gpt-oss-120b`.
+  > **UPDATE (P0, 2026-09-12):** The model is now owned by
+  > `environments/<env>.tfvars`, not this GitHub var. PR #1 removed the
+  > `-var="ai_foundry_model=..."` override from `azure-deploy.yml`'s plan steps,
+  > so `staging.tfvars` (`gpt-5.6-terra`) wins. The `AI_FOUNDRY_MODEL` GitHub var
+  > is now unused by the model path (leave or delete). `gpt-5.6-terra` is deployed
+  > in the Foundry account alongside `gpt-oss-120b`.
 - **AI-015 landed** (`b9284c9`): gateway has no ai-llama sidecar, entra
   upstream auth (fail-closed), `min_replicas=0`, single-source model pin
   (`local.ai_model_id` feeds both gateway MODEL_ID and worker `ai_model_id`).
