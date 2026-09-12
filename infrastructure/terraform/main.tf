@@ -1339,6 +1339,24 @@ resource "azurerm_container_app" "ai_gateway" {
         name  = "KP_AI_GATEWAY_MODEL_ID"
         value = local.ai_model_id
       }
+      # Reliability bounds for the managed (reasoning-capable) backend. The
+      # gateway ignores an empty value (env_ignore_empty), so "" disables the
+      # reasoning field for a non-reasoning model. Bounding reasoning effort is
+      # the primary fix for the generation-timeout dead-lettering.
+      env {
+        name  = "KP_AI_GATEWAY_REASONING_EFFORT"
+        value = var.ai_reasoning_effort
+      }
+      env {
+        name  = "KP_AI_GATEWAY_MAX_COMPLETION_TOKENS"
+        value = tostring(var.ai_max_completion_tokens)
+      }
+      # Some current GA models (gpt-5.6-terra) 400 on any explicit temperature;
+      # set ai_send_temperature=false to omit it. Reproducible temp=0 otherwise.
+      env {
+        name  = "KP_AI_GATEWAY_SEND_TEMPERATURE"
+        value = tostring(var.ai_send_temperature)
+      }
       # The OpenAI-compatible upstream base. Named for (and still defaulting to)
       # the local llama.cpp server, but in managed mode it is the Foundry
       # Serverless endpoint; the gateway appends /chat/completions itself.
@@ -1802,6 +1820,13 @@ resource "azurerm_container_app" "worker" {
       env {
         name  = "KP_WORKER_CIPHERTEXT_KEY_ID"
         value = trimspace(var.ciphertext_active_key_id)
+      }
+      # Per-request provider timeout (incl. AI generation). With the gateway's
+      # reasoning effort bounded this needs only modest headroom; it durably
+      # supersedes any live `az containerapp update` hotfix.
+      env {
+        name  = "KP_WORKER_PROVIDER_TIMEOUT_SECONDS"
+        value = tostring(var.worker_provider_timeout_seconds)
       }
       dynamic "env" {
         for_each = local.ciphertext_recovery_enabled ? [1] : []

@@ -188,6 +188,9 @@ services:
       # if your pinned llama.cpp server is elsewhere.
       KP_AI_GATEWAY_LLAMA_BASE_URL: ${KP_AI_GATEWAY_LLAMA_BASE_URL:-http://host.docker.internal:18081/v1}
       KP_AI_GATEWAY_MODEL_ID: ${KP_AI_GATEWAY_MODEL_ID:-llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M}
+      # Bound output so a slow generation cannot blow the worker timeout. Sent as
+      # OpenAI `max_tokens` to the local llama.cpp backend (see _completion_token_param).
+      KP_AI_GATEWAY_MAX_COMPLETION_TOKENS: ${KP_AI_GATEWAY_MAX_COMPLETION_TOKENS:-2000}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

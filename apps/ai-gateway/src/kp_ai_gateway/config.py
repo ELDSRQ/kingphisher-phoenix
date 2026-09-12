@@ -31,6 +31,9 @@ UpstreamAuthMode = Literal["none", "entra"]
 #: Foundry Serverless accepts a Cognitive Services audience token.
 _DEFAULT_UPSTREAM_SCOPE = "https://cognitiveservices.azure.com/.default"
 
+#: Accepted values for ``reasoning_effort`` (OpenAI / Azure reasoning models).
+_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
+
 
 class GatewaySettings(BaseSettings):
     """Environment-driven settings for the AI gateway."""
@@ -56,8 +59,37 @@ class GatewaySettings(BaseSettings):
     #: Per-request timeout to the llama.cpp server, in seconds.
     request_timeout_seconds: float = 120.0
 
-    #: Sampling temperature. Zero for reproducible, review-stable drafts.
+    #: Sampling temperature. Zero for reproducible, review-stable drafts on
+    #: backends that accept it (local llama.cpp, gpt-oss-120b). Some current GA
+    #: models (e.g. gpt-5.6-terra) reject any non-default temperature and must
+    #: have the field omitted entirely — see ``send_temperature``.
     temperature: float = 0.0
+
+    #: Whether to send ``temperature`` at all. ``True`` (the default) preserves
+    #: the reproducible-draft behaviour. Set ``False`` for a model that only
+    #: accepts its default temperature (it returns 400 "does not support 0.0" /
+    #: "Only the default (1) value is supported" otherwise); the field is then
+    #: omitted and the model's default applies. A human reviews every draft, so
+    #: the loss of temperature=0 reproducibility is acceptable.
+    send_temperature: bool = True
+
+    #: Upper bound on generated (completion) tokens. ``None`` (the default) sends
+    #: no cap, preserving the historical behaviour. Bounding this is the primary
+    #: reliability lever for the managed path: an unbounded reasoning model can
+    #: run for tens of seconds and blow the worker's request timeout (the Foundry
+    #: ``gpt-oss-120b`` dead-lettering was this). The wire key differs by backend
+    #: (see ``_completion_token_param`` in ``main.py``): Azure reasoning models
+    #: require ``max_completion_tokens`` and reject ``max_tokens``; the local
+    #: llama.cpp server speaks ``max_tokens``. A single value covers both.
+    max_completion_tokens: int | None = None
+
+    #: Reasoning effort for reasoning-capable models (``minimal``/``low``/
+    #: ``medium``/``high``). ``None`` (the default) sends no field, so non-reasoning
+    #: backends (e.g. the local Qwen2.5 llama.cpp server, which is not a reasoning
+    #: model) and older OpenAI-compatible servers are unaffected. On the managed
+    #: path ``low`` collapsed ``gpt-oss-120b`` latency from tens of seconds to
+    #: ~1.7s while keeping valid schema-constrained output.
+    reasoning_effort: str | None = None
 
     #: Shared secret a caller must present as ``Authorization: Bearer <key>`` on
     #: ``/propose`` and ``/setup-assist``. The generation worker already sends
@@ -135,5 +167,22 @@ class GatewaySettings(BaseSettings):
                 "KP_AI_GATEWAY_REQUIRE_AUTH is set but KP_AI_GATEWAY_API_KEY is empty; "
                 "authentication is required and cannot be satisfied. Set the shared bearer "
                 "secret or disable REQUIRE_AUTH for local development."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _generation_bounds_are_coherent(self) -> Self:
+        """Validate the optional reliability bounds fail-closed at construction.
+
+        Both default to ``None`` (unbounded / unset), so a deployment that sets
+        neither is byte-for-byte unchanged. When set, a bad value is a boot-time
+        error rather than a request-time surprise that silently degrades.
+        """
+
+        if self.max_completion_tokens is not None and self.max_completion_tokens < 1:
+            raise ValueError("KP_AI_GATEWAY_MAX_COMPLETION_TOKENS must be a positive integer when set")
+        if self.reasoning_effort is not None and self.reasoning_effort not in _REASONING_EFFORTS:
+            raise ValueError(
+                f"KP_AI_GATEWAY_REASONING_EFFORT must be one of {', '.join(sorted(_REASONING_EFFORTS))} when set"
             )
         return self

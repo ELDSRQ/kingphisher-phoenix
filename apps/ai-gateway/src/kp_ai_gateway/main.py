@@ -275,18 +275,40 @@ def _ensure_placeholder(text: str, placeholder: str, *, html: bool) -> str:
     return f"{text}\nComplete the awareness training: {placeholder}"
 
 
+def _completion_token_param() -> str:
+    """Name of the max-completion-tokens field for the configured backend.
+
+    Azure reasoning models (the ``entra``/Foundry path) require
+    ``max_completion_tokens`` and reject the legacy ``max_tokens``; the local
+    llama.cpp server (the ``none`` path) speaks OpenAI's ``max_tokens``. One
+    configured integer covers both — only the wire key differs.
+    """
+
+    return "max_completion_tokens" if settings.upstream_auth_mode == "entra" else "max_tokens"
+
+
 @app.post("/propose", response_model=None, dependencies=[Depends(require_caller)])
 async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
     placeholder = body.training_url or TRAINING_URL_PLACEHOLDER
-    payload = {
+    payload: dict[str, Any] = {
         "model": settings.model_id,
         "messages": _build_messages(body),
-        "temperature": settings.temperature,
         "response_format": {
             "type": "json_schema",
             "json_schema": {"name": "generation_response", "schema": _RESPONSE_SCHEMA, "strict": True},
         },
     }
+    # Temperature is omitted for models that accept only their default (some
+    # current GA models 400 on any explicit temperature); otherwise sent for
+    # reproducible drafts.
+    if settings.send_temperature:
+        payload["temperature"] = settings.temperature
+    # Optional reliability bounds. Omitted entirely when unset so an unconfigured
+    # deployment (and the local llama.cpp default) is byte-for-byte unchanged.
+    if settings.max_completion_tokens is not None:
+        payload[_completion_token_param()] = settings.max_completion_tokens
+    if settings.reasoning_effort is not None:
+        payload["reasoning_effort"] = settings.reasoning_effort
     endpoint = settings.llama_base_url.rstrip("/") + "/chat/completions"
     try:
         # Outbound auth for the upstream (AI-015 Path D). In the default local

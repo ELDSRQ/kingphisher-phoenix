@@ -158,6 +158,66 @@ variable "ai_foundry_resource_id" {
   }
 }
 
+variable "ai_reasoning_effort" {
+  description = <<-EOT
+    Reasoning effort for the managed gateway's generation calls
+    (KP_AI_GATEWAY_REASONING_EFFORT): minimal | low | medium | high, or empty to
+    send no field. This is the primary latency/reliability control for reasoning
+    models (e.g. gpt-oss-120b / gpt-5.6-*): an unbounded reasoning run blows the
+    worker timeout and dead-letters generation; "low" collapsed observed latency
+    from tens of seconds to ~1.7s with valid schema output. Empty is correct for
+    a non-reasoning model.
+  EOT
+  type        = string
+  default     = "low"
+  validation {
+    condition     = contains(["", "minimal", "low", "medium", "high"], var.ai_reasoning_effort)
+    error_message = "ai_reasoning_effort must be one of: (empty), minimal, low, medium, high."
+  }
+}
+
+variable "ai_max_completion_tokens" {
+  description = <<-EOT
+    Upper bound on generated tokens (KP_AI_GATEWAY_MAX_COMPLETION_TOKENS). Bounds
+    output so a slow/verbose generation cannot blow the worker request timeout. A
+    phishing-awareness email needs little output; 2000 is a safe default. Must be
+    a positive integer.
+  EOT
+  type        = number
+  default     = 2000
+  validation {
+    condition     = var.ai_max_completion_tokens >= 1 && floor(var.ai_max_completion_tokens) == var.ai_max_completion_tokens
+    error_message = "ai_max_completion_tokens must be a positive integer."
+  }
+}
+
+variable "ai_send_temperature" {
+  description = <<-EOT
+    Whether the gateway sends an explicit `temperature` (KP_AI_GATEWAY_SEND_TEMPERATURE).
+    Some current GA models (e.g. gpt-5.6-terra) reject any non-default temperature
+    with a 400 and require the field omitted; set this false for them. true (the
+    default) keeps reproducible temperature=0 drafts on backends that accept it
+    (gpt-oss-120b, local llama.cpp).
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "worker_provider_timeout_seconds" {
+  description = <<-EOT
+    Per-request timeout the worker applies to provider calls including AI
+    generation (KP_WORKER_PROVIDER_TIMEOUT_SECONDS). With reasoning effort bounded
+    this only needs modest headroom over the model's latency. The application caps
+    it at 60.
+  EOT
+  type        = number
+  default     = 30
+  validation {
+    condition     = var.worker_provider_timeout_seconds >= 1 && var.worker_provider_timeout_seconds <= 60
+    error_message = "worker_provider_timeout_seconds must be between 1 and 60 (the application's cap)."
+  }
+}
+
 variable "isolate_delivery_worker" {
   description = "Run delivery in one dedicated Container App and identity; false keeps the default three-app runtime."
   type        = bool

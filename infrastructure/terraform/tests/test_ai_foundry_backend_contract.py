@@ -114,3 +114,31 @@ def test_gateway_upstream_auth_defaults_to_unauthenticated_local() -> None:
     assert 'upstream_auth_mode: UpstreamAuthMode = "none"' in config
     assert "https://cognitiveservices.azure.com/.default" in config
     assert "local.ai_foundry_backend" in MAIN
+
+
+def test_gateway_bounds_reasoning_effort_and_completion_tokens() -> None:
+    # P0 reliability: the gateway must send bounded reasoning effort and a
+    # completion-token cap so an unbounded reasoning run cannot blow the worker
+    # timeout (the generation dead-lettering root cause).
+    assert 'name  = "KP_AI_GATEWAY_REASONING_EFFORT"' in GATEWAY
+    assert "value = var.ai_reasoning_effort" in GATEWAY
+    assert 'name  = "KP_AI_GATEWAY_MAX_COMPLETION_TOKENS"' in GATEWAY
+    assert "value = tostring(var.ai_max_completion_tokens)" in GATEWAY
+    effort = _variable("ai_reasoning_effort")
+    assert 'default     = "low"' in effort
+    assert "minimal" in effort and "high" in effort
+    tokens = _variable("ai_max_completion_tokens")
+    assert "positive integer" in tokens
+    # Temperature must be omittable: some current GA models 400 on any explicit
+    # temperature (gpt-5.6-terra). The gateway gates it on ai_send_temperature.
+    assert 'name  = "KP_AI_GATEWAY_SEND_TEMPERATURE"' in GATEWAY
+    assert "value = tostring(var.ai_send_temperature)" in GATEWAY
+    assert 'variable "ai_send_temperature"' in VARIABLES
+
+
+def test_worker_provider_timeout_is_pinned_durably() -> None:
+    # Durably pins the provider timeout in IaC, superseding any live hotfix.
+    assert 'name  = "KP_WORKER_PROVIDER_TIMEOUT_SECONDS"' in WORKER
+    assert "value = tostring(var.worker_provider_timeout_seconds)" in WORKER
+    block = _variable("worker_provider_timeout_seconds")
+    assert "between 1 and 60" in block
