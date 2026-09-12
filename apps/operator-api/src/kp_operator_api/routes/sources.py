@@ -294,6 +294,11 @@ def acknowledge_source_terms(
         enabled=True,
     )
     session.add(terms)
+    # Flush the new terms row before pointing the source at it: the
+    # sources.license_state_id foreign key is not deferrable, so assigning the
+    # not-yet-inserted terms id in the same transaction violates it at UPDATE
+    # time (ForeignKeyViolation) instead of at commit.
+    session.flush()
     source.license_state_id = terms.source_terms_id
     audit.record(
         session=session,
