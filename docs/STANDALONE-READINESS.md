@@ -93,7 +93,7 @@
 ### AI Model Structured Output — RESOLVED (P0, PR #1, 2026-09-12)
 The earlier "gpt-oss-120b quality risk" is fixed. The real cause was **unbounded reasoning effort** (generation ran past the worker timeout), and gpt-oss-120b is a flaky *Preview* model (~20% schema-**invalid** — truncated/invalid JSON; not "reasoning-channel text in fields": the `content` field is valid JSON and the gateway ignores the separate `reasoning_content` channel).
 - **Azure:** pinned to **`gpt-5.6-terra`** (current GA model) with reasoning empty, temperature omitted, and a `max_completion_tokens` cap. Benchmarked 10/10 schema-valid, p95 ~5.4s, zero timeouts (`scripts/operator/ai/benchmark_generation.py`). **Not** `gpt-4.1-mini` — that earlier suggestion is superseded.
-- **Standalone/local:** the gateway now bounds the local Qwen output (`KP_AI_GATEWAY_MAX_COMPLETION_TOKENS`, sent as `max_tokens`); the deterministic `SafetyValidator` rejects unsafe output and a human approves every draft. The planned P2 HTML allow-list sanitizer (see `docs/AI_PIPELINE_REDESIGN_SPEC.md`) further hardens the local path.
+- **Standalone/local:** the gateway now bounds the local Qwen output (`KP_AI_GATEWAY_MAX_COMPLETION_TOKENS`, sent as `max_tokens`); the deterministic `SafetyValidator` rejects unsafe output and a human approves every draft. The P2 allow-list HTML sanitizer (PR #3) now cleans each draft before validation, further hardening the local path (it strips forms/tracking pixels and neutralizes off-allowlist links, offline, with no new dependency).
 
 ### What Works Fully Standalone Today
 | Capability | Status |

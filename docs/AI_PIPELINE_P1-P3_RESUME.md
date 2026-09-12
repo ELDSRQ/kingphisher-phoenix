@@ -9,7 +9,8 @@
 
 - **P0 landed** → **PR #1** (`feat/p0-ai-reliability-bounded-reasoning`). Bounds reasoning/tokens, temperature-omit control, Azure staging → `gpt-5.6-terra`, bounded on-prem gateway, benchmark harness, and (re-pinned) the azure-deploy.yml workflow digest. `gpt-5.6-terra` = 10/10 valid, p95 5.4s.
 - **P1 landed** → **PR #2** (`feat/p1-campaign-extraction`, stacked on #1). Model-based extraction: gateway `/extract` + worker enrichment with `gpt-5.6-luna`, fail-closed to the deterministic pattern. `gpt-5.6-luna` extraction = 8/8 valid, p95 2.5s. See the P1 as-built note in `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
-- **Still open:** **P2** (HTML allow-list sanitizer) and **P3** (Web Search research). §3 below is now history (P1 is done); build from §4 (P2) and §5 (P3).
+- **P2 landed** → **PR #3** (`feat/p2-html-sanitizer`, stacked on #2). Allow-list HTML sanitizer (`sanitize_safe_html`, BeautifulSoup — not nh3) runs before `SafetyValidator` at generation time; salvages drafts with a stray form/pixel/off-allowlist link, persists the cleaned HTML, records a `raw_proposal["sanitizer"]` provenance. See the P2 as-built note in `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
+- **Still open:** **P3** (Web Search research, Azure-only, flag-gated, needs compliance sign-off). §3 and §4 below are now history (P1, P2 done); build from §5 (P3).
 - **luna learned (for P2/P3 reuse):** like terra it **rejects an explicit temperature**; it **accepts `reasoning_effort=none`** (terra rejects reasoning_effort entirely). `none` is now an allowed gateway reasoning value.
 
 ### Post-merge live checks (do these before P1)
@@ -81,7 +82,9 @@ Then benchmark luna for `reasoning_effort`/`temperature` acceptance (do NOT assu
 
 ---
 
-## 4. P2 — HTML allow-list sanitizer (transform/salvage)
+## 4. P2 — HTML allow-list sanitizer (transform/salvage) ✅ DONE (PR #3)
+
+> **Shipped in PR #3** — kept below as the record of intent. As-built (with deviations: BeautifulSoup not nh3; generation-time only; provenance in `raw_proposal["sanitizer"]`) is in the **P2 as-built note** in `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
 
 **Goal:** stop discarding otherwise-good generations on a single stray element; explicitly strip forms + tracking pixels; rewrite/neutralize off-allowlist links. Currently the `SafetyValidator` only **rejects** (see `packages/safety-validation`), so one bad element wastes a whole generation.
 
