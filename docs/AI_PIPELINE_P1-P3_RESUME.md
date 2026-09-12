@@ -7,9 +7,10 @@
 
 ## 0. Where things stand
 
-- **P0 landed** on branch `feat/p0-ai-reliability-bounded-reasoning` → **PR #1** (`https://github.com/ELDSRQ/kingphisher-phoenix/pull/1`). It bounds reasoning/tokens, adds a temperature-omit control, moves Azure staging to `gpt-5.6-terra`, bounds the on-prem gateway, and adds the benchmark harness. Verify it merged and CI deployed before building on it: `git log --oneline -5`, `gh pr view 1`.
-- **Proven result:** `gpt-5.6-terra` (no temperature, 2000-token cap) = 10/10 valid, p50 4.5s / p95 5.4s, zero timeouts. `gpt-oss-120b` was ~20% schema-invalid. Reliability is solved; P1–P3 are effectiveness/robustness.
-- **What P0 did NOT do (still open):** model-based extraction (P1), HTML allow-list sanitizer (P2), Web Search research (P3). Generation is still single-call from the deterministic keyword builder's pattern.
+- **P0 landed** → **PR #1** (`feat/p0-ai-reliability-bounded-reasoning`). Bounds reasoning/tokens, temperature-omit control, Azure staging → `gpt-5.6-terra`, bounded on-prem gateway, benchmark harness, and (re-pinned) the azure-deploy.yml workflow digest. `gpt-5.6-terra` = 10/10 valid, p95 5.4s.
+- **P1 landed** → **PR #2** (`feat/p1-campaign-extraction`, stacked on #1). Model-based extraction: gateway `/extract` + worker enrichment with `gpt-5.6-luna`, fail-closed to the deterministic pattern. `gpt-5.6-luna` extraction = 8/8 valid, p95 2.5s. See the P1 as-built note in `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
+- **Still open:** **P2** (HTML allow-list sanitizer) and **P3** (Web Search research). §3 below is now history (P1 is done); build from §4 (P2) and §5 (P3).
+- **luna learned (for P2/P3 reuse):** like terra it **rejects an explicit temperature**; it **accepts `reasoning_effort=none`** (terra rejects reasoning_effort entirely). `none` is now an allowed gateway reasoning value.
 
 ### Post-merge live checks (do these before P1)
 ```bash
@@ -58,7 +59,9 @@ Extend it (don't fork it) for P1 by adding an extraction schema + a `--task extr
 
 ---
 
-## 3. P1 — model-based campaign extraction/enrichment (`gpt-5.6-luna`)
+## 3. P1 — model-based campaign extraction/enrichment (`gpt-5.6-luna`) ✅ DONE (PR #2)
+
+> **Shipped in PR #2** — kept below as the record of intent. What actually landed (and a couple of corrections to the plan) is in the **P1 as-built note** in `docs/AI_PIPELINE_REDESIGN_SPEC.md`: extraction runs in the worker (not activation), `gpt-5.6-luna` takes `reasoning_effort=none` and rejects temperature, and the extract model id is owned by `environments/<env>.tfvars`.
 
 **Goal:** richer, more faithful campaign records → more realistic generation than the deterministic keyword builder alone. Deterministic `build_pattern_candidate` stays the fail-closed fallback.
 
