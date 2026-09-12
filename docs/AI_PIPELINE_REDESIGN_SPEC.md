@@ -189,6 +189,14 @@ Conventions for **every** task (the "land" checklist):
 
 ### Phase 3 — Effectiveness (optional, Azure-only, flag-gated): Web Search research
 
+> **✅ P3 AS-BUILT (2026-09-12, PR #4, stacked on #3 — operator signed off on live web egress + staging enablement):**
+> - **Endpoint:** gateway `POST /discover` (`apps/ai-gateway/.../main.py`) uses the **Foundry Responses API `web_search` tool** via `gpt-5.6-luna`, returning strict-JSON cited `CampaignLead`s. Disabled (503) unless `KP_AI_GATEWAY_DISCOVER_MODEL_ID` **and** `KP_AI_GATEWAY_RESPONSES_BASE_URL` are set; clean 502 on backend/parse failure.
+> - **API surface:** only this endpoint uses the **Responses API** (`{services.ai.azure.com}/openai/v1/responses?api-version=preview`) — the rest of the platform stays on chat/completions. **No separate Bing-grounding resource/connection was needed** — registering the `Microsoft.Bing` provider sufficed; the hosted `web_search` tool is self-contained.
+> - **Two in-code gates (spec §10):** `assert_pii_free_query` rejects any query containing an email/PII (422) before egress; `citation_is_allowlisted` + `DiscoveryResult.sourced_leads` drop leads that don't cite an approved threat-intel domain (no source, no campaign). Both in `packages/contracts/discovery.py`.
+> - **Enabled in staging:** `ai_discover_model=gpt-5.6-luna`, `ai_responses_base_url=https://ais-kp-staging-6117w.services.ai.azure.com/openai/v1`. Empty disables it everywhere else — **all on-prem stays off** (no web egress, offline guarantee preserved). `gpt-5.6-luna` capacity raised to 200 for web_search token headroom.
+> - **Validated live:** web_search executed ~18 real searches and returned parseable cited leads; the allow-list filter correctly dropped unsourced ones.
+> - **Consumer is a follow-on (documented):** the operator-facing way to PULL leads — an **on-demand console route** (preferred over a scheduled worker role: each call runs many billable searches, and on-demand keeps a human in control of cost + egress) — is the immediate next increment. Nothing auto-promotes a lead: human review + the existing operator-activation path remains the only route from a lead to a pattern. Queries must be built from public threat terms only (the PII gate is the backstop).
+
 **T3.1 — Research component (luna + Foundry Web Search).**
 - Files: a new research path (Agents/Responses API — the **only** place that API is introduced), behind `KP_..._WEB_SEARCH_ENABLED` (default **false**; **forced false** in the on-prem profile).
 - Domain-restrict to vetted threat-intel sources (doc §1 list). Output must carry citations/dates; no-source → no campaign.

@@ -10,7 +10,8 @@
 - **P0 landed** → **PR #1** (`feat/p0-ai-reliability-bounded-reasoning`). Bounds reasoning/tokens, temperature-omit control, Azure staging → `gpt-5.6-terra`, bounded on-prem gateway, benchmark harness, and (re-pinned) the azure-deploy.yml workflow digest. `gpt-5.6-terra` = 10/10 valid, p95 5.4s.
 - **P1 landed** → **PR #2** (`feat/p1-campaign-extraction`, stacked on #1). Model-based extraction: gateway `/extract` + worker enrichment with `gpt-5.6-luna`, fail-closed to the deterministic pattern. `gpt-5.6-luna` extraction = 8/8 valid, p95 2.5s. See the P1 as-built note in `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
 - **P2 landed** → **PR #3** (`feat/p2-html-sanitizer`, stacked on #2). Allow-list HTML sanitizer (`sanitize_safe_html`, BeautifulSoup — not nh3) runs before `SafetyValidator` at generation time; salvages drafts with a stray form/pixel/off-allowlist link, persists the cleaned HTML, records a `raw_proposal["sanitizer"]` provenance. See the P2 as-built note in `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
-- **Still open:** **P3** (Web Search research, Azure-only, flag-gated, needs compliance sign-off). §3 and §4 below are now history (P1, P2 done); build from §5 (P3).
+- **P3 landed** → **PR #4** (`feat/p3-web-discovery`, stacked on #3; operator signed off on live web egress + staging enablement). Gateway `/discover` (Responses API `web_search`, PII-free + citation-allowlist gates), enabled in staging on `gpt-5.6-luna`, validated live. See the P3 as-built note in `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
+- **P0–P3 complete.** The one remaining increment is P3's **consumer**: an on-demand operator console route to pull/review `/discover` leads (preferred over a scheduled worker — each call runs many billable web searches). Nothing auto-promotes a lead; human review + existing operator activation stays the gate. Build that next; `/discover` is live and validated.
 - **luna learned (for P2/P3 reuse):** like terra it **rejects an explicit temperature**; it **accepts `reasoning_effort=none`** (terra rejects reasoning_effort entirely). `none` is now an allowed gateway reasoning value.
 
 ### Post-merge live checks (do these before P1)
@@ -96,7 +97,9 @@ Then benchmark luna for `reasoning_effort`/`temperature` acceptance (do NOT assu
 
 ---
 
-## 5. P3 — Web Search research (optional, Azure-only, flag-gated)
+## 5. P3 — Web Search research (optional, Azure-only, flag-gated) ✅ DONE (PR #4)
+
+> **Shipped in PR #4** — kept below as the record of intent. As-built (Responses API `web_search`, no separate Bing resource needed, PII + citation gates, enabled in staging on luna, consumer route as follow-on) is in the **P3 as-built note** in `docs/AI_PIPELINE_REDESIGN_SPEC.md`.
 
 **Goal:** freshness/breadth beyond the registered feeds. **Do not start without explicit operator sign-off** (cost + data-egress/compliance).
 
