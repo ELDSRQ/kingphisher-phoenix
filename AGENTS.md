@@ -15,7 +15,13 @@ These rules apply to every agent working in this repository.
 - Preserve `.env`, `data/`, `data/recovery/`, database volumes, audit state, and
   all user changes. Never use broad destructive paths, globs, or unresolved
   variables.
-- Treat the native ARM64 worker at `192.168.1.140`,
+- **Current worker: `.105` (WSL2).** The engineering/qualification worker is now
+  the WSL2 native-`linux/amd64` Docker host `erikd@192.168.1.105`
+  (`scripts/operator/wsl2-docker-worker/`; migration `.140`->`.105` DONE, commit
+  `fff07ce`). The `192.168.1.140` / Colima / `DockerExternal` worker in the rules
+  below is RETIRED and kept only as a manual rollback reference — preserve it, do
+  not treat it as the current engine.
+- Treat the retired (rollback-only) native ARM64 worker at `192.168.1.140`,
   `/Volumes/DockerExternal/KingPhisher-Phoenix`, its fixed-volume identity, the
   `kingphisher` Colima profile, encrypted migration snapshots, qualification
   evidence, and the preserved Docker Desktop rollback copy as project assets.

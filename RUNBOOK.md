@@ -84,9 +84,16 @@ worker's response guard (`KP_WORKER_AI_MODEL_ID`) checks on every `/propose`.
 
 ## 0. Current engineering topology
 
+> **Current worker: `.105` (WSL2).** The engineering/qualification worker is now
+> the WSL2 native-`linux/amd64` Docker host `erikd@192.168.1.105`; run
+> `scripts/operator/wsl2-docker-worker/preflight-105.sh` and restore with
+> `restore-state-wsl2.sh` (migration `.140`->`.105` DONE, commit `fff07ce`). The
+> `192.168.1.140` / Colima / `DockerExternal` topology described below is
+> **RETIRED and kept only as a manual rollback reference.**
+
 The controller workspace is
-`/Users/edierks/projects/codex-test/phishing-awareness-platform`. The target
-native ARM64 worker is `edierks@192.168.1.140`, with canonical source
+`/Users/edierks/projects/codex-test/phishing-awareness-platform`. The prior,
+now-RETIRED (rollback-only) native ARM64 worker was `edierks@192.168.1.140`, with canonical source
 `/Users/edierks/Projects/kingphisher-phoenix` mounted read-only inside the
 project-only `kingphisher` Colima VM. Its VM disks, cache, Docker client
 metadata, and socket are beneath
