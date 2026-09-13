@@ -24,6 +24,7 @@ from kp_operator_api.connection_probes import (
     _explicit_loopback_host,
     _validated_acs_endpoint,
 )
+from kp_operator_api.console.deployment_cost import estimate_monthly_cost
 from kp_operator_api.deployment_orchestration import (
     DeploymentConflict,
     DeploymentOrchestrator,
@@ -933,6 +934,7 @@ def validate_azure_deployment(
         "ok": not errors,
         "errors": errors,
         "warnings": warnings,
+        "cost_estimate": estimate_monthly_cost(values),
         "provider_readiness": {
             "enabled_roles": enabled_roles,
             "configuration_valid": not any(
