@@ -1,6 +1,13 @@
-# External Docker worker on `.140`
+# External Docker worker on `.140` — RETIRED (rollback only)
 
-This directory defines the target canonical engineering/qualification worker.
+> **RETIRED.** The current engineering/qualification worker is the WSL2 host
+> `erikd@192.168.1.105` — see `scripts/operator/wsl2-docker-worker/`. The
+> `.140`->`.105` migration is DONE (commit `fff07ce`); no build dependency on
+> `.140` remains and the macOS Keychain scripts in this directory are legacy that
+> fail fast and are not usable on WSL2. Everything below is kept only as a manual
+> rollback reference.
+
+This directory defines the (retired) canonical engineering/qualification worker.
 The controller keeps its source workspace; SSH reaches
 `edierks@192.168.1.140`; the canonical remote source is
 `/Users/edierks/Projects/kingphisher-phoenix`; and that source is mounted

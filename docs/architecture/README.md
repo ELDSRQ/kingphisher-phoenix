@@ -101,7 +101,13 @@ controller workspace
   shared internal engine; unrelated workloads; not a project fallback
 ```
 
-The current external engine's VM disks, cache, Docker client metadata, and socket
+> **Current worker: `.105` (WSL2).** The engineering/qualification worker is now
+> the WSL2 native-`linux/amd64` Docker host `erikd@192.168.1.105`
+> (`scripts/operator/wsl2-docker-worker/`; migration `.140`->`.105` DONE, commit
+> `fff07ce`). The `192.168.1.140` / Colima / `DockerExternal` engine described in
+> this section is **RETIRED and kept only as a manual rollback reference.**
+
+The prior, now-RETIRED external engine's VM disks, cache, Docker client metadata, and socket
 are all beneath the exact reviewed 1 TB external volume. Mount UUID, writability,
 free space, unsymlinked path ancestry, native ARM64/VZ profile, disabled
 Rosetta/binfmt/Kubernetes, read-only source mount, Keychain-backed Docker

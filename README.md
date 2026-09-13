@@ -6,8 +6,16 @@ The build is useful for local development and controlled demonstrations. It is *
 
 ## Engineering worker architecture
 
-The controller workspace remains on this Mac. The current engineering topology
-uses the Apple Silicon worker at `192.168.1.140`, the canonical remote source at
+> **Current worker: `.105` (WSL2).** The engineering, build, and local-live
+> qualification worker is now the WSL2 native-`linux/amd64` Docker host
+> `erikd@192.168.1.105`; its read-only preflight and clean-engine restore live in
+> `scripts/operator/wsl2-docker-worker/` (migration `.140`->`.105` DONE, commit
+> `fff07ce`; no build dependency on `.140` remains). Everything below about
+> `192.168.1.140` / Colima / `DockerExternal` is **RETIRED and kept only as a
+> manual rollback reference.**
+
+The controller workspace remains on this Mac. The prior engineering topology
+used the Apple Silicon worker at `192.168.1.140`, the canonical remote source at
 `/Users/edierks/Projects/kingphisher-phoenix`, and a read-only source mount in
 the project-only `kingphisher` Colima VM. Its VM, cache, client metadata, and
 socket are rooted under `/Volumes/DockerExternal/KingPhisher-Phoenix`
