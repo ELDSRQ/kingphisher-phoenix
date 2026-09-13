@@ -29,6 +29,9 @@ locals {
     generation = trimspace(var.ai_endpoint) == "" ? {} : {
       KP_WORKER_AI_BASE_URL = trimspace(var.ai_endpoint)
       KP_WORKER_AI_MODEL_ID = local.ai_model_id
+      # P1: same value as the gateway's KP_AI_GATEWAY_EXTRACT_MODEL_ID (the pin).
+      # Empty disables extraction on the worker (env_ignore_empty).
+      KP_WORKER_AI_EXTRACT_MODEL_ID = local.ai_extract_model_id
     }
     directory = trimspace(var.graph_endpoint) == "" ? {} : {
       KP_WORKER_GRAPH_BASE_URL      = trimspace(var.graph_endpoint)
@@ -106,6 +109,12 @@ locals {
   # serverless model. Isolated on its own line so it does not join the
   # tracking/training alignment group the contract test pins.
   ai_model_id = local.ai_foundry_backend ? trimspace(var.ai_foundry_model) : "llama.cpp/Qwen2.5-7B-Instruct-Q4_K_M"
+
+  # P1 extraction model id, kept IDENTICAL across the gateway's
+  # KP_AI_GATEWAY_EXTRACT_MODEL_ID and the worker's KP_WORKER_AI_EXTRACT_MODEL_ID
+  # so the extract pin cannot drift. Empty disables extraction on both sides
+  # (env_ignore_empty), leaving generation on the deterministic pattern alone.
+  ai_extract_model_id = trimspace(var.ai_extract_model)
 
   # Entra issues console access tokens with aud = the client (application) id, so
   # that is the only audience the operator API can validate in this deployment.
@@ -1356,6 +1365,16 @@ resource "azurerm_container_app" "ai_gateway" {
       env {
         name  = "KP_AI_GATEWAY_SEND_TEMPERATURE"
         value = tostring(var.ai_send_temperature)
+      }
+      # P1 extraction stage. Empty extract model id disables /extract
+      # (env_ignore_empty), so this is inert unless ai_extract_model is set.
+      env {
+        name  = "KP_AI_GATEWAY_EXTRACT_MODEL_ID"
+        value = local.ai_extract_model_id
+      }
+      env {
+        name  = "KP_AI_GATEWAY_EXTRACT_REASONING_EFFORT"
+        value = var.ai_extract_reasoning_effort
       }
       # The OpenAI-compatible upstream base. Named for (and still defaulting to)
       # the local llama.cpp server, but in managed mode it is the Foundry

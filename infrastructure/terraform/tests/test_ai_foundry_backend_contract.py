@@ -142,3 +142,17 @@ def test_worker_provider_timeout_is_pinned_durably() -> None:
     assert "value = tostring(var.worker_provider_timeout_seconds)" in WORKER
     block = _variable("worker_provider_timeout_seconds")
     assert "between 1 and 60" in block
+
+
+def test_extraction_model_is_pinned_across_gateway_and_worker() -> None:
+    # P1: the extract model id is wired identically to the gateway and worker
+    # (one local) so the extract pin cannot drift, mirroring the generation pin.
+    assert "ai_extract_model_id = trimspace(var.ai_extract_model)" in MAIN
+    assert 'name  = "KP_AI_GATEWAY_EXTRACT_MODEL_ID"' in GATEWAY
+    assert "value = local.ai_extract_model_id" in GATEWAY
+    assert 'name  = "KP_AI_GATEWAY_EXTRACT_REASONING_EFFORT"' in GATEWAY
+    assert "value = var.ai_extract_reasoning_effort" in GATEWAY
+    assert "KP_WORKER_AI_EXTRACT_MODEL_ID = local.ai_extract_model_id" in MAIN
+    assert 'variable "ai_extract_model"' in VARIABLES
+    effort = _variable("ai_extract_reasoning_effort")
+    assert "none" in effort

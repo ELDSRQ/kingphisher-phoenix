@@ -32,7 +32,11 @@ UpstreamAuthMode = Literal["none", "entra"]
 _DEFAULT_UPSTREAM_SCOPE = "https://cognitiveservices.azure.com/.default"
 
 #: Accepted values for ``reasoning_effort`` (OpenAI / Azure reasoning models).
-_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high"})
+#: ``none`` is accepted by some models (e.g. gpt-5.6-luna) to disable reasoning;
+#: others reject ``reasoning_effort`` entirely (e.g. gpt-5.6-terra) and must
+#: leave it unset. Which values a given model accepts is the operator's concern;
+#: this set only guards the token itself.
+_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high"})
 
 
 class GatewaySettings(BaseSettings):
@@ -90,6 +94,19 @@ class GatewaySettings(BaseSettings):
     #: path ``low`` collapsed ``gpt-oss-120b`` latency from tens of seconds to
     #: ~1.7s while keeping valid schema-constrained output.
     reasoning_effort: str | None = None
+
+    #: P1 extraction stage. When set, enables ``POST /extract`` (normalize threat
+    #: evidence into a ``CampaignRecord``) using THIS model id, returned as the
+    #: record's pinned ``model_id``. ``None`` (the default) disables ``/extract``
+    #: with a 503, so a single-model or on-prem deployment is unaffected. The
+    #: extract call reuses ``send_temperature`` and ``max_completion_tokens``;
+    #: only reasoning effort is separate (generation and extraction models differ
+    #: — e.g. gpt-5.6-terra rejects reasoning_effort, gpt-5.6-luna takes ``none``).
+    extract_model_id: str | None = None
+
+    #: Reasoning effort for the ``/extract`` model (see ``reasoning_effort``).
+    #: ``None`` sends no field; for gpt-5.6-luna extraction, ``none`` is correct.
+    extract_reasoning_effort: str | None = None
 
     #: Shared secret a caller must present as ``Authorization: Bearer <key>`` on
     #: ``/propose`` and ``/setup-assist``. The generation worker already sends
@@ -185,4 +202,7 @@ class GatewaySettings(BaseSettings):
             raise ValueError(
                 f"KP_AI_GATEWAY_REASONING_EFFORT must be one of {', '.join(sorted(_REASONING_EFFORTS))} when set"
             )
+        if self.extract_reasoning_effort is not None and self.extract_reasoning_effort not in _REASONING_EFFORTS:
+            allowed = ", ".join(sorted(_REASONING_EFFORTS))
+            raise ValueError(f"KP_AI_GATEWAY_EXTRACT_REASONING_EFFORT must be one of {allowed} when set")
         return self

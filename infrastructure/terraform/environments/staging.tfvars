@@ -29,6 +29,14 @@ ai_reasoning_effort             = ""
 ai_send_temperature             = false
 ai_max_completion_tokens        = 2000
 worker_provider_timeout_seconds = 30
+# P1 extraction stage: normalize threat evidence into a CampaignRecord before
+# generation, for more specific, current content. PROVEN against gpt-5.6-luna
+# (8/8 valid, p95 ~2.5s) by scripts/operator/ai/benchmark_generation.py --task
+# extract. luna takes reasoning_effort=none and (like terra) rejects temperature;
+# ai_send_temperature above already omits it for the whole managed gateway. The
+# gpt-5.6-luna deployment must exist in the Foundry account (out-of-band).
+ai_extract_model           = "gpt-5.6-luna"
+ai_extract_reasoning_effort = "none"
 
 # Staging matches the on-prem posture: a two-person IT team cannot field the
 # three distinct identities `enforce` needs to publish. single-operator drops
