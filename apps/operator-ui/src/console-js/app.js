@@ -295,6 +295,7 @@ function toast(message, type = "") {
 
 import { el, svg, SVG_NS } from "./dom.js";
 import { ledgerTrendChart } from "./chart.js";
+import { discoverAzure } from "./azure-discovery.js";
 
 
 const CAMPAIGN_ACTION_FLAGS = Object.freeze([
@@ -2071,6 +2072,61 @@ views["azure-deployment"] = async (root) => {
         el("details", { id: `${id}-help`, class: "field-location" }, [el("summary", { text: "Where do I find this?" }), el("p", { text: field.where_to_find })]),
       ]);
     };
+    // DEP-010: optional browser-side Azure discovery. Signs in via a PKCE popup
+    // and reads the operator's Azure control-plane to pre-fill wizard fields.
+    // Fail-closed: any error leaves manual entry untouched; the delegated token
+    // stays in the discovery module and is never persisted or sent to our server.
+    const applyDiscovered = (key, value) => {
+      if (value === undefined || value === null || value === "") return;
+      collected[key] = String(value);
+      if (inputs[key]) { inputs[key].value = String(value); inputs[key].dispatchEvent(new Event("input")); }
+    };
+    const discoveryStatus = el("div", { class: "assistant-answer", role: "status", "aria-live": "polite" });
+    const discoveryResults = el("div", { class: "assistant-suggestions", "aria-label": "Discovered Azure resources" });
+    const discoveryChip = (label, key, value) => el("button", { class: "btn small", type: "button", text: label, onclick: () => {
+      applyDiscovered(key, value);
+      toast(`Applied ${label} to the form. Review it before creating a plan.`, "success");
+    } });
+    const discoverBtn = el("button", { class: "btn small", type: "button", text: "Discover from Azure" });
+    discoverBtn.addEventListener("click", async () => {
+      const clientId = collected.entra_client_id || "";
+      if (!clientId) {
+        discoveryStatus.textContent = "Set the Entra application (client) ID first — discovery signs in with it. It needs delegated Azure Service Management (user_impersonation) permission and this console's /console/azure-redirect.html registered as a SPA redirect URI.";
+        return;
+      }
+      discoverBtn.disabled = true;
+      discoveryStatus.textContent = "Opening Azure sign-in…";
+      discoveryResults.replaceChildren();
+      try {
+        const redirectUri = `${location.origin}/console/azure-redirect.html`;
+        const tenant = collected.entra_tenant_id || "organizations";
+        const found = await discoverAzure({ clientId, tenant, redirectUri });
+        if (!found.selected) {
+          discoveryStatus.textContent = "Signed in, but no enabled subscriptions were visible to this account.";
+          return;
+        }
+        applyDiscovered("subscription_id", found.selected.id);
+        applyDiscovered("entra_tenant_id", found.selected.tenantId);
+        if (found.dnsZones.length === 1) applyDiscovered("acs_dns_zone_id", found.dnsZones[0].id);
+        discoveryStatus.textContent = `Applied subscription "${found.selected.name}" and tenant. Found ${found.subscriptions.length} subscription(s), ${found.locations.length} region(s), ${found.dnsZones.length} DNS zone(s), ${found.resourceGroups.length} resource group(s). Click a value below to apply it.`;
+        const rows = [];
+        const others = found.subscriptions.filter((s) => s.id !== found.selected.id);
+        if (others.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Other subscriptions:" }), ...others.slice(0, 15).map((s) => discoveryChip(s.name, "subscription_id", s.id))]));
+        if (found.resourceGroups.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Resource groups:" }), ...found.resourceGroups.slice(0, 20).map((g) => discoveryChip(g.name, "tf_state_resource_group", g.name))]));
+        if (found.dnsZones.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "DNS zones:" }), ...found.dnsZones.slice(0, 20).map((z) => discoveryChip(z.name, "acs_dns_zone_id", z.id))]));
+        if (found.locations.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Regions:" }), ...found.locations.slice(0, 30).map((l) => discoveryChip(l.display || l.name, "location", l.name))]));
+        discoveryResults.replaceChildren(...rows);
+      } catch (e) {
+        discoveryStatus.textContent = `Discovery unavailable — enter values manually. (${e.message})`;
+      } finally {
+        discoverBtn.disabled = false;
+      }
+    });
+    form.appendChild(el("details", { class: "azure-discovery" }, [
+      el("summary", { text: "Discover from Azure (optional)" }),
+      el("p", { class: "field-help", text: "Sign in to Azure in a popup to auto-fill subscription, tenant, region, DNS zone, and resource group. Read-only; your Azure token is never sent to this server. Requires the Entra client ID (above) with delegated Azure Service Management permission." }),
+      el("div", { class: "btn-row" }, [discoverBtn]), discoveryStatus, discoveryResults,
+    ]));
     const normalFields = (step.fields || []).filter((field) => field.advanced !== true);
     const advancedFields = (step.fields || []).filter((field) => field.advanced === true);
     normalFields.forEach((field, index) => form.appendChild(renderField(field, index)));

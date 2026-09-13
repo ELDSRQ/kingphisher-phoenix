@@ -811,7 +811,17 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     return app
 
 
-_CONSOLE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'"
+# DEP-010: connect-src is widened to the two Azure control-plane origins so the
+# browser-side deployment discovery (PKCE popup) can exchange its auth code at
+# login.microsoftonline.com and read ARM at management.azure.com with the
+# operator's own delegated token. The token never touches this server. The auth
+# step is a popup navigation, not an iframe, so no frame-src is required and the
+# rest of the policy stays locked (default-src 'none', script/style/img 'self').
+_CONSOLE_CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; "
+    "connect-src 'self' https://login.microsoftonline.com https://management.azure.com; "
+    "img-src 'self'"
+)
 
 
 def _mount_console(app: FastAPI, settings: OperatorApiSettings) -> None:
