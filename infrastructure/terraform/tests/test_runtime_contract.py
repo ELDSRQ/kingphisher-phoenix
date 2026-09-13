@@ -250,6 +250,25 @@ def test_acs_sender_uses_the_explicit_delivery_workload_identity() -> None:
     assert 'name  = "AZURE_CLIENT_ID"' not in worker
 
 
+def test_operator_declares_the_ai_gateway_auth_secret_it_references() -> None:
+    # Regression (deploy 2026-09-13): the P3 discovery consumer wires
+    # OPERATOR_API_AI_GATEWAY_API_KEY to secretRef "ai-gateway-auth-key". Azure
+    # Container Apps reject an env secretRef with no matching secret block
+    # (400 ContainerAppSecretRefNotFound) — terraform plan/validate cannot catch
+    # it. The operator must therefore DECLARE the secret whenever it references
+    # it, gated on the same condition as the env.
+    operator_section = MAIN.split('resource "azurerm_container_app" "operator"', maxsplit=1)[1].split(
+        'resource "azurerm_container_app" "tracking"', maxsplit=1
+    )[0]
+    assert 'OPERATOR_API_AI_GATEWAY_API_KEY = { value = null, secret = "ai-gateway-auth-key" }' in operator_section
+    assert 'name                = "ai-gateway-auth-key"' in operator_section
+    assert (
+        'key_vault_secret_id = azurerm_key_vault_secret.runtime["ai-gateway-auth-key"].versionless_id'
+        in operator_section
+    )
+    assert "for_each = (var.deploy_workloads && var.deploy_ai_gateway) ? [1] : []" in operator_section
+
+
 def test_tracking_replicas_use_the_shared_redis_rate_limit_backend() -> None:
     tracking_section = MAIN.split('resource "azurerm_container_app" "tracking"', maxsplit=1)[1].split(
         'resource "azurerm_container_app" "worker"', maxsplit=1
