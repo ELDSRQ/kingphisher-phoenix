@@ -457,7 +457,7 @@ def test_plan_apply_status_is_allowlisted_audited_and_redacted(tmp_path) -> None
     service = DeploymentOrchestrator(
         MemoryPlanStore(),
         _successful_gateway(order),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     with TestClient(_app(tmp_path, service, audit)) as client:
         headers = _headers(client)
@@ -558,7 +558,7 @@ def test_latest_and_advance_routes_restore_owner_plan_and_create_only_next_stage
     service = DeploymentOrchestrator(
         store,
         _successful_gateway(),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     audit = FakeAudit()
     with TestClient(_app(tmp_path, service, audit)) as client:
@@ -833,7 +833,7 @@ def test_confirmed_non_successful_completion_is_reconcile_only(conclusion: str) 
     service = DeploymentOrchestrator(
         MemoryPlanStore(),
         gateway,
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     plan = service.create_plan(_values(), actor="operator")
     submitted = service.apply(
@@ -1318,7 +1318,7 @@ def test_recorded_plan_expiry_is_enforced_even_after_store_save() -> None:
         MemoryPlanStore(),
         _successful_gateway(),
         clock=lambda: now[0],
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     plan = service.create_plan(_values(), actor="operator")
     now[0] += timedelta(seconds=24 * 60 * 60 + 1)
@@ -1331,7 +1331,7 @@ def test_plan_operation_lock_serializes_apply_and_refresh() -> None:
     service = DeploymentOrchestrator(
         store,
         _successful_gateway(),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     plan = service.create_plan(_values(), actor="operator")
     assert store.acquire_operation(plan["plan_id"], "first-request") is True
@@ -1350,7 +1350,7 @@ def test_latest_plan_index_and_advance_create_new_digest_bound_stage_without_red
     service = DeploymentOrchestrator(
         store,
         _successful_gateway(),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     bootstrap = service.create_plan(_values(), actor="operator")
     stored = store.load(bootstrap["plan_id"])
@@ -1405,7 +1405,7 @@ def test_apply_rejects_exhausted_capacity_before_acquiring_leases(capacity: str)
     service = DeploymentOrchestrator(
         store,
         _successful_gateway(),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     public = service.create_plan(_values(), actor="operator")
     stored = store.load(public["plan_id"])
@@ -1451,7 +1451,7 @@ def test_initial_dispatch_intent_write_failure_releases_all_acquired_leases() ->
     service = DeploymentOrchestrator(
         store,
         _successful_gateway(),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     plan = service.create_plan(_values(), actor="operator")
     store.fail_next_save = True
@@ -1909,7 +1909,7 @@ def test_success_with_missing_final_acs_artifact_is_evidence_unverified() -> Non
     service = DeploymentOrchestrator(
         MemoryPlanStore(),
         gateway,
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     plan = service.create_plan(_values(), actor="operator")
     service.apply(
@@ -2366,7 +2366,7 @@ def test_public_plan_redacts_unrecognized_durable_error() -> None:
     service = DeploymentOrchestrator(
         store,
         _successful_gateway(),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     plan = service.create_plan(_values(), actor="operator")
     stored = store.plans[plan["plan_id"]]
@@ -2526,7 +2526,7 @@ def test_interrupted_dispatch_reentry_uses_checkpoint_to_choose_safe_recovery(
     service = DeploymentOrchestrator(
         store,
         _successful_gateway(),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     public = service.create_plan(_values(), actor="operator")
     stored = store.load(public["plan_id"])
@@ -2571,7 +2571,7 @@ def test_tampered_recovery_state_fails_closed_with_bounded_error(tamper: str) ->
     service = DeploymentOrchestrator(
         store,
         _successful_gateway(),
-        preflight=lambda environment: _preflight(environment),
+        preflight=lambda e: _preflight(e),
     )
     plan = service.create_plan(_values(), actor="operator")
     stored = store.plans[plan["plan_id"]]
@@ -2584,3 +2584,84 @@ def test_tampered_recovery_state_fails_closed_with_bounded_error(tamper: str) ->
         service.get_plan(plan["plan_id"], actor="operator", refresh=False)
 
     assert str(caught.value) == "deployment plan storage is malformed"
+
+
+# --- DEP-010 P3: roll-forward-to-last-green rollback + recovery ---
+
+
+def _green_record(**overrides: Any) -> dict[str, Any]:
+    record = {
+        "schema": "kp.deployment-green.v1",
+        "environment": "staging",
+        "plan_id": "a" * 32,
+        "deployment_phase": "foundation_bootstrap",
+        "reviewed_commit_sha": COMMIT_SHA,
+        "reviewed_values": _values(),
+        "recorded_at": "2026-09-13T00:00:00+00:00",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_green_record_store_round_trip() -> None:
+    store = MemoryPlanStore()
+    assert store.load_green("staging") is None
+    record = _green_record()
+    store.save_green("staging", record)
+    assert store.load_green("staging") == record
+    # Loaded records are deep copies, not shared references.
+    store.load_green("staging")["reviewed_values"]["subscription_id"] = "mutated"
+    assert store.load_green("staging")["reviewed_values"]["subscription_id"] == _values()["subscription_id"]
+    with pytest.raises(DeploymentUnavailable):
+        store.save_green("bogus", record)
+    with pytest.raises(DeploymentUnavailable):
+        store.load_green("bogus")
+
+
+def test_record_green_captures_the_reviewed_configuration() -> None:
+    store = MemoryPlanStore()
+    service = DeploymentOrchestrator(store, _successful_gateway(), preflight=lambda e: _preflight(e))
+    plan = {
+        "environment": "staging",
+        "plan_id": "b" * 32,
+        "inputs": {"deployment_phase": "workloads"},
+        "source_revision": {"commit_sha": COMMIT_SHA},
+        "reviewed_values": _values(),
+    }
+    service._record_green(plan)
+    record = store.load_green("staging")
+    assert record is not None
+    assert record["reviewed_commit_sha"] == COMMIT_SHA
+    assert record["deployment_phase"] == "workloads"
+    assert record["reviewed_values"]["subscription_id"] == _values()["subscription_id"]
+
+
+def test_rollback_without_a_recorded_green_is_a_conflict() -> None:
+    service = _service()
+    with pytest.raises(DeploymentConflict):
+        service.create_rollback_plan("staging", actor="operator")
+    assert service.rollback_target("staging") is None
+
+
+def test_rollback_creates_a_reviewed_plan_from_the_recorded_green() -> None:
+    store = MemoryPlanStore()
+    service = DeploymentOrchestrator(store, _successful_gateway(), preflight=lambda e: _preflight(e))
+    store.save_green("staging", _green_record())
+    plan = service.create_rollback_plan("staging", actor="operator")
+    # A normal reviewed plan that still goes through apply + environment approval.
+    assert plan["state"] == "reviewed"
+    assert plan["review"]["environment"] == "staging"
+    assert plan["review_digest"]
+    assert service.rollback_target("staging") == {
+        "available": True,
+        "environment": "staging",
+        "plan_id": "a" * 32,
+        "deployment_phase": "foundation_bootstrap",
+        "reviewed_commit_sha": COMMIT_SHA,
+        "recorded_at": "2026-09-13T00:00:00+00:00",
+    }
+
+
+def test_rollback_rejects_unknown_environment() -> None:
+    with pytest.raises(DeploymentConflict):
+        _service().create_rollback_plan("bogus", actor="operator")

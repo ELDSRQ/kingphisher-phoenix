@@ -251,6 +251,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/console/azure-deployment",
             "POST /api/v1/console/azure-deployment/validate",
             "POST /api/v1/console/azure-deployment/orchestration/plan",
+            "POST /api/v1/console/azure-deployment/orchestration/rollback",
             "GET /api/v1/console/azure-deployment/orchestration/latest",
             "GET /api/v1/console/azure-deployment/orchestration/plans/{plan_id}",
             "POST /api/v1/console/azure-deployment/orchestration/plans/{plan_id}/apply",

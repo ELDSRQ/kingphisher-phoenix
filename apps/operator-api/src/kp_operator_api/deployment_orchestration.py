@@ -148,6 +148,12 @@ __all__ = [
 ]
 
 
+# DEP-010: a "last green" rollback target outlives the short-lived plan TTL — it
+# is the reviewed configuration of the last successfully-applied deployment for an
+# environment, re-dispatched on rollback through the same review + approval gate.
+GREEN_RECORD_TTL_SECONDS = 60 * 60 * 24 * 60  # 60 days
+
+
 class PlanStore(Protocol):
     def save(self, plan: dict[str, Any]) -> None: ...
 
@@ -156,6 +162,10 @@ class PlanStore(Protocol):
     def save_latest(self, actor: str, environment: str, plan_id: str) -> None: ...
 
     def load_latest(self, actor: str, environment: str) -> str | None: ...
+
+    def save_green(self, environment: str, record: dict[str, Any]) -> None: ...
+
+    def load_green(self, environment: str) -> dict[str, Any] | None: ...
 
     def acquire_attempt(self, plan_id: str, attempt: int) -> bool: ...
 
@@ -238,6 +248,41 @@ class RedisPlanStore:
         if not isinstance(plan_id, str) or _PLAN_ID.fullmatch(plan_id) is None:
             raise DeploymentUnavailable("deployment plan storage is malformed")
         return plan_id
+
+    def _green_key(self, environment: str) -> str:
+        return f"{self._prefix}green:{environment}"
+
+    def save_green(self, environment: str, record: dict[str, Any]) -> None:
+        if environment not in {"staging", "production"}:
+            raise DeploymentUnavailable("deployment plan storage is malformed")
+        encoded = json.dumps(record, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > MAX_PLAN_BYTES:
+            raise DeploymentUnavailable("deployment plan storage is malformed")
+        try:
+            stored = self._client.set(self._green_key(environment), encoded, ex=GREEN_RECORD_TTL_SECONDS)
+        except redis.RedisError:
+            raise DeploymentUnavailable("deployment plan storage is unavailable") from None
+        if not stored:
+            raise DeploymentUnavailable("deployment plan storage is unavailable")
+
+    def load_green(self, environment: str) -> dict[str, Any] | None:
+        if environment not in {"staging", "production"}:
+            raise DeploymentUnavailable("deployment plan storage is malformed")
+        try:
+            raw = self._client.get(self._green_key(environment))
+        except redis.RedisError:
+            raise DeploymentUnavailable("deployment plan storage is unavailable") from None
+        if raw is None:
+            return None
+        if not isinstance(raw, str) or len(raw.encode("utf-8")) > MAX_PLAN_BYTES:
+            raise DeploymentUnavailable("deployment plan storage is malformed")
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, RecursionError):
+            raise DeploymentUnavailable("deployment plan storage is malformed") from None
+        if not isinstance(value, dict):
+            raise DeploymentUnavailable("deployment plan storage is malformed")
+        return value
 
     def acquire_attempt(self, plan_id: str, attempt: int) -> bool:
         try:
@@ -330,6 +375,7 @@ class MemoryPlanStore:
         self.environments: dict[str, str] = {}
         self.operations: dict[str, str] = {}
         self.latest: dict[tuple[str, str], str] = {}
+        self.green: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     def save(self, plan: dict[str, Any]) -> None:
@@ -352,6 +398,19 @@ class MemoryPlanStore:
             raise DeploymentUnavailable("deployment plan storage is malformed")
         with self._lock:
             return self.latest.get((actor, environment))
+
+    def save_green(self, environment: str, record: dict[str, Any]) -> None:
+        if environment not in {"staging", "production"}:
+            raise DeploymentUnavailable("deployment plan storage is malformed")
+        with self._lock:
+            self.green[environment] = json.loads(json.dumps(record))
+
+    def load_green(self, environment: str) -> dict[str, Any] | None:
+        if environment not in {"staging", "production"}:
+            raise DeploymentUnavailable("deployment plan storage is malformed")
+        with self._lock:
+            record = self.green.get(environment)
+            return json.loads(json.dumps(record)) if record is not None else None
 
     def acquire_attempt(self, plan_id: str, attempt: int) -> bool:
         with self._lock:
@@ -808,8 +867,12 @@ class DeploymentOrchestrator:
                 "The workflow dispatch API accepts a branch or tag, not an immutable commit SHA",
             ],
             "rollback": {
-                "supported": False,
-                "reason": "No separately reviewed allowlisted rollback workflow exists; recovery remains manual.",
+                "supported": True,
+                "reason": (
+                    "Roll forward to the last successfully-applied reviewed configuration, re-dispatched "
+                    "through the same review and environment-approval gate; available once a green "
+                    "deployment is recorded for the environment."
+                ),
             },
         }
 
@@ -966,7 +1029,10 @@ class DeploymentOrchestrator:
                 "GitHub has no non-dispatch input-schema dry run; the exact pinned workflow content is checked instead",
                 "GitHub environment approval remains mandatory and may reject or delay the run",
                 "A successful workflow is required before Azure deployment can be described as complete",
-                "Rollback is not supported by this GUI slice; use the protected Azure recovery procedure",
+                (
+                    "Rollback rolls forward to the last successfully-applied reviewed configuration "
+                    "through this same review and approval gate"
+                ),
                 (
                     "The connector fails closed unless bounded GitHub job and step results verify every required "
                     "phase-specific recovery gate"
@@ -986,6 +1052,60 @@ class DeploymentOrchestrator:
         self.store.save(plan)
         self.store.save_latest(actor, inputs["environment"], plan_id)
         return self._public_plan(plan)
+
+    def _record_green(self, plan: dict[str, Any]) -> None:
+        """Record a just-succeeded deployment's reviewed configuration as the
+        environment's rollback target. Best-effort: a storage failure must never
+        undo the recorded success (the plan itself is persisted by _refresh)."""
+        environment = str(plan.get("environment", ""))
+        reviewed_values = plan.get("reviewed_values")
+        source_revision = plan.get("source_revision") or {}
+        if environment not in {"staging", "production"} or not isinstance(reviewed_values, dict):
+            return
+        record = {
+            "schema": "kp.deployment-green.v1",
+            "environment": environment,
+            "plan_id": str(plan.get("plan_id", "")),
+            "deployment_phase": str((plan.get("inputs") or {}).get("deployment_phase", "")),
+            "reviewed_commit_sha": str(source_revision.get("commit_sha", "")),
+            "reviewed_values": reviewed_values,
+            "recorded_at": self._clock().isoformat(),
+        }
+        try:
+            self.store.save_green(environment, record)
+        except DeploymentUnavailable:
+            self._append_checkpoint(plan, "rollback_target_record_skipped", evidence={"reason": "storage_unavailable"})
+
+    def rollback_target(self, environment: str) -> dict[str, Any] | None:
+        """A bounded, secret-free summary of the environment's last-green rollback
+        target, or None if none is recorded yet."""
+        if environment not in {"staging", "production"}:
+            return None
+        record = self.store.load_green(environment)
+        if not isinstance(record, dict):
+            return None
+        return {
+            "available": True,
+            "environment": environment,
+            "plan_id": str(record.get("plan_id", "")),
+            "deployment_phase": str(record.get("deployment_phase", "")),
+            "reviewed_commit_sha": str(record.get("reviewed_commit_sha", "")),
+            "recorded_at": str(record.get("recorded_at", "")),
+        }
+
+    def create_rollback_plan(self, environment: str, *, actor: str) -> dict[str, Any]:
+        """Roll forward to last-green: create a NEW reviewed plan that re-deploys
+        the last successfully-applied configuration for the environment. It flows
+        through the identical review -> apply -> environment-approval -> dispatch
+        path — there is no separate, unreviewed rollback dispatch, and the dispatch
+        still revalidates the reviewed commit at apply time."""
+        if environment not in {"staging", "production"}:
+            raise DeploymentConflict("unknown deployment environment")
+        record = self.store.load_green(environment)
+        if not isinstance(record, dict) or not isinstance(record.get("reviewed_values"), dict):
+            raise DeploymentConflict("no previously successful deployment is recorded for this environment")
+        reviewed_values = {str(key): str(value) for key, value in record["reviewed_values"].items()}
+        return self.create_plan(reviewed_values, actor=actor)
 
     def get_plan(self, plan_id: str, *, actor: str, refresh: bool = True) -> dict[str, Any]:
         if not refresh:
@@ -1366,6 +1486,7 @@ class DeploymentOrchestrator:
                     plan["state"] = "workflow_succeeded"
                     plan["last_error"] = None
                     self._append_checkpoint(plan, "workflow_succeeded", evidence={"run_id": int(run_id)})
+                    self._record_green(plan)
             else:
                 plan["state"] = "evidence_unverified"
                 plan["last_error"] = (
