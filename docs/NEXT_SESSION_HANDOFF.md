@@ -1,8 +1,9 @@
 # Next-session handoff
 
-> **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-12.md` (repo root) — read that
-> first.** It covers the P0–P3 AI-pipeline redesign (four stacked PRs, not yet
-> merged). Blocker #1 below is resolved there.
+> **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-13.md` (repo root) — read that
+> first.** It is current as of the merged + deployed P0–P3 pipeline and the built
+> (deploy-pending) P3 consumer. Blocker #1 below is resolved; the P0–P3 design is
+> in `docs/AI_PIPELINE_REDESIGN_SPEC.md` / `docs/AI_PIPELINE_P1-P3_RESUME.md`.
 
 ## Addendum 2026-09-11 (end of session, head `e41e3e9` or later) — CURRENT STATE
 

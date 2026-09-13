@@ -1,5 +1,9 @@
 # AI Handoff
 
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-13.md` (repo root).** This file is the
+> pre-redesign history (last substantive addendum 2026-09-06). For current state —
+> P0–P3 merged + deployed, P3 consumer built — read `AI_HANDOFF_2026-09-13.md`.
+
 ## Addendum 2026-09-06 — REVIEW-FINDINGS wave LANDED (head `e47570f`, all pushed)
 
 All 11 tasks from the four-perspective review (`docs/design/REVIEW-FINDINGS-2026-09.md`) landed

@@ -1,5 +1,11 @@
 # AI Handoff — 2026-09-12 (AI generation pipeline redesign, P0–P3)
 
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-13.md`.** This doc was written while the four
+> P0–P3 PRs were "not yet merged". As of 2026-09-13 they are all **merged to `main`** and
+> **deployed to staging**, and the P3 consumer is built (`5e71837`) — read the 09-13
+> handoff for current state and next actions. Kept as the record of the P0–P3 design and
+> the original merge plan.
+
 **Supersedes** `AI_HANDOFF_2026-09-11.md`. Full design + per-phase as-built notes:
 `docs/AI_PIPELINE_REDESIGN_SPEC.md`. Resume/lessons: `docs/AI_PIPELINE_P1-P3_RESUME.md`.
 

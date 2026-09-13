@@ -1,5 +1,9 @@
 # Next-session resume prompt (copy/paste)
 
+> **⚠️ SUPERSEDED — read `AI_HANDOFF_2026-09-13.md` (repo root) instead.** The
+> fenced copy/paste prompt below dates from 2026-09-05/06 and is far out of date.
+> Kept as history only.
+
 > Copy everything in the fenced block below into a fresh session to resume seamlessly.
 > Written 2026-09-05, updated 2026-09-06. Repo head at handoff: `e47570f` (fully pushed to origin/main).
 
