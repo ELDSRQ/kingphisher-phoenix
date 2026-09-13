@@ -2105,6 +2105,7 @@
         const resultBox = el("div", { class: "wizard-feedback", role: "status", "aria-live": "polite", text: "Select Validate configuration to run the readiness checks." });
         const readinessPanel = el("div", {}, [releaseReadinessCard(schema.release_readiness)]);
         const exports = el("div", { class: "btn-row" });
+        const costPanel = el("div", {});
         const orchestration = el("div", { class: "card" });
         const validateButton = el("button", { class: "btn primary", type: "button", text: "Validate configuration", onclick: async () => {
           validateButton.disabled = true;
@@ -2118,6 +2119,21 @@
             }
             setWizardFeedback(resultBox, "success", ["Inputs are structurally valid; production readiness is not proven.", ...result.warnings || []].join(" "));
             readinessPanel.replaceChildren(releaseReadinessCard(result.release_readiness));
+            const cost = result.cost_estimate;
+            if (cost) {
+              costPanel.replaceChildren(el("section", { class: "card cost-estimate", "aria-label": "Estimated monthly Azure cost" }, [
+                el("h4", { text: `Estimated monthly cost (${cost.environment}): ${cost.currency} ${cost.monthly_low}\u2013${cost.monthly_high}/${cost.period}` }),
+                el("table", { class: "cost-table" }, [
+                  el("thead", {}, [el("tr", {}, [el("th", { text: "Resource" }), el("th", { text: `${cost.currency}/mo (low\u2013high)` })])]),
+                  el("tbody", {}, (cost.line_items || []).map((item) => el("tr", {}, [
+                    el("td", {}, [el("span", { text: item.resource }), item.note ? el("span", { class: "field-help", text: ` \u2014 ${item.note}` }) : el("span", {})]),
+                    el("td", { text: `${item.monthly_low}\u2013${item.monthly_high}` })
+                  ])))
+                ]),
+                ...(cost.usage_notes || []).map((note) => el("p", { class: "field-help", text: `Usage-metered: ${note}` })),
+                el("p", { class: "field-help", text: cost.disclaimer })
+              ]));
+            }
             const terraformValues = {
               subscription_id: collected.subscription_id,
               environment: collected.environment,
@@ -2203,6 +2219,7 @@
           summary,
           resultBox,
           readinessPanel,
+          costPanel,
           exports,
           orchestration,
           el("div", { class: "notice", role: "note", text: "After adding these values to the protected GitHub environment, an authorized operator runs Azure deployment. The workflow plans, requires environment approval, applies, migrates, and health-checks the release." }),
