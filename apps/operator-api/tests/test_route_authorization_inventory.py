@@ -148,6 +148,8 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "POST /api/v1/threats/{source_item_id}/activate",
             "POST /api/v1/threats/{source_item_id}/reject",
             "POST /api/v1/threats/{source_item_id}/merge-duplicate",
+            "POST /api/v1/console/discover/search",
+            "GET /api/v1/console/discover/allowed-domains",
         ),
     ),
     (

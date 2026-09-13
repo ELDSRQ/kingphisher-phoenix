@@ -44,6 +44,7 @@ from kp_operator_api.analytics_routes import router as analytics_router
 from kp_operator_api.auth import make_idp
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.console import router as console_router
+from kp_operator_api.console.discovery_routes import router as discovery_router
 from kp_operator_api.program_routes import router as program_router
 from kp_operator_api.ratelimit import LoginThrottle, RateLimiter
 from kp_operator_api.routers import router
@@ -669,6 +670,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.include_router(training_library_router)
     app.include_router(threat_router)
     app.include_router(console_router)
+    app.include_router(discovery_router)
     app.include_router(acs_receipts_router)
 
     _mount_console(app, settings)

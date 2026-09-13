@@ -1124,21 +1124,27 @@ resource "azurerm_key_vault_secret" "runtime" {
 locals {
   workload_secret_names = merge(
     {
-      operator = toset([
-        "operator-database-url",
-        "recipient-import-digest",
-        "audit-database-url",
-        "redis-url",
-        "ciphertext-kek",
-        "recipient-salt",
-        "console-jwt",
-        "console-password",
-        "roe-signing-key",
-        "domain-verify-key",
-        "tracking-token-hmac",
-        "training-token-hmac",
-        "acs-receipt-signing-key",
-      ])
+      operator = toset(concat(
+        [
+          "operator-database-url",
+          "recipient-import-digest",
+          "audit-database-url",
+          "redis-url",
+          "ciphertext-kek",
+          "recipient-salt",
+          "console-jwt",
+          "console-password",
+          "roe-signing-key",
+          "domain-verify-key",
+          "tracking-token-hmac",
+          "training-token-hmac",
+          "acs-receipt-signing-key",
+        ],
+        # P3: the console calls the gateway's /discover on behalf of a
+        # source curator, so it reads the shared gateway bearer (AI-016). Scoped
+        # only when the managed gateway is deployed.
+        var.deploy_workloads && var.deploy_ai_gateway ? ["ai-gateway-auth-key"] : [],
+      ))
       tracking = toset([
         "tracking-database-url",
         "redis-url",
@@ -1583,12 +1589,20 @@ resource "azurerm_container_app" "operator" {
           OPERATOR_API_RATE_LIMIT_BACKEND       = { value = "redis", secret = null }
           OPERATOR_API_CONSOLE_STATIC_DIR       = { value = "/app/apps/operator-ui/src/console", secret = null }
           APPLICATIONINSIGHTS_CONNECTION_STRING = { value = azurerm_application_insights.main.connection_string, secret = null }
+          # P3 discovery consumer: internal AI gateway base URL (empty disables
+          # discovery, so every on-prem posture stays offline by default).
+          OPERATOR_API_AI_GATEWAY_URL = { value = trimspace(var.ai_endpoint), secret = null }
           },
           local.deployment_orchestration_enabled ? {
             OPERATOR_API_DEPLOYMENT_GITHUB_TOKEN = { value = null, secret = "deployment-github-token" }
           } : {},
           local.ciphertext_recovery_enabled ? {
             OPERATOR_API_CIPHERTEXT_PRIOR_KEYS = { value = null, secret = "ciphertext-prior-keys" }
+          } : {},
+          # P3: shared gateway bearer for the console's /discover call. Only when
+          # the managed gateway (and therefore the ai-gateway-auth-key secret) exists.
+          (var.deploy_workloads && var.deploy_ai_gateway) ? {
+            OPERATOR_API_AI_GATEWAY_API_KEY = { value = null, secret = "ai-gateway-auth-key" }
           } : {},
         )
         content {

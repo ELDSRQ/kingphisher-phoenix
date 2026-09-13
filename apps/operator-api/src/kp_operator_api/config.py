@@ -150,6 +150,23 @@ class OperatorApiSettings(BaseSettings):
     env_file: str = ".env"
     console_static_dir: str = "apps/operator-ui/src/console"
 
+    # P3 web-search discovery consumer. The console calls the internal AI
+    # gateway's /discover endpoint (the only place the platform reaches the
+    # public web). Empty in on-prem/local deployments — the route then reports
+    # discovery unavailable (503) rather than attempting any egress.
+    ai_gateway_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPERATOR_API_AI_GATEWAY_URL", "KP_WORKER_AI_BASE_URL"),
+    )
+    #: Shared bearer secret the gateway requires (KP_AI_GATEWAY_API_KEY). Never
+    #: a caller-provided value; it is provisioned from Key Vault in Azure and
+    #: from .env on the local stack.
+    ai_gateway_api_key: str = Field(
+        default="",
+        repr=False,
+        validation_alias=AliasChoices("OPERATOR_API_AI_GATEWAY_API_KEY", "KP_WORKER_AI_BEARER_TOKEN"),
+    )
+
     # --- send-safety policy (T-06) ---
     # Both accept a shared, unprefixed env var so an operator sets one value
     # for the API and the workers instead of two that can silently diverge.

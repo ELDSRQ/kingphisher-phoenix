@@ -483,7 +483,7 @@ def test_receipt_signing_secret_is_scoped_only_to_operator_and_delivery_deployme
         'resource "azurerm_role_assignment" "workload_secret"', maxsplit=1
     )[0]
     assert access.count('"acs-receipt-signing-key"') == 2
-    assert "operator = toset([" in access
+    assert "operator = toset(concat(" in access
     assert 'contains(roles, "delivery")' in access
     for role in ("tracking", "migration"):
         block = access.split(f"{role} = toset(", maxsplit=1)[1].split(")", maxsplit=1)[0]
