@@ -1,5 +1,13 @@
 # RESUME HERE — 2026-09-05 (Azure IDLED; full app + Qwen now run LOCAL on .105; head `a57345d`)
 
+> **LATEST (2026-09-13): read [`AI_HANDOFF_2026-09-13.md`](AI_HANDOFF_2026-09-13.md) first — it is
+> the current canonical handoff.** Since the note below: the P0–P3 pipeline is merged + deployed, the
+> **P3 consumer is deployed + verified**, **DEP-010 is complete** (GUI Azure deploy: browser
+> discovery, cost estimate, roll-forward rollback), and **MAIL-005 + DOC-030** landed. **Azure
+> staging is now POWERED OFF to save cost** (VM deallocated, Postgres stopped, container apps
+> min-replicas 0 — bring it back per §2 of that handoff before staging work). The `.105` WSL2 local
+> stack below is still correct; the `.140` engine is retired.
+
 > **Full copy/paste resume prompt: [`docs/NEXT-SESSION-PROMPT.md`](docs/NEXT-SESSION-PROMPT.md).**
 > The section below is the current state; older history follows further down.
 
