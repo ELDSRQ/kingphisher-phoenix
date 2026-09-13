@@ -1,273 +1,172 @@
-# AI Handoff — 2026-09-13 (P0–P3 merged + deployed; P3 consumer built, deploy pending)
+# AI Handoff — 2026-09-13 (P0–P3 + P3 consumer deployed; DEP-010 complete; staging idled)
 
-**Supersedes** `AI_HANDOFF_2026-09-12.md`. Design reference: `docs/AI_PIPELINE_REDESIGN_SPEC.md`
-and `docs/AI_PIPELINE_P1-P3_RESUME.md`. Longer history: `docs/NEXT_SESSION_HANDOFF.md`.
+**Supersedes** `AI_HANDOFF_2026-09-12.md`. Design reference: `docs/AI_PIPELINE_REDESIGN_SPEC.md`,
+`docs/AI_PIPELINE_P1-P3_RESUME.md`, and `docs/design/DEP-010-BUILD-PLAN.md`.
 
 **Repo:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`
-**Head:** `5e71837` on `main` — tree clean, nothing unpushed, CI green. Verify state, not a sha:
-`git log --oneline -3` (a docs commit here will be newer than any sha named below).
+**Head:** `main` clean, nothing unpushed, CI green. Verify state, not a sha:
+`git log --oneline -5` (a later docs commit will be newer than any sha named below).
 
 ---
 
 ## 0. TL;DR — where things stand
 
-The four stacked AI-pipeline PRs are **merged** and **deployed** to Azure staging. The
-P3 consumer (the on-demand console route that pulls web-search leads) is **built and on
-`main` (`5e71837`), but NOT yet deployed** — it needs one more `azure-deploy.yml`
-workloads dispatch (and the usual human approval) to take effect.
-
-Two decisions are still open and should be resolved before/with the next deploy:
-
-1. **Deploy the P3 consumer now?** (needs a workloads dispatch + staging-approval click).
-2. **Production generation model** — `production.tfvars` still defaults to `gpt-oss-120b`
-   (bounded); deciding to move production to `gpt-5.6-terra` is a one-file tfvars change.
-
-And the live-campaign goal still needs a **distinct second identity** to approve a pattern
-(§8); `single-operator` posture is already live on staging, which removes the 3-approver
-publish deadlock but does **not** relax the pattern self-approval bar.
-
----
-
-## 1. What changed this session
-
-| Item | Status |
-|------|--------|
-| Merge PRs #1 → #4 (P0 reliability, P1 extraction, P2 sanitizer, P3 discovery) | ✅ merged bottom-up to `main` |
-| Deploy P0–P3 to staging | ✅ run `34728845782` (at `0719c46`) |
-| Build P3 consumer (console `/discover` route + Terraform secret grant) | ✅ committed `5e71837`, CI green, **not deployed** |
-
-### 1.1 Why the merge needed care (do not forget)
-
-- **Missing second workflow SHA pin.** PR #1 re-pinned `EXPECTED_WORKFLOW_SHA256` in
-  `deployment_common.py` but **not** the second pin in
-  `tests/test_azure_idle_workflow_contract.py` (`EXPECTED_DEPLOY_WORKFLOW_SHA256`). The
-  hermetic gate failed on #1 and every stacked PR inherited it. Fixed in `b3ee319` (one
-  line). Any future `azure-deploy.yml` edit must re-pin **both**.
-- **Strict branch protection** (`strict: true` on `main`). Each stacked PR went
-  `mergeStateStatus=BEHIND` and had to be updated with main (local `git merge origin/main`
-  + push) before `--auto` would merge. Merge bottom-up: #1 → (auto-retarget) → #2 → … → #4.
-
-### 1.2 What is LIVE on staging (post `34728845782`)
-
-```
-ca-kp-staging-worker:    KP_WORKER_AI_MODEL_ID          = gpt-5.6-terra
-                         KP_WORKER_PROVIDER_TIMEOUT_SECONDS = 30   (supersedes the 45s hotfix)
-ca-kp-staging-operator:  OPERATOR_APPROVAL_POLICY        = single-operator
-                         OPERATOR_API_AI_MODEL_ID        = gpt-5.6-terra
-ca-kp-staging-ai-gateway:KP_AI_GATEWAY_MODEL_ID           = gpt-5.6-terra
-                         KP_AI_GATEWAY_EXTRACT_MODEL_ID    = gpt-5.6-luna   (reasoning=none)
-                         KP_AI_GATEWAY_DISCOVER_MODEL_ID   = gpt-5.6-luna   (Responses web_search)
-                         KP_AI_GATEWAY_REASONING_EFFORT    = ""            (terra 400s on it)
-                         KP_AI_GATEWAY_SEND_TEMPERATURE    = false         (terra 400s on explicit temp)
-                         KP_AI_GATEWAY_MAX_COMPLETION_TOKENS = 2000
-                         KP_AI_GATEWAY_RESPONSES_BASE_URL  = https://ais-kp-staging-6117w.services.ai.azure.com/openai/v1
-```
-
-### 1.3 What the P3 consumer adds (commit `5e71837`, NOT yet on staging)
-
-- `POST /api/v1/console/discover/search` and `GET /api/v1/console/discover/allowed-domains`
-  under capability `manage:source` (new file `apps/operator-api/src/kp_operator_api/console/discovery_routes.py`).
-- `OperatorApiSettings` gains `ai_gateway_url` (`OPERATOR_API_AI_GATEWAY_URL`) and
-  `ai_gateway_api_key` (`OPERATOR_API_AI_GATEWAY_API_KEY`).
-- Terraform (`infrastructure/terraform/main.tf`): operator container gets
-  `OPERATOR_API_AI_GATEWAY_URL = var.ai_endpoint` and (conditionally) the
-  `ai-gateway-auth-key` secret grant, gated on `deploy_workloads && deploy_ai_gateway`.
-- Route fails closed `503` when `ai_gateway_url` is unset → on-prem stays offline.
-- Tests: `apps/operator-api/tests/test_discovery_routes.py` + entries in
-  `test_route_authorization_inventory.py` + one contract-test string update in
-  `infrastructure/terraform/tests/test_runtime_contract.py`.
+- **P0–P3 AI pipeline: merged + deployed to Azure staging** (bounded generation, `gpt-5.6-terra`
+  generation, `gpt-5.6-luna` extract/discover).
+- **P3 consumer (console `/discover` route): DEPLOYED + verified** on staging (was the one open
+  item in the prior handoff). The first deploy failed on a missing `ai-gateway-auth-key` secret
+  block on the operator container app; fixed in PR #6 (`azurerm_container_app.operator` now declares
+  the secret) and re-deployed green. `POST /api/v1/console/discover/search` → 200 with
+  `model_id: gpt-5.6-luna`; a query containing `@` → 422 (PII gate).
+- **DEP-010 (simplified GUI Azure/mail deployment): COMPLETE** — all three phases merged:
+  - **P1** browser Azure discovery (client-side PKCE popup, no npm dep) — PR #9
+  - **P2** static monthly cost estimate — PR #10
+  - **P3** roll-forward-to-last-green rollback + recovery — PR #11
+- **MAIL-005** (ACS positioned as recommended managed send) — PR #7. **DOC-030** (worker docs
+  reconciled to the `.105` WSL2 worker) — PR #8.
+- **Task matrix reconciled** against live code (see §5): most items COMPLETE or live/human-gated;
+  the buildable, non-gated backlog is now **empty**.
+- **⚠️ Azure staging is currently POWERED OFF to save cost** (operator request, end of session).
+  See §2 to bring it back before any staging work.
 
 ---
 
-## 2. Remaining work (priority order)
+## 1. What shipped this session (all merged to `main`)
 
-### 2.1 Deploy the P3 consumer (one workloads dispatch + approval)
+| PR | Item |
+|----|------|
+| #6 | Fix: declare `ai-gateway-auth-key` secret on the operator container app (unblocked the P3 consumer deploy) |
+| #7 | MAIL-005: ACS = recommended managed send, SMTP = advanced (onboarding UI) |
+| #8 | DOC-030: reconcile README/RUNBOOK/architecture/AGENTS/remote-docker-worker docs to the `.105` WSL2 worker (additive; contract guard preserved) |
+| #9 | DEP-010 P1: client-side browser Azure discovery (PKCE popup) pre-filling the wizard |
+| #10 | DEP-010 P2: static monthly cost estimate in the wizard |
+| #11 | DEP-010 P3: roll-forward-to-last-green rollback + recovery |
 
-Same path as every deploy — CI is the only mutation path (local Terraform apply stays
-blocked: state-backend SAS 403 + a KV data-plane role the human lacks).
+Also: the staging `workloads` deploy that put the P3 consumer live; the task-matrix reconciliation;
+and repo cleanup (stale P0–P3 branches + 9 finished agent worktrees removed — all their work was
+already on `main`).
+
+---
+
+## 2. ⚠️ Azure staging is powered off — bring it back before staging work
+
+Powered off at end of session (RG `rg-kp-staging`, operator identity in `$HOME/.azure`):
+`vm-kp-staging-runner` **deallocated**; `psql-kp-staging-6117w` **stopped**; container apps
+`ca-kp-staging-{operator,tracking,worker}` **min-replicas 0** (ai-gateway was already scale-to-zero).
+Residual charges remain only for storage/disks, the Container App Environment, Key Vault, and Log
+Analytics (those stop only on deletion, which was deliberately NOT done — this is a pause).
+
+To resume (operator identity — the shell default `AZURE_CONFIG_DIR` is the subscription-less
+`licensing@` dir, so export the real one):
 
 ```bash
-# Rebuild the reviewed deployment config if lost (see §6.2), then:
-REQ_ID="kp-$(openssl rand -hex 16)-1"
-gh workflow run azure-deploy.yml --ref main \
-  -f environment=staging -f network_mode=private -f deployment_phase=workloads \
-  -f deployment_config="$CONFIG" \
-  -f deployment_request_id="$REQ_ID" \
-  -f reviewed_commit_sha=$(git rev-parse HEAD)
-# Wait for the "waiting" state, then the operator approves at the run page:
-#   https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/<id>
+export AZURE_CONFIG_DIR="$HOME/.azure"        # erik.dierks@gmail.com, sub 169644fd, rg-kp-staging
+az vm start                    -g rg-kp-staging -n vm-kp-staging-runner
+az postgres flexible-server start -g rg-kp-staging -n psql-kp-staging-6117w
+# Restore container-app replicas either with a workloads deploy (§3) or directly:
+for a in ca-kp-staging-operator ca-kp-staging-tracking ca-kp-staging-worker; do
+  az containerapp update -g rg-kp-staging -n "$a" --min-replicas 1; done
 ```
 
-Post-deploy verify:
-
-```bash
-# operator should now carry the gateway URL + a secret-backed API key:
-az containerapp show -g rg-kp-staging -n ca-kp-staging-operator \
-  --query "properties.template.containers[0].env[?name=='OPERATOR_API_AI_GATEWAY_URL']" -o json
-az containerapp show -g rg-kp-staging -n ca-kp-staging-operator \
-  --query "properties.template.containers[0].env[?name=='OPERATOR_API_AI_GATEWAY_API_KEY']" -o json   # secretRef: ai-gateway-auth-key
-```
-
-Then exercise it (the operator's own `manage:source` identity, not `licensing`):
-
-```bash
-TOKEN=$(az account get-access-token --resource "api://97466174-d0ac-460c-94e8-7b6ff3c83da5" --query accessToken -o tsv | tr -d '\n\r')
-curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  "https://ca-kp-staging-operator.calmflower-9463bfc2.eastus2.azurecontainerapps.io/api/v1/console/discover/search" \
-  -d '{"query":"credential phishing campaigns targeting finance"}'
-# Expect 200 with {"leads":[...], "model_id":"gpt-5.6-luna"}. A query with "@" -> 422 (PII gate).
-```
-
-### 2.2 Decide the production generation model
-
-`environments/production.tfvars` sets none of the AI vars → defaults to `gpt-oss-120b`
-bounded (reasoning `low`, temp on, 2000-cap, 30s): coherent, no regression. To move
-production to terra (matches staging), add to `production.tfvars`:
-
-```hcl
-ai_foundry_model      = "gpt-5.6-terra"
-ai_reasoning_effort   = ""
-ai_send_temperature   = false
-```
-
-`gpt-5.6-terra` / `-luna` are already deployed out-of-band in Foundry (§3). This needs no
-code change — just the tfvars edit + a production deploy (its own review/approval path).
-
-### 2.3 Live Azure campaign (blocked on human second-identity action, not code)
-
-- `single-operator` posture is already live, so submit → `APPROVED` and publish under one
-  identity works. The remaining hard stop is the **pattern self-approval bar**, which is
-  unconditional (§3): the pattern `7e0d6ece-8c94-5a6a-8775-971094a99729` is already
-  APPROVED (approved via `licensing` last session — do **not** re-approve, 409), which
-  means generation is unblocked. Resume the seed/launch from there, or re-run the
-  source→activate→approve flow (a freshly activated pattern must be approved by a
-  *different* identity than the activator; template and training-resource approval have the
-  same author≠reviewer rule). The full campaign launch sequence (import → create →
-  audience/freeze → submit → schedule → canary → publish) is unchanged.
+Postgres auto-restarts ~7 days after being stopped. The nightly-shutdown workflow will re-idle
+compute overnight; a `network_mode=private` deploy needs the runner VM up first or it queues for
+hours (learned the hard way — start the VM before dispatching).
 
 ---
 
-## 3. Hard-won facts (accumulated; do not relearn)
+## 3. Remaining work (priority order) — all needs an operator decision, nothing is un-built
 
-- `gpt-5.6-terra` rejects an explicit `temperature` **and** `reasoning_effort` (400) —
-  run it with temperature omitted (`send_temperature=false`) and no reasoning effort.
-- `gpt-5.6-luna` rejects an explicit `temperature`; accepts `reasoning_effort` incl. `none`
-  (extraction/discovery use `none`). `none` is an allowed gateway reasoning value.
-- For reasoning models `max_completion_tokens` includes reasoning tokens (cap truncates JSON).
-- **Foundry account + model deployments are NOT Terraform-managed.** They liveout-of-band
-  in `ais-kp-staging-6117w`: `gpt-oss-120b`, `gpt-5.6-terra`, `gpt-5.6-luna` (cap 200).
-  `Microsoft.Bing` provider is Registered — that alone enabled Responses-API `web_search`;
-  no separate Bing-grounding resource was needed.
-- **Model comes from `environments/<env>.tfvars`** (CI no longer passes `-var`).
-- Editing `.github/workflows/azure-deploy.yml` **requires re-pinning `EXPECTED_WORKFLOW_SHA256`
-  in `deployment_common.py` AND `EXPECTED_DEPLOY_WORKFLOW_SHA256` in
-  `tests/test_azure_idle_workflow_contract.py`** (two pins — one was missed and broke the
-  gate; `test_deployment_orchestration` / `test_azure_idle_workflow_contract` enforce them).
-- The **ai-gateway is its own uv workspace**: `cd apps/ai-gateway && KP_DISABLE_DOTENV=1 uv run --frozen python -m pytest tests/test_gateway.py -q`
-- **Terraform local apply is blocked** (backend SAS 403 + missing KV data-plane role). CI
-  applies via OIDC. Locally: `terraform fmt`, `terraform init -backend=false` + `validate`,
-  then `git checkout infrastructure/terraform/.terraform.lock.hcl` (never commit lock churn).
-- **Pattern self-approval is unconditional** — a single operator cannot approve their own
-  pattern (also true for template/training-resource "author ≠ reviewer"). Use `licensing@`
-  (§8) for the second identity. This is NOT relaxed by `single-operator`.
-- **Testing gotcha:** run the operator-api / terraform contract test suites with
-  `KP_DISABLE_DOTENV=1`. Without it, the local `.env` (which sets
-  `OPERATOR_API_APPROVAL_POLICY=single-operator`) pollutes `test_send_policy.py` and makes
-  it *look* like a config regression when the code is fine.
+1. **DEP-010 discovery, to actually use it on staging** (Azure-side config, not code): register an
+   Entra SPA app (the wizard's `entra_client_id`) with delegated **Azure Service Management
+   (user_impersonation)** permission and `/console/azure-redirect.html` as a **SPA redirect URI**.
+   Until then the "Discover from Azure" button explains what's missing and manual entry works.
+2. **Production generation model** — `environments/production.tfvars` still defaults to
+   `gpt-oss-120b` bounded (coherent, no regression). Moving prod to `gpt-5.6-terra` is a one-file
+   tfvars edit (`ai_foundry_model`/`ai_reasoning_effort=""`/`ai_send_temperature=false`) + a prod
+   deploy. Operator chose to keep gpt-oss-120b for now.
+3. **RET-005** pseudonym-key rotation/recovery — the ledger substrate is complete; only key
+   rotation/recovery is unbuilt, and it is **operator/governance-gated** (needs a rotation policy
+   decision before building).
+4. **UX-010** five-area navigation IA — **DEFERRED** per the goal-aligned priority policy; do not
+   build without an explicit scope change.
+5. **Live campaign** — still gated on a **distinct second identity** to approve a pattern (the
+   self-approval bar is unconditional). Pattern `7e0d6ece-8c94-5a6a-8775-971094a99729` was approved
+   last session via `licensing@` (do not re-approve — 409). `single-operator` posture is live.
+6. **Live/human-gated evidence** (code done, only live proof pending): SAFE-030 (provider-live
+   delivery receipt), AZ-030 (live ACS/inbox/human-mailbox), AI-010 (live Foundry run), A11Y-030
+   (real-browser/WCAG walkthrough).
 
 ---
 
-## 4. Security boundaries (unchanged — never cross)
+## 4. Hard-won facts (do not relearn)
 
-- Never grant operator API or workers the `audit-hmac` signing root.
-- Never change the shared Entra audience default (`kp-operator-api` is correct for on-prem Keycloak).
-- Docker only on `.105` (never the Mac). Pinned worker: `KP_DOCKER_WORKER=erikd@192.168.1.105`.
-- On-prem stays fully offline — P3 `/discover` is OFF on-prem (no web egress); keep it that way.
-- Never `git add -A`; never commit secrets or `.terraform.lock.hcl` churn.
-- The AI-gateway's shared bearer (`ai-gateway-auth-key`) is a *gateway auth* secret, distinct
-  from the audit signing root; granting it to the operator API (for /discover) is **not**
-  a boundary violation — but never extend the audit-hmac line.
+- **Two workflow-SHA pins** must both be re-pinned on any `azure-deploy.yml` edit:
+  `EXPECTED_WORKFLOW_SHA256` in `apps/operator-api/src/kp_operator_api/deployment_common.py` AND
+  `EXPECTED_DEPLOY_WORKFLOW_SHA256` in `tests/test_azure_idle_workflow_contract.py`.
+- **A Container App env `secretRef` needs a matching `secret {}` block on that same app** or the
+  apply 400s `ContainerAppSecretRefNotFound` — `terraform plan`/`validate` cannot catch it (this was
+  the P3-consumer deploy failure; regression test added in `test_runtime_contract.py`).
+- **The handoff docs are guarded** by `tests/test_external_worker_handoff_contract.py`, which pins
+  the retired-`.140`-worker strings across ~13 docs. Update those docs **additively** (keep every
+  pinned string; the `.140` engine is RETIRED, the `.105` WSL2 host is current) or the hermetic gate
+  goes red. `AI_HANDOFF_2026-09-13.md` (this file) and `NEXT_AI_PROMPT.md` are NOT guarded.
+- **Test suites need `KP_DISABLE_DOTENV=1`** or the local `.env` pollutes settings-driven tests.
+- **The operator console is CSP-hardened** (`default-src 'none'`, self-only). DEP-010 P1 widened
+  `connect-src` to `login.microsoftonline.com` + `management.azure.com` for browser discovery (popup,
+  no frame-src). The frontend is deliberately near-zero-dependency with a byte-exact bundle drift
+  gate (`test_console_bundle_drift.py`) — rebuild `apps/operator-ui` (`npm run build`) and commit the
+  bundle after any `console-js/` edit; avoid adding npm deps (DEP-010 used hand-rolled PKCE to keep
+  it dependency-free).
+- **Terraform local apply is blocked** (backend SAS 403 + missing KV role). CI applies via OIDC.
+  Locally: `terraform fmt`, `init -backend=false` + `validate`, then `git checkout` the lock.
+- **Pattern self-approval is unconditional**; a single operator cannot approve their own pattern.
+- **Reviewed deployment_config**: recover from any green `azure-deploy.yml` run log via
+  `grep -m1 "REVIEWED_DEPLOYMENT_CONFIG:"`; it carries the 38-key contract and its
+  `allowed_recipient_domains` overrides `staging.tfvars`.
+- **Deploy needs the VNet runner UP**: a private-mode deploy dispatched while `vm-kp-staging-runner`
+  is deallocated (e.g. by the nightly shutdown) queues indefinitely — `az vm start` it first.
 
 ---
 
-## 5. Verify state first (run before acting)
+## 5. Reconciled task-matrix status (verified against live code 2026-09-13)
+
+COMPLETE (in code): ORG-001, OUT-001, INT-001, UX-030, THR-001A, THR-001B, TRN-010, AI-005,
+ANA-010, IMP-001, DOCSIM-001, SEC-030, SEC-031, REL-031, REL-030, **MAIL-005, DOC-030, DEP-010**.
+LIVE/HUMAN-GATED (code done): SAFE-030, AZ-030, AI-010, A11Y-030.
+SUPERSEDED (matrix stale): EXT-001/EXT-002 (the `.140` engine is retired → `.105` WSL2).
+GATED/DEFERRED: RET-005 (key rotation, operator-gated), UX-010 (deferred).
+The `docs/PRODUCTION-READINESS-TASK-MATRIX.md` self-reconciled date is 2026-08-30 and predates all
+of the above — trust this section over stale rows.
+
+---
+
+## 6. Verify state first (run before acting)
 
 ```bash
-git log --oneline -3 && git status --short        # expect clean, HEAD 5e71837 or newer
-gh run list --branch main --limit 1                # expect green
-gh pr list                                          # expect empty (all merged)
+git log --oneline -5 && git status --short           # expect clean
+gh run list --branch main --limit 1                  # expect green
+gh pr list                                            # expect empty
 
 KP_DISABLE_DOTENV=1 uv run --frozen python -m pytest \
   packages/contracts/tests/test_discovery.py \
   infrastructure/terraform/tests/ \
-  apps/operator-api/tests/test_discovery_routes.py -q
+  apps/operator-api/tests/test_deployment_orchestration.py \
+  apps/operator-api/tests/test_dep010_discovery_contract.py \
+  apps/operator-api/tests/test_deployment_cost.py -q
 
 make lint && make typecheck
 ```
 
-Then read `docs/AI_PIPELINE_REDESIGN_SPEC.md` and `docs/AI_PIPELINE_P1-P3_RESUME.md` in full.
-
 ---
 
-## 6. Operational notes
-
-### 6.1 Staging approval is a required-reviewer gate
-
-The `staging` GitHub environment has `required_reviewers` (user `ELDSRQ`). Every workloads
-deploy hands at the "Deploy reviewed Azure phase" until the operator clicks **Approve
-deployment** on the run page. State is observable via:
-
-```bash
-gh api "repos/{owner}/{repo}/deployments?environment=staging&per_page=1" --jq '.[0].id'
-gh api "repos/{owner}/{repo}/deployments/<id>/statuses" --jq '.[0].state'   # waiting / in_progress
-```
-
-### 6.2 Rebuild the reviewed deployment config (if it is lost)
-
-`/tmp/kp-deploy-config.json` was the reviewed config from a prior green run; it may not
-survive to the next session. Recover it from any green `azure-deploy.yml` run's log:
-
-```bash
-gh run view <green-run-id> --log 2>/dev/null | grep -m1 "REVIEWED_DEPLOYMENT_CONFIG:" | sed 's/.*REVIEWED_DEPLOYMENT_CONFIG: //'
-```
-
-Facts about that JSON: it carries exactly the 38-key reviewed contract, and its
-`allowed_recipient_domains` **overrides** `staging.tfvars` (a later `-var-file` wins). The
-last green run used `erikdierksgmail.onmicrosoft.com,gmail.com` — so `floridamanevolved.us`
-is **not** in the live recipient allowlist despite being pinned in tfvars. If the campaign
-must mail a `floridamanevolved.us` recipient, update `allowed_recipient_domains` in the
-dispatching config. `acs_*_verification_status` fields are overwritten to
-`pending_live_readback` and re-verified live each run, so their values in the JSON don't matter.
-
----
-
-## 7. Repository layout (relevant to this work)
+## 7. Reference values (Azure staging)
 
 ```
-apps/operator-api/src/kp_operator_api/console/discovery_routes.py   # P3 consumer (new)
-apps/operator-api/src/kp_operator_api/config.py                     # ai_gateway_url/api_key fields
-apps/operator-api/tests/test_discovery_routes.py                     # P3 consumer tests
-infrastructure/terraform/main.tf                                     # operator env + ai-gateway-auth-key grant
-infrastructure/terraform/environments/{staging,production}.tfvars    # model ownership + approval posture
-apps/ai-gateway/src/kp_ai_gateway/main.py                            # /propose /extract /discover
-packages/contracts/src/kp_contracts/discovery.py                     # PII-free + citation-allowlist gates
-docs/AI_PIPELINE_REDESIGN_SPEC.md, docs/AI_PIPELINE_P1-P3_RESUME.md  # design + lesson record
-```
-
----
-
-## 8. Reference values (Azure staging)
-
-```
-RG="rg-kp-staging"
-FOUNDRY="ais-kp-staging-6117w"
-FOUNDRY_CHAT_BASE="https://ais-kp-staging-6117w.cognitiveservices.azure.com/openai/v1"     # /chat/completions (propose, extract)
-FOUNDRY_RESPONSES_BASE="https://ais-kp-staging-6117w.services.ai.azure.com/openai/v1"      # /responses (discover, web_search)
-CONSOLE_CLIENT_ID="97466174-d0ac-460c-94e8-7b6ff3c83da5"
-TENANT_ID="808f2f63-5b2c-46e6-ace7-d133a2df35f8"
-SUBSCRIPTION_ID="169644fd-c81d-4935-af55-5770f8271022"
+RG="rg-kp-staging"   FOUNDRY="ais-kp-staging-6117w"
+SUBSCRIPTION_ID="169644fd-c81d-4935-af55-5770f8271022"   TENANT_ID="808f2f63-5b2c-46e6-ace7-d133a2df35f8"
 OPERATOR_URL="https://ca-kp-staging-operator.calmflower-9463bfc2.eastus2.azurecontainerapps.io"
-# Deployed models (out-of-band): gpt-oss-120b, gpt-5.6-terra, gpt-5.6-luna (cap 200)
-# Second approver: licensing@erikdierksgmail.onmicrosoft.com (oid ee54cb16-6028-45c7-b37f-059aa2f95e8e)
-#   login: AZURE_CONFIG_DIR="$HOME/.azure-licensing" az login --tenant 808f2f63-... --allow-no-subscriptions
+Deployed Foundry models (out-of-band): gpt-oss-120b, gpt-5.6-terra, gpt-5.6-luna
+Second approver: licensing@erikdierksgmail.onmicrosoft.com (AZURE_CONFIG_DIR="$HOME/.azure-licensing")
+Infra ops identity: erik.dierks@gmail.com (AZURE_CONFIG_DIR="$HOME/.azure")
+Docker worker: erikd@192.168.1.105 (WSL2; scripts/operator/wsl2-docker-worker/; .140 retired)
 ```

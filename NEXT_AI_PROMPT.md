@@ -1,10 +1,13 @@
 # Next AI Session Prompt — Phishing Awareness Platform
 
 > **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-13.md`** — read that first. The
-> "Terraform Azure provider auth" blocker framing below is stale, and the P0–P3
-> pipeline redesign is now merged and deployed. The live campaign goal sits
-> behind the P3-consumer deploy and the pattern second-approver requirement.
-> Kept as history.
+> "Terraform Azure provider auth" blocker framing below is stale. The P0–P3
+> pipeline redesign is merged and deployed, the **P3 consumer is now deployed +
+> verified**, and **DEP-010 (GUI Azure deploy: discovery, cost, rollback) is
+> complete**. **Azure staging is currently powered off to save cost — bring it
+> back per §2 of the current handoff before staging work.** The live campaign
+> goal now sits only behind the pattern second-approver requirement. Kept as
+> history.
 
 ## Context
 **Repo:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`

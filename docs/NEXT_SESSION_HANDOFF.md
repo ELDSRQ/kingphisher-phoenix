@@ -1,9 +1,12 @@
 # Next-session handoff
 
 > **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-13.md` (repo root) — read that
-> first.** It is current as of the merged + deployed P0–P3 pipeline and the built
-> (deploy-pending) P3 consumer. Blocker #1 below is resolved; the P0–P3 design is
-> in `docs/AI_PIPELINE_REDESIGN_SPEC.md` / `docs/AI_PIPELINE_P1-P3_RESUME.md`.
+> first.** It is current as of the merged + deployed P0–P3 pipeline, the
+> **deployed + verified P3 consumer**, and **complete DEP-010** (GUI Azure
+> deploy: browser discovery, cost estimate, roll-forward rollback). **Azure
+> staging is currently powered off to save cost — see §2 of that handoff before
+> staging work.** Blocker #1 below is resolved; the P0–P3 design is in
+> `docs/AI_PIPELINE_REDESIGN_SPEC.md` / `docs/AI_PIPELINE_P1-P3_RESUME.md`.
 
 ## Addendum 2026-09-11 (end of session, head `e41e3e9` or later) — CURRENT STATE
 
