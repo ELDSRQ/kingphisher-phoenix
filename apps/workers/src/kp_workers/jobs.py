@@ -94,6 +94,7 @@ from kp_domain_models.roe import (
 from kp_domain_models.source_governance import source_governance_is_current
 from kp_safety_validation.validator import SafetyValidator
 from kp_sanitization.neutralize import neutralize
+from kp_sanitization.safe_html import sanitize_safe_html
 from kp_source_adapters import BulkDownloadAdapter, RssAdapter, SourceAdapter, StixAdapter
 from kp_telemetry.errors import SafetyRejectionError
 from kp_telemetry.logging import get_logger
@@ -547,6 +548,20 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
             generation_request = _with_campaign_record(generation_request, campaign_record)
         response = _call_ai(ctx, generation_request)
 
+        # P2: allow-list sanitize the model's HTML BEFORE validation, so a draft
+        # carrying a stray form, tracking pixel, or off-allowlist link is cleaned
+        # and kept rather than the whole generation being discarded. This is
+        # salvage, not the authority: SafetyValidator still runs on the cleaned
+        # output below and remains the fail-closed gate. The sanitized HTML is
+        # what gets persisted, reviewed, approved, and delivered.
+        sanitized = sanitize_safe_html(response.safe_html, training_placeholder=TRAINING_URL_PLACEHOLDER)
+        clean_safe_html = sanitized.html
+        if TRAINING_URL_PLACEHOLDER not in clean_safe_html:
+            # The contract guarantees the placeholder in the model's safe_html;
+            # if sanitization ever drops it the draft could not become a
+            # recipient-bound training link, so fail closed rather than persist it.
+            raise SafetyRejectionError("sanitization removed the required training placeholder")
+
         validator = SafetyValidator(training_domains=ctx.settings.training_domain_set())
         # The response contract requires a non-navigable Jinja placeholder,
         # while the safety validator intentionally rejects unknown href forms.
@@ -555,7 +570,7 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # startup and is bound only during recipient rendering. Persist the
         # required placeholder unchanged.
         validation_plain_text = response.plain_text.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
-        validation_safe_html = response.safe_html.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
+        validation_safe_html = clean_safe_html.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
         verdict = validator.validate(response.subject, validation_plain_text, validation_safe_html)
         if not verdict.allowed:
             # The model's output is never trusted: it is re-validated here, and
@@ -578,6 +593,9 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # (absent when extraction was not configured or fell back).
         if campaign_record is not None:
             proposal["campaign_record"] = campaign_record.model_dump(mode="json")
+        # P2 provenance: what the allow-list sanitizer removed/neutralized from
+        # the model's HTML (the original is preserved under proposal["safe_html"]).
+        proposal["sanitizer"] = sanitized.as_provenance()
 
         template = TemplateVersion(
             template_version_id=uuid.uuid4(),
@@ -590,7 +608,7 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
             raw_proposal=proposal,
             subject=response.subject,
             plain_text=response.plain_text,
-            safe_html=response.safe_html,
+            safe_html=clean_safe_html,
             approval_state=dm.TemplateApprovalState.DRAFT,
         )
         try:
