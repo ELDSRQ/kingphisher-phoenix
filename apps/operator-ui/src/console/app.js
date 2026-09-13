@@ -2199,6 +2199,19 @@
                   toast(e.message, "error");
                 }
               } }));
+              if (schema.orchestration?.rollback?.supported) {
+                exports.appendChild(el("button", { class: "btn", type: "button", text: "Roll forward to last-green", onclick: async () => {
+                  try {
+                    const env = encodeURIComponent(collected.environment || "staging");
+                    const plan = await api(`/console/azure-deployment/orchestration/rollback?environment=${env}`, { method: "POST" });
+                    markFormSaved(stage);
+                    renderPlan(plan, orchestration);
+                    toast("Prepared a rollback plan from the last successful deployment. Review and apply it \u2014 the environment approval still gates the dispatch.", "success");
+                  } catch (e) {
+                    toast(e.message, "error");
+                  }
+                } }));
+              }
               orchestration.replaceChildren(el("p", { class: "notice", text: `GUI dispatch is connected to ${schema.orchestration.repository} at ${schema.orchestration.ref}. Creating a plan does not start a workflow.` }));
             } else {
               orchestration.replaceChildren(el("p", { class: "notice", text: `GUI dispatch is unavailable: ${schema.orchestration?.reason || "the protected workflow connector is not configured"}. You can still export the reviewed values.` }));

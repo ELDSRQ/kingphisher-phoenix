@@ -130,8 +130,12 @@ def _azure_release_readiness() -> dict[str, Any]:
             {
                 "id": "rollback",
                 "label": "Reviewed rollback workflow",
-                "status": "unsupported",
-                "detail": "No allowlisted GUI rollback workflow or previously qualified revision target exists.",
+                "status": "supported",
+                "detail": (
+                    "Roll forward to the last successfully-applied reviewed configuration, re-dispatched "
+                    "through the same review and environment-approval gate. Available once a green "
+                    "deployment has been recorded for the environment."
+                ),
             },
         ],
     }
@@ -1028,6 +1032,41 @@ def plan_azure_deployment(
     return plan
 
 
+@router.post("/azure-deployment/orchestration/rollback", response_model=dict[str, Any])
+def rollback_azure_deployment(
+    request: Request,
+    environment: str = "staging",
+    _connector: None = Depends(_require_deploy_connector_enabled),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    # DEP-010 roll forward to last-green: build a NEW reviewed plan from the last
+    # successfully-applied configuration for the environment. The operator still
+    # applies it and the protected GitHub environment approval still gates the
+    # dispatch — rollback is never a separate, unreviewed deploy path.
+    if environment == "production":
+        raise ConflictError(
+            "production deployment is blocked until custom-domain, certificate, edge restriction, "
+            "live HSTS, backup/restore, and rollback gates are verifiable; use staging for bootstrap"
+        )
+    try:
+        plan = _deployment_orchestrator(request).create_rollback_plan(environment, actor=principal.principal_id)
+    except (DeploymentUnavailable, DeploymentConflict) as exc:
+        raise ConflictError(public_deployment_error(exc)) from None
+    request.app.state.audit_store.record(
+        actor=principal.principal_id,
+        action="deployment.rollback.review",
+        object_type="azure_deployment",
+        object_id=str(plan["plan_id"]),
+        detail={
+            "review_digest": plan["review_digest"],
+            "environment": plan["review"]["environment"],
+            "deployment_stage": plan["review"]["deployment_stage"],
+            "commit_sha": plan["source_revision"]["commit_sha"],
+        },
+    )
+    return plan
+
+
 @router.get("/azure-deployment/orchestration/latest", response_model=dict[str, Any])
 def get_latest_azure_deployment_plan(
     request: Request,
@@ -1035,11 +1074,16 @@ def get_latest_azure_deployment_plan(
     _connector: None = Depends(_require_deploy_connector_enabled),
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
+    orchestrator = _deployment_orchestrator(request)
     try:
-        plan = _deployment_orchestrator(request).get_latest_plan(environment, actor=principal.principal_id)
+        plan = orchestrator.get_latest_plan(environment, actor=principal.principal_id)
     except (DeploymentUnavailable, DeploymentConflict) as exc:
         raise ConflictError(public_deployment_error(exc)) from None
-    return {"environment": environment, "plan": plan}
+    return {
+        "environment": environment,
+        "plan": plan,
+        "rollback_target": orchestrator.rollback_target(environment),
+    }
 
 
 @router.get("/azure-deployment/orchestration/plans/{plan_id}", response_model=dict[str, Any])

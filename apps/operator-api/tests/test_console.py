@@ -853,7 +853,7 @@ def test_azure_deployment_wizard_is_nonsecret_and_guided(env_file: str) -> None:
         "waf_edge": "not_implemented",
         "live_hsts_observation": "external_unverified",
         "backup_restore": "external_unverified",
-        "rollback": "unsupported",
+        "rollback": "supported",
     }
     assert "token" not in " ".join(field["label"].lower() for field in fields)
 
