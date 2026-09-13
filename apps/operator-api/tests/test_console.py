@@ -735,10 +735,18 @@ def test_onboarding_state_returns_only_nonsecret_values(env_file: str) -> None:
         assert "KP_WORKER_ACS_CLIENT_ID" in {field["key"] for field in email["fields"]}
         assert email["provider_key"] == "KP_WORKER_EMAIL_PROVIDER"
         email_fields = {field["key"]: field for field in email["fields"]}
-        assert {choice["value"] for choice in email_fields["KP_WORKER_EMAIL_PROVIDER"]["choices"]} == {
+        provider_choices = email_fields["KP_WORKER_EMAIL_PROVIDER"]["choices"]
+        assert {choice["value"] for choice in provider_choices} == {
             "smtp",
             "azure_communication_services",
         }
+        # MAIL-005: ACS is positioned as the recommended managed send path (listed
+        # first, labelled recommended/managed); SMTP is the advanced path.
+        assert provider_choices[0]["value"] == "azure_communication_services"
+        acs_label = provider_choices[0]["label"].lower()
+        assert "recommended" in acs_label and "managed" in acs_label
+        smtp_choice = next(c for c in provider_choices if c["value"] == "smtp")
+        assert "advanced" in smtp_choice["label"].lower()
         assert email_fields["KP_WORKER_SMTP_ADDRESS"]["providers"] == ["smtp"]
         assert email_fields["KP_WORKER_ACS_EMAIL_ENDPOINT"]["required_for"] == ["azure_communication_services"]
         mailbox = next(step for step in body["steps"] if step["component"] == "mailbox")
