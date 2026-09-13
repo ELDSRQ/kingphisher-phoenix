@@ -858,3 +858,110 @@ def test_settings_reject_invalid_extract_reasoning_effort(monkeypatch) -> None:
     _clear_gateway_env(monkeypatch)
     with pytest.raises(ValueError, match="EXTRACT_REASONING_EFFORT"):
         GatewaySettings(extract_reasoning_effort="turbo")
+
+
+# --- P3: /discover web-search threat discovery -------------------------------
+
+
+def _stub_responses(monkeypatch, *, payload: dict) -> dict:
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return payload
+
+    class _Client:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a) -> None:
+            return None
+
+        async def post(self, url: str, params: dict | None = None, json: dict | None = None, headers=None):  # noqa: A002
+            captured.update({"url": url, "params": params, "json": json, "headers": headers or {}})
+            return _Resp()
+
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _Client)
+    return captured
+
+
+def _discover_payload(leads: list[dict]) -> dict:
+    return {
+        "output": [
+            {"type": "web_search_call"},
+            {"type": "message", "content": [{"type": "output_text", "text": json.dumps({"leads": leads})}]},
+        ]
+    }
+
+
+_LEAD_SOURCED = {
+    "title": "DocuSign invoice lure",
+    "claimed_brand": "DocuSign",
+    "lure_theme": "completed document",
+    "target_sector": "finance",
+    "summary": "A 2026 campaign impersonating DocuSign.",
+    "published_date": "2026-09",
+    "source_urls": ["https://www.proofpoint.com/us/blog/docusign"],
+    "confidence": 0.8,
+}
+_LEAD_UNSOURCED = {**_LEAD_SOURCED, "title": "Unsourced", "source_urls": ["https://phish.evil/x"]}
+
+
+def _enable_discover(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "discover_model_id", "gpt-5.6-luna")
+    monkeypatch.setattr(gateway_main.settings, "responses_base_url", "https://acct.services.ai.azure.com/openai/v1")
+
+
+def test_discover_disabled_returns_503_when_unconfigured(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "discover_model_id", None)
+    monkeypatch.setattr(gateway_main.settings, "responses_base_url", None)
+    resp = TestClient(gateway_main.app).post("/discover", json={"query": "phishing 2026"})
+    assert resp.status_code == 503
+
+
+def test_discover_rejects_pii_query_422(monkeypatch) -> None:
+    _enable_discover(monkeypatch)
+    captured = _stub_responses(monkeypatch, payload=_discover_payload([_LEAD_SOURCED]))
+    resp = TestClient(gateway_main.app).post("/discover", json={"query": "phishing targeting jane.doe@corp.com"})
+    assert resp.status_code == 422
+    assert captured == {}  # never reached the web
+
+
+def test_discover_returns_only_allowlisted_leads_and_pins_model(monkeypatch) -> None:
+    _enable_discover(monkeypatch)
+    _stub_responses(monkeypatch, payload=_discover_payload([_LEAD_SOURCED, _LEAD_UNSOURCED]))
+    resp = TestClient(gateway_main.app).post("/discover", json={"query": "DocuSign phishing 2026"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["model_id"] == "gpt-5.6-luna"
+    assert len(body["leads"]) == 1  # the phish.evil lead is dropped (no source, no campaign)
+    assert body["leads"][0]["claimed_brand"] == "DocuSign"
+    assert body["leads"][0]["source_urls"] == ["https://www.proofpoint.com/us/blog/docusign"]
+
+
+def test_discover_sends_web_search_tool_and_structured_output(monkeypatch) -> None:
+    _enable_discover(monkeypatch)
+    captured = _stub_responses(monkeypatch, payload=_discover_payload([_LEAD_SOURCED]))
+    assert TestClient(gateway_main.app).post("/discover", json={"query": "phishing 2026"}).status_code == 200
+    sent = captured["json"]
+    assert sent["tools"] == [{"type": "web_search"}]
+    assert sent["text"]["format"]["type"] == "json_schema"
+    assert sent["model"] == "gpt-5.6-luna"
+    assert captured["params"] == {"api-version": "preview"}
+    assert captured["url"].endswith("/responses")
+
+
+def test_discover_502_on_unparseable_model_output(monkeypatch) -> None:
+    _enable_discover(monkeypatch)
+    _stub_responses(
+        monkeypatch,
+        payload={"output": [{"type": "message", "content": [{"type": "output_text", "text": "not json"}]}]},
+    )
+    resp = TestClient(gateway_main.app).post("/discover", json={"query": "phishing 2026"})
+    assert resp.status_code == 502

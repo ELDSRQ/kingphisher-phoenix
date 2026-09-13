@@ -1,5 +1,10 @@
 # Next AI Session Prompt — Phishing Awareness Platform
 
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-12.md`** — read that first. The
+> "Terraform Azure provider auth" blocker framing below is stale; the live
+> campaign goal now sits behind the P0–P3 pipeline redesign (four stacked PRs,
+> not yet merged) and the pattern second-approver requirement. Kept as history.
+
 ## Context
 **Repo:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 **Head:** see `git log --oneline -3` (main, CI green, pushed)

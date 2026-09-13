@@ -156,3 +156,15 @@ def test_extraction_model_is_pinned_across_gateway_and_worker() -> None:
     assert 'variable "ai_extract_model"' in VARIABLES
     effort = _variable("ai_extract_reasoning_effort")
     assert "none" in effort
+
+
+def test_discovery_is_gateway_only_and_gated() -> None:
+    # P3: /discover is enabled only when both a model id and the Responses base
+    # URL are set; empty disables it (env_ignore_empty). It is the only web path.
+    assert "ai_discover_model_id = trimspace(var.ai_discover_model)" in MAIN
+    assert 'name  = "KP_AI_GATEWAY_DISCOVER_MODEL_ID"' in GATEWAY
+    assert "value = local.ai_discover_model_id" in GATEWAY
+    assert 'name  = "KP_AI_GATEWAY_RESPONSES_BASE_URL"' in GATEWAY
+    assert "value = trimspace(var.ai_responses_base_url)" in GATEWAY
+    assert 'variable "ai_discover_model"' in VARIABLES
+    assert 'variable "ai_responses_base_url"' in VARIABLES
