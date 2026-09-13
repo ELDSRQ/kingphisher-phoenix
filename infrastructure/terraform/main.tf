@@ -1516,6 +1516,19 @@ resource "azurerm_container_app" "operator" {
       identity            = azurerm_user_assigned_identity.workload["operator"].id
     }
   }
+  # P3: the console's /discover call presents this shared gateway bearer. Only
+  # when the managed gateway (and therefore the ai-gateway-auth-key secret)
+  # exists — matches the OPERATOR_API_AI_GATEWAY_API_KEY env gate below. Without
+  # this block the env's secretRef has nothing to resolve and the container-app
+  # update fails 400 ContainerAppSecretRefNotFound.
+  dynamic "secret" {
+    for_each = (var.deploy_workloads && var.deploy_ai_gateway) ? [1] : []
+    content {
+      name                = "ai-gateway-auth-key"
+      key_vault_secret_id = azurerm_key_vault_secret.runtime["ai-gateway-auth-key"].versionless_id
+      identity            = azurerm_user_assigned_identity.workload["operator"].id
+    }
+  }
   ingress {
     external_enabled = true
     target_port      = 8000
