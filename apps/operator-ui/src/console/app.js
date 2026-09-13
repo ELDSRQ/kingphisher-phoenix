@@ -104,6 +104,163 @@
     return el("figure", { class: "report-chart" }, [legend, chart]);
   }
 
+  // src/console-js/azure-discovery.js
+  var AUTHORITY = "https://login.microsoftonline.com";
+  var ARM = "https://management.azure.com";
+  var SCOPE = "https://management.azure.com/user_impersonation openid profile";
+  var ARM_API = "2021-04-01";
+  var DNS_API = "2018-05-01";
+  var ACS_API = "2023-04-01";
+  function _base64url(bytes) {
+    let s = "";
+    const arr = new Uint8Array(bytes);
+    for (let i = 0; i < arr.length; i += 1) s += String.fromCharCode(arr[i]);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function _randomString(byteLength) {
+    const buf = new Uint8Array(byteLength);
+    crypto.getRandomValues(buf);
+    return _base64url(buf.buffer);
+  }
+  async function _s256(verifier) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+    return _base64url(digest);
+  }
+  function _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge }) {
+    const q = new URLSearchParams({
+      client_id: clientId,
+      response_type: "code",
+      redirect_uri: redirectUri,
+      response_mode: "query",
+      scope: SCOPE,
+      state,
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+      prompt: "select_account"
+    });
+    return `${AUTHORITY}/${encodeURIComponent(tenant || "organizations")}/oauth2/v2.0/authorize?${q.toString()}`;
+  }
+  function _popupForCode({ url, state, redirectOrigin }) {
+    return new Promise((resolve, reject) => {
+      const popup = window.open(url, "kp-azure-discovery", "width=520,height=640,menubar=no,toolbar=no");
+      if (!popup) {
+        reject(new Error("Popup blocked. Allow popups for this console, then retry discovery."));
+        return;
+      }
+      let settled = false;
+      const finish = (fn, arg) => {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener("message", onMessage);
+        clearInterval(closedTimer);
+        clearTimeout(timeout);
+        try {
+          popup.close();
+        } catch (_e) {
+        }
+        fn(arg);
+      };
+      const onMessage = (event) => {
+        if (event.origin !== redirectOrigin) return;
+        const data = event.data || {};
+        if (data.kind !== "kp-azure-discovery") return;
+        if (data.error) {
+          finish(reject, new Error(String(data.error)));
+        } else if (data.state !== state) {
+          finish(reject, new Error("Discovery state mismatch \u2014 aborting for safety."));
+        } else if (data.code) {
+          finish(resolve, String(data.code));
+        }
+      };
+      window.addEventListener("message", onMessage);
+      const closedTimer = setInterval(() => {
+        if (popup.closed) finish(reject, new Error("Sign-in window closed before completing discovery."));
+      }, 500);
+      const timeout = setTimeout(() => finish(reject, new Error("Discovery sign-in timed out.")), 3e5);
+    });
+  }
+  async function _exchangeCode({ clientId, tenant, redirectUri, code, verifier }) {
+    const body = new URLSearchParams({
+      client_id: clientId,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+      scope: SCOPE
+    });
+    const resp = await fetch(`${AUTHORITY}/${encodeURIComponent(tenant || "organizations")}/oauth2/v2.0/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString()
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data.access_token) {
+      throw new Error(data.error_description || data.error || `Token exchange failed (${resp.status}).`);
+    }
+    return data.access_token;
+  }
+  async function _armGet(token2, path) {
+    const resp = await fetch(`${ARM}${path}`, {
+      headers: { Authorization: `Bearer ${token2}`, Accept: "application/json" }
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      throw new Error(`Azure read failed (${resp.status}) for ${path}. ${detail.slice(0, 200)}`);
+    }
+    const data = await resp.json().catch(() => ({}));
+    return Array.isArray(data.value) ? data.value : [];
+  }
+  async function acquireArmToken({ clientId, tenant, redirectUri }) {
+    if (!clientId) throw new Error("Azure discovery is not configured (no Entra client ID).");
+    const verifier = _randomString(48);
+    const state = _randomString(24);
+    const codeChallenge = await _s256(verifier);
+    const url = _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge });
+    const code = await _popupForCode({ url, state, redirectOrigin: new URL(redirectUri).origin });
+    return _exchangeCode({ clientId, tenant, redirectUri, code, verifier });
+  }
+  async function listSubscriptions(token2) {
+    const subs = await _armGet(token2, `/subscriptions?api-version=${ARM_API}`);
+    return subs.filter((s) => (s.state || "").toLowerCase() === "enabled" || !s.state).map((s) => ({ id: s.subscriptionId, name: s.displayName, tenantId: s.tenantId }));
+  }
+  async function listLocations(token2, subscriptionId) {
+    const locs = await _armGet(token2, `/subscriptions/${subscriptionId}/locations?api-version=${ARM_API}`);
+    return locs.map((l) => ({ name: l.name, display: l.displayName }));
+  }
+  async function listResourceGroups(token2, subscriptionId) {
+    const groups = await _armGet(token2, `/subscriptions/${subscriptionId}/resourcegroups?api-version=${ARM_API}`);
+    return groups.map((g) => ({ name: g.name, location: g.location }));
+  }
+  async function listDnsZones(token2, subscriptionId) {
+    const zones = await _armGet(
+      token2,
+      `/subscriptions/${subscriptionId}/providers/Microsoft.Network/dnszones?api-version=${DNS_API}`
+    );
+    return zones.map((z) => ({ id: z.id, name: z.name }));
+  }
+  async function listCommunicationServices(token2, subscriptionId) {
+    const svcs = await _armGet(
+      token2,
+      `/subscriptions/${subscriptionId}/providers/Microsoft.Communication/communicationServices?api-version=${ACS_API}`
+    );
+    return svcs.map((c) => ({ id: c.id, name: c.name }));
+  }
+  async function discoverAzure({ clientId, tenant, redirectUri, subscriptionId } = {}) {
+    const token2 = await acquireArmToken({ clientId, tenant, redirectUri });
+    const subscriptions = await listSubscriptions(token2);
+    if (!subscriptions.length) {
+      return { subscriptions: [], selected: null, locations: [], resourceGroups: [], dnsZones: [], communicationServices: [] };
+    }
+    const selected = subscriptions.find((s) => s.id === subscriptionId) || subscriptions[0];
+    const [locations, resourceGroups, dnsZones, communicationServices] = await Promise.all([
+      listLocations(token2, selected.id).catch(() => []),
+      listResourceGroups(token2, selected.id).catch(() => []),
+      listDnsZones(token2, selected.id).catch(() => []),
+      listCommunicationServices(token2, selected.id).catch(() => [])
+    ]);
+    return { subscriptions, selected, locations, resourceGroups, dnsZones, communicationServices };
+  }
+
   // src/console-js/app.js
   var API = "/api/v1";
   var TOKEN_KEY = "kp_console_token";
@@ -2077,6 +2234,62 @@
           el("details", { id: `${id}-help`, class: "field-location" }, [el("summary", { text: "Where do I find this?" }), el("p", { text: field.where_to_find })])
         ]);
       };
+      const applyDiscovered = (key, value) => {
+        if (value === void 0 || value === null || value === "") return;
+        collected[key] = String(value);
+        if (inputs[key]) {
+          inputs[key].value = String(value);
+          inputs[key].dispatchEvent(new Event("input"));
+        }
+      };
+      const discoveryStatus = el("div", { class: "assistant-answer", role: "status", "aria-live": "polite" });
+      const discoveryResults = el("div", { class: "assistant-suggestions", "aria-label": "Discovered Azure resources" });
+      const discoveryChip = (label, key, value) => el("button", { class: "btn small", type: "button", text: label, onclick: () => {
+        applyDiscovered(key, value);
+        toast(`Applied ${label} to the form. Review it before creating a plan.`, "success");
+      } });
+      const discoverBtn = el("button", { class: "btn small", type: "button", text: "Discover from Azure" });
+      discoverBtn.addEventListener("click", async () => {
+        const clientId = collected.entra_client_id || "";
+        if (!clientId) {
+          discoveryStatus.textContent = "Set the Entra application (client) ID first \u2014 discovery signs in with it. It needs delegated Azure Service Management (user_impersonation) permission and this console's /console/azure-redirect.html registered as a SPA redirect URI.";
+          return;
+        }
+        discoverBtn.disabled = true;
+        discoveryStatus.textContent = "Opening Azure sign-in\u2026";
+        discoveryResults.replaceChildren();
+        try {
+          const redirectUri = `${location.origin}/console/azure-redirect.html`;
+          const tenant = collected.entra_tenant_id || "organizations";
+          const found = await discoverAzure({ clientId, tenant, redirectUri });
+          if (!found.selected) {
+            discoveryStatus.textContent = "Signed in, but no enabled subscriptions were visible to this account.";
+            return;
+          }
+          applyDiscovered("subscription_id", found.selected.id);
+          applyDiscovered("entra_tenant_id", found.selected.tenantId);
+          if (found.dnsZones.length === 1) applyDiscovered("acs_dns_zone_id", found.dnsZones[0].id);
+          discoveryStatus.textContent = `Applied subscription "${found.selected.name}" and tenant. Found ${found.subscriptions.length} subscription(s), ${found.locations.length} region(s), ${found.dnsZones.length} DNS zone(s), ${found.resourceGroups.length} resource group(s). Click a value below to apply it.`;
+          const rows = [];
+          const others = found.subscriptions.filter((s) => s.id !== found.selected.id);
+          if (others.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Other subscriptions:" }), ...others.slice(0, 15).map((s) => discoveryChip(s.name, "subscription_id", s.id))]));
+          if (found.resourceGroups.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Resource groups:" }), ...found.resourceGroups.slice(0, 20).map((g) => discoveryChip(g.name, "tf_state_resource_group", g.name))]));
+          if (found.dnsZones.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "DNS zones:" }), ...found.dnsZones.slice(0, 20).map((z) => discoveryChip(z.name, "acs_dns_zone_id", z.id))]));
+          if (found.locations.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Regions:" }), ...found.locations.slice(0, 30).map((l) => discoveryChip(l.display || l.name, "location", l.name))]));
+          discoveryResults.replaceChildren(...rows);
+        } catch (e) {
+          discoveryStatus.textContent = `Discovery unavailable \u2014 enter values manually. (${e.message})`;
+        } finally {
+          discoverBtn.disabled = false;
+        }
+      });
+      form.appendChild(el("details", { class: "azure-discovery" }, [
+        el("summary", { text: "Discover from Azure (optional)" }),
+        el("p", { class: "field-help", text: "Sign in to Azure in a popup to auto-fill subscription, tenant, region, DNS zone, and resource group. Read-only; your Azure token is never sent to this server. Requires the Entra client ID (above) with delegated Azure Service Management permission." }),
+        el("div", { class: "btn-row" }, [discoverBtn]),
+        discoveryStatus,
+        discoveryResults
+      ]));
       const normalFields = (step.fields || []).filter((field) => field.advanced !== true);
       const advancedFields = (step.fields || []).filter((field) => field.advanced === true);
       normalFields.forEach((field, index) => form.appendChild(renderField(field, index)));
