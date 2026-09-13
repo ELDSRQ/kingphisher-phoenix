@@ -240,9 +240,15 @@ _FIELD_CHOICES: dict[str, tuple[dict[str, str], ...]] = {
         {"value": "false", "label": "No implicit TLS"},
         {"value": "true", "label": "Use implicit TLS"},
     ),
+    # MAIL-005 positioning: ACS is the recommended managed send path (listed
+    # first); SMTP is the advanced path. Graph is directory/report-only and is
+    # deliberately not a send option here.
     "KP_WORKER_EMAIL_PROVIDER": (
-        {"value": "smtp", "label": "SMTP relay"},
-        {"value": "azure_communication_services", "label": "Azure Communication Services Email"},
+        {
+            "value": "azure_communication_services",
+            "label": "Azure Communication Services Email (recommended · managed send)",
+        },
+        {"value": "smtp", "label": "SMTP relay (advanced)"},
     ),
     "KP_WORKER_REPORTED_MAILBOX_PROVIDER": (
         {"value": "mailpit", "label": "Local Mailpit (development)"},
