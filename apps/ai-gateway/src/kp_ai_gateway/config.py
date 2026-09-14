@@ -132,6 +132,43 @@ class GatewaySettings(BaseSettings):
     #: Empty uses the contract default (reputable threat-intel vendors/CERTs).
     discover_citation_domains: str = ""
 
+    #: M3 background threat-aggregation stage. When set, enables
+    #: ``POST /aggregate`` — a LARGE local analyst model reads a bounded batch of
+    #: already-neutralized ingested feed items and returns ranked CURRENT-campaign
+    #: candidates for human review. This value is the pinned analyst-model identity
+    #: returned as ``AggregateResponse.model_id`` (never the model's self-report).
+    #: ``None`` (the default) disables ``/aggregate`` with a 503, so a deployment
+    #: that never configures it is byte-for-byte unchanged. This is a BACKGROUND
+    #: tier: unlike ``/propose`` and ``/extract`` it has its OWN base URL and its
+    #: OWN long timeout below, because it runs for minutes/hours, not chat latency.
+    aggregate_model_id: str | None = None
+
+    #: OpenAI-compatible base URL of the LARGE aggregation backend. This may be a
+    #: DIFFERENT host than ``llama_base_url`` (e.g. a separate RTX box that serves
+    #: the big analyst model), which is the whole reason it is a distinct setting.
+    #: ``None`` (the default) falls back to ``llama_base_url`` so a single-box
+    #: on-prem deployment that serves both models from one server still works.
+    aggregate_base_url: str | None = None
+
+    #: LONG per-request timeout for the background aggregation call, in seconds.
+    #: This is the point of a separate tier: the aggregation pass is NOT bounded
+    #: by the chat-latency ``request_timeout_seconds`` (a large analyst model over
+    #: 50 items runs for minutes to hours). Default is 30 minutes; large values
+    #: (hours) are allowed. Validated ``> 0`` at construction.
+    aggregate_timeout_seconds: float = 1800.0
+
+    #: Reasoning effort for the aggregation model (see ``reasoning_effort``).
+    #: ``None`` sends no field; mirrors ``discover_reasoning_effort`` (a reasoning
+    #: analyst model that takes ``none`` sets it explicitly).
+    aggregate_reasoning_effort: str | None = None
+
+    #: Optional output-token cap for an ``/aggregate`` call. A ranked candidate
+    #: list plus reasoning needs room, so this is separate from the chat
+    #: ``max_completion_tokens`` and does not inherit it. ``None`` (the default)
+    #: sends no cap. When set it is validated ``>= 1`` and applied as the
+    #: completion-token param (wire key per ``_completion_token_param``).
+    aggregate_max_output_tokens: int | None = None
+
     #: Shared secret a caller must present as ``Authorization: Bearer <key>`` on
     #: ``/propose`` and ``/setup-assist``. The generation worker already sends
     #: this value as its ``ai_bearer_token`` (jobs.py:2088), so the same secret
@@ -234,4 +271,15 @@ class GatewaySettings(BaseSettings):
             raise ValueError(f"KP_AI_GATEWAY_DISCOVER_REASONING_EFFORT must be one of {allowed} when set")
         if self.discover_max_output_tokens < 1:
             raise ValueError("KP_AI_GATEWAY_DISCOVER_MAX_OUTPUT_TOKENS must be a positive integer")
+        # M3 background aggregation tier. All default off, so an unconfigured
+        # deployment is unchanged; when set, a bad value is a boot-time error.
+        if self.aggregate_reasoning_effort is not None and self.aggregate_reasoning_effort not in _REASONING_EFFORTS:
+            allowed = ", ".join(sorted(_REASONING_EFFORTS))
+            raise ValueError(f"KP_AI_GATEWAY_AGGREGATE_REASONING_EFFORT must be one of {allowed} when set")
+        if self.aggregate_max_output_tokens is not None and self.aggregate_max_output_tokens < 1:
+            raise ValueError("KP_AI_GATEWAY_AGGREGATE_MAX_OUTPUT_TOKENS must be a positive integer when set")
+        # The long background timeout must be positive; large values (hours) are
+        # deliberately allowed — that is the reason the tier exists.
+        if self.aggregate_timeout_seconds <= 0:
+            raise ValueError("KP_AI_GATEWAY_AGGREGATE_TIMEOUT_SECONDS must be greater than 0")
         return self
