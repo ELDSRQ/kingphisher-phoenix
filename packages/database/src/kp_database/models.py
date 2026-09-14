@@ -26,6 +26,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -261,6 +262,44 @@ class SourceItem(Base):
     quarantine_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     duplicate_of = mapped_column(UUID(as_uuid=True), nullable=True)
     __table_args__ = (UniqueConstraint("source_id", "content_hash", name="uq_source_items_dedup"),)
+
+
+class AggregationCandidate(Base):
+    """A ranked current-campaign candidate from a background aggregation pass (M3).
+
+    Advisory, operator-reviewed output: ``record`` holds the serialized
+    ``CampaignRecord`` (generation-ready), ``source_item_ids`` the provenance.
+    Nothing is acted on until an operator promotes a candidate into a
+    ``CampaignPattern`` on the existing governance path. Rows carry only public
+    threat-intel facts — never recipient or internal PII.
+    """
+
+    __tablename__ = "aggregation_candidates"
+
+    aggregation_candidate_id = _pk()
+    run_id = mapped_column(UUID(as_uuid=True), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer)
+    score: Mapped[float] = mapped_column(Float)
+    title: Mapped[str] = mapped_column(Text)
+    as_of: Mapped[str] = mapped_column(Text, default="")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    model_id: Mapped[str] = mapped_column(String(128))
+    record: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source_item_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    review_state: Mapped[dm.AggregationReviewState] = mapped_column(
+        Enum(dm.AggregationReviewState, name="aggregation_review_state"),
+        default=dm.AggregationReviewState.PENDING,
+    )
+    reviewed_at = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    promoted_pattern_id = mapped_column(UUID(as_uuid=True), nullable=True)
+    __table_args__ = (
+        CheckConstraint("rank >= 1", name="rank_positive"),
+        CheckConstraint("score >= 0 AND score <= 1", name="score_unit"),
+        Index("ix_aggregation_candidates_run", "run_id", "rank"),
+        Index("ix_aggregation_candidates_review", "review_state", "created_at"),
+    )
 
 
 class CampaignPattern(Base):

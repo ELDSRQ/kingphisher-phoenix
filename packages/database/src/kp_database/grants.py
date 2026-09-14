@@ -89,7 +89,11 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
             "campaign_audience_manifest",
             "campaign_launch_gates",
         ),
-        "SELECT, INSERT, UPDATE": ("campaign_programs",),
+        # The console runs background aggregation passes (INSERT ranked
+        # candidates), lists them, and records a review verdict (UPDATE
+        # review_state / promoted_pattern_id). Promotion writes campaign_patterns,
+        # already in the full-CRUD slice above.
+        "SELECT, INSERT, UPDATE": ("campaign_programs", "aggregation_candidates"),
         "SELECT, INSERT": ("campaign_program_occurrences",),
         # The console binds the durable launch review (create/re-create) and
         # reads canary membership; re-review deletes and re-inserts these rows.

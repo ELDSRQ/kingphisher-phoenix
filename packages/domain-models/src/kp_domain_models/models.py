@@ -52,6 +52,19 @@ class QuarantineState(StrEnum):
     REJECTED = "rejected"
 
 
+class AggregationReviewState(StrEnum):
+    """Operator review verdict on a ranked aggregation candidate (M3).
+
+    A background aggregation pass produces ``pending`` candidates; the operator
+    reviews each and either ``promoted`` it (turned it into a campaign pattern
+    on the existing governance path) or ``dismissed`` it. Nothing is auto-acted.
+    """
+
+    PENDING = "pending"
+    PROMOTED = "promoted"
+    DISMISSED = "dismissed"
+
+
 class LureCategory(StrEnum):
     INVOICE = "invoice"
     PASSWORD_RESET = "password_reset"  # noqa: S105 - enum value, not a credential
@@ -309,6 +322,35 @@ class SourceItem(BaseEntity):
     quarantine_state: QuarantineState = QuarantineState.ACTIVE
     quarantine_reason: str | None = None
     duplicate_of: UUID | None = None
+
+
+class AggregationCandidate(BaseEntity):
+    """A ranked current-campaign candidate from a background aggregation pass (M3).
+
+    Produced by an aggregation run over the ingested-item pool and stored for the
+    operator to review. ``record`` is the serialized ``CampaignRecord`` (the same
+    generation-ready shape ``/extract`` yields) so a promoted candidate folds into
+    the existing pattern/generation path. ``source_item_ids`` is the provenance
+    (which ingested items support it). Advisory only: it carries public
+    threat-intel facts, never recipient or internal PII, and nothing is acted on
+    until the operator promotes it.
+    """
+
+    aggregation_candidate_id: UUID = Field(default_factory=uuid4)
+    run_id: UUID
+    rank: int = Field(ge=1)
+    score: float = Field(ge=0.0, le=1.0)
+    title: str
+    as_of: str = ""
+    rationale: str = ""
+    model_id: str
+    record: dict[str, Any] = Field(default_factory=dict)
+    source_item_ids: list[str] = Field(default_factory=list)
+    created_at: datetime
+    review_state: AggregationReviewState = AggregationReviewState.PENDING
+    reviewed_at: datetime | None = None
+    reviewed_by: str | None = None
+    promoted_pattern_id: UUID | None = None
 
 
 class CampaignPattern(BaseEntity):
