@@ -28,8 +28,8 @@ output "managed_worker_health_targets" {
     }
   } : {}
 }
-output "key_vault_name" { value = azurerm_key_vault.main.name }
-output "key_vault_id" { value = azurerm_key_vault.main.id }
+output "key_vault_name" { value = local.key_vault_name }
+output "key_vault_id" { value = local.key_vault_id }
 output "ciphertext_keyring" {
   description = "Non-secret keyring lifecycle metadata shared by the operator and workers."
   value = {

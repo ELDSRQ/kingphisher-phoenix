@@ -143,10 +143,17 @@ locals {
   acs_receipt_subscription_name = "acs-delivery-receipts"
   acs_receipt_webhook_path      = "/api/v1/integrations/acs/events"
   acs_provision                 = var.acs_resource_mode == "provision"
-  acs_dns_automation            = local.acs_provision && trimspace(var.acs_dns_zone_id) != ""
-  acs_dns_zone_parts            = split("/", trimspace(var.acs_dns_zone_id))
-  acs_dns_zone_name             = local.acs_dns_automation ? lower(try(local.acs_dns_zone_parts[8], "")) : ""
-  acs_dns_zone_rg               = local.acs_dns_automation ? try(local.acs_dns_zone_parts[4], "") : ""
+  # DEP-010 Z8: resolve the Key Vault to either the one we provision or an
+  # existing enterprise vault (id parts: /subscriptions/2/resourceGroups/4/.../vaults/8).
+  kv_provision             = var.key_vault_resource_mode == "provision"
+  key_vault_existing_parts = split("/", trimspace(var.key_vault_existing_id))
+  key_vault_id             = local.kv_provision ? azurerm_key_vault.main[0].id : trimspace(var.key_vault_existing_id)
+  key_vault_uri            = local.kv_provision ? azurerm_key_vault.main[0].vault_uri : data.azurerm_key_vault.existing[0].vault_uri
+  key_vault_name           = local.kv_provision ? azurerm_key_vault.main[0].name : data.azurerm_key_vault.existing[0].name
+  acs_dns_automation       = local.acs_provision && trimspace(var.acs_dns_zone_id) != ""
+  acs_dns_zone_parts       = split("/", trimspace(var.acs_dns_zone_id))
+  acs_dns_zone_name        = local.acs_dns_automation ? lower(try(local.acs_dns_zone_parts[8], "")) : ""
+  acs_dns_zone_rg          = local.acs_dns_automation ? try(local.acs_dns_zone_parts[4], "") : ""
   acs_readiness_current = try(
     timecmp(var.acs_readiness_checked_at, timeadd(plantimestamp(), "-${var.acs_readiness_max_age_hours}h")) >= 0 &&
     timecmp(var.acs_readiness_checked_at, timeadd(plantimestamp(), "5m")) <= 0,
@@ -169,12 +176,12 @@ locals {
   ciphertext_prior_secret_parts   = split("/", local.ciphertext_prior_keys_secret_id)
   ciphertext_prior_secret_name    = try(local.ciphertext_prior_secret_parts[10], "")
   ciphertext_prior_keys_versionless_uri = local.ciphertext_recovery_enabled ? (
-    "${trimsuffix(azurerm_key_vault.main.vault_uri, "/")}/secrets/${local.ciphertext_prior_secret_name}"
+    "${trimsuffix(local.key_vault_uri, "/")}/secrets/${local.ciphertext_prior_secret_name}"
   ) : ""
   deployment_github_token_secret_parts = split("/", trimspace(var.deployment_github_token_secret_id))
   deployment_github_token_secret_name  = try(local.deployment_github_token_secret_parts[10], "")
   deployment_github_token_versionless_uri = local.deployment_orchestration_enabled ? (
-    "${trimsuffix(azurerm_key_vault.main.vault_uri, "/")}/secrets/${local.deployment_github_token_secret_name}"
+    "${trimsuffix(local.key_vault_uri, "/")}/secrets/${local.deployment_github_token_secret_name}"
   ) : ""
 
   # Starter mode trades network isolation for hosted-runner bring-up in a new
@@ -285,7 +292,7 @@ resource "terraform_data" "workload_config_guard" {
         !strcontains(trimspace(var.deployment_github_ref), "..") &&
         startswith(
           lower(trimspace(var.deployment_github_token_secret_id)),
-          "${lower(azurerm_key_vault.main.id)}/secrets/"
+          "${lower(local.key_vault_id)}/secrets/"
         ) &&
         can(regex("/secrets/[A-Za-z0-9-]+$", trimspace(var.deployment_github_token_secret_id)))
       )
@@ -299,7 +306,7 @@ resource "terraform_data" "workload_config_guard" {
             var.deploy_workloads &&
             startswith(
               lower(local.ciphertext_prior_keys_secret_id),
-              "${lower(azurerm_key_vault.main.id)}/secrets/"
+              "${lower(local.key_vault_id)}/secrets/"
             ) &&
             can(regex("/secrets/[A-Za-z0-9-]+$", local.ciphertext_prior_keys_secret_id))
           ) : local.ciphertext_prior_keys_secret_id == ""
@@ -696,7 +703,14 @@ resource "azurerm_role_assignment" "acr_pull" {
   principal_id         = azurerm_user_assigned_identity.workload[each.key].principal_id
 }
 
+data "azurerm_key_vault" "existing" {
+  count               = local.kv_provision ? 0 : 1
+  name                = try(local.key_vault_existing_parts[8], "")
+  resource_group_name = try(local.key_vault_existing_parts[4], "")
+}
+
 resource "azurerm_key_vault" "main" {
+  count                         = local.kv_provision ? 1 : 0
   name                          = substr(replace("kv-${local.suffix}-${random_string.unique.result}", "-", ""), 0, 24)
   location                      = azurerm_resource_group.main.location
   resource_group_name           = azurerm_resource_group.main.name
@@ -783,7 +797,7 @@ resource "random_id" "awareness_pseudonym" {
 }
 
 resource "azurerm_role_assignment" "deployer_secrets" {
-  scope                = azurerm_key_vault.main.id
+  scope                = local.key_vault_id
   role_definition_name = "Key Vault Secrets Officer"
   principal_id         = data.azurerm_client_config.current.object_id
 }
@@ -1014,14 +1028,16 @@ resource "azurerm_private_endpoint" "redis" {
 }
 
 resource "azurerm_private_endpoint" "vault" {
-  count               = local.private_network ? 1 : 0
+  # Only create a private endpoint for a vault we provision; an existing
+  # enterprise vault is reached over its own network path (Z8).
+  count               = local.private_network && local.kv_provision ? 1 : 0
   name                = "pep-${local.suffix}-vault"
   location            = azurerm_resource_group.main.location
   resource_group_name = azurerm_resource_group.main.name
   subnet_id           = azurerm_subnet.private_endpoints.id
   private_service_connection {
     name                           = "vault"
-    private_connection_resource_id = azurerm_key_vault.main.id
+    private_connection_resource_id = azurerm_key_vault.main[0].id
     subresource_names              = ["vault"]
     is_manual_connection           = false
   }
@@ -1117,7 +1133,7 @@ resource "azurerm_key_vault_secret" "runtime" {
   for_each     = local.secret_values
   name         = each.key
   value        = each.value
-  key_vault_id = azurerm_key_vault.main.id
+  key_vault_id = local.key_vault_id
   depends_on   = [azurerm_role_assignment.deployer_secrets, azurerm_private_endpoint.vault]
 }
 
