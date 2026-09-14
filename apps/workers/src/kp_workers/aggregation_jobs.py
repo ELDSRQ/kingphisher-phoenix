@@ -29,9 +29,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
-import time
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
 from typing import Any, Protocol
 
 import httpx
@@ -44,7 +42,7 @@ from kp_contracts.aggregation import (
 from kp_telemetry.logging import get_logger
 from pydantic import ValidationError as PydanticValidationError
 
-from kp_workers.observability import metrics
+from kp_workers.observability import metrics, provider_call
 
 logger = get_logger("kp_workers.aggregation_jobs")
 
@@ -163,57 +161,6 @@ class _CountingResponse:
             yield chunk
 
 
-@contextmanager
-def _aggregate_provider_call() -> Iterator[None]:
-    """Time the ``/aggregate`` call and emit provider metrics, best-effort.
-
-    A local mirror of ``observability.provider_call("ai", "aggregate")``. WHY not
-    the shared helper directly: ``observability.MetricRegistry`` only accepts
-    label values declared UP FRONT, and its ``OPERATIONS`` set does not yet
-    include ``"aggregate"`` (registering it belongs to the integrator's
-    observability wiring — that module is outside this slice's write-allowlist).
-    The shared ``provider_call`` would therefore raise ``ValueError`` from its
-    metric emission; because this job fails closed to ``[]`` on ANY exception,
-    that would SILENTLY discard a perfectly good aggregation pass. So we emit the
-    same three metrics ourselves but swallow a declaration ``ValueError`` — metrics
-    are observability, never control flow. Genuine work exceptions still propagate
-    to the caller's fail-closed handler (we set ``outcome="error"`` on the way).
-    Once the integrator declares ``"aggregate"`` these emissions light up as-is.
-    """
-
-    start = time.perf_counter()
-    outcome = "success"
-    try:
-        yield
-    except Exception:
-        outcome = "error"
-        raise
-    finally:
-        duration = max(0.0, time.perf_counter() - start)
-        # "aggregate" not declared in observability.OPERATIONS yet; on a
-        # declaration ValueError degrade to a no-op timing wrapper rather than
-        # poisoning the result (see docstring). Once the integrator declares it,
-        # these three emissions light up unchanged.
-        with suppress(ValueError):
-            metrics.increment(
-                "kp_worker_provider_operations_total",
-                provider="ai",
-                operation="aggregate",
-                outcome=outcome,
-            )
-            metrics.increment(
-                "kp_worker_provider_latency_seconds_sum",
-                duration,
-                provider="ai",
-                operation="aggregate",
-            )
-            metrics.increment(
-                "kp_worker_provider_latency_seconds_count",
-                provider="ai",
-                operation="aggregate",
-            )
-
-
 def run_campaign_aggregation(
     ctx: AggregationContext,
     items: list[AggregationSourceItem],
@@ -250,7 +197,7 @@ def run_campaign_aggregation(
         request_payload = AggregateRequest(items=items, max_candidates=max_candidates).model_dump(mode="json")
         counting = _CountingResponse()
         with (
-            _aggregate_provider_call(),
+            provider_call("ai", "aggregate"),
             httpx.stream(
                 "POST",
                 f"{ctx.settings.effective_ai_base_url.rstrip('/')}/aggregate",
@@ -274,16 +221,12 @@ def run_campaign_aggregation(
         logger.info("campaign aggregation unavailable (%s); returning no candidates", type(exc).__name__)
         return []
 
-    # Best-effort, same reason as _aggregate_provider_call: the "aggregate"
-    # operation label is not declared in observability yet, so this emission must
-    # not be allowed to raise and crash a successful pass.
-    with suppress(ValueError):
-        metrics.increment(
-            "kp_worker_ai_response_bytes_total",
-            counting.bytes_read,
-            provider="ai",
-            operation="aggregate",
-        )
+    metrics.increment(
+        "kp_worker_ai_response_bytes_total",
+        counting.bytes_read,
+        provider="ai",
+        operation="aggregate",
+    )
 
     # SOFT model pin (AI-010 style): a mismatched analyst model is ignored, not
     # fatal — the candidates simply do not count as coming from the approved
