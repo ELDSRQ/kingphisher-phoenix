@@ -1,0 +1,102 @@
+# AI-010 bake-off candidate manifest.
+#
+# The current on-prem pick (Qwen2.5-7B-Instruct) was chosen under a CHAT-LATENCY
+# constraint (the synchronous worker path caps a generation call at
+# provider_timeout_seconds <= 60s). Threat AGGREGATION is a BACKGROUND job that
+# can think for minutes/hours, and on-prem has GPU capacity for much larger
+# models — so this manifest adds larger + reasoning candidates for a re-run.
+#
+# This file is documentation/config for the OPERATOR: nothing here downloads or
+# serves weights. Serve each candidate on a loopback llama.cpp (or vLLM) server,
+# then run scripts/ai-bakeoff/evaluate_model.py against it (see README), and
+# compare with scripts/ai-bakeoff/compare_reports.py.
+#
+# license_ok: "yes" = permissive (Apache-2.0 / MIT). "review" = a community/
+# research license with use restrictions the operator must confirm are
+# acceptable for this internal, non-commercial-distribution use before selecting.
+
+candidates:
+  - id: qwen2.5-7b-instruct-q4_k_m
+    params_b: 7
+    reasoning: false
+    quant: Q4_K_M
+    approx_size_gb: 5
+    min_vram_gb: 8            # runs on CPU too (the current on-prem default)
+    recommended_host: any     # .105 CPU today; any small GPU
+    source_repo: unsloth/Qwen2.5-7B-Instruct-GGUF
+    license: Apache-2.0
+    license_ok: "yes"
+    role: incumbent-baseline
+    notes: >-
+      The current selection (docs/ai010-selection/SELECTION.md). Keep as the
+      baseline to beat; fast, chat-latency, good structured output.
+
+  # --- 32B reasoning: fits the RTX 3090 (24 GB) at Q4; thinks step-by-step ---
+  - id: qwq-32b-q4_k_m
+    params_b: 32
+    reasoning: true
+    quant: Q4_K_M
+    approx_size_gb: 20
+    min_vram_gb: 24
+    recommended_host: rtx-3090
+    source_repo: Qwen/QwQ-32B-GGUF        # or a trusted conversion (bartowski/QwQ-32B-GGUF)
+    license: Apache-2.0
+    license_ok: "yes"
+    role: background-analyst
+    notes: >-
+      Qwen's reasoning model. Evaluate with --reasoning and a large
+      --request-timeout (e.g. 900). Strong at multi-step analysis / ranking —
+      the aggregation "find the optimal material" role.
+
+  - id: deepseek-r1-distill-qwen-32b-q4_k_m
+    params_b: 32
+    reasoning: true
+    quant: Q4_K_M
+    approx_size_gb: 20
+    min_vram_gb: 24
+    recommended_host: rtx-3090
+    source_repo: bartowski/DeepSeek-R1-Distill-Qwen-32B-GGUF
+    license: MIT
+    license_ok: "yes"
+    role: background-analyst
+    notes: >-
+      Reasoning distill; strong analytical chains. Same --reasoning flow as QwQ.
+
+  # --- 70B instruct: fits the Strix Halo unified memory (~96-128 GB) at Q4 ---
+  - id: qwen2.5-72b-instruct-q4_k_m
+    params_b: 72
+    reasoning: false
+    quant: Q4_K_M
+    approx_size_gb: 44
+    min_vram_gb: 48           # unified-memory host; slow tokens, fine for background
+    recommended_host: strix-halo
+    source_repo: Qwen/Qwen2.5-72B-Instruct-GGUF
+    license: Qwen (community)
+    license_ok: "review"
+    role: background-analyst
+    notes: >-
+      Broad knowledge, strong instruction following. Not a reasoning model, so
+      run WITHOUT --reasoning (keep the json_schema grammar).
+
+  - id: llama-3.3-70b-instruct-q4_k_m
+    params_b: 70
+    reasoning: false
+    quant: Q4_K_M
+    approx_size_gb: 40
+    min_vram_gb: 48
+    recommended_host: strix-halo
+    source_repo: unsloth/Llama-3.3-70B-Instruct-GGUF
+    license: Llama 3.3 Community License
+    license_ok: "review"
+    role: background-analyst
+    notes: >-
+      Strong general model. Run WITHOUT --reasoning.
+
+# Selection order (AI-005): schema-validity, then evidence fidelity, then the
+# SAFETY hard gates (safe_refusal, prompt_injection), then latency/cost. For the
+# BACKGROUND aggregation role latency is de-prioritised — a model that thinks for
+# minutes but selects better material and refuses/resists more reliably wins.
+# NOTE: the fixed evaluation_set.yaml scores GENERATION quality; it does not yet
+# score aggregation/analysis quality (identifying the optimal CURRENT campaign).
+# Adding aggregation-eval cases is a recommended follow-up before finalising a
+# dedicated aggregation model.

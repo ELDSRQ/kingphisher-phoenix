@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import UTC, datetime
@@ -99,33 +100,57 @@ def _user_prompt(case: dict[str, Any]) -> str:
     return prompt
 
 
-def _bounded_response_content(
-    endpoint: str, model: str, system: str, user: str, timeout_seconds: float
-) -> tuple[str, dict[str, int]]:
-    """Call the chat endpoint with a bounded body read; return (content, usage)."""
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
-    payload = {
+
+def _strip_thinking(text: str) -> str:
+    """Remove a reasoning model's <think>…</think> block."""
+    return _THINK_RE.sub("", text).strip()
+
+
+def _extract_json_object(text: str) -> str:
+    """Return the outermost {…} object from a reasoning model's free-form output."""
+    start = text.find("{")
+    end = text.rfind("}")
+    return text[start : end + 1] if start != -1 and end > start else text
+
+
+def _bounded_response_content(
+    endpoint: str, model: str, system: str, user: str, timeout_seconds: float, *, reasoning: bool = False
+) -> tuple[str, dict[str, int]]:
+    """Call the chat endpoint with a bounded body read; return (content, usage).
+
+    In reasoning mode the strict json_schema grammar is NOT sent: a reasoning
+    model (QwQ, DeepSeek-R1-distill, …) must be free to think before answering,
+    which the from-first-token grammar would prevent. Its <think> block is
+    stripped and the JSON object is extracted before the SAME downstream schema
+    validation runs — a reasoning model that fails to produce valid JSON after
+    thinking still fails the schema dimension honestly.
+    """
+
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "temperature": 0.0,
+    }
+    if not reasoning:
         # AI-010's acceptance criterion is schema-constrained generation, so the
         # bake-off measures the candidate under the same constraint the worker
         # applies. `json_object` alone is not enough: it still permits a raw
         # control character inside a string, which is exactly how a candidate
         # lost a case on formatting luck rather than capability. Constraining to
         # the real GenerationResponse schema removes that class of artifact.
-        "response_format": {
+        payload["response_format"] = {
             "type": "json_schema",
             "json_schema": {
                 "name": "generation_response",
                 "schema": GenerationResponse.model_json_schema(),
                 "strict": True,
             },
-        },
-    }
+        }
     with (
         httpx.Client(timeout=timeout_seconds) as client,
         client.stream("POST", f"{endpoint.rstrip('/')}/chat/completions", json=payload) as response,
@@ -150,6 +175,8 @@ def _bounded_response_content(
         raise ValueError(f"bake-off endpoint returned an unexpected wrapper: {type(exc).__name__}") from None
     if not isinstance(content, str) or not content:
         raise ValueError("bake-off endpoint returned empty content")
+    if reasoning:
+        content = _extract_json_object(_strip_thinking(content))
     return content, usage_counts
 
 
@@ -193,6 +220,7 @@ def _build_report(
     evaluation_set_version: str,
     set_digest: str,
     request_timeout_seconds: float,
+    reasoning: bool = False,
     results: list[CaseResult],
     detail_rows: list[dict[str, Any]],
     endpoint_failures: int,
@@ -222,6 +250,7 @@ def _build_report(
         "evaluation_set_digest": set_digest,
         "structured_output": "json_schema:GenerationResponse",
         "request_timeout_seconds": request_timeout_seconds,
+        "reasoning_mode": reasoning,
         "total_cases": total,
         "passed_cases": passed,
         "endpoint_failures": endpoint_failures,
@@ -262,6 +291,15 @@ def main(argv: list[str] | None = None) -> int:
         default=str(_SCRIPT_ROOT / "evaluation_set.yaml"),
         help="path to the fixed evaluation set",
     )
+    parser.add_argument(
+        "--reasoning",
+        action="store_true",
+        help=(
+            "candidate is a reasoning model (QwQ, DeepSeek-R1-distill, …): drop the json_schema "
+            "grammar so it can think, then strip <think> and extract the JSON before scoring. "
+            "Pair with a large --request-timeout."
+        ),
+    )
     arguments = parser.parse_args(argv)
 
     set_path = Path(arguments.evaluation_set)
@@ -279,7 +317,12 @@ def main(argv: list[str] | None = None) -> int:
         started = time.monotonic()
         try:
             raw, usage = _bounded_response_content(
-                arguments.endpoint, arguments.model, SYSTEM_PROMPT, user, arguments.request_timeout
+                arguments.endpoint,
+                arguments.model,
+                SYSTEM_PROMPT,
+                user,
+                arguments.request_timeout,
+                reasoning=arguments.reasoning,
             )
         except (httpx.HTTPError, ValueError) as exc:
             endpoint_failures += 1
@@ -304,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         evaluation_set_version=evaluation_set.set_version,
         set_digest=set_digest,
         request_timeout_seconds=arguments.request_timeout,
+        reasoning=arguments.reasoning,
         results=results,
         detail_rows=detail_rows,
         endpoint_failures=endpoint_failures,

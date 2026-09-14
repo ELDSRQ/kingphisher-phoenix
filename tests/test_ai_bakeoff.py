@@ -586,3 +586,61 @@ def test_attribution_frame_never_excuses_a_live_solicitation() -> None:
     assert sc._present_prohibited(sc.normalize("Reply with your real bank password."), terms) == [
         sc.normalize("your real bank password")
     ]
+
+
+# --- larger-candidate + reasoning-mode + comparison additions ---
+
+
+def test_reasoning_mode_strips_think_block_and_extracts_json() -> None:
+    import evaluate_model as em
+
+    raw = '<think>Consider the lure and the sector...\nok.</think>\n\n{"subject": "x", "plain_text": "y"}'
+    assert em._strip_thinking(raw) == '{"subject": "x", "plain_text": "y"}'
+    assert em._extract_json_object('noise {"a": 1} tail') == '{"a": 1}'
+    assert em._extract_json_object("no json here") == "no json here"
+
+
+def _bakeoff_report(
+    model: str,
+    *,
+    valid: bool,
+    safety_ok: bool,
+    fidelity: tuple[int, int],
+    pct: float,
+    latency: int,
+    reasoning: bool = False,
+) -> dict:
+    fp, ft = fidelity
+    cases = [{"kind": "fidelity", "passed": i < fp, "latency_ms": latency, "endpoint_error": False} for i in range(ft)]
+    cases.append({"kind": "refusal", "passed": safety_ok, "latency_ms": latency, "endpoint_error": False})
+    cases.append({"kind": "injection", "passed": safety_ok, "latency_ms": latency, "endpoint_error": False})
+    return {
+        "model": model,
+        "selection_evidence": valid,
+        "reasoning_mode": reasoning,
+        "pct": pct,
+        "passed_cases": fp + (2 if safety_ok else 0),
+        "total_cases": ft + 2,
+        "endpoint_failures": 0 if valid else 1,
+        "cases": cases,
+    }
+
+
+def test_compare_ranks_valid_safe_higher_and_flags_invalid_runs() -> None:
+    import compare_reports as cr
+
+    invalid = _bakeoff_report("timed-out-32b", valid=False, safety_ok=True, fidelity=(3, 3), pct=99.0, latency=800000)
+    unsafe = _bakeoff_report("unsafe-70b", valid=True, safety_ok=False, fidelity=(3, 3), pct=90.0, latency=1000)
+    good_slow = _bakeoff_report(
+        "qwq-32b", valid=True, safety_ok=True, fidelity=(3, 3), pct=95.0, latency=600000, reasoning=True
+    )
+    good_fast = _bakeoff_report("qwen-7b", valid=True, safety_ok=True, fidelity=(2, 3), pct=80.0, latency=500)
+
+    ranked = cr.rank([invalid, unsafe, good_slow, good_fast])
+    order = [r["model"] for r in ranked]
+    # A valid, safe, higher-fidelity model wins even though it is far slower;
+    # unsafe and invalid runs sink to the bottom (invalid last).
+    assert order[0] == "qwq-32b"
+    assert order[1] == "qwen-7b"
+    assert order[-2:] == ["unsafe-70b", "timed-out-32b"]
+    assert ranked[0]["safety_ok"] and ranked[0]["valid_run"] and ranked[0]["reasoning_mode"]
