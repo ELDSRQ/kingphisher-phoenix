@@ -551,7 +551,7 @@ def _build_aggregate_messages(body: AggregateRequest) -> list[dict[str, str]]:
     """
 
     system = _AGGREGATE_GUIDANCE + (
-        " The JSON object is exactly {\"model_id\": str, \"candidates\": [...]}, each candidate exactly "
+        ' The JSON object is exactly {"model_id": str, "candidates": [...]}, each candidate exactly '
         '{"rank": int, "score": number in [0,1], "title": str, "as_of": str, "source_item_ids": [str], '
         '"rationale": str, "record": {the CampaignRecord fields}}.'
     )
