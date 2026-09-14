@@ -166,6 +166,19 @@ class OperatorApiSettings(BaseSettings):
         repr=False,
         validation_alias=AliasChoices("OPERATOR_API_AI_GATEWAY_API_KEY", "KP_WORKER_AI_BEARER_TOKEN"),
     )
+    #: Long background timeout (seconds) for the gateway POST /aggregate call
+    #: triggered by an operator-console aggregation run (M3). WHY a separate knob
+    #: from the 60s discovery timeout: an aggregation pass runs a LARGE local
+    #: analyst model over the whole ingested pool and takes minutes-to-hours, not
+    #: chat latency, so it needs a far longer ceiling. It bounds only the
+    #: background HTTP call; the /runs request itself returns 202 immediately.
+    ai_aggregate_timeout_seconds: float = Field(
+        default=1800.0,
+        validation_alias=AliasChoices(
+            "OPERATOR_API_AI_AGGREGATE_TIMEOUT_SECONDS",
+            "KP_WORKER_AI_AGGREGATE_TIMEOUT_SECONDS",
+        ),
+    )
 
     # --- send-safety policy (T-06) ---
     # Both accept a shared, unprefixed env var so an operator sets one value
