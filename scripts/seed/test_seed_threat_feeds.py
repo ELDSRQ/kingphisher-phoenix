@@ -7,7 +7,6 @@ Run (no DB, no network):
 
 from __future__ import annotations
 
-import copy
 import sys
 from pathlib import Path
 

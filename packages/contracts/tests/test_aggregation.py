@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from kp_contracts.aggregation import (
     MAX_AGG_EXCERPT_CHARS,
     MAX_AGG_SOURCE_IDS,
@@ -15,6 +13,7 @@ from kp_contracts.aggregation import (
     AggregateResponse,
     AggregationSourceItem,
 )
+from pydantic import ValidationError
 
 
 def _record(**overrides: object) -> dict[str, object]:
