@@ -72,8 +72,17 @@ _TRAINING_HEADERS = {
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
     "X-Robots-Tag": "noindex, nofollow, noarchive",
+    # Training pages carry two small STATIC inline <style> blocks (no scripts, no
+    # user data in the CSS). Allow exactly those two by sha256 hash instead of
+    # 'unsafe-inline', so no other injected style can apply. There are no inline
+    # style="" attributes, so element hashes suffice (no 'unsafe-hashes').
+    # test_training_page_csp.py recomputes these from the rendered pages and fails
+    # if the CSS changes without updating the hash here.
     "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'none'; "
+        "style-src 'sha256-a9c1vHbDDCCu9u8/yWE7ovdZ2Wuq8cuEjFda8du3faY=' "
+        "'sha256-WYFOCiy5jxsj3MZenEj1bXsuABzn+SVZBlXeSe1/a3o='; "
+        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
     ),
 }
 _QUIZ_ANSWER = "verify_independently"
