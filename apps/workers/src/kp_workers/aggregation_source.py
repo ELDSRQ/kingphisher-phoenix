@@ -63,6 +63,7 @@ class AggregationPassContext(Protocol):
 
     def session_factory(self) -> AbstractContextManager[Session]: ...
 
+
 #: How many rows to pull from the DB per pass before the Python governance
 #: filter. We over-fetch (a governance-lapsed or unbound item is dropped in
 #: Python, not SQL) but stay hard-bounded so a huge ``source_items`` table can
