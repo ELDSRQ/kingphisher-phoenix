@@ -420,6 +420,37 @@ variable "acs_resource_mode" {
   }
 }
 
+# DEP-010 Z8 bring-your-own: an enterprise that already runs a Key Vault can
+# point this deployment at it instead of provisioning a duplicate. In existing
+# mode the app's runtime secrets are written into (and read from) the supplied
+# vault; the deployer identity therefore needs Key Vault Secrets Officer + role-
+# assignment rights on it, and the vault must be reachable from the workload
+# network (this deployment does not create a private endpoint for a vault it does
+# not own).
+variable "key_vault_resource_mode" {
+  description = "Provision a dedicated Key Vault, or use an existing enterprise Key Vault (bring-your-own)."
+  type        = string
+  default     = "provision"
+  validation {
+    condition     = contains(["provision", "existing"], var.key_vault_resource_mode)
+    error_message = "key_vault_resource_mode must be provision or existing."
+  }
+}
+
+variable "key_vault_existing_id" {
+  description = "Complete resource ID of an existing Key Vault; required only when key_vault_resource_mode=existing."
+  type        = string
+  default     = ""
+  validation {
+    condition = (
+      var.key_vault_resource_mode == "provision"
+      ? trimspace(var.key_vault_existing_id) == ""
+      : can(regex("^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft.KeyVault/vaults/[^/]+$", trimspace(var.key_vault_existing_id)))
+    )
+    error_message = "key_vault_resource_mode=existing requires a complete Key Vault resource ID; provision mode requires it empty."
+  }
+}
+
 variable "acs_existing_communication_service_id" {
   description = "Complete resource ID of an existing Communication Service; required only in existing mode."
   type        = string

@@ -537,7 +537,7 @@ def test_ciphertext_recovery_uses_one_secret_reference_and_one_key_id_for_all_ru
     assert "scope                = local.ciphertext_prior_keys_secret_id" in MAIN
     assert "ciphertext-prior-keys = local.ciphertext_prior_keys_versionless_uri" in MAIN
     assert "key_vault_secret_id = local.ciphertext_prior_keys_versionless_uri" in MAIN
-    assert '${trimsuffix(azurerm_key_vault.main.vault_uri, "/")}/secrets/' in MAIN
+    assert '${trimsuffix(local.key_vault_uri, "/")}/secrets/' in MAIN
     assert "OPERATOR_API_CIPHERTEXT_KEY_ID            = { value = trimspace(var.ciphertext_active_key_id)" in MAIN
     assert 'name  = "KP_WORKER_CIPHERTEXT_KEY_ID"' in MAIN
     assert "value = trimspace(var.ciphertext_active_key_id)" in MAIN
@@ -680,3 +680,22 @@ def test_ai_gateway_auth_default_is_off_for_local_dev() -> None:
     )
     assert "KP_AI_GATEWAY_REQUIRE_AUTH" not in compose
     assert "KP_AI_GATEWAY_API_KEY" not in compose
+
+
+def test_key_vault_supports_bring_your_own_existing_mode() -> None:
+    # DEP-010 Z8: an enterprise Key Vault can be used instead of provisioning one.
+    assert 'variable "key_vault_resource_mode"' in VARIABLES
+    assert 'contains(["provision", "existing"], var.key_vault_resource_mode)' in VARIABLES
+    assert 'variable "key_vault_existing_id"' in VARIABLES
+    assert 'var.key_vault_resource_mode == "provision"' in MAIN
+    assert 'data "azurerm_key_vault" "existing"' in MAIN
+    kv = MAIN.split('resource "azurerm_key_vault" "main"', maxsplit=1)[1].split("\n}\n", maxsplit=1)[0]
+    assert "local.kv_provision ? 1 : 0" in kv
+    # Every consumer resolves through the local, never the raw count-indexed resource.
+    for token in ("local.key_vault_id", "local.key_vault_uri"):
+        assert token in MAIN, token
+    assert "local.key_vault_name" in OUTPUTS
+    # A private endpoint is created only for a vault we own.
+    assert "local.private_network && local.kv_provision ? 1 : 0" in MAIN
+    # Runtime secrets are written to the resolved vault.
+    assert "key_vault_id = local.key_vault_id" in MAIN
