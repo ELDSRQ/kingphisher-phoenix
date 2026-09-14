@@ -1,0 +1,139 @@
+# Curated static manifest of REPUTABLE public threat-intelligence feed SOURCES.
+#
+# Purpose (M3 on-prem background aggregation): this file names WHERE the
+# "current phishing campaign" signal comes from. A later, separate ingestion
+# step fetches these sources, neutralizes/sanitizes each entry, and turns the
+# fetched items into `AggregationSourceItem`s (see
+# packages/contracts/src/kp_contracts/aggregation.py). The `id` and `publisher`
+# below are the stable handles an ingestion step maps onto an item's
+# `source_reference`, e.g. "<id>#<feed-entry-guid>".
+#
+# This manifest is DATA ONLY. Nothing here is fetched by seed_threat_feeds.py —
+# validating this file makes no network calls. These are all PUBLIC, reputable
+# sources (national CERTs, well-known vendor threat-research teams, and public
+# anti-phishing aggregators) used for DEFENSIVE awareness-training simulations.
+#
+# Editing rules:
+#   * `id` must be unique and stable (it becomes provenance downstream).
+#   * `url` must be http(s) and point at the public advisory/feed endpoint.
+#   * `kind` must be one of: rss, atom, html, json.
+#   * Set `enabled: false` for anything not confidently a live public feed, and
+#     say why in a comment or the optional `note:` field. Disabled entries are
+#     kept as reviewed candidates; ingestion skips them.
+#
+# schema_version bumps when the entry shape changes.
+schema_version: 1
+
+feeds:
+  # --- National CERTs / government advisories --------------------------------
+
+  - id: cisa-advisories
+    name: CISA Cybersecurity Advisories
+    url: https://www.cisa.gov/cybersecurity-advisories/all.xml
+    kind: rss
+    publisher: cisa.gov
+    categories: ["phishing", "credential-harvesting", "advisory"]
+    enabled: true
+
+  - id: ncsc-uk-reports
+    name: UK NCSC Reports & Advisories
+    url: https://www.ncsc.gov.uk/api/1/services/v1/report-rss-feed.xml
+    kind: rss
+    publisher: ncsc.gov.uk
+    categories: ["phishing", "advisory"]
+    enabled: true
+
+  # --- Well-known vendor / independent threat-research teams -----------------
+
+  - id: cisco-talos
+    name: Cisco Talos Intelligence Blog
+    url: https://blog.talosintelligence.com/rss/
+    kind: rss
+    publisher: talosintelligence.com
+    categories: ["phishing", "credential-harvesting", "threat-research"]
+    enabled: true
+
+  - id: microsoft-security-blog
+    name: Microsoft Security Blog
+    url: https://www.microsoft.com/en-us/security/blog/feed/
+    kind: rss
+    publisher: microsoft.com
+    categories: ["phishing", "credential-harvesting", "threat-research"]
+    enabled: true
+
+  - id: paloalto-unit42
+    name: Palo Alto Networks Unit 42
+    url: https://unit42.paloaltonetworks.com/feed/
+    kind: rss
+    publisher: paloaltonetworks.com
+    categories: ["phishing", "credential-harvesting", "threat-research"]
+    enabled: true
+
+  - id: sans-isc
+    name: SANS Internet Storm Center
+    url: https://isc.sans.edu/rssfeed.xml
+    kind: rss
+    publisher: sans.edu
+    categories: ["phishing", "threat-research"]
+    enabled: true
+
+  - id: thedfirreport
+    name: The DFIR Report
+    url: https://thedfirreport.com/feed/
+    kind: rss
+    publisher: thedfirreport.com
+    categories: ["phishing", "credential-harvesting", "threat-research"]
+    enabled: true
+
+  - id: krebs-on-security
+    name: Krebs on Security
+    url: https://krebsonsecurity.com/feed/
+    kind: rss
+    publisher: krebsonsecurity.com
+    categories: ["phishing", "threat-research"]
+    enabled: true
+
+  # --- Reviewed candidates kept DISABLED ------------------------------------
+  # Reputable, but not confidently a live/structured public feed on-prem can
+  # poll unauthenticated. Ingestion skips these until the endpoint is confirmed.
+
+  - id: google-mandiant-ti
+    name: Google Cloud (Mandiant) Threat Intelligence Blog
+    url: https://cloud.google.com/blog/topics/threat-intelligence/rss
+    kind: rss
+    publisher: cloud.google.com
+    categories: ["phishing", "credential-harvesting", "threat-research"]
+    enabled: false
+    # Mandiant content migrated under cloud.google.com; the exact RSS endpoint
+    # needs verification before enabling.
+
+  - id: apwg-ecrime
+    name: APWG (Anti-Phishing Working Group) eCrime Reports
+    url: https://apwg.org/ecx/
+    kind: html
+    publisher: apwg.org
+    categories: ["phishing", "credential-harvesting", "report"]
+    enabled: false
+    # Authoritative anti-phishing body, but publishes periodic PDF reports
+    # rather than a live pollable feed — no per-campaign items to ingest.
+
+  - id: phishtank
+    name: PhishTank Public Phishing Feed
+    url: https://phishtank.org/developer_info.php
+    kind: json
+    publisher: phishtank.org
+    categories: ["phishing", "url-blocklist"]
+    enabled: false
+    # Community phishing-URL corpus, but the downloadable feed now requires a
+    # registered API key; keep disabled until a key is provisioned (no secrets
+    # live in this manifest).
+
+  - id: openphish-community
+    name: OpenPhish Community Feed
+    url: https://openphish.com/
+    kind: html
+    publisher: openphish.com
+    categories: ["phishing", "url-blocklist"]
+    enabled: false
+    # Free community feed is a rate-limited plaintext URL list (not one of the
+    # structured kinds); the structured feed is a paid subscription.
