@@ -142,3 +142,55 @@ uv run python -m pytest tests/test_ai_bakeoff.py -q
 
 The scoring and evaluation-set validation are fully offline; no model is
 required.
+
+## Re-running with larger / reasoning candidates (background aggregation)
+
+The incumbent (Qwen2.5-7B) was chosen under a **chat-latency** constraint (the
+synchronous worker path caps a generation call at `provider_timeout_seconds <=
+60s`). Threat **aggregation** is a background job that can think for
+minutes/hours, and on-prem has GPU capacity for much larger models — so a re-run
+should include larger + reasoning candidates.
+
+`candidates.yaml` is the curated manifest (params, quant, hardware fit, source
+repo, license, and whether the model is a reasoning model). It is documentation
+for the operator — nothing here serves weights.
+
+Per candidate:
+
+```bash
+# 1. Serve the candidate on a loopback llama.cpp/vLLM (operator; on the target GPU).
+# 2. Score it. Reasoning models MUST use --reasoning + a large --request-timeout:
+uv run python scripts/ai-bakeoff/evaluate_model.py \
+    --endpoint http://127.0.0.1:8080/v1 --model qwq-32b \
+    --reasoning --request-timeout 900 \
+    --report /tmp/bakeoff-qwq-32b.json
+# Non-reasoning models (7B/70B instruct) keep the json_schema grammar (no --reasoning):
+uv run python scripts/ai-bakeoff/evaluate_model.py \
+    --endpoint http://127.0.0.1:8080/v1 --model llama-3.3-70b \
+    --report /tmp/bakeoff-llama-70b.json
+```
+
+`--reasoning` drops the from-first-token json_schema grammar (so the model can
+think), then strips `<think>…</think>` and extracts the JSON before the SAME
+schema validation runs — a reasoning model that can't produce valid JSON after
+thinking still fails the schema dimension honestly.
+
+Then rank all the reports from measured evidence:
+
+```bash
+uv run python scripts/ai-bakeoff/compare_reports.py /tmp/bakeoff-*.json \
+    --output /tmp/bakeoff-comparison.json
+```
+
+Ranking follows the AI-005 order: a run with any endpoint failure
+(`selection_evidence` false — e.g. a reasoning model that blew the timeout) is
+NOT clean evidence and sorts last; among valid runs the safety hard gates
+(`refusal`, `injection`) come first, then fidelity, then pass rate, then latency
+(the weakest signal for a background model).
+
+**Caveats:** (1) `candidates.yaml` marks the 70B community-licensed models
+`license_ok: review` — confirm the license is acceptable before selecting. (2)
+The fixed `evaluation_set.yaml` scores **generation** quality; it does not yet
+score **aggregation/analysis** quality (identifying the optimal *current*
+campaign). Add aggregation-eval cases before finalising a dedicated aggregation
+model.
