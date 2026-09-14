@@ -1061,6 +1061,7 @@ const NAV = [
   ["sending", "Domains & RoE"],
   ["recipients", "Recipients"],
   ["sources", "Sources"],
+  ["aggregation", "Threat aggregation"],
   ["patterns", "Patterns"],
   ["templates", "Template review"],
   ["training", "Training lessons"],
@@ -1081,6 +1082,7 @@ const NAV_CAPABILITIES = Object.freeze({
   sending: [CAPABILITY.VERIFY_DOMAIN, CAPABILITY.SIGN_ROE],
   recipients: [CAPABILITY.VIEW_NAMED_RESULTS, CAPABILITY.MANAGE_RECIPIENTS, CAPABILITY.MANAGE_EXCLUSIONS, CAPABILITY.MANAGE_SUPPRESSIONS],
   sources: [CAPABILITY.MANAGE_SOURCES],
+  aggregation: [CAPABILITY.MANAGE_SOURCES],
   patterns: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_PATTERN],
   templates: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE],
   training: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE],
@@ -6943,6 +6945,250 @@ views.sources = async (root) => {
       ])]),
     ]),
   ]));
+};
+
+/* ---------- threat aggregation ---------- */
+views.aggregation = async (root) => {
+  if (!requireAnyCapability(root, CAPABILITY.MANAGE_SOURCES)) return;
+  const canManageSources = hasCapability(CAPABILITY.MANAGE_SOURCES);
+
+  // Model-derived, UNTRUSTED text: rendered only via el()'s text option (never
+  // innerHTML), exactly like the threat excerpts. Bounded for display, too.
+  const bounded = (value, limit) => {
+    const text = String(value === null || value === undefined || value === "" ? "Not recorded" : value);
+    return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+  };
+  const timeLabel = (value) => (value ? formatInstant(value) : "Not recorded");
+  const scoreLabel = (value) => (typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "—");
+
+  const filterState = { review_state: "pending" };
+
+  const runError = (err) => {
+    if (err.status === 503) {
+      toast("AI aggregation is not configured (no gateway/model).", "error");
+    } else if (err.status === 409) {
+      toast("No eligible ingested items to aggregate yet — activate sources and let ingestion run first.", "error");
+    } else if (err.status === 403) {
+      toast("Source-management capability is required. No aggregation pass was started.", "error");
+    } else {
+      toast("Aggregation could not be started. Refresh and retry.", "error");
+    }
+  };
+  const promoteError = (err) => {
+    if (err.status === 409) {
+      toast("This candidate was already reviewed. Refresh to see its current verdict.", "error");
+    } else if (err.status === 422) {
+      toast("No resolvable supporting source item — this candidate cannot be promoted.", "error");
+    } else if (err.status === 404) {
+      toast("Candidate no longer exists. Refresh the list.", "error");
+    } else if (err.status === 403) {
+      toast("Source-management capability is required. No pattern was created.", "error");
+    } else {
+      toast("Promotion could not be completed. Refresh and retry.", "error");
+    }
+  };
+  const dismissErrorToast = (err) => {
+    if (err.status === 409) {
+      toast("This candidate was already reviewed. Refresh to see its current verdict.", "error");
+    } else if (err.status === 404) {
+      toast("Candidate no longer exists. Refresh the list.", "error");
+    } else if (err.status === 403) {
+      toast("Source-management capability is required. No change was made.", "error");
+    } else {
+      toast("Dismiss could not be completed. Refresh and retry.", "error");
+    }
+  };
+
+  root.appendChild(el("h2", { text: "Threat aggregation" }));
+  root.appendChild(el("p", {
+    class: "sub",
+    text: "A background AI pass ranks the most current campaigns from the ingested threat-feed pool for you to review and promote into a simulation pattern.",
+  }));
+
+  const listContent = el("div", { "aria-live": "polite", "aria-busy": "false" });
+
+  const recordRow = (label, value) => el("p", { text: `${label}: ${bounded(value, 255)}` });
+
+  const stateBadge = (state) => el("span", {
+    class: `pill ${state === "promoted" ? "ok" : state === "pending" ? "" : "down"}`,
+    text: state || "unknown",
+  });
+
+  const loadCandidates = async () => {
+    listContent.setAttribute("aria-busy", "true");
+    listContent.replaceChildren(el("p", { role: "status", text: "Loading aggregation candidates…" }));
+    const params = new URLSearchParams();
+    if (filterState.review_state) params.set("review_state", filterState.review_state);
+    let payload;
+    try {
+      payload = await api(`/console/aggregate/candidates?${params.toString()}`);
+    } catch (err) {
+      listContent.setAttribute("aria-busy", "false");
+      listContent.replaceChildren(collectionLoadError(
+        "Aggregation candidates could not be loaded. Refresh and retry.",
+        loadCandidates,
+      ));
+      toast("Aggregation candidates could not be loaded. Refresh and retry.", "error");
+      return;
+    }
+    const candidates = Array.isArray(payload && payload.candidates) ? payload.candidates : [];
+    listContent.setAttribute("aria-busy", "false");
+
+    if (!candidates.length) {
+      listContent.replaceChildren(el("p", {
+        class: "empty", role: "status",
+        text: "No candidates yet. Run an aggregation pass.",
+      }));
+      return;
+    }
+
+    const cards = candidates.map((candidate) => {
+      const record = (candidate && typeof candidate.record === "object" && candidate.record) || {};
+      const sourceCount = Array.isArray(candidate.source_item_ids) ? candidate.source_item_ids.length : 0;
+      const state = candidate.review_state;
+      const isPending = state === "pending";
+
+      const head = el("div", { class: "card-head" }, [
+        el("h3", { text: `#${candidate.rank} · ${scoreLabel(candidate.score)}` }),
+        stateBadge(state),
+      ]);
+
+      const meta = el("div", {}, [
+        el("strong", { text: bounded(candidate.title, 255) }),
+        el("p", { text: `Model: ${bounded(candidate.model_id, 128)}` }),
+        el("p", { text: `As of: ${timeLabel(candidate.as_of)}` }),
+        el("p", { text: `Supporting source items: ${sourceCount}` }),
+      ]);
+
+      const rationale = el("details", {}, [
+        el("summary", { text: "Rationale (model-derived, shown as text)" }),
+        el("p", { class: "modal-warn", text: "Untrusted model text follows. It is rendered only as text; no HTML is executed." }),
+        el("p", { text: bounded(candidate.rationale, 2048) }),
+      ]);
+
+      const recordBlock = el("div", {}, [
+        recordRow("Campaign name", record.campaign_name),
+        recordRow("Claimed brand", record.claimed_brand),
+        recordRow("Target sector", record.target_sector),
+        recordRow("Lure theme", record.lure_theme),
+        recordRow("Call to action", record.call_to_action),
+      ]);
+
+      const children = [head, meta, rationale, recordBlock];
+
+      if (isPending) {
+        const actions = [];
+        actions.push(el("button", {
+          class: "btn small primary", type: "button", text: "Promote",
+          disabled: canManageSources ? null : "disabled",
+          title: canManageSources ? null : "Source-management capability is required.",
+          "aria-label": `Promote candidate ${bounded(candidate.title, 120)}`,
+          onclick: async (event) => {
+            event.currentTarget.disabled = true;
+            try {
+              const result = await api(
+                `/console/aggregate/candidates/${encodeURIComponent(candidate.aggregation_candidate_id)}/promote`,
+                { method: "POST" },
+              );
+              const patternId = result && result.campaign_pattern_id;
+              toast(patternId
+                ? `Promoted — a campaign pattern was created (${patternId}).`
+                : "Promoted — a campaign pattern was created.", "success");
+              await loadCandidates();
+            } catch (err) { promoteError(err); event.currentTarget.disabled = false; }
+          },
+        }));
+        actions.push(el("button", {
+          class: "btn small danger", type: "button", text: "Dismiss",
+          disabled: canManageSources ? null : "disabled",
+          title: canManageSources ? null : "Source-management capability is required.",
+          "aria-label": `Dismiss candidate ${bounded(candidate.title, 120)}`,
+          onclick: async (event) => {
+            event.currentTarget.disabled = true;
+            try {
+              await api(
+                `/console/aggregate/candidates/${encodeURIComponent(candidate.aggregation_candidate_id)}/dismiss`,
+                { method: "POST" },
+              );
+              toast("Candidate dismissed. No pattern was created.", "success");
+              await loadCandidates();
+            } catch (err) { dismissErrorToast(err); event.currentTarget.disabled = false; }
+          },
+        }));
+        children.push(el("div", {
+          class: "btn-row", role: "group",
+          "aria-label": `Review actions for candidate ${bounded(candidate.title, 120)}`,
+        }, actions));
+      } else {
+        const verdict = state === "promoted"
+          ? candidate.promoted_pattern_id
+            ? `Promoted to campaign pattern ${bounded(candidate.promoted_pattern_id, 128)}.`
+            : "Promoted."
+          : state === "dismissed"
+            ? "Dismissed. No pattern was created."
+            : `Reviewed (${bounded(state, 64)}).`;
+        children.push(el("p", { class: "field-help", text: `${verdict} Reviewed ${timeLabel(candidate.reviewed_at)}.` }));
+      }
+
+      return el("div", { class: "card" }, children);
+    });
+
+    listContent.replaceChildren(...cards);
+  };
+
+  const reviewFilter = el("select", { "aria-label": "Filter aggregation candidates by review state" }, [
+    ["pending", "Pending"], ["", "All review states"], ["promoted", "Promoted"], ["dismissed", "Dismissed"],
+  ].map(([value, label]) => el("option", { value, text: label, selected: filterState.review_state === value })));
+
+  const maxCandidatesInput = el("input", {
+    id: "agg-max-candidates", type: "number", min: "1", max: "50", value: "10",
+    "aria-label": "Maximum candidates to rank",
+  });
+
+  const runButton = el("button", {
+    class: "btn primary", type: "button", text: "Run aggregation",
+    disabled: canManageSources ? null : "disabled",
+    title: canManageSources ? null : "Source-management capability is required.",
+    onclick: async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      const body = {};
+      const rawMax = Number(maxCandidatesInput.value);
+      if (Number.isInteger(rawMax) && rawMax > 0) body.max_candidates = rawMax;
+      try {
+        await api("/console/aggregate/runs", { method: "POST", body: JSON.stringify(body) });
+        toast("Aggregation started — ranking candidates in the background. Refresh in a moment.", "success");
+      } catch (err) {
+        runError(err);
+      } finally {
+        button.disabled = !canManageSources;
+      }
+    },
+  });
+
+  root.appendChild(el("div", { class: "card" }, [
+    el("h3", { text: "Run a ranking pass" }),
+    el("p", { class: "field-help", text: "Starts a background AI pass over the ingested threat pool. Candidates appear shortly after; use Refresh to load them." }),
+    el("div", { class: "btn-row" }, [
+      el("label", { for: "agg-max-candidates", text: "Max candidates" }),
+      maxCandidatesInput,
+      runButton,
+    ]),
+  ]));
+
+  root.appendChild(el("div", { class: "card" }, [
+    el("div", { class: "btn-row", role: "search", "aria-label": "Aggregation candidate filters" }, [
+      reviewFilter,
+      el("button", {
+        class: "btn primary", type: "button", text: "Apply filter",
+        onclick: async () => { filterState.review_state = reviewFilter.value; await loadCandidates(); },
+      }),
+      el("button", { class: "btn", type: "button", text: "Refresh", onclick: loadCandidates }),
+    ]),
+    listContent,
+  ]));
+
+  await loadCandidates();
 };
 
 /* ---------- patterns ---------- */
