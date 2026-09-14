@@ -242,6 +242,16 @@ class WorkerSettings(BaseSettings):
     #: compared against it, constant-time). ``None`` disables extraction, so the
     #: worker generates from the deterministic pattern alone (unchanged).
     ai_extract_model_id: str | None = Field(default=None, min_length=1, max_length=128)
+    #: M3 background aggregation stage. When set, the on-prem aggregation job may
+    #: POST a bounded batch of neutralized threat-feed items to the gateway's
+    #: ``/aggregate`` endpoint and get back ranked current-campaign candidates for
+    #: a human to review. Must equal the gateway's
+    #: ``KP_AI_GATEWAY_AGGREGATE_MODEL_ID`` (the ``AggregateResponse.model_id`` is
+    #: compared against it, constant-time — a SOFT pin: a mismatch yields "no
+    #: candidates" and a log, never a crash, because aggregation is advisory
+    #: enrichment). ``None`` DISABLES the job entirely: it returns ``[]`` without
+    #: opening a socket, so an unconfigured worker is byte-for-byte unchanged.
+    ai_aggregate_model_id: str | None = Field(default=None, min_length=1, max_length=128)
     kp_profile: KPProfile = Field(
         default=KPProfile.LOCAL_DEV,
         validation_alias=AliasChoices("KP_PROFILE", "KP_WORKER_PROFILE"),
@@ -283,6 +293,16 @@ class WorkerSettings(BaseSettings):
     reported_mailbox_basic_username: str | None = None
     reported_mailbox_basic_password: str | None = None
     provider_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60.0)
+    #: LONG background timeout for the M3 aggregation job — a DELIBERATELY SEPARATE
+    #: axis from ``provider_timeout_seconds``. WHY a distinct field: chat/latency
+    #: provider calls (propose/extract) are hard-capped at <=60s by
+    #: ``provider_timeout_seconds``'s ``le=60.0`` so a slow model can never stall an
+    #: interactive path; but background aggregation runs a LARGE local analyst
+    #: model over a batch of feed items and may legitimately take MINUTES to HOURS.
+    #: Reusing (and raising) the chat cap would either starve aggregation or weaken
+    #: the interactive guardrail — so aggregation gets its own tier (default 30min,
+    #: ceiling 6h) and the <=60s chat cap is left untouched.
+    aggregate_timeout_seconds: float = Field(default=1800.0, ge=1.0, le=21600.0)
     mailbox_poll_limit: int = 50
     reminder_batch_size: int = 100
     reminder_sender: str = "security-awareness@example.com"
@@ -383,6 +403,12 @@ class WorkerSettings(BaseSettings):
             raise ValueError("AI model ID must be a single line without control characters")
         if self.ai_extract_model_id and any(c in self.ai_extract_model_id for c in ("\x00", "\r", "\n")):
             raise ValueError("AI extract model ID must be a single line without control characters")
+        # Same control-char guard as the other pinned model ids: the aggregate
+        # model id is compared constant-time against a gateway response, so it
+        # must be a single clean line (no NUL/CR/LF that could smuggle in a
+        # header-splitting or log-injection payload).
+        if self.ai_aggregate_model_id and any(c in self.ai_aggregate_model_id for c in ("\x00", "\r", "\n")):
+            raise ValueError("AI aggregate model ID must be a single line without control characters")
         _validate_provider_url("tracking base URL", self.tracking_base_url)
         _validate_provider_url("training base URL", self.training_base_url)
         if self.audit_anchor_container_url:
