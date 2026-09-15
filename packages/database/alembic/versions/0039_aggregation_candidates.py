@@ -21,10 +21,16 @@ down_revision = "0038_unique_constraint_naming"
 branch_labels = None
 depends_on = None
 
+# SQLAlchemy's default Enum maps a Python enum to its member NAMES (uppercase),
+# and the ORM column below uses that default — matching every other enum in this
+# schema (e.g. quarantine_state stores 'ACTIVE'/'QUARANTINED'). The Postgres type
+# MUST therefore use the uppercase labels, or inserts/queries fail on real
+# Postgres with "invalid input value for enum ... 'PENDING'" (SQLite tests do not
+# enforce enum labels, so this only surfaces against a live database).
 _REVIEW_STATE = postgresql.ENUM(
-    "pending",
-    "promoted",
-    "dismissed",
+    "PENDING",
+    "PROMOTED",
+    "DISMISSED",
     name="aggregation_review_state",
     create_type=False,
 )
@@ -45,7 +51,7 @@ def upgrade() -> None:
         sa.Column("record", postgresql.JSONB(), nullable=False, server_default="{}"),
         sa.Column("source_item_ids", postgresql.JSONB(), nullable=False, server_default="[]"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("review_state", _REVIEW_STATE, nullable=False, server_default="pending"),
+        sa.Column("review_state", _REVIEW_STATE, nullable=False, server_default="PENDING"),
         sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("reviewed_by", sa.String(length=255), nullable=True),
         sa.Column("promoted_pattern_id", sa.UUID(), nullable=True),

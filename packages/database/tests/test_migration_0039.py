@@ -41,7 +41,11 @@ def test_migration_is_linked_into_the_chain() -> None:
 def test_upgrade_creates_table_enum_indexes_and_least_privilege_grant() -> None:
     sql = _sql("upgrade")
     assert "CREATE TABLE aggregation_candidates" in sql
-    assert "CREATE TYPE aggregation_review_state AS ENUM ('pending', 'promoted', 'dismissed')" in sql
+    # Uppercase labels: the ORM Enum column uses SQLAlchemy's default name-based
+    # mapping (like every other enum here), so the Postgres type must match or
+    # inserts/queries fail on a live database with "invalid input value".
+    assert "CREATE TYPE aggregation_review_state AS ENUM ('PENDING', 'PROMOTED', 'DISMISSED')" in sql
+    assert "'pending'" not in sql and "'promoted'" not in sql and "'dismissed'" not in sql
     assert "ck_aggregation_candidates_rank_positive" in sql
     assert "ck_aggregation_candidates_score_unit" in sql
     assert "ix_aggregation_candidates_run" in sql
@@ -62,6 +66,17 @@ def test_downgrade_is_a_clean_reversal() -> None:
     assert "DROP TYPE aggregation_review_state" in sql
     assert "DROP INDEX ix_aggregation_candidates_run" in sql
     assert "DROP INDEX ix_aggregation_candidates_review" in sql
+
+
+def test_orm_enum_labels_match_the_migration() -> None:
+    """The ORM review_state column and the migrated Postgres type must use the
+    same (uppercase) labels — the mismatch that broke inserts on live Postgres."""
+
+    from sqlalchemy import Enum as SAEnum
+
+    column = AggregationCandidate.__table__.c.review_state  # type: ignore[attr-defined]
+    assert isinstance(column.type, SAEnum)
+    assert set(column.type.enums) == {"PENDING", "PROMOTED", "DISMISSED"}
 
 
 def test_model_metadata_mirrors_the_migrated_table() -> None:
