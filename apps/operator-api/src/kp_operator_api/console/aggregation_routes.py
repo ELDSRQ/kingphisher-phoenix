@@ -57,6 +57,7 @@ from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
 from kp_operator_api.threat_routes import (
     _activate_linked_pattern,
+    _locked_linked_patterns,
     _require_locked_current_governance,
     _source_pattern_id,
 )
@@ -351,7 +352,14 @@ def promote_candidate(
     item.quarantine_reason = None
     item.duplicate_of = None
     _activate_linked_pattern(session, item, principal, as_of=as_of)
-    pattern_id = _source_pattern_id(item.source_item_id)
+    # Resolve the ACTUAL linked pattern id. _activate_linked_pattern creates a
+    # deterministic-id pattern only when none is linked yet; if one already
+    # exists (an operator activated the item earlier, or seeded data), it keeps
+    # that pattern — which may have a non-deterministic id. Assuming
+    # _source_pattern_id here would point the candidate at a pattern that does
+    # not exist, so read the real linked pattern instead.
+    linked = _locked_linked_patterns(session, item)
+    pattern_id = linked[0].campaign_pattern_id if linked else _source_pattern_id(item.source_item_id)
 
     updated = set_review_state(
         session,
