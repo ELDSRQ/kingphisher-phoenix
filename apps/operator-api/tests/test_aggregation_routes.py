@@ -407,6 +407,44 @@ def test_promote_activates_pattern_and_records_verdict() -> None:
     engine.dispose()
 
 
+def test_promote_links_to_preexisting_pattern_not_deterministic_id() -> None:
+    """When the item already has a linked pattern with a non-deterministic id
+    (activated earlier, or seeded), promote must return THAT pattern's id, not
+    the computed _source_pattern_id (which would point at a non-existent row)."""
+    from kp_operator_api.threat_routes import _source_pattern_id
+
+    settings = _settings(ai_gateway_url="https://gw.internal.example")
+    engine = _database()
+    _seed_governed(engine)
+    preexisting_id = uuid.uuid4()
+    assert preexisting_id != _source_pattern_id(ACTIVE_ID)
+    with Session(engine) as session:
+        session.add(
+            CampaignPattern(
+                campaign_pattern_id=preexisting_id,
+                lure_category=dm.LureCategory.INVOICE,
+                confidence=dm.Confidence.MEDIUM,
+                attack_mapping={"source_item_id": str(ACTIVE_ID)},
+            )
+        )
+        session.commit()
+    candidate_id = _insert_pending(engine, [str(ACTIVE_ID)])
+    client = _app(settings, engine, _Audit())
+
+    response = client.post(
+        f"/api/v1/console/aggregate/candidates/{candidate_id}/promote",
+        headers=_headers(settings),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["campaign_pattern_id"] == str(preexisting_id)
+    assert body["candidate"]["promoted_pattern_id"] == str(preexisting_id)
+    with Session(engine) as session:
+        # the existing pattern was reused, not duplicated
+        assert session.scalar(select(func.count()).select_from(CampaignPattern)) == 1
+    engine.dispose()
+
+
 def test_promote_with_no_resolvable_item_returns_422() -> None:
     settings = _settings(ai_gateway_url="https://gw.internal.example")
     engine = _database()
