@@ -2329,7 +2329,6 @@
           const rows = [];
           const others = found.subscriptions.filter((s) => s.id !== found.selected.id);
           if (others.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Other subscriptions:" }), ...others.slice(0, 15).map((s) => discoveryChip(s.name, "subscription_id", s.id))]));
-          if (found.resourceGroups.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Resource groups:" }), ...found.resourceGroups.slice(0, 20).map((g) => discoveryChip(g.name, "tf_state_resource_group", g.name))]));
           if (found.dnsZones.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "DNS zones:" }), ...found.dnsZones.slice(0, 20).map((z) => discoveryChip(z.name, "acs_dns_zone_id", z.id))]));
           if (found.locations.length) rows.push(el("div", { class: "suggestion-row" }, [el("span", { text: "Regions:" }), ...found.locations.slice(0, 30).map((l) => discoveryChip(l.display || l.name, "location", l.name))]));
           discoveryResults.replaceChildren(...rows);

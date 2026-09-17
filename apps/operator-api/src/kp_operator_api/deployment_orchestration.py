@@ -937,13 +937,12 @@ class DeploymentOrchestrator:
     ) -> dict[str, Any]:
         inputs = self.workflow_inputs(values)
         source_revision = self._preflight(inputs["environment"]).review_payload()
-        terraform_state_identity = {
-            "resource_group": values.get("tf_state_resource_group", ""),
-            "storage_account": values.get("tf_state_storage_account", ""),
-            "container": values.get("tf_state_container", ""),
-        }
-        if source_revision.get("terraform_state_identity") != terraform_state_identity:
-            raise DeploymentConflict("reviewed Terraform state identity does not match the protected environment")
+        # WS3: the Terraform state identity is authoritative protected-environment
+        # data (validated by preflight), not operator input. Use it directly so the
+        # operator never re-types TF_STATE_* values the server already holds.
+        terraform_state_identity = source_revision.get("terraform_state_identity")
+        if not isinstance(terraform_state_identity, dict) or not terraform_state_identity:
+            raise DeploymentConflict("reviewed Terraform state identity is missing from the protected environment")
         plan_id = uuid.uuid4().hex
         created_at = self._clock()
         review_body = {
@@ -988,9 +987,6 @@ class DeploymentOrchestrator:
                 "environment": values["environment"],
                 "network_mode": values["network_mode"],
                 "deployment_stage": values["deployment_stage"],
-                "tf_state_resource_group": values.get("tf_state_resource_group", ""),
-                "tf_state_storage_account": values.get("tf_state_storage_account", ""),
-                "tf_state_container": values.get("tf_state_container", ""),
             },
             "review": {
                 "environment": inputs["environment"],
@@ -1537,9 +1533,6 @@ class DeploymentOrchestrator:
             "environment",
             "network_mode",
             "deployment_stage",
-            "tf_state_resource_group",
-            "tf_state_storage_account",
-            "tf_state_container",
         }
         if (
             not isinstance(reviewed_values, dict)

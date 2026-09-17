@@ -91,9 +91,6 @@ def _values() -> dict[str, str]:
         "ciphertext_prior_key_ids": "",
         "ciphertext_prior_keys_secret_id": "",
         "azure_deployment_client_id": "55555555-5555-4555-8555-555555555555",
-        "tf_state_resource_group": "rg-kp-state",
-        "tf_state_storage_account": "kptfstateprod",
-        "tf_state_container": "tfstate",
         "runner_label": "azure-vnet",
     }
 
@@ -683,8 +680,15 @@ def test_network_mode_is_reviewed_and_private_runner_is_enforced(tmp_path) -> No
 
 def test_plan_binds_reviewed_terraform_state_identity() -> None:
     service = _service()
-    with pytest.raises(DeploymentConflict, match="Terraform state identity"):
-        service.create_plan({**_values(), "tf_state_container": "wrong-state"}, actor="operator")
+    plan = service.create_plan(_values(), actor="operator")
+    # WS3: the identity is authoritative protected-environment data, sourced from
+    # preflight. Operator-supplied tf_state_* values are no longer accepted input,
+    # so the plan binds the preflight identity without any operator tf_state field.
+    assert plan["terraform_state_identity"] == {
+        "resource_group": "rg-kp-state",
+        "storage_account": "kptfstateprod",
+        "container": "tfstate",
+    }
 
 
 def test_routes_require_auth_healthy_audit_and_reject_unknown_keys(tmp_path) -> None:
