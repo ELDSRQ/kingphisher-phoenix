@@ -7,7 +7,8 @@ Azure tenant bootstrap, protected release qualification, and several
 tenant-administrator actions still require scripts or provider consoles; those
 gaps are identified below rather than presented as GUI-complete.
 
-Quick links: [Architecture](docs/architecture/README.md) ·
+Quick links: [Operator guide](docs/OPERATOR-GUIDE.md) ·
+[Architecture](docs/architecture/README.md) ·
 [AI handoff](docs/AI_HANDOFF.md) · [QA findings](QA_TASKS.md)
 
 > **Wave 38 operator alignment.** This deployment serves one 125-person tenant
