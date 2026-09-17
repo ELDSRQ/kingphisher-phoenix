@@ -352,6 +352,57 @@ _GLOSSARY: tuple[dict[str, str], ...] = (
         "meaning": "A short-lived, federated identity used by deployment automation instead of a stored Azure "
         "client secret.",
     },
+    {
+        "term": "Rules of Engagement (RoE)",
+        "meaning": "A dated, signed permission slip recording who may run the simulated phish, which company "
+        "domains may be targeted, and the approved date window. Delivery refuses to proceed without a signed, "
+        "unexpired, un-revoked one, so there is auditable proof the test was authorized.",
+    },
+    {
+        "term": "Canary",
+        "meaning": "A tiny group of internal test accounts you send first. Full-audience sending is blocked until "
+        "that test group is proven to have actually gone out, so a broken send fails on a few test accounts "
+        "instead of the whole company.",
+    },
+    {
+        "term": "Allowlist",
+        "meaning": "The approved list of company domains this tool may email. Anything not on it is blocked, and if "
+        "the list is missing the tool refuses to send at all — it fails closed rather than risk emailing the wrong "
+        "people.",
+    },
+    {
+        "term": "ACS Email",
+        "meaning": "Azure Communication Services Email: Microsoft's managed email-sending service. It removes the "
+        "need to run your own mail server but requires a domain you own to be verified first.",
+    },
+    {
+        "term": "SPF, DKIM, DMARC",
+        "meaning": "Three public DNS records that let mail systems prove your emails are genuinely from you and not "
+        "a forger. Paste the records the console shows into your domain's DNS settings, then click Verify.",
+    },
+    {
+        "term": "Mailpit",
+        "meaning": "A built-in pretend inbox. In the offline/test setup, campaign emails do not leave the computer — "
+        "they land at localhost:8025 so you can check how a message looks before connecting real email.",
+    },
+    {
+        "term": "Approval policy",
+        "meaning": "Decides whether one person or two must sign off before a campaign goes out. Enforce requires two "
+        "separate approvals; single-operator lets one person run everything while the domain allowlist still blocks "
+        "off-list recipients; single-admin is a local-test-only relaxation refused when a real identity provider is "
+        "connected.",
+    },
+    {
+        "term": "Kill switch",
+        "meaning": "An emergency stop that immediately cancels every queued message and invalidates every "
+        "already-sent tracking link, either for one campaign or company-wide. Recall cancels only one campaign's "
+        "pending mail; pause stops future scheduling but does not cancel queued mail.",
+    },
+    {
+        "term": "Fail closed",
+        "meaning": "Block by default when uncertain. When a safety check cannot be completed or a required value is "
+        "missing, the platform refuses to send rather than risk sending to the wrong people.",
+    },
 )
 
 
@@ -384,6 +435,33 @@ _TOPICS: tuple[dict[str, str], ...] = (
         "summary": "Use Azure deployment to collect and validate non-secret subscription, Entra, DNS, integration, "
         "and Terraform backend values. Export them for the protected GitHub workflow; the wizard never requests "
         "Azure credentials, saves values on the server, or starts a deployment.",
+    },
+    {
+        "id": "run-campaign",
+        "title": "Run your first campaign",
+        "summary": "Create a campaign from an approved pattern, choose a training lesson, freeze the exact "
+        "audience, complete the required approval, run the canary to a small test group, then publish the full "
+        "audience once provider evidence is recorded.",
+    },
+    {
+        "id": "send-safety",
+        "title": "Send safety and approval",
+        "summary": "The person who creates a campaign can never approve it. A single independent reviewer may "
+        "complete both the security and privacy approvals, the recipient-domain allowlist blocks anything off-list, "
+        "and the kill switch stops delivery immediately.",
+    },
+    {
+        "id": "dns-domains",
+        "title": "Sending domains and DNS",
+        "summary": "Mail only delivers from domains you control with valid SPF, DKIM, and DMARC records. Prove "
+        "control of a domain via DNS, then sign a Rules of Engagement that names which domains may be targeted.",
+    },
+    {
+        "id": "deploy-choice",
+        "title": "On-premises vs Azure",
+        "summary": "Two ways to run the tool. On-prem runs on a machine you control and you edit settings in the "
+        "console. Azure managed runs in Microsoft's cloud where configuration lives in Azure; it enforces "
+        "two-person approval and Microsoft's managed email service.",
     },
 )
 
