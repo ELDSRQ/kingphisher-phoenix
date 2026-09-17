@@ -46,6 +46,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/programs/{program_id}",
             "GET /api/v1/console/help",
             "GET /api/v1/console/status",
+            "GET /api/v1/console/model-control",
         ),
     ),
     (
@@ -268,6 +269,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/console/config",
             "PUT /api/v1/console/config",
             "POST /api/v1/console/restart",
+            "POST /api/v1/console/model-control/swap",
         ),
     ),
 )

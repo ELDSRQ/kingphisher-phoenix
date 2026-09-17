@@ -127,6 +127,14 @@ from kp_operator_api.console.env_store import (
     _reject_if_managed,
     _verify_console_password,
 )
+from kp_operator_api.console.model_control import (
+    ModelControlStatus,
+    ModelSwapRequest,
+    ModelSwapResponse,
+)
+from kp_operator_api.console.model_control import (
+    router as _model_control_router,
+)
 from kp_operator_api.console.onboarding import (
     _AZURE_EMAIL_PROTECTED_AI_OUTPUT,
     ConnectionTest,
@@ -182,6 +190,9 @@ __all__ = [
     "ConnectionTest",
     "MANAGED_CONFIG_MESSAGE",
     "MANAGED_PROCESS_MESSAGE",
+    "ModelControlStatus",
+    "ModelSwapRequest",
+    "ModelSwapResponse",
     "OidcStartResponse",
     "OnboardingPatch",
     "RuntimeCapabilities",
@@ -482,6 +493,7 @@ for _seam_router in (
     _onboarding_router,
     _config_router,
     _runtime_status_router,
+    _model_control_router,
 ):
     for _seam_route in _seam_router.routes:
         router.routes.append(_seam_route)

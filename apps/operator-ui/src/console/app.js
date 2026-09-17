@@ -1290,12 +1290,14 @@
     ["privacy", "Privacy"],
     ["queues", "Failed jobs"],
     ["audit", "Audit"],
+    ["modelcontrol", "AI model"],
     ["settings", "Settings"]
   ];
   var NAV_CAPABILITIES = Object.freeze({
     getstarted: [CAPABILITY.MANAGE_ROLES],
     onboarding: [CAPABILITY.MANAGE_ROLES],
     "azure-deployment": [CAPABILITY.MANAGE_ROLES],
+    modelcontrol: [CAPABILITY.MANAGE_ROLES],
     help: [CAPABILITY.VIEW_AGGREGATE],
     dashboard: [CAPABILITY.VIEW_AGGREGATE, CAPABILITY.VIEW_AUDIT],
     campaigns: [CAPABILITY.VIEW_AGGREGATE],
@@ -8023,6 +8025,62 @@
         ])
       ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 4, text: "No audit events yet." })])])
     ])]));
+  };
+  views.modelcontrol = async (root) => {
+    if (!requireAnyCapability(root, CAPABILITY.MANAGE_ROLES)) return;
+    root.appendChild(el("h2", { text: "AI model" }));
+    root.appendChild(el("p", {
+      class: "sub",
+      text: "This host's GPU runs one model at a time. Switch it between this system's aggregation model and the separate qwen3:32b."
+    }));
+    const card = el("div", { class: "card" });
+    root.appendChild(card);
+    async function loadAndRender() {
+      let status;
+      try {
+        status = await api("/console/model-control");
+      } catch (e) {
+        card.replaceChildren(el("div", { role: "alert", text: `Could not read model state: ${e.message}` }));
+        return;
+      }
+      card.replaceChildren();
+      if (!status.enabled) {
+        card.appendChild(el("h3", { text: "Model is managed externally" }));
+        card.appendChild(el("p", { text: "This deployment's AI model is managed outside the console; no local model can be changed from here." }));
+        return;
+      }
+      card.appendChild(el("h3", { text: "Current model" }));
+      card.appendChild(el("ul", {}, [
+        el("li", { text: `Aggregation model (gpt-oss-20b): ${status.aggregation_loaded ? "loaded" : "not loaded"}` }),
+        el("li", { text: `qwen3:32b: ${status.qwen_loaded ? "loaded" : "not loaded"}` })
+      ]));
+      if (!status.swap_script_present) {
+        card.appendChild(el("p", {
+          class: "field-help",
+          text: "The model swap script is not installed on this host, so switching is disabled."
+        }));
+        return;
+      }
+      const swap = async (target, busy) => {
+        busy.disabled = true;
+        try {
+          const result = await api("/console/model-control/swap", { method: "POST", body: JSON.stringify({ target }) });
+          toast(result.message || `Switched to ${target}`, result.ok ? "success" : "error");
+        } catch (e) {
+          toast(e.message, "error");
+        }
+        await loadAndRender();
+      };
+      card.appendChild(el("div", { class: "btn-row" }, [
+        el("button", { class: "btn", type: "button", text: "Use qwen3:32b", onclick: (e) => swap("qwen", e.target) }),
+        el("button", { class: "btn", type: "button", text: "Restore aggregation model", onclick: (e) => swap("aggregate", e.target) })
+      ]));
+      card.appendChild(el("p", {
+        class: "field-help",
+        text: "Switching can take up to a minute while the model loads or unloads."
+      }));
+    }
+    await loadAndRender();
   };
   views.settings = async (root) => {
     if (!requireAnyCapability(root, CAPABILITY.MANAGE_ROLES)) return;
