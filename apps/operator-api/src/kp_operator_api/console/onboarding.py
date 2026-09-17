@@ -434,6 +434,7 @@ def _onboarding_state(path: Path) -> dict[str, Any]:
                 "optional": definition["optional"],
                 "estimated_minutes": definition["estimated_minutes"],
                 "prerequisites": list(definition["prerequisites"]),
+                "auto_checks": list(definition.get("auto_checks", ())),
                 "configured": configured,
                 "ready": configured,
                 "fields": fields,
