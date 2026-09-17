@@ -1079,6 +1079,7 @@ function sidebarEmergencyStop() {
 
 /* ---------- shell ---------- */
 const NAV = [
+  ["getstarted", "Get started"],
   ["onboarding", "Setup wizard"],
   ["azure-deployment", "Azure deployment"],
   ["help", "Help"],
@@ -1100,6 +1101,7 @@ const NAV = [
 ];
 
 const NAV_CAPABILITIES = Object.freeze({
+  getstarted: [CAPABILITY.MANAGE_ROLES],
   onboarding: [CAPABILITY.MANAGE_ROLES],
   "azure-deployment": [CAPABILITY.MANAGE_ROLES],
   help: [CAPABILITY.VIEW_AGGREGATE],
@@ -1285,6 +1287,38 @@ function setWizardFeedback(node, state, message) {
 }
 
 /* ---------- onboarding ---------- */
+/* ---------- get started: first-class deployment chooser (WS6) ---------- */
+views.getstarted = async (root) => {
+  const path = (title, description, note, href) => el("div", { class: "card" }, [
+    el("h3", { text: title }),
+    el("p", { text: description }),
+    el("p", { class: "field-help", text: note }),
+    el("div", { class: "btn-row" }, [el("button", {
+      class: "btn primary", type: "button", text: "Choose this path",
+      onclick: () => { location.hash = href; },
+    })]),
+  ]);
+  root.appendChild(el("h2", { text: "How do you want to run Kingphisher-Phoenix?" }));
+  root.appendChild(el("p", {
+    class: "sub",
+    text: "Both paths are fully supported and stay available. Pick the one that fits your team now; you can revisit this choice later from the menu.",
+  }));
+  root.appendChild(el("div", { class: "form-grid" }, [
+    path(
+      "Run on my own hardware",
+      "The platform runs on a machine you control. You configure it in the console, and test email stays in a built-in pretend inbox until you connect a real mail relay.",
+      "Best for small teams that want to keep everything internal.",
+      "onboarding",
+    ),
+    path(
+      "Run in Microsoft Azure",
+      "The platform runs in Microsoft's cloud, managed through a reviewed deployment workflow. Configuration lives in Azure, with two-person approval and Microsoft's managed email service always on.",
+      "Best for teams already running in Azure.",
+      "azure-deployment",
+    ),
+  ]));
+};
+
 views.onboarding = async (root) => {
   if (!requireAnyCapability(root, CAPABILITY.MANAGE_ROLES)) return;
   root.appendChild(el("h2", { text: "Let’s set up Kingphisher" }));
@@ -7686,7 +7720,7 @@ async function render() {
     if (hasCapability(CAPABILITY.MANAGE_ROLES)) {
       try {
         const onboarding = await api("/console/onboarding");
-        if (!onboarding.complete) location.hash = "onboarding";
+        if (!onboarding.complete) location.hash = "getstarted";
       } catch (e) { toast(`Unable to check setup status: ${e.message}`, "error"); }
     }
     if (!token() && !sessionInfo()) return;
