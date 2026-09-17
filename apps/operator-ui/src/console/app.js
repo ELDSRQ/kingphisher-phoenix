@@ -404,6 +404,14 @@
       el("dl", { class: "modal-detail" }, items)
     ]);
   }
+  function shortRef(id) {
+    const s = String(id || "");
+    return s.length > 8 ? `${s.slice(0, 8)}\u2026` : s;
+  }
+  function auditObjectLabel(type) {
+    const s = String(type || "");
+    return s ? s.replace(/_/g, " ") : "object";
+  }
   async function boundedCsvBlob(response) {
     const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
     if (contentType !== "text/csv") throw new Error("Export returned an unexpected content type");
@@ -3956,7 +3964,7 @@
         return;
       }
       const { dlg, form } = dialogShell(
-        `Program ${program.campaign_program_id.slice(0, 8)} timeline`,
+        `Timeline: ${program.source_campaign_title || "campaign program"}`,
         "Times below are exact UTC instants. Campaign IDs and lifecycle states are shown; recipient and message content are not included."
       );
       form.appendChild(el("p", {
@@ -3966,14 +3974,17 @@
       form.appendChild(el("table", { class: "report-table" }, [
         el("thead", {}, [el("tr", {}, [
           el("th", { text: "Run" }),
-          el("th", { text: "Campaign ID" }),
+          el("th", { text: "Campaign" }),
           el("th", { text: "State" }),
           el("th", { text: "Start UTC" }),
           el("th", { text: "End UTC" })
         ])]),
         el("tbody", {}, detail.occurrences.map((occurrence) => el("tr", {}, [
           el("td", { class: "num", text: String(occurrence.occurrence_number) }),
-          el("td", { class: "mono", text: occurrence.campaign_id }),
+          el("td", {
+            text: occurrence.campaign_title || shortRef(occurrence.campaign_id),
+            title: occurrence.campaign_title ? occurrence.campaign_id : void 0
+          }),
           el("td", { text: occurrence.state }),
           el("td", { class: "mono", text: formatUtcInstant(occurrence.schedule_start) }),
           el("td", { class: "mono", text: formatUtcInstant(occurrence.schedule_end) })
@@ -4039,7 +4050,10 @@
           onclick: changeState(program, program.state === "active" ? "pause" : "resume")
         }));
         return el("tr", {}, [
-          el("td", { class: "mono", text: program.campaign_program_id }),
+          el("td", {
+            text: program.source_campaign_title || shortRef(program.campaign_program_id),
+            title: program.source_campaign_title ? `Program ${program.campaign_program_id}` : void 0
+          }),
           el("td", {}, [el("span", {
             class: `pill ${program.complete ? "ok" : program.state === "active" ? "ok" : "down"}`,
             text: program.complete ? "complete" : program.state
@@ -7955,7 +7969,11 @@
         el("td", { class: "mono", text: String(ev.occurred_at).slice(0, 19) }),
         el("td", { text: ev.actor }),
         el("td", { text: ev.action }),
-        el("td", { class: "mono", text: ev.object_id })
+        el("td", {}, [
+          el("span", { text: auditObjectLabel(ev.object_type) }),
+          " \xB7 ",
+          el("span", { class: "mono", text: shortRef(ev.object_id), title: ev.object_id })
+        ])
       ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 4, text: "No audit events yet." })])])
     ])]));
   };

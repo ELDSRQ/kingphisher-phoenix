@@ -56,6 +56,7 @@ def _occurrence_payload(session: Session, occurrence: CampaignProgramOccurrence)
         "campaign_program_occurrence_id": str(occurrence.campaign_program_occurrence_id),
         "occurrence_number": occurrence.occurrence_number,
         "campaign_id": str(occurrence.campaign_id),
+        "campaign_title": campaign.title,
         "state": campaign.state.value,
         "schedule_start": _utc_instant(occurrence.schedule_start),
         "schedule_end": _utc_instant(occurrence.schedule_end),
@@ -68,9 +69,12 @@ def _program_payload(
     *,
     include_occurrences: bool,
 ) -> dict[str, Any]:
+    source_campaign = session.get(Campaign, program.source_campaign_id)
     payload: dict[str, Any] = {
         "campaign_program_id": str(program.campaign_program_id),
         "source_campaign_id": str(program.source_campaign_id),
+        # WS1: a human reads the source campaign's title, not a raw program UUID.
+        "source_campaign_title": source_campaign.title if source_campaign is not None else None,
         "state": program.state.value,
         "version": program.version,
         "cadence_days": program.cadence_days,
