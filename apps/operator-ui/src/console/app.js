@@ -1163,7 +1163,7 @@
         }
       }
     };
-    const hint = el("p", { id: "login-hint", class: "login-hint", hidden: true, text: "Local development uses KP_CONSOLE_PASSWORD from .env. Managed Azure uses Microsoft identity sign-in and disables password login. See RUNBOOK section 2.1." });
+    const hint = el("p", { id: "login-hint", class: "login-hint", hidden: true, text: "Local development signs in with the console password from your .env file (KP_CONSOLE_PASSWORD). After signing in, set a memorable password under Settings. Managed Azure uses Microsoft identity sign-in and disables password login." });
     let authMode;
     try {
       const resp = await fetch(`${API}/console/auth-mode`);
@@ -1787,6 +1787,10 @@
         el("summary", { text: "Setup help and prerequisites" }),
         el("p", { text: step.learn_more || `This connection lets Kingphisher use ${step.title}. Gather the items below before testing.` }),
         ...step.prerequisites?.length ? [el("ul", { class: "prerequisite-list" }, step.prerequisites.map((item) => el("li", { text: item })))] : [],
+        ...step.auto_checks?.length ? [el("div", {}, [
+          el("p", { class: "field-help", text: "The console already checks these for you when you run the connection test:" }),
+          el("ul", { class: "prerequisite-list" }, step.auto_checks.map((item) => el("li", { text: item })))
+        ])] : [],
         el("p", { class: "field-help", text: `Typical time: about ${step.estimated_minutes || 5} minutes. You can ask the setup assistant for provider-specific guidance without sharing credentials.` }),
         el("button", { class: "link-button", type: "button", text: "Open searchable help center", onclick: () => navigateTo("help") })
       ]);

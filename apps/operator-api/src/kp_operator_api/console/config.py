@@ -69,6 +69,10 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "Permission to register a browser application and API",
             "The public HTTPS address operators will use for this console",
         ),
+        "auto_checks": (
+            "The connection test fetches your identity provider's /.well-known/openid-configuration "
+            "to confirm the sign-in authority is reachable before you save.",
+        ),
         "configured_any": (("OPERATOR_API_OIDC_MODE",),),
         "fields": (
             ("OPERATOR_API_OIDC_MODE", "Authentication mode", "text", True, False, "dev or oidc"),
@@ -105,6 +109,9 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "One or more selected Entra group object IDs",
             "An expected upper bound for employee records",
         ),
+        "auto_checks": (
+            "The connection test calls the directory's /users endpoint to confirm reachability before you save.",
+        ),
         "configured_any": (("KP_WORKER_GRAPH_BASE_URL",), ("MOCK_GRAPH_URL",)),
         "fields": (
             ("KP_WORKER_GRAPH_BASE_URL", "Graph base URL", "url", True, False, "https://graph.microsoft.com/v1.0"),
@@ -127,6 +134,10 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "An approved SMTP relay or service account",
             "The sender mailbox authorized by that relay",
             "The relay's TLS requirement and port",
+        ),
+        "auto_checks": (
+            "The connection test opens a real SMTP session with your host, port, TLS, and account settings. "
+            "For ACS it only confirms the endpoint is reachable — no message or credential is sent.",
         ),
         "configured_any": (("KP_WORKER_SMTP_ADDRESS",), ("KP_WORKER_MAILPIT_SMTP",), ("KP_WORKER_ACS_EMAIL_ENDPOINT",)),
         "fields": (
@@ -185,6 +196,10 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "A dedicated mailbox managed identity",
             "Exchange Online Application RBAC scoped to only that mailbox",
         ),
+        "auto_checks": (
+            "The connection test reads the mailbox endpoint (Mailpit) or the Microsoft Graph delta path "
+            "(Microsoft 365) to confirm reachability before you save.",
+        ),
         "configured_any": (("KP_WORKER_REPORTED_MAILBOX_URL",), ("KP_WORKER_MAILPIT_API_URL",)),
         "fields": (
             ("KP_WORKER_REPORTED_MAILBOX_PROVIDER", "Mailbox provider", "text", True, False, "Choose a provider"),
@@ -228,6 +243,9 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "A compatible service exposing /propose and /setup-assist",
             "A dedicated, least-privilege credential if authentication is required",
         ),
+        "auto_checks": (
+            "The connection test confirms the /propose endpoint is reachable; it sends no campaign content.",
+        ),
         "configured_any": (("KP_WORKER_AI_BASE_URL",), ("MOCK_AI_URL",)),
         "fields": (
             ("KP_WORKER_AI_BASE_URL", "AI service base URL", "url", True, False, "https://ai-gateway.example"),
@@ -244,6 +262,9 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
         "prerequisites": (
             "The exact training landing-page URL",
             "Every domain that may host approved training content",
+        ),
+        "auto_checks": (
+            "The connection test fetches the training landing-page URL to confirm it is reachable before you save.",
         ),
         "configured_any": (("OPERATOR_API_TRAINING_BASE_URL", "OPERATOR_API_TRAINING_DOMAINS"),),
         "fields": (
@@ -268,6 +289,7 @@ _ONBOARDING_STEPS: tuple[dict[str, Any], ...] = (
             "An HTTPS receiver for operational alerts",
             "The receiver hostname approved for the outbound allowlist",
         ),
+        "auto_checks": ("The connection test performs a TLS handshake with the webhook URL before you save.",),
         "configured_any": (("KP_WORKER_ALERT_WEBHOOK_DOMAINS",),),
         "fields": (
             ("KP_WORKER_ALERT_WEBHOOK_DOMAINS", "Allowed webhook domains", "text", True, False, "hooks.example.com"),

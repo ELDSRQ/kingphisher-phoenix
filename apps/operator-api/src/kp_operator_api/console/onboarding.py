@@ -30,6 +30,7 @@ from kp_operator_api.connection_probes import (
     _connection_test_result,
     _credentials_for_destination,
     _microsoft365_probe_url,
+    _parse_smtp_address,
     _probe_http,
     _probe_smtp,
     _probe_webhook,
@@ -434,6 +435,7 @@ def _onboarding_state(path: Path) -> dict[str, Any]:
                 "optional": definition["optional"],
                 "estimated_minutes": definition["estimated_minutes"],
                 "prerequisites": list(definition["prerequisites"]),
+                "auto_checks": list(definition.get("auto_checks", ())),
                 "configured": configured,
                 "ready": configured,
                 "fields": fields,
@@ -754,6 +756,71 @@ async def assist_onboarding(
     )
 
 
+_ENTRA_TENANT_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _infer_oidc_issuer(desired: dict[str, str], saved: dict[str, str]) -> None:
+    """Derive the Microsoft Entra issuer from the tenant ID when it is otherwise empty.
+
+    For the common Microsoft case the issuer is entirely determined by the tenant
+    ID, so the operator should not have to copy it from provider metadata. Only
+    fires under OIDC mode, for a UUID-shaped tenant ID, when no issuer is set.
+    """
+
+    mode = (desired.get("OPERATOR_API_OIDC_MODE") or saved.get("OPERATOR_API_OIDC_MODE", "")).strip()
+    if mode != "oidc":
+        return
+    tenant_id = (desired.get("KP_WORKER_MICROSOFT_TENANT_ID") or saved.get("KP_WORKER_MICROSOFT_TENANT_ID", "")).strip()
+    if _ENTRA_TENANT_ID.fullmatch(tenant_id) is None:
+        return
+    issuer = (
+        desired["OPERATOR_API_OIDC_ISSUER"].strip()
+        if "OPERATOR_API_OIDC_ISSUER" in desired
+        else saved.get("OPERATOR_API_OIDC_ISSUER", "").strip()
+    )
+    if issuer:
+        return
+    desired["OPERATOR_API_OIDC_ISSUER"] = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+
+
+def _infer_smtp_tls(desired: dict[str, str], saved: dict[str, str]) -> None:
+    """Derive SMTP TLS from the relay port when the operator left it on "Automatic".
+
+    The field help already states the rule (587 uses STARTTLS, 465 uses implicit
+    TLS); this applies it so a non-technical operator does not have to know it.
+    An explicit choice (STARTTLS true/false or SSL true) is always respected.
+    """
+
+    provider = (desired.get("KP_WORKER_EMAIL_PROVIDER") or saved.get("KP_WORKER_EMAIL_PROVIDER", "")).strip()
+    if provider != "smtp":
+        return
+    address = (desired.get("KP_WORKER_SMTP_ADDRESS") or saved.get("KP_WORKER_SMTP_ADDRESS", "")).strip()
+    if not address:
+        return
+    try:
+        _host, port = _parse_smtp_address(address)
+    except ValueError:
+        return
+    if port is None:
+        return
+    starttls = (
+        desired["KP_WORKER_SMTP_STARTTLS"].strip().lower()
+        if "KP_WORKER_SMTP_STARTTLS" in desired
+        else saved.get("KP_WORKER_SMTP_STARTTLS", "").strip().lower()
+    )
+    ssl = (
+        desired["KP_WORKER_SMTP_SSL"].strip().lower()
+        if "KP_WORKER_SMTP_SSL" in desired
+        else saved.get("KP_WORKER_SMTP_SSL", "").strip().lower()
+    )
+    if starttls in {"true", "false"} or ssl == "true":
+        return
+    if port == 587:
+        desired["KP_WORKER_SMTP_STARTTLS"] = "true"
+    elif port == 465:
+        desired["KP_WORKER_SMTP_SSL"] = "true"
+
+
 def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Principal) -> list[str]:
     forbidden = set(body.values) - _ALLOWED_KEYS
     if forbidden:
@@ -769,6 +836,9 @@ def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Prin
     for source, target in mirrors.items():
         if source in desired and target not in desired:
             desired[target] = desired[source]
+    saved = _env_values(_env_path(request))
+    _infer_oidc_issuer(desired, saved)
+    _infer_smtp_tls(desired, saved)
     if body.completed is not None:
         desired["OPERATOR_API_ONBOARDING_COMPLETED"] = str(body.completed).lower()
 
