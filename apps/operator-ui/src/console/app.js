@@ -2012,7 +2012,12 @@
         State: state,
         Attempt: plan.attempt
       }).forEach(([key, value]) => summary.append(el("dt", { text: key }), el("dd", { text: value ?? "\u2014" })));
-      const prerequisites = el("ul", {}, (plan.external_prerequisites || []).map((item) => el("li", { text: item })));
+      const prerequisites = el("ul", { class: "prerequisite-list", "aria-label": "Deployment prerequisites" }, (plan.external_prerequisites || []).map((item) => el("li", {}, [
+        el("label", { class: "prerequisite-item" }, [
+          el("input", { type: "checkbox", "aria-label": `Marked complete: ${item}` }),
+          el("span", { text: item })
+        ])
+      ])));
       const limitations = el("ul", {}, (plan.limitations || []).map((item) => el("li", { text: item })));
       const activity = el(
         "ul",

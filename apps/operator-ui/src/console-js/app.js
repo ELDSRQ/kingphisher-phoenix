@@ -1890,7 +1890,12 @@ views["azure-deployment"] = async (root) => {
       State: state,
       Attempt: plan.attempt,
     }).forEach(([key, value]) => summary.append(el("dt", { text: key }), el("dd", { text: value ?? "—" })));
-    const prerequisites = el("ul", {}, (plan.external_prerequisites || []).map((item) => el("li", { text: item })));
+    const prerequisites = el("ul", { class: "prerequisite-list", "aria-label": "Deployment prerequisites" }, (plan.external_prerequisites || []).map((item) => el("li", {}, [
+      el("label", { class: "prerequisite-item" }, [
+        el("input", { type: "checkbox", "aria-label": `Marked complete: ${item}` }),
+        el("span", { text: item }),
+      ]),
+    ])));
     const limitations = el("ul", {}, (plan.limitations || []).map((item) => el("li", { text: item })));
     const activity = el("ul", { class: "event-list", "aria-label": "Bounded deployment activity" },
       (plan.activity || []).map((item) => el("li", { text: `${item.kind}: ${item.name} — ${item.status}${item.conclusion ? ` / ${item.conclusion}` : ""}` })));
