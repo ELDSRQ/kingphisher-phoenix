@@ -874,9 +874,6 @@ def test_azure_deployment_advanced_fields_are_classified_and_defaulted(env_file:
         "acs_ramp_batch_size",
         "acs_ramp_interval_seconds",
         "runner_label",
-        "tf_state_resource_group",
-        "tf_state_storage_account",
-        "tf_state_container",
         "network_mode",
         "azure_deployment_client_id",
         "ciphertext_active_key_id",
@@ -938,9 +935,6 @@ def test_azure_deployment_validation_accepts_safe_values_and_rejects_bad_hosts(e
         "reported_mailbox_address": "",
         "reported_mailbox_folder": "inbox",
         "alert_webhook_domains": "ntfy.example.com,hooks.example.com",
-        "tf_state_resource_group": "rg-kp-state",
-        "tf_state_storage_account": "kptfstateprod",
-        "tf_state_container": "tfstate",
         "runner_label": "azure-vnet",
     }
     with TestClient(_app(env_file)) as client:
@@ -1084,9 +1078,6 @@ def test_azure_ciphertext_recovery_accepts_only_versionless_secret_metadata(env_
         "reported_mailbox_address": "",
         "reported_mailbox_folder": "inbox",
         "alert_webhook_domains": "",
-        "tf_state_resource_group": "rg-kp-state",
-        "tf_state_storage_account": "kptfstateprod",
-        "tf_state_container": "tfstate",
         "runner_label": "azure-vnet",
     }
     reference = (
@@ -1160,9 +1151,6 @@ def test_azure_deployment_validation_requires_ai_generation_gateway(env_file: st
         "reported_mailbox_address": "",
         "reported_mailbox_folder": "inbox",
         "alert_webhook_domains": "",
-        "tf_state_resource_group": "rg-kp-state",
-        "tf_state_storage_account": "kptfstateprod",
-        "tf_state_container": "tfstate",
         "runner_label": "azure-vnet",
     }
     with TestClient(_app(env_file)) as client:
@@ -1194,9 +1182,6 @@ def test_azure_provider_readiness_requires_selected_groups_and_mailbox(env_file:
         "reported_mailbox_address": "",
         "reported_mailbox_folder": "inbox",
         "alert_webhook_domains": "",
-        "tf_state_resource_group": "rg-kp-state",
-        "tf_state_storage_account": "kptfstateprod",
-        "tf_state_container": "tfstate",
         "runner_label": "azure-vnet",
     }
     with TestClient(_app(env_file)) as client:
@@ -1252,9 +1237,6 @@ def test_azure_acs_readiness_is_fail_closed_and_secret_free(env_file: str, obsol
         "reported_mailbox_address": "",
         "reported_mailbox_folder": "inbox",
         "alert_webhook_domains": "",
-        "tf_state_resource_group": "rg-kp-state",
-        "tf_state_storage_account": "kptfstateprod",
-        "tf_state_container": "tfstate",
         "runner_label": "azure-vnet",
         obsolete_key: "verified",
     }

@@ -479,30 +479,6 @@ _AZURE_DEPLOYMENT_STEPS: tuple[dict[str, Any], ...] = (
                 "Application (client) ID. This is not the operator-console application ID.",
             ),
             (
-                "tf_state_resource_group",
-                "Terraform-state resource group",
-                "text",
-                True,
-                "rg-kp-terraform-state",
-                "Azure portal → Resource groups → the dedicated infrastructure-state resource group.",
-            ),
-            (
-                "tf_state_storage_account",
-                "Terraform-state storage account",
-                "text",
-                True,
-                "kptfstateprod",
-                "Azure portal → Storage accounts → the private account holding the tfstate container.",
-            ),
-            (
-                "tf_state_container",
-                "Terraform-state container",
-                "text",
-                True,
-                "tfstate",
-                "Storage account → Data storage → Containers → the private state container.",
-            ),
-            (
                 "runner_label",
                 "Private runner label",
                 "text",
@@ -562,9 +538,6 @@ _AZURE_ADVANCED_KEYS = frozenset(
         "acs_ramp_interval_seconds",
         # GitHub Actions / Terraform / repository internals.
         "runner_label",
-        "tf_state_resource_group",
-        "tf_state_storage_account",
-        "tf_state_container",
         "network_mode",
         "azure_deployment_client_id",
         # Key-vault and prior-key references (rotation/recovery only).
@@ -864,12 +837,6 @@ def validate_azure_deployment(
     ]
     if not recipient_domains or any(not hostname_pattern.fullmatch(domain) for domain in recipient_domains):
         errors["allowed_recipient_domains"] = "Enter at least one authorized mail domain, separated by commas."
-    if not re.fullmatch(r"[A-Za-z0-9_.()\-]{1,90}", values.get("tf_state_resource_group", "")):
-        errors["tf_state_resource_group"] = "Enter the 1–90 character Azure resource-group name."
-    if not re.fullmatch(r"[a-z0-9]{3,24}", values.get("tf_state_storage_account", "")):
-        errors["tf_state_storage_account"] = "Use the 3–24 character lowercase Azure Storage account name."
-    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?", values.get("tf_state_container", "")):
-        errors["tf_state_container"] = "Enter the lowercase blob container name."
     ciphertext_key_id_pattern = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
     active_ciphertext_key_id = values.get("ciphertext_active_key_id", "")
     if ciphertext_key_id_pattern.fullmatch(active_ciphertext_key_id) is None:
