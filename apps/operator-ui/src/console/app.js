@@ -1902,7 +1902,7 @@
           Environment: plan.review.environment,
           Network: plan.review.network_mode,
           Workflow: plan.workflow,
-          "Review digest": plan.review_digest
+          "Plan review": plan.review_digest ? "reviewed revision bound" : "unverified"
         },
         confirmLabel: retry ? "Retry rejected dispatch" : "Dispatch workflow",
         danger: true
@@ -1988,7 +1988,7 @@
         const valid = checkpoint && typeof checkpoint === "object" && checkpoint.sequence === index + 1 && typeof checkpoint.phase === "string" && /^[a-z][a-z0-9_]{1,47}$/.test(checkpoint.phase) && typeof checkpoint.recorded_at === "string" && checkpoint.recorded_at.length > 0 && checkpoint.recorded_at.length <= 64 && Number.isInteger(checkpoint.attempt) && checkpoint.attempt >= 0 && typeof checkpoint.digest === "string" && /^[0-9a-f]{64}$/.test(checkpoint.digest) && checkpoint.previous_digest === previousDigest;
         checkpointIntegrity = checkpointIntegrity && valid;
         if (valid) previousDigest = checkpoint.digest;
-        checkpoints.appendChild(el("li", { text: valid ? `Checkpoint ${checkpoint.sequence}: ${checkpoint.phase.replaceAll("_", " ")} \u2014 attempt ${checkpoint.attempt} at ${checkpoint.recorded_at}; digest ${checkpoint.digest.slice(0, 12)}\u2026` : `Checkpoint ${index + 1}: integrity unavailable; refresh required.` }));
+        checkpoints.appendChild(el("li", { text: valid ? `Checkpoint ${checkpoint.sequence}: ${checkpoint.phase.replaceAll("_", " ")} \u2014 attempt ${checkpoint.attempt} at ${checkpoint.recorded_at}` : `Checkpoint ${index + 1}: integrity unavailable; refresh required.` }));
       });
       if (!checkpointRows.length) checkpoints.appendChild(el("li", { text: "No server-validated checkpoints are available. Refresh before taking action." }));
       const checkpointPanel = el("section", { class: "card", "aria-label": "Deployment checkpoint integrity" }, [
@@ -2045,7 +2045,7 @@
         const confirmed = await confirmDialog({
           title: "Advance to the next Azure stage",
           message: "This creates a new reviewed plan from server-held non-secret configuration and verified evidence. It does not redispatch the completed plan.",
-          detail: { "Completed stage": plan.stage_status.deployment_stage, "Next stage": stageAction.next_stage, "Evidence digest": rawAcsEvidence.evidence_digest },
+          detail: { "Completed stage": plan.stage_status.deployment_stage, "Next stage": stageAction.next_stage, "Evidence": rawAcsEvidence.status === "verified" ? "verified" : "not verified" },
           confirmLabel: "Create next reviewed stage"
         });
         if (!confirmed) return;
@@ -2642,7 +2642,7 @@
         label: "Exact training lesson",
         required: true,
         ready: campaign.training_lesson?.ready === true,
-        detail: campaign.training_lesson?.ready ? `${campaign.training_lesson.title}, version ${campaign.training_lesson.bound_version}, content ${campaign.training_lesson.bound_content_digest.slice(0, 12)}\u2026. The server rechecks approval, version and content before scheduling and assignment.` : campaign.training_lesson?.error || "Choose an approved training lesson and review the campaign again.",
+        detail: campaign.training_lesson?.ready ? `${campaign.training_lesson.title}, version ${campaign.training_lesson.bound_version}. The server rechecks approval, version and content before scheduling and assignment.` : campaign.training_lesson?.error || "Choose an approved training lesson and review the campaign again.",
         destination: "campaigns"
       },
       {
@@ -3294,7 +3294,7 @@
             `Excluded: ${latestPreview.excluded_count} ${JSON.stringify(latestPreview.excluded_counts)}`,
             `Diff: +${latestPreview.diff.added} / -${latestPreview.diff.removed} / =${latestPreview.diff.unchanged}`,
             `Sample: ${latestPreview.sample_size || "all"}; seed: ${latestPreview.sample_seed || "none"}`,
-            `RoE: ${latestPreview.roe_id || "none"}`,
+            `RoE: ${latestPreview.roe_id ? "covered" : "none"}`,
             ...latestPreview.recipients.slice(0, 25).map((r) => `${r.mailbox} \xB7 ${r.department || "No department"}`),
             ...latestPreview.recipients.length > 25 ? [`\u2026 ${latestPreview.recipients.length - 25} more masked recipients`] : []
           ].join("\n");
@@ -5769,6 +5769,10 @@
   async function manageRecipientExclusions(recipient, campaigns, campaignsLoaded) {
     if (!hasCapability(CAPABILITY.MANAGE_EXCLUSIONS)) return;
     const reference = String(recipient.recipient_id || "").slice(0, 8);
+    const campaignScopeLabel = (campaignId) => {
+      const found = Array.isArray(campaigns) ? campaigns.find((c) => c.campaign_id === campaignId) : null;
+      return found ? found.title : `Campaign ${String(campaignId).slice(0, 8)}`;
+    };
     const { dlg, form } = dialogShell(
       `Exclusions for recipient ${reference}`,
       "This view uses the opaque recipient reference only. Active exclusions prevent future audience preparation in their configured scope."
@@ -5823,7 +5827,7 @@
         detail: {
           "Recipient reference": reference,
           "Exclusion type": EXCLUSION_TYPE_LABELS[exclusion.exclusion_type] || exclusion.exclusion_type,
-          Scope: exclusion.campaign_id ? `Campaign ${String(exclusion.campaign_id).slice(0, 8)}` : "Global"
+          Scope: exclusion.campaign_id ? campaignScopeLabel(exclusion.campaign_id) : "Global"
         },
         confirmLabel: "Revoke exclusion",
         danger: true
@@ -5846,7 +5850,7 @@
     }
     const rows = history.map((exclusion) => el("tr", {}, [
       el("td", { text: EXCLUSION_TYPE_LABELS[exclusion.exclusion_type] || exclusion.exclusion_type }),
-      el("td", { text: exclusion.campaign_id ? `Campaign ${String(exclusion.campaign_id).slice(0, 8)}` : "Global" }),
+      el("td", { text: exclusion.campaign_id ? campaignScopeLabel(exclusion.campaign_id) : "Global" }),
       el("td", { text: exclusion.active ? "Active" : exclusion.revoked_at ? "Revoked" : "Expired" }),
       el("td", { text: exclusion.expires_at ? formatInstant(exclusion.expires_at) : "No expiry" }),
       el("td", { text: exclusion.reason || "Reason recorded" }),
@@ -6385,7 +6389,7 @@
             class: r.is_test_account ? "btn" : "btn danger",
             type: "button",
             text: r.is_test_account ? "Remove designation" : "Designate test account",
-            "aria-label": `${r.is_test_account ? "Remove test-account designation from" : "Designate as test account"} recipient ${String(r.recipient_id || "").slice(0, 8)}`,
+            "aria-label": `${r.is_test_account ? "Remove test-account designation from" : "Designate as test account"} recipient ${recipientReference(r)}`,
             onclick: async (event) => {
               event.currentTarget.disabled = true;
               try {
@@ -6399,7 +6403,7 @@
             class: "btn",
             type: "button",
             text: "Manage exclusions",
-            "aria-label": `Manage exclusions for recipient ${String(r.recipient_id || "").slice(0, 8)}`,
+            "aria-label": `Manage exclusions for recipient ${recipientReference(r)}`,
             onclick: async (event) => {
               event.currentTarget.disabled = true;
               try {
@@ -6413,7 +6417,7 @@
             class: "btn",
             type: "button",
             text: "Manage suppressions",
-            "aria-label": `Manage delivery suppressions for recipient ${String(r.recipient_id || "").slice(0, 8)}`,
+            "aria-label": `Manage delivery suppressions for recipient ${recipientReference(r)}`,
             onclick: async (event) => {
               event.currentTarget.disabled = true;
               try {
@@ -6843,7 +6847,7 @@
             const confirmed = await confirmDialog({
               title: "Activate this threat evidence?",
               message: "Activation creates or retains one deterministic draft pattern-basis candidate for explicit downstream review. It never approves a pattern, selects recipients, or launches a campaign.",
-              detail: { "Source item": item.source_item_id, "Current review state": item.review_state },
+              detail: { "Threat": boundedMetadata(item.title, 255), "Current review state": item.review_state },
               confirmLabel: "Activate evidence"
             });
             if (!confirmed) return;
@@ -7535,8 +7539,7 @@
                   `/console/aggregate/candidates/${encodeURIComponent(candidate.aggregation_candidate_id)}/promote`,
                   { method: "POST" }
                 );
-                const patternId = result && result.campaign_pattern_id;
-                toast(patternId ? `Promoted \u2014 a campaign pattern was created (${patternId}).` : "Promoted \u2014 a campaign pattern was created.", "success");
+                toast("Promoted \u2014 a campaign pattern was created.", "success");
                 await loadCandidates();
               } catch (err) {
                 promoteError(err);
@@ -7572,7 +7575,7 @@
             "aria-label": `Review actions for candidate ${bounded(candidate.title, 120)}`
           }, actions));
         } else {
-          const verdict = state === "promoted" ? candidate.promoted_pattern_id ? `Promoted to campaign pattern ${bounded(candidate.promoted_pattern_id, 128)}.` : "Promoted." : state === "dismissed" ? "Dismissed. No pattern was created." : `Reviewed (${bounded(state, 64)}).`;
+          const verdict = state === "promoted" ? "Promoted to a campaign pattern." : state === "dismissed" ? "Dismissed. No pattern was created." : `Reviewed (${bounded(state, 64)}).`;
           children.push(el("p", { class: "field-help", text: `${verdict} Reviewed ${timeLabel(candidate.reviewed_at)}.` }));
         }
         return el("div", { class: "card" }, children);
