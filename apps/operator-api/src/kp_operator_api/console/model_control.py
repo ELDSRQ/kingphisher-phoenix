@@ -143,8 +143,8 @@ def model_control_swap(
         return ModelSwapResponse(ok=False, target=target, message=message)
 
     ok = completed.returncode == 0
-    message = (completed.stdout or completed.stderr or "").strip().splitlines()
-    tail = "\n".join(message[-8:]) if message else "(no output)"
+    lines = (completed.stdout or completed.stderr or "").strip().splitlines()
+    tail = "\n".join(lines[-8:]) if lines else "(no output)"
     if ok:
         summary = f"model swap to {target!r} completed"
     else:
