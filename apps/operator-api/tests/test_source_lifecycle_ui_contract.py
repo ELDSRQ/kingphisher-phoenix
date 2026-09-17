@@ -70,7 +70,10 @@ def test_source_terms_state_and_bounded_metadata_are_visible() -> None:
     for field in ("terms_reference", "terms_hash", "reviewed_at", "next_review_at"):
         assert f"acknowledgement.{field}" in SOURCE_VIEW
     assert "boundedMetadata(acknowledgement.terms_reference, 2048)" in SOURCE_VIEW
-    assert "boundedMetadata(acknowledgement.terms_hash, 64)" in SOURCE_VIEW
+    # WS1: the terms hash is no longer a primary label; a human sees "Recorded",
+    # and the exact SHA-256 remains reachable as a hover tooltip for auditors.
+    assert 'acknowledgement.terms_hash ? "Recorded" : "Missing"' in SOURCE_VIEW
+    assert "`SHA-256 ${acknowledgement.terms_hash}`" in SOURCE_VIEW
     assert "Terms state unavailable. Enable and Ingest remain disabled." in SOURCE_VIEW
 
 

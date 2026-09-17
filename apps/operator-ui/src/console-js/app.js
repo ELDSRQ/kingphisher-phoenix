@@ -137,6 +137,34 @@ function recipientPickerLabel(recipient) {
   return status ? `${department} · ${reference} · ${status}` : `${department} · ${reference}`;
 }
 
+// WS1 console humanization: integrity digests and opaque identifiers are
+// evidence, not labels. A human reads the summary; the raw value stays
+// reachable behind a collapsed "Advanced" block so auditors and the review
+// workflow can still verify exact digests without the console pushing 64-hex
+// strings into every primary view.
+function diagnosticBlock(label, entries) {
+  const rows = Object.entries(entries).filter(([, value]) => value !== null && value !== undefined && value !== "");
+  if (!rows.length) return null;
+  const items = [];
+  for (const [key, value] of rows) {
+    items.push(el("dt", { text: key }), el("dd", { class: "mono", text: String(value) }));
+  }
+  return el("details", { class: "modal-diagnostic" }, [
+    el("summary", { text: label }),
+    el("dl", { class: "modal-detail" }, items),
+  ]);
+}
+
+function shortRef(id) {
+  const s = String(id || "");
+  return s.length > 8 ? `${s.slice(0, 8)}…` : s;
+}
+
+function auditObjectLabel(type) {
+  const s = String(type || "");
+  return s ? s.replace(/_/g, " ") : "object";
+}
+
 async function boundedCsvBlob(response) {
   const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
   if (contentType !== "text/csv") throw new Error("Export returned an unexpected content type");
@@ -1671,7 +1699,7 @@ views["azure-deployment"] = async (root) => {
         Environment: plan.review.environment,
         Network: plan.review.network_mode,
         Workflow: plan.workflow,
-        "Review digest": plan.review_digest,
+        "Plan review": plan.review_digest ? "reviewed revision bound" : "unverified",
       },
       confirmLabel: retry ? "Retry rejected dispatch" : "Dispatch workflow",
       danger: true,
@@ -1835,7 +1863,7 @@ views["azure-deployment"] = async (root) => {
       checkpointIntegrity = checkpointIntegrity && valid;
       if (valid) previousDigest = checkpoint.digest;
       checkpoints.appendChild(el("li", { text: valid
-        ? `Checkpoint ${checkpoint.sequence}: ${checkpoint.phase.replaceAll("_", " ")} — attempt ${checkpoint.attempt} at ${checkpoint.recorded_at}; digest ${checkpoint.digest.slice(0, 12)}…`
+        ? `Checkpoint ${checkpoint.sequence}: ${checkpoint.phase.replaceAll("_", " ")} — attempt ${checkpoint.attempt} at ${checkpoint.recorded_at}`
         : `Checkpoint ${index + 1}: integrity unavailable; refresh required.` }));
     });
     if (!checkpointRows.length) checkpoints.appendChild(el("li", { text: "No server-validated checkpoints are available. Refresh before taking action." }));
@@ -1886,7 +1914,7 @@ views["azure-deployment"] = async (root) => {
       const confirmed = await confirmDialog({
         title: "Advance to the next Azure stage",
         message: "This creates a new reviewed plan from server-held non-secret configuration and verified evidence. It does not redispatch the completed plan.",
-        detail: { "Completed stage": plan.stage_status.deployment_stage, "Next stage": stageAction.next_stage, "Evidence digest": rawAcsEvidence.evidence_digest },
+        detail: { "Completed stage": plan.stage_status.deployment_stage, "Next stage": stageAction.next_stage, "Evidence": rawAcsEvidence.status === "verified" ? "verified" : "not verified" },
         confirmLabel: "Create next reviewed stage",
       });
       if (!confirmed) return;
@@ -2446,7 +2474,7 @@ function readinessForCampaign(campaign, context, enforcing) {
       key: "lesson", label: "Exact training lesson", required: true,
       ready: campaign.training_lesson?.ready === true,
       detail: campaign.training_lesson?.ready
-        ? `${campaign.training_lesson.title}, version ${campaign.training_lesson.bound_version}, content ${campaign.training_lesson.bound_content_digest.slice(0, 12)}…. The server rechecks approval, version and content before scheduling and assignment.`
+        ? `${campaign.training_lesson.title}, version ${campaign.training_lesson.bound_version}. The server rechecks approval, version and content before scheduling and assignment.`
         : campaign.training_lesson?.error || "Choose an approved training lesson and review the campaign again.",
       destination: "campaigns",
     },
@@ -3057,7 +3085,7 @@ views.campaigns = async (root) => {
           `Excluded: ${latestPreview.excluded_count} ${JSON.stringify(latestPreview.excluded_counts)}`,
           `Diff: +${latestPreview.diff.added} / -${latestPreview.diff.removed} / =${latestPreview.diff.unchanged}`,
           `Sample: ${latestPreview.sample_size || "all"}; seed: ${latestPreview.sample_seed || "none"}`,
-          `RoE: ${latestPreview.roe_id || "none"}`,
+          `RoE: ${latestPreview.roe_id ? "covered" : "none"}`,
           ...latestPreview.recipients.slice(0, 25).map((r) => `${r.mailbox} · ${r.department || "No department"}`),
           ...(latestPreview.recipients.length > 25 ? [`… ${latestPreview.recipients.length - 25} more masked recipients`] : []),
         ].join("\n");
@@ -3098,12 +3126,15 @@ views.campaigns = async (root) => {
       el("dt", { text: "Binding" }), el("dd", { text: lesson.ready ? "Valid" : "Blocked" }),
       el("dt", { text: "Lesson" }), el("dd", { text: lesson.title || "Missing" }),
       el("dt", { text: "Version" }), el("dd", { text: lesson.bound_version || "Missing" }),
-      el("dt", { text: "Content digest" }), el("dd", { class: "mono", text: lesson.bound_content_digest || "Missing" }),
-      el("dt", { text: "Campaign manifest" }), el("dd", { class: "mono", text: review.manifest_hash || "Missing" }),
-      el("dt", { text: "Launch review" }), el("dd", { class: "mono", text: review.launch_review?.review_manifest_hash || "Not bound" }),
       el("dt", { text: "Canary cohort" }), el("dd", { text: `${review.launch_review?.canary_recipient_count || 0} locked test account(s)` }),
       el("dt", { text: "Launch phase" }), el("dd", { text: review.launch_review?.state || "unreviewed" }),
     ]));
+    const reviewDigests = diagnosticBlock("Advanced: integrity digests", {
+      "Content digest": lesson.bound_content_digest,
+      "Campaign manifest": review.manifest_hash,
+      "Launch review": review.launch_review?.review_manifest_hash,
+    });
+    if (reviewDigests) reviewForm.appendChild(reviewDigests);
     if (!lesson.ready) reviewForm.appendChild(el("div", {
       class: "modal-warn", role: "alert", text: lesson.error || "Training lesson binding is invalid.",
     }));
@@ -3230,7 +3261,7 @@ views.campaigns = async (root) => {
           ? `${c.training_lesson.title} · v${c.training_lesson.bound_version}`
           : "reconfiguration required",
         title: c.training_lesson?.ready
-          ? `Content ${c.training_lesson.bound_content_digest}`
+          ? `${c.training_lesson.title} · v${c.training_lesson.bound_version} — content verified against the review manifest`
           : (c.training_lesson?.error || "No exact training lesson is bound."),
       })]),
       el("td", {}, [el("span", {
@@ -3408,7 +3439,7 @@ views.campaigns = async (root) => {
       }
       const values = await promptDialog({
         title: `${approving ? "Approve" : "Reject"}: ${approvalType} review`,
-        description: `Campaign "${campaign.title}". Exact lesson: "${lesson.title}", version ${lesson.bound_version}, content digest ${lesson.bound_content_digest}. Use Review campaign to read the complete lesson. This decision is recorded in the audit chain against your identity.`,
+        description: `Campaign "${campaign.title}". Exact lesson: "${lesson.title}", version ${lesson.bound_version}. Use Review campaign to read the complete lesson. This decision is recorded in the audit chain against your identity.`,
         fields: [
           { name: "rationale", label: "Rationale", type: "textarea", required: true,
             placeholder: approving ? "Why this campaign is safe to run" : "What must change before this can run",
@@ -3469,7 +3500,7 @@ views.campaigns = async (root) => {
           "Frozen audience": `version ${campaign.audience_version}`,
           "Approval policy": enforcing ? "security + privacy" : "single-admin development",
           "Training lesson": campaign.training_lesson?.ready
-            ? `${campaign.training_lesson.title} · version ${campaign.training_lesson.bound_version} · ${campaign.training_lesson.bound_content_digest}`
+            ? `${campaign.training_lesson.title} · version ${campaign.training_lesson.bound_version}`
             : "Invalid binding — scheduling will fail closed",
           Start: formatInstant(campaign.schedule_start),
           End: formatInstant(campaign.schedule_end),
@@ -3501,7 +3532,9 @@ views.campaigns = async (root) => {
         detail: {
           "Campaign start": formatInstant(campaign.schedule_start),
           Provider: campaign.launch_gate?.provider || "Evidence unavailable",
-          "Canary evidence": campaign.launch_gate?.canary_evidence_hash || "Missing",
+          "Canary evidence": campaign.launch_gate?.canary_evidence_hash
+            ? "Provider-accepted and bound to this review"
+            : "Missing",
         },
         confirmLabel: "Publish exact audience",
       });
@@ -3669,7 +3702,7 @@ views.programs = async (root) => {
     try { detail = await api(`/programs/${program.campaign_program_id}`); }
     catch (e) { toast(e.message, "error"); return; }
     const { dlg, form } = dialogShell(
-      `Program ${program.campaign_program_id.slice(0, 8)} timeline`,
+      `Timeline: ${program.source_campaign_title || "campaign program"}`,
       "Times below are exact UTC instants. Campaign IDs and lifecycle states are shown; recipient and message content are not included.",
     );
     form.appendChild(el("p", {
@@ -3678,12 +3711,15 @@ views.programs = async (root) => {
     }));
     form.appendChild(el("table", { class: "report-table" }, [
       el("thead", {}, [el("tr", {}, [
-        el("th", { text: "Run" }), el("th", { text: "Campaign ID" }), el("th", { text: "State" }),
+        el("th", { text: "Run" }), el("th", { text: "Campaign" }), el("th", { text: "State" }),
         el("th", { text: "Start UTC" }), el("th", { text: "End UTC" }),
       ])]),
       el("tbody", {}, detail.occurrences.map((occurrence) => el("tr", {}, [
         el("td", { class: "num", text: String(occurrence.occurrence_number) }),
-        el("td", { class: "mono", text: occurrence.campaign_id }),
+        el("td", {
+          text: occurrence.campaign_title || shortRef(occurrence.campaign_id),
+          title: occurrence.campaign_title ? occurrence.campaign_id : undefined,
+        }),
         el("td", { text: occurrence.state }),
         el("td", { class: "mono", text: formatUtcInstant(occurrence.schedule_start) }),
         el("td", { class: "mono", text: formatUtcInstant(occurrence.schedule_end) }),
@@ -3739,7 +3775,10 @@ views.programs = async (root) => {
         onclick: changeState(program, program.state === "active" ? "pause" : "resume"),
       }));
       return el("tr", {}, [
-        el("td", { class: "mono", text: program.campaign_program_id }),
+        el("td", {
+          text: program.source_campaign_title || shortRef(program.campaign_program_id),
+          title: program.source_campaign_title ? `Program ${program.campaign_program_id}` : undefined,
+        }),
         el("td", {}, [el("span", {
           class: `pill ${program.complete ? "ok" : program.state === "active" ? "ok" : "down"}`,
           text: program.complete ? "complete" : program.state,
@@ -3953,7 +3992,7 @@ views.sending = async (root) => {
           target_domains: targets,
         }),
       });
-      toast(`RoE signed (${roe.terms_hash.slice(0, 12)}...)`, "success");
+      toast("RoE signed", "success");
       location.reload();
     } catch (err) { toast(err.message, "error"); }
   }
@@ -5389,6 +5428,10 @@ async function manageRecipientSuppression(recipient) {
 async function manageRecipientExclusions(recipient, campaigns, campaignsLoaded) {
   if (!hasCapability(CAPABILITY.MANAGE_EXCLUSIONS)) return;
   const reference = String(recipient.recipient_id || "").slice(0, 8);
+  const campaignScopeLabel = (campaignId) => {
+    const found = Array.isArray(campaigns) ? campaigns.find((c) => c.campaign_id === campaignId) : null;
+    return found ? found.title : `Campaign ${String(campaignId).slice(0, 8)}`;
+  };
   const { dlg, form } = dialogShell(
     `Exclusions for recipient ${reference}`,
     "This view uses the opaque recipient reference only. Active exclusions prevent future audience preparation in their configured scope.",
@@ -5440,7 +5483,7 @@ async function manageRecipientExclusions(recipient, campaigns, campaignsLoaded) 
       detail: {
         "Recipient reference": reference,
         "Exclusion type": EXCLUSION_TYPE_LABELS[exclusion.exclusion_type] || exclusion.exclusion_type,
-        Scope: exclusion.campaign_id ? `Campaign ${String(exclusion.campaign_id).slice(0, 8)}` : "Global",
+        Scope: exclusion.campaign_id ? campaignScopeLabel(exclusion.campaign_id) : "Global",
       },
       confirmLabel: "Revoke exclusion",
       danger: true,
@@ -5464,7 +5507,7 @@ async function manageRecipientExclusions(recipient, campaigns, campaignsLoaded) 
 
   const rows = history.map((exclusion) => el("tr", {}, [
     el("td", { text: EXCLUSION_TYPE_LABELS[exclusion.exclusion_type] || exclusion.exclusion_type }),
-    el("td", { text: exclusion.campaign_id ? `Campaign ${String(exclusion.campaign_id).slice(0, 8)}` : "Global" }),
+    el("td", { text: exclusion.campaign_id ? campaignScopeLabel(exclusion.campaign_id) : "Global" }),
     el("td", { text: exclusion.active ? "Active" : (exclusion.revoked_at ? "Revoked" : "Expired") }),
     el("td", { text: exclusion.expires_at ? formatInstant(exclusion.expires_at) : "No expiry" }),
     el("td", { text: exclusion.reason || "Reason recorded" }),
@@ -5954,7 +5997,7 @@ views.recipients = async (root) => {
         class: r.is_test_account ? "btn" : "btn danger",
         type: "button",
         text: r.is_test_account ? "Remove designation" : "Designate test account",
-        "aria-label": `${r.is_test_account ? "Remove test-account designation from" : "Designate as test account"} recipient ${String(r.recipient_id || "").slice(0, 8)}`,
+        "aria-label": `${r.is_test_account ? "Remove test-account designation from" : "Designate as test account"} recipient ${recipientReference(r)}`,
         onclick: async (event) => {
           event.currentTarget.disabled = true;
           try { await changeTestAccountDesignation(r); }
@@ -5963,7 +6006,7 @@ views.recipients = async (root) => {
         })] : []),
         ...(canManageExclusions ? [el("button", {
           class: "btn", type: "button", text: "Manage exclusions",
-          "aria-label": `Manage exclusions for recipient ${String(r.recipient_id || "").slice(0, 8)}`,
+          "aria-label": `Manage exclusions for recipient ${recipientReference(r)}`,
           onclick: async (event) => {
             event.currentTarget.disabled = true;
             try { await manageRecipientExclusions(r, campaigns, campaignsLoaded); }
@@ -5972,7 +6015,7 @@ views.recipients = async (root) => {
         })] : []),
         ...(canManageSuppressions ? [el("button", {
           class: "btn", type: "button", text: "Manage suppressions",
-          "aria-label": `Manage delivery suppressions for recipient ${String(r.recipient_id || "").slice(0, 8)}`,
+          "aria-label": `Manage delivery suppressions for recipient ${recipientReference(r)}`,
           onclick: async (event) => {
             event.currentTarget.disabled = true;
             try { await manageRecipientSuppression(r); }
@@ -6424,7 +6467,7 @@ views.sources = async (root) => {
           const confirmed = await confirmDialog({
             title: "Activate this threat evidence?",
             message: "Activation creates or retains one deterministic draft pattern-basis candidate for explicit downstream review. It never approves a pattern, selects recipients, or launches a campaign.",
-            detail: { "Source item": item.source_item_id, "Current review state": item.review_state },
+            detail: { "Threat": boundedMetadata(item.title, 255), "Current review state": item.review_state },
             confirmLabel: "Activate evidence",
           });
           if (!confirmed) return;
@@ -6498,7 +6541,6 @@ views.sources = async (root) => {
           el("strong", { text: boundedMetadata(item.title, 255) }),
           el("p", { text: `Publisher: ${boundedMetadata(item.publisher, 255)}` }),
           el("p", { text: `Citation text: ${boundedMetadata(item.citation, 2048)}` }),
-          el("p", { class: "mono", text: `Source item: ${item.source_item_id}` }),
         ]),
         el("td", {}, [
           el("p", { text: `Actor: ${boundedMetadata(item.claimed_actor, 255)}` }),
@@ -6528,7 +6570,7 @@ views.sources = async (root) => {
         el("td", {}, [
           el("span", { class: `pill ${item.review_state === "active" ? "ok" : "down"}`, text: item.review_state }),
           item.review_rationale ? el("p", { text: `Rationale: ${boundedMetadata(item.review_rationale, 256)}` }) : null,
-          item.duplicate_of ? el("p", { class: "mono", text: `Duplicate of: ${item.duplicate_of}` }) : null,
+          item.duplicate_of ? el("p", { class: "field-help", text: "Marked as a duplicate of a reviewed threat" }) : null,
         ].filter(Boolean)),
         el("td", {}, [el("div", { class: "btn-row", role: "group", "aria-label": `Curation actions for ${boundedMetadata(item.title, 120)}` }, actions)]),
       ]);
@@ -6921,8 +6963,8 @@ views.sources = async (root) => {
             ? el("dl", { class: "modal-detail" }, [
               el("dt", { text: "Reference" }),
               el("dd", { text: boundedMetadata(acknowledgement.terms_reference, 2048) }),
-              el("dt", { text: "SHA-256" }),
-              el("dd", { class: "mono", text: boundedMetadata(acknowledgement.terms_hash, 64) }),
+              el("dt", { text: "Verification" }),
+              el("dd", { text: acknowledgement.terms_hash ? "Recorded" : "Missing", title: acknowledgement.terms_hash ? `SHA-256 ${acknowledgement.terms_hash}` : undefined }),
               el("dt", { text: "Reviewed" }),
               el("dd", { text: timeLabel(acknowledgement.reviewed_at) }),
               el("dt", { text: "Next review" }),
@@ -7090,10 +7132,7 @@ views.aggregation = async (root) => {
                 `/console/aggregate/candidates/${encodeURIComponent(candidate.aggregation_candidate_id)}/promote`,
                 { method: "POST" },
               );
-              const patternId = result && result.campaign_pattern_id;
-              toast(patternId
-                ? `Promoted — a campaign pattern was created (${patternId}).`
-                : "Promoted — a campaign pattern was created.", "success");
+              toast("Promoted — a campaign pattern was created.", "success");
               await loadCandidates();
             } catch (err) { promoteError(err); event.currentTarget.disabled = false; }
           },
@@ -7121,9 +7160,7 @@ views.aggregation = async (root) => {
         }, actions));
       } else {
         const verdict = state === "promoted"
-          ? candidate.promoted_pattern_id
-            ? `Promoted to campaign pattern ${bounded(candidate.promoted_pattern_id, 128)}.`
-            : "Promoted."
+          ? "Promoted to a campaign pattern."
           : state === "dismissed"
             ? "Dismissed. No pattern was created."
             : `Reviewed (${bounded(state, 64)}).`;
@@ -7482,7 +7519,11 @@ views.audit = async (root) => {
       el("td", { class: "mono", text: String(ev.occurred_at).slice(0, 19) }),
       el("td", { text: ev.actor }),
       el("td", { text: ev.action }),
-      el("td", { class: "mono", text: ev.object_id }),
+      el("td", {}, [
+        el("span", { text: auditObjectLabel(ev.object_type) }),
+        " · ",
+        el("span", { class: "mono", text: shortRef(ev.object_id), title: ev.object_id }),
+      ]),
     ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 4, text: "No audit events yet." })])]),
   ])]));
 };
