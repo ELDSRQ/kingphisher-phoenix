@@ -392,6 +392,18 @@
     const status = recipient && recipient.status;
     return status ? `${department} \xB7 ${reference} \xB7 ${status}` : `${department} \xB7 ${reference}`;
   }
+  function diagnosticBlock(label, entries) {
+    const rows = Object.entries(entries).filter(([, value]) => value !== null && value !== void 0 && value !== "");
+    if (!rows.length) return null;
+    const items = [];
+    for (const [key, value] of rows) {
+      items.push(el("dt", { text: key }), el("dd", { class: "mono", text: String(value) }));
+    }
+    return el("details", { class: "modal-diagnostic" }, [
+      el("summary", { text: label }),
+      el("dl", { class: "modal-detail" }, items)
+    ]);
+  }
   async function boundedCsvBlob(response) {
     const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
     if (contentType !== "text/csv") throw new Error("Export returned an unexpected content type");
@@ -3322,17 +3334,17 @@
         el("dd", { text: lesson.title || "Missing" }),
         el("dt", { text: "Version" }),
         el("dd", { text: lesson.bound_version || "Missing" }),
-        el("dt", { text: "Content digest" }),
-        el("dd", { class: "mono", text: lesson.bound_content_digest || "Missing" }),
-        el("dt", { text: "Campaign manifest" }),
-        el("dd", { class: "mono", text: review.manifest_hash || "Missing" }),
-        el("dt", { text: "Launch review" }),
-        el("dd", { class: "mono", text: review.launch_review?.review_manifest_hash || "Not bound" }),
         el("dt", { text: "Canary cohort" }),
         el("dd", { text: `${review.launch_review?.canary_recipient_count || 0} locked test account(s)` }),
         el("dt", { text: "Launch phase" }),
         el("dd", { text: review.launch_review?.state || "unreviewed" })
       ]));
+      const reviewDigests = diagnosticBlock("Advanced: integrity digests", {
+        "Content digest": lesson.bound_content_digest,
+        "Campaign manifest": review.manifest_hash,
+        "Launch review": review.launch_review?.review_manifest_hash
+      });
+      if (reviewDigests) reviewForm.appendChild(reviewDigests);
       if (!lesson.ready) reviewForm.appendChild(el("div", {
         class: "modal-warn",
         role: "alert",
@@ -3475,7 +3487,7 @@
           el("td", {}, [el("span", {
             class: `pill ${c.training_lesson?.ready ? "ok" : "down"}`,
             text: c.training_lesson?.ready ? `${c.training_lesson.title} \xB7 v${c.training_lesson.bound_version}` : "reconfiguration required",
-            title: c.training_lesson?.ready ? `Content ${c.training_lesson.bound_content_digest}` : c.training_lesson?.error || "No exact training lesson is bound."
+            title: c.training_lesson?.ready ? `${c.training_lesson.title} \xB7 v${c.training_lesson.bound_version} \u2014 content verified against the review manifest` : c.training_lesson?.error || "No exact training lesson is bound."
           })]),
           el("td", {}, [el("span", {
             class: `pill ${c.roe_bound ? "ok" : "down"}`,
@@ -3665,7 +3677,7 @@
         }
         const values = await promptDialog({
           title: `${approving ? "Approve" : "Reject"}: ${approvalType} review`,
-          description: `Campaign "${campaign.title}". Exact lesson: "${lesson.title}", version ${lesson.bound_version}, content digest ${lesson.bound_content_digest}. Use Review campaign to read the complete lesson. This decision is recorded in the audit chain against your identity.`,
+          description: `Campaign "${campaign.title}". Exact lesson: "${lesson.title}", version ${lesson.bound_version}. Use Review campaign to read the complete lesson. This decision is recorded in the audit chain against your identity.`,
           fields: [
             {
               name: "rationale",
@@ -3737,7 +3749,7 @@
           detail: {
             "Frozen audience": `version ${campaign.audience_version}`,
             "Approval policy": enforcing ? "security + privacy" : "single-admin development",
-            "Training lesson": campaign.training_lesson?.ready ? `${campaign.training_lesson.title} \xB7 version ${campaign.training_lesson.bound_version} \xB7 ${campaign.training_lesson.bound_content_digest}` : "Invalid binding \u2014 scheduling will fail closed",
+            "Training lesson": campaign.training_lesson?.ready ? `${campaign.training_lesson.title} \xB7 version ${campaign.training_lesson.bound_version}` : "Invalid binding \u2014 scheduling will fail closed",
             Start: formatInstant(campaign.schedule_start),
             End: formatInstant(campaign.schedule_end),
             "Time zone": browserTimeZone(),
@@ -3768,7 +3780,7 @@
           detail: {
             "Campaign start": formatInstant(campaign.schedule_start),
             Provider: campaign.launch_gate?.provider || "Evidence unavailable",
-            "Canary evidence": campaign.launch_gate?.canary_evidence_hash || "Missing"
+            "Canary evidence": campaign.launch_gate?.canary_evidence_hash ? "Provider-accepted and bound to this review" : "Missing"
           },
           confirmLabel: "Publish exact audience"
         });
@@ -4229,7 +4241,7 @@
             target_domains: targets
           })
         });
-        toast(`RoE signed (${roe.terms_hash.slice(0, 12)}...)`, "success");
+        toast("RoE signed", "success");
         location.reload();
       } catch (err) {
         toast(err.message, "error");
@@ -6909,8 +6921,7 @@
           el("td", {}, [
             el("strong", { text: boundedMetadata(item.title, 255) }),
             el("p", { text: `Publisher: ${boundedMetadata(item.publisher, 255)}` }),
-            el("p", { text: `Citation text: ${boundedMetadata(item.citation, 2048)}` }),
-            el("p", { class: "mono", text: `Source item: ${item.source_item_id}` })
+            el("p", { text: `Citation text: ${boundedMetadata(item.citation, 2048)}` })
           ]),
           el("td", {}, [
             el("p", { text: `Actor: ${boundedMetadata(item.claimed_actor, 255)}` }),
@@ -6940,7 +6951,7 @@
           el("td", {}, [
             el("span", { class: `pill ${item.review_state === "active" ? "ok" : "down"}`, text: item.review_state }),
             item.review_rationale ? el("p", { text: `Rationale: ${boundedMetadata(item.review_rationale, 256)}` }) : null,
-            item.duplicate_of ? el("p", { class: "mono", text: `Duplicate of: ${item.duplicate_of}` }) : null
+            item.duplicate_of ? el("p", { class: "field-help", text: "Marked as a duplicate of a reviewed threat" }) : null
           ].filter(Boolean)),
           el("td", {}, [el("div", { class: "btn-row", role: "group", "aria-label": `Curation actions for ${boundedMetadata(item.title, 120)}` }, actions)])
         ]);
@@ -7351,8 +7362,8 @@
           governance.unavailable ? el("p", { class: "field-help", text: "Terms state unavailable. Enable and Ingest remain disabled." }) : acknowledgement ? el("dl", { class: "modal-detail" }, [
             el("dt", { text: "Reference" }),
             el("dd", { text: boundedMetadata(acknowledgement.terms_reference, 2048) }),
-            el("dt", { text: "SHA-256" }),
-            el("dd", { class: "mono", text: boundedMetadata(acknowledgement.terms_hash, 64) }),
+            el("dt", { text: "Verification" }),
+            el("dd", { text: acknowledgement.terms_hash ? "Recorded" : "Missing", title: acknowledgement.terms_hash ? `SHA-256 ${acknowledgement.terms_hash}` : void 0 }),
             el("dt", { text: "Reviewed" }),
             el("dd", { text: timeLabel(acknowledgement.reviewed_at) }),
             el("dt", { text: "Next review" }),
