@@ -30,6 +30,7 @@ from kp_operator_api.connection_probes import (
     _connection_test_result,
     _credentials_for_destination,
     _microsoft365_probe_url,
+    _parse_smtp_address,
     _probe_http,
     _probe_smtp,
     _probe_webhook,
@@ -755,6 +756,44 @@ async def assist_onboarding(
     )
 
 
+def _infer_smtp_tls(desired: dict[str, str], saved: dict[str, str]) -> None:
+    """Derive SMTP TLS from the relay port when the operator left it on "Automatic".
+
+    The field help already states the rule (587 uses STARTTLS, 465 uses implicit
+    TLS); this applies it so a non-technical operator does not have to know it.
+    An explicit choice (STARTTLS true/false or SSL true) is always respected.
+    """
+
+    provider = (desired.get("KP_WORKER_EMAIL_PROVIDER") or saved.get("KP_WORKER_EMAIL_PROVIDER", "")).strip()
+    if provider != "smtp":
+        return
+    address = (desired.get("KP_WORKER_SMTP_ADDRESS") or saved.get("KP_WORKER_SMTP_ADDRESS", "")).strip()
+    if not address:
+        return
+    try:
+        _host, port = _parse_smtp_address(address)
+    except ValueError:
+        return
+    if port is None:
+        return
+    starttls = (
+        desired["KP_WORKER_SMTP_STARTTLS"].strip().lower()
+        if "KP_WORKER_SMTP_STARTTLS" in desired
+        else saved.get("KP_WORKER_SMTP_STARTTLS", "").strip().lower()
+    )
+    ssl = (
+        desired["KP_WORKER_SMTP_SSL"].strip().lower()
+        if "KP_WORKER_SMTP_SSL" in desired
+        else saved.get("KP_WORKER_SMTP_SSL", "").strip().lower()
+    )
+    if starttls in {"true", "false"} or ssl == "true":
+        return
+    if port == 587:
+        desired["KP_WORKER_SMTP_STARTTLS"] = "true"
+    elif port == 465:
+        desired["KP_WORKER_SMTP_SSL"] = "true"
+
+
 def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Principal) -> list[str]:
     forbidden = set(body.values) - _ALLOWED_KEYS
     if forbidden:
@@ -770,6 +809,7 @@ def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Prin
     for source, target in mirrors.items():
         if source in desired and target not in desired:
             desired[target] = desired[source]
+    _infer_smtp_tls(desired, _env_values(_env_path(request)))
     if body.completed is not None:
         desired["OPERATOR_API_ONBOARDING_COMPLETED"] = str(body.completed).lower()
 

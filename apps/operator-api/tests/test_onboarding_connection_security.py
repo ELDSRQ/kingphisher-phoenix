@@ -821,3 +821,61 @@ def test_acs_connection_test_enforces_exact_endpoint_before_probe(
 
     assert accepted["outcome"] == "reachable_unverified"
     assert calls == ["https://name.communication.azure.com"]
+
+
+def test_smtp_tls_is_inferred_from_port_only_when_automatic() -> None:
+    """WS2: derive SMTP TLS from the relay port unless the operator chose explicitly."""
+    infer = console_onboarding_module._infer_smtp_tls
+
+    def run(desired: dict[str, str], saved: dict[str, str] | None = None) -> dict[str, str]:
+        d = dict(desired)
+        infer(d, dict(saved or {}))
+        return d
+
+    # Port 587 derives STARTTLS when the operator left TLS on "Automatic".
+    assert (
+        run({"KP_WORKER_EMAIL_PROVIDER": "smtp", "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:587"})[
+            "KP_WORKER_SMTP_STARTTLS"
+        ]
+        == "true"
+    )
+    # Port 465 derives implicit TLS.
+    assert (
+        run({"KP_WORKER_EMAIL_PROVIDER": "smtp", "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:465"})[
+            "KP_WORKER_SMTP_SSL"
+        ]
+        == "true"
+    )
+    # An explicit "Do not use STARTTLS" is respected, even on 587.
+    assert (
+        run(
+            {
+                "KP_WORKER_EMAIL_PROVIDER": "smtp",
+                "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:587",
+                "KP_WORKER_SMTP_STARTTLS": "false",
+            }
+        )["KP_WORKER_SMTP_STARTTLS"]
+        == "false"
+    )
+    # An explicit "Use implicit TLS" is respected (and blocks STARTTLS inference on 587).
+    explicit_ssl = run(
+        {
+            "KP_WORKER_EMAIL_PROVIDER": "smtp",
+            "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:587",
+            "KP_WORKER_SMTP_SSL": "true",
+        }
+    )
+    assert explicit_ssl["KP_WORKER_SMTP_SSL"] == "true"
+    assert "KP_WORKER_SMTP_STARTTLS" not in explicit_ssl
+    # A non-SMTP provider is left alone.
+    assert run(
+        {"KP_WORKER_EMAIL_PROVIDER": "azure_communication_services", "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:587"}
+    ) == {
+        "KP_WORKER_EMAIL_PROVIDER": "azure_communication_services",
+        "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:587",
+    }
+    # An unrecognized port infers nothing.
+    assert run({"KP_WORKER_EMAIL_PROVIDER": "smtp", "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:2525"}) == {
+        "KP_WORKER_EMAIL_PROVIDER": "smtp",
+        "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:2525",
+    }
