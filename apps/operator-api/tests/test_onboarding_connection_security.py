@@ -879,3 +879,40 @@ def test_smtp_tls_is_inferred_from_port_only_when_automatic() -> None:
         "KP_WORKER_EMAIL_PROVIDER": "smtp",
         "KP_WORKER_SMTP_ADDRESS": "smtp.example.com:2525",
     }
+
+
+def test_oidc_issuer_is_derived_from_microsoft_tenant_id() -> None:
+    """WS2: derive the Microsoft Entra issuer from the tenant ID when unset."""
+    infer = console_onboarding_module._infer_oidc_issuer
+
+    def run(desired: dict[str, str], saved: dict[str, str] | None = None) -> dict[str, str]:
+        d = dict(desired)
+        infer(d, dict(saved or {}))
+        return d
+
+    tenant = "72f988bf-86f1-41af-91ab-2d7cd011db47"
+    expected = f"https://login.microsoftonline.com/{tenant}/v2.0"
+    # OIDC mode + Microsoft tenant + empty issuer -> derived.
+    assert (
+        run({"OPERATOR_API_OIDC_MODE": "oidc", "KP_WORKER_MICROSOFT_TENANT_ID": tenant})["OPERATOR_API_OIDC_ISSUER"]
+        == expected
+    )
+    # Development mode is untouched.
+    assert "OPERATOR_API_OIDC_ISSUER" not in run(
+        {"OPERATOR_API_OIDC_MODE": "dev", "KP_WORKER_MICROSOFT_TENANT_ID": tenant}
+    )
+    # A non-UUID tenant ID is untouched.
+    assert "OPERATOR_API_OIDC_ISSUER" not in run(
+        {"OPERATOR_API_OIDC_MODE": "oidc", "KP_WORKER_MICROSOFT_TENANT_ID": "not-a-tenant"}
+    )
+    # An existing issuer is preserved.
+    assert (
+        run(
+            {
+                "OPERATOR_API_OIDC_MODE": "oidc",
+                "KP_WORKER_MICROSOFT_TENANT_ID": tenant,
+                "OPERATOR_API_OIDC_ISSUER": "https://okta.example/issuer",
+            }
+        )["OPERATOR_API_OIDC_ISSUER"]
+        == "https://okta.example/issuer"
+    )

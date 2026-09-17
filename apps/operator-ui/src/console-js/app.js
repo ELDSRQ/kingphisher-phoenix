@@ -954,7 +954,7 @@ views.login = async (root) => {
       }
     }
   };
-  const hint = el("p", { id: "login-hint", class: "login-hint", hidden: true, text: "Local development uses KP_CONSOLE_PASSWORD from .env. Managed Azure uses Microsoft identity sign-in and disables password login. See RUNBOOK section 2.1." });
+  const hint = el("p", { id: "login-hint", class: "login-hint", hidden: true, text: "Local development signs in with the console password from your .env file (KP_CONSOLE_PASSWORD). After signing in, set a memorable password under Settings. Managed Azure uses Microsoft identity sign-in and disables password login." });
   let authMode;
   try {
     const resp = await fetch(`${API}/console/auth-mode`);

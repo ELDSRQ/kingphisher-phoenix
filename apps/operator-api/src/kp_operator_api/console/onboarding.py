@@ -756,6 +756,33 @@ async def assist_onboarding(
     )
 
 
+_ENTRA_TENANT_ID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _infer_oidc_issuer(desired: dict[str, str], saved: dict[str, str]) -> None:
+    """Derive the Microsoft Entra issuer from the tenant ID when it is otherwise empty.
+
+    For the common Microsoft case the issuer is entirely determined by the tenant
+    ID, so the operator should not have to copy it from provider metadata. Only
+    fires under OIDC mode, for a UUID-shaped tenant ID, when no issuer is set.
+    """
+
+    mode = (desired.get("OPERATOR_API_OIDC_MODE") or saved.get("OPERATOR_API_OIDC_MODE", "")).strip()
+    if mode != "oidc":
+        return
+    tenant_id = (desired.get("KP_WORKER_MICROSOFT_TENANT_ID") or saved.get("KP_WORKER_MICROSOFT_TENANT_ID", "")).strip()
+    if _ENTRA_TENANT_ID.fullmatch(tenant_id) is None:
+        return
+    issuer = (
+        desired["OPERATOR_API_OIDC_ISSUER"].strip()
+        if "OPERATOR_API_OIDC_ISSUER" in desired
+        else saved.get("OPERATOR_API_OIDC_ISSUER", "").strip()
+    )
+    if issuer:
+        return
+    desired["OPERATOR_API_OIDC_ISSUER"] = f"https://login.microsoftonline.com/{tenant_id}/v2.0"
+
+
 def _infer_smtp_tls(desired: dict[str, str], saved: dict[str, str]) -> None:
     """Derive SMTP TLS from the relay port when the operator left it on "Automatic".
 
@@ -809,7 +836,9 @@ def _persist_onboarding(body: OnboardingPatch, request: Request, principal: Prin
     for source, target in mirrors.items():
         if source in desired and target not in desired:
             desired[target] = desired[source]
-    _infer_smtp_tls(desired, _env_values(_env_path(request)))
+    saved = _env_values(_env_path(request))
+    _infer_oidc_issuer(desired, saved)
+    _infer_smtp_tls(desired, saved)
     if body.completed is not None:
         desired["OPERATOR_API_ONBOARDING_COMPLETED"] = str(body.completed).lower()
 
