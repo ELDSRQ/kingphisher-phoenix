@@ -1,0 +1,118 @@
+# Aggregation-quality evaluation set (M3 background analyst tier).
+#
+# Fictional and sanitized: every actor, sector, and reference below is invented;
+# no real recipient, mailbox, or organization appears anywhere. Unlike
+# evaluation_set.yaml (which scores GENERATION quality), this set scores
+# AGGREGATION/ANALYSIS quality: given a batch of already-ingested, neutralized
+# feed items, can the analyst model pick the OPTIMAL current campaign material
+# and rank it first.
+#
+# Each case is a list of feed items plus `gold_item_ids` — the input items that
+# ARE the optimal current campaign. The scorer is deterministic: it checks that
+# the model's rank-1 candidate is sourced from (intersects) the gold items.
+# A candidate derived from a non-gold item, or a stale/irrelevant item promoted
+# above the gold, is a miss.
+#
+# This set is paired with aggregate_evaluate.py. Changes to the set must be
+# reviewed and recorded here (like evaluation_set.yaml's version discipline).
+
+set_version: "1.0"
+cases:
+  - id: recency_currency
+    kind: ranking
+    gold_item_ids: ["feed-2026-0417-a"]
+    items:
+      - item_id: feed-2026-0417-a
+        title: "Urgent invoice wave targeting EMEA logistics this week"
+        excerpt: "A fresh campaign surfaced yesterday: attackers impersonating a regional carrier send 'overdue invoice' lures with a 24-hour payment demand. The sender domain was registered three days ago and the lure embeds a working credential-phishing form."
+        published_at: "2026-09-17"
+        source_reference: "REV-2026-9010"
+        claimed_actor: "Midnight Basilisk"
+        claimed_target_sector: "European logistics"
+      - item_id: feed-2026-0201-b
+        title: "Old gift-card scam from Q1"
+        excerpt: "A months-old gift-card redemption scam that mostly targeted consumer mailboxes. No new infrastructure or activity has been observed since March."
+        published_at: "2026-02-01"
+        source_reference: "REV-2026-1102"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "consumer retail"
+      - item_id: feed-2026-0115-c
+        title: "Generic credential-phishing roundup"
+        excerpt: "A low-signal roundup of routine credential-phishing that mixes many sectors with no single campaign, no named actor, and no distinct lure."
+        published_at: "2026-01-15"
+        source_reference: "REV-2026-0805"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "multiple"
+      - item_id: feed-2026-0322-d
+        title: "Voice-phishing call script circulating"
+        excerpt: "A vishing (voice) script for impersonating a helpdesk. Not an email lure, and no email infrastructure is described."
+        published_at: "2026-03-22"
+        source_reference: "REV-2026-2210"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "healthcare"
+
+  - id: actionable_relevance
+    kind: ranking
+    gold_item_ids: ["feed-2026-0418-e"]
+    items:
+      - item_id: feed-2026-0418-e
+        title: "Document-share lure with live capture kit"
+        excerpt: "A specific shared-document lure impersonating a document platform, with the full lure text, a fresh credential-capture URL pattern, and the exact display name used. Immediately usable as simulation material."
+        published_at: "2026-09-18"
+        source_reference: "REV-2026-9011"
+        claimed_actor: "Example Impostor"
+        claimed_target_sector: "manufacturing"
+      - item_id: feed-2026-0416-f
+        title: "Phishing is up this quarter"
+        excerpt: "A high-level analyst note that phishing volume rose this quarter, with no lure, no actor, and no actionable campaign details."
+        published_at: "2026-09-16"
+        source_reference: "REV-2026-9001"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "multiple"
+      - item_id: feed-2026-0416-g
+        title: "Researcher blog on email-security trends"
+        excerpt: "An opinion piece about email-security trends, not a threat campaign. Contains no lure and no target."
+        published_at: "2026-09-16"
+        source_reference: "REV-2026-9002"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "multiple"
+      - item_id: feed-2026-0401-h
+        title: "Retired business-email-compromise report"
+        excerpt: "A business-email-compromise report from early April whose infrastructure has been sinkholed and is no longer active."
+        published_at: "2026-04-01"
+        source_reference: "REV-2026-3001"
+        claimed_actor: "Legacy Threat Group"
+        claimed_target_sector: "finance"
+
+  - id: multi_source_coherence
+    kind: ranking
+    gold_item_ids: ["feed-2026-0417-i", "feed-2026-0417-j"]
+    items:
+      - item_id: feed-2026-0417-i
+        title: "Password-reset lure targeting healthcare helpdesk"
+        excerpt: "One bulletin describing a password-reset lure impersonating a healthcare IT helpdesk with a forged identity-provider login link. Fresh, specific, and actionable."
+        published_at: "2026-09-17"
+        source_reference: "REV-2026-9012"
+        claimed_actor: "Example Impostor"
+        claimed_target_sector: "healthcare"
+      - item_id: feed-2026-0417-j
+        title: "Same healthcare password-reset lure, second source"
+        excerpt: "A second, independent bulletin confirming the same healthcare password-reset campaign and adding the forged login-link URL pattern. Corroborates feed-2026-0417-i."
+        published_at: "2026-09-17"
+        source_reference: "REV-2026-9013"
+        claimed_actor: "Example Impostor"
+        claimed_target_sector: "healthcare"
+      - item_id: feed-2026-0330-k
+        title: "Dormant cryptowallet phish"
+        excerpt: "An old cryptowallet phishing kit that has not been observed in months and is not email-delivered."
+        published_at: "2026-03-30"
+        source_reference: "REV-2026-2800"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "cryptocurrency"
+      - item_id: feed-2026-0415-l
+        title: "Broad scam-watch advisory"
+        excerpt: "A general advisory listing several unrelated scam categories with no single campaign and no usable lure text."
+        published_at: "2026-09-15"
+        source_reference: "REV-2026-9014"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "multiple"
