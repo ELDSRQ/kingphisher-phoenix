@@ -90,6 +90,17 @@ def _evaluate_case(
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0,
+        # Production-faithful: the ai-gateway constrains aggregation with the
+        # AggregateResponse json_schema grammar. Sending it here makes the eval
+        # match production AND suppresses reasoning-mode models' thinking pass,
+        # which is what lets both candidates emit clean JSON on equal terms.
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "aggregate_response",
+                "schema": AggregateResponse.model_json_schema(),
+            },
+        },
     }
     started = time.monotonic()
     try:
