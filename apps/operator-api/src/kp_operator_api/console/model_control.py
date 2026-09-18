@@ -1,11 +1,11 @@
 """Local model-residency control for the console.
 
 The on-prem host's single GPU serves two models that cannot be resident at once:
-this build's aggregation model (gpt-oss-20b, served by a llama.cpp ``llama-server``)
+this build's aggregation model (Qwen3-30B-A3B, served by a llama.cpp ``llama-server``)
 and the operator's separate qwen3:32b (served by Ollama). This seam reports which
 is currently loaded and swaps between them by shelling out to the operator-owned
 swap script (``scripts/operator/ai-model-swap.sh``), which preserves the
-aggregation model's identity pin (``--alias gpt-oss-20b-aggregate``) so the
+aggregation model's identity pin (``--alias qwen3-30b-a3b-aggregate``) so the
 ai-gateway's fail-closed ``model_id`` check keeps passing after a swap back.
 
 Managed (Azure) deployments short-circuit both routes: the model and its serving

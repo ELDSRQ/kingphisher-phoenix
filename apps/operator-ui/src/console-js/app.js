@@ -7601,7 +7601,7 @@ views.modelcontrol = async (root) => {
 
     card.appendChild(el("h3", { text: "Current model" }));
     card.appendChild(el("ul", {}, [
-      el("li", { text: `Aggregation model (gpt-oss-20b): ${status.aggregation_loaded ? "loaded" : "not loaded"}` }),
+      el("li", { text: `Aggregation model (Qwen3-30B-A3B): ${status.aggregation_loaded ? "loaded" : "not loaded"}` }),
       el("li", { text: `qwen3:32b: ${status.qwen_loaded ? "loaded" : "not loaded"}` }),
     ]));
 
