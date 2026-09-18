@@ -329,6 +329,7 @@ class GitHubWorkflowGateway:
                     raise DeploymentUnavailable("GitHub deployment evidence is malformed")
                 evidence_bytes = bundle.read(ACS_EVIDENCE_ARTIFACT_PATH)
                 live_bytes = bundle.read("acs-live-readiness.json")
+                delivery_bytes = bundle.read("acs-delivery-readiness.json")
         except (KeyError, RuntimeError, zipfile.BadZipFile, zipfile.LargeZipFile):
             raise DeploymentUnavailable("GitHub deployment evidence is malformed") from None
         if not 0 < len(evidence_bytes) <= MAX_ACS_EVIDENCE_BYTES:
@@ -336,9 +337,14 @@ class GitHubWorkflowGateway:
         try:
             evidence = json.loads(evidence_bytes.decode("utf-8"))
             live_evidence = json.loads(live_bytes.decode("utf-8"))
+            delivery_readiness = json.loads(delivery_bytes.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
             raise DeploymentUnavailable("GitHub deployment evidence is malformed") from None
-        if not isinstance(evidence, dict) or not isinstance(live_evidence, dict):
+        if (
+            not isinstance(evidence, dict)
+            or not isinstance(live_evidence, dict)
+            or not isinstance(delivery_readiness, dict)
+        ):
             raise DeploymentUnavailable("GitHub deployment evidence is malformed")
         phase = evidence.get("phase")
         if not isinstance(phase, str):
@@ -348,7 +354,12 @@ class GitHubWorkflowGateway:
             "foundation_finalize": "acs-finalize-readback.json",
             "workloads": None,
         }.get(phase, "invalid")
-        expected_paths = {"checkpoints.ndjson", "acs-live-readiness.json", "acs-stage-result.json"}
+        expected_paths = {
+            "checkpoints.ndjson",
+            "acs-live-readiness.json",
+            "acs-stage-result.json",
+            "acs-delivery-readiness.json",
+        }
         if isinstance(source_path, str) and source_path != "invalid":
             expected_paths.add(source_path)
         if source_path == "invalid" or set(names) != expected_paths:
@@ -367,6 +378,7 @@ class GitHubWorkflowGateway:
             "stage_result": evidence,
             "live_readiness": live_evidence,
             "stage_source": source_evidence,
+            "delivery_readiness": delivery_readiness,
         }
 
     def preflight(self, environment: str) -> WorkflowPreflight:

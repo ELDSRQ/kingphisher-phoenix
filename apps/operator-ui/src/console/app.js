@@ -1971,6 +1971,7 @@
         ["Stage evidence", rawAcsEvidence.evidence_digest],
         ["Artifact", rawAcsEvidence.artifact_sha256]
       ].filter(([, value]) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value)) : [];
+      const evidenceDnsRecords = acsEvidenceValid && Array.isArray(rawAcsEvidence.dns_records) ? rawAcsEvidence.dns_records.filter((record) => record && typeof record === "object" && typeof record.purpose === "string" && /^[a-z0-9_]{1,32}$/.test(record.purpose) && typeof record.type === "string" && /^[A-Z]{2,16}$/.test(record.type) && typeof record.name === "string" && record.name.length > 0 && record.name.length <= 512 && typeof record.value === "string" && record.value.length > 0 && record.value.length <= 4096).slice(0, 4) : [];
       const acsEvidencePanel = el("section", { class: "card", "aria-label": "Bounded ACS deployment evidence" }, [
         el("h5", { text: "ACS control-plane evidence" }),
         el("p", { class: acsEvidenceValid && rawAcsEvidence.status === "verified" ? "notice" : "modal-warn", text: acsEvidenceValid ? `Artifact status: ${rawAcsEvidence.status.replaceAll("_", " ")}. DNS: ${String(rawAcsEvidence.dns_status || "awaiting protected workflow").replaceAll("_", " ")}.` : "The bounded ACS artifact contract is unavailable; stage advance is blocked." }),
@@ -1979,6 +1980,25 @@
           el("dd", { text: value })
         ])),
         el("ul", { class: "event-list", "aria-label": "Authenticated ACS statuses" }, evidenceStatuses.map(([name, value]) => el("li", { text: `${name.toUpperCase()}: ${value.replaceAll("_", " ")}` }))),
+        ...evidenceDnsRecords.length ? [el("ul", { class: "event-list", "aria-label": "DNS records to publish" }, evidenceDnsRecords.map((record) => {
+          const box = el("textarea", { class: "mono", rows: "2", readonly: "readonly" });
+          box.value = record.value;
+          const status2 = el("span", { class: "field-help" });
+          return el("li", {}, [
+            el("strong", { text: `${record.purpose.toUpperCase()} \u2014 ${record.type} ${record.name}` }),
+            box,
+            el("button", { class: "btn", type: "button", text: "Copy", onclick: async () => {
+              box.select();
+              try {
+                await navigator.clipboard.writeText(record.value);
+                status2.textContent = "Copied.";
+              } catch {
+                status2.textContent = "Select the value and press Ctrl/Cmd+C.";
+              }
+            } }),
+            status2
+          ]);
+        }))] : [],
         el("ul", { class: "event-list", "aria-label": "ACS evidence scope limits" }, evidenceScopes.map(([name, value]) => el("li", { text: `${name.replaceAll("_", " ")}: ${value ? "proven" : "not proven"}` }))),
         el("p", { class: "field-help", text: acsEvidenceValid && rawAcsEvidence.observed_at ? `Authenticated read observed at ${String(rawAcsEvidence.observed_at).slice(0, 64)}. Mail delivery, inbox placement, and human mailbox validation remain separate gates.` : "No authenticated ACS readback is available yet." })
       ]);

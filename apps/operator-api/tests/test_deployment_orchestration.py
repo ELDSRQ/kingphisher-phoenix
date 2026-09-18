@@ -316,6 +316,44 @@ def _successful_evidence_bundle(run_id: int, run_attempt: int, correlation: str)
         "stage_result": stage_result,
         "live_readiness": live,
         "stage_source": initiation,
+        "delivery_readiness": {
+            "acs_delivery_readiness": {
+                "sensitive": False,
+                "type": ["object"],
+                "value": {
+                    "dns_records": [
+                        {
+                            "purpose": "domain",
+                            "name": "mail.example.com",
+                            "type": "TXT",
+                            "value": "kp-domain-verification",
+                            "ttl": 3600,
+                        },
+                        {
+                            "purpose": "spf",
+                            "name": "mail.example.com",
+                            "type": "TXT",
+                            "value": "v=spf1 include:spf.example.com -all",
+                            "ttl": 3600,
+                        },
+                        {
+                            "purpose": "dkim",
+                            "name": "selector1._domainkey.mail.example.com",
+                            "type": "CNAME",
+                            "value": "selector1-domainkey.example.com",
+                            "ttl": 3600,
+                        },
+                        {
+                            "purpose": "dkim2",
+                            "name": "selector2._domainkey.mail.example.com",
+                            "type": "CNAME",
+                            "value": "selector2-domainkey.example.com",
+                            "ttl": 3600,
+                        },
+                    ],
+                },
+            }
+        },
     }
 
 
@@ -941,6 +979,7 @@ def _acs_artifact_zip() -> bytes:
         bundle.writestr("acs-live-readiness.json", json.dumps(evidence["live_readiness"]))
         bundle.writestr("acs-verification-initiation.json", json.dumps(evidence["stage_source"]))
         bundle.writestr("acs-stage-result.json", json.dumps(evidence["stage_result"]))
+        bundle.writestr("acs-delivery-readiness.json", json.dumps(evidence["delivery_readiness"]))
         bundle.writestr("checkpoints.ndjson", "{}\n")
     return stream.getvalue()
 

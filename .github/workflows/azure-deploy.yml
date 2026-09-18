@@ -1846,6 +1846,13 @@ jobs:
       - name: Checkpoint ACS foundation finalize apply
         if: inputs.deployment_phase == 'foundation_finalize'
         run: python3 "$KP_CHECKPOINT_HELPER" --stage foundation_finalize_applied --status passed
+      - name: Publish DNS records to evidence
+        if: inputs.deployment_phase == 'foundation_finalize'
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          terraform output -json acs_delivery_readiness \
+            > "$RUNNER_TEMP/deployment-evidence/acs-delivery-readiness.json"
       - name: Prove finalized ACS association and sender from Azure
         if: inputs.deployment_phase == 'foundation_finalize'
         env:
@@ -2108,6 +2115,13 @@ jobs:
           KP_MIGRATION_RESULT: not_applicable
           KP_HEALTH_RESULT: not_applicable
         run: python3 "$KP_CHECKPOINT_HELPER" --stage foundation_finalize_readback --status passed
+      - name: Publish DNS records to evidence
+        if: inputs.deployment_phase == 'workloads'
+        working-directory: infrastructure/terraform
+        shell: bash
+        run: |
+          terraform output -json acs_delivery_readiness \
+            > "$RUNNER_TEMP/deployment-evidence/acs-delivery-readiness.json"
       - name: Open the registry to ACR Tasks for the image build
         if: inputs.deployment_phase == 'workloads'
         shell: bash

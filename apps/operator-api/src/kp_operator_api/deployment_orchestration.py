@@ -1941,6 +1941,33 @@ class DeploymentOrchestrator:
         dns_status = (
             "provider_verified" if claims.get("domain_verification_proven") is True else "publish_four_provider_records"
         )
+        dns_records: list[dict[str, Any]] = []
+        delivery = bundle.get("delivery_readiness")
+        if isinstance(delivery, dict):
+            wrapped = delivery.get("acs_delivery_readiness")
+            raw_records = wrapped.get("value", {}).get("dns_records") if isinstance(wrapped, dict) else None
+            if isinstance(raw_records, list):
+                for record in raw_records[:4]:
+                    if not isinstance(record, dict):
+                        continue
+                    purpose = record.get("purpose")
+                    name = record.get("name")
+                    type_ = record.get("type")
+                    value = record.get("value")
+                    ttl = record.get("ttl")
+                    if (
+                        isinstance(purpose, str)
+                        and isinstance(name, str)
+                        and isinstance(type_, str)
+                        and isinstance(value, str)
+                        and isinstance(ttl, int)
+                        and 0 < ttl <= 2_147_483_647
+                        and len(purpose) <= 32
+                        and len(name) <= 512
+                        and len(type_) <= 16
+                        and len(value) <= 4096
+                    ):
+                        dns_records.append(record)
         return {
             "status": "verified",
             "schema": ACS_EVIDENCE_ARTIFACT_SCHEMA,
@@ -1949,6 +1976,7 @@ class DeploymentOrchestrator:
             "observed_at": live["observed_at"],
             "dns_status": dns_status,
             "statuses": statuses,
+            "dns_records": dns_records,
             "resource_ids": resource_ids,
             "scope_limits": scope_limits,
             "claims": claims,
