@@ -112,6 +112,9 @@ def _evaluate_case(
         resp.raise_for_status()
         payload = resp.json()
         content = payload["choices"][0]["message"].get("content") or ""
+        usage = payload.get("usage") or {}
+        completion_tokens = usage.get("completion_tokens")
+        prompt_tokens = usage.get("prompt_tokens")
         latency_ms = int((time.monotonic() - started) * 1000)
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
         return {"passed": False, "endpoint_error": True, "detail": f"{type(exc).__name__}: {str(exc)[:160]}"}
@@ -130,6 +133,8 @@ def _evaluate_case(
         "endpoint_error": False,
         "detail": "rank-1 sourced from gold items" if passed else "rank-1 not sourced from gold items",
         "latency_ms": latency_ms,
+        "completion_tokens": completion_tokens,
+        "prompt_tokens": prompt_tokens,
         "rank1_source_ids": validated.candidates[0].source_item_ids if validated.candidates else [],
     }
 
