@@ -50,6 +50,13 @@ def test_discovery_requests_only_delegated_arm_read_scope() -> None:
     assert "client_secret" not in DISCOVERY_JS
 
 
+def test_discovery_requests_entra_app_list_scope() -> None:
+    # A2b: Entra app-list discovery uses delegated Application.Read.All, requested
+    # only by the Entra step — never bundled into the ARM scope, no client secret.
+    assert "https://graph.microsoft.com/Application.Read.All" in DISCOVERY_JS
+    assert "client_secret" not in DISCOVERY_JS
+
+
 def test_discovery_never_persists_the_azure_token() -> None:
     # The delegated token lives only in the module closure for one run.
     assert "localStorage" not in DISCOVERY_JS
@@ -66,9 +73,10 @@ def test_discovery_is_a_popup_not_an_iframe() -> None:
     assert "createElement('iframe')" not in DISCOVERY_JS
 
 
-def test_discovery_only_reaches_the_two_azure_origins() -> None:
+def test_discovery_only_reaches_the_three_azure_origins() -> None:
     assert "https://login.microsoftonline.com" in DISCOVERY_JS
     assert "https://management.azure.com" in DISCOVERY_JS
+    assert "https://graph.microsoft.com" in DISCOVERY_JS
 
 
 def test_redirect_page_returns_code_only_to_the_exact_console_origin() -> None:
@@ -83,13 +91,17 @@ def test_redirect_page_returns_code_only_to_the_exact_console_origin() -> None:
 
 def test_wizard_exposes_failclosed_discovery_control() -> None:
     assert "Discover from Azure" in APP_SRC_JS
+    assert "Discover Entra apps" in APP_SRC_JS
     assert 'from "./azure-discovery.js"' in APP_SRC_JS
     # Fail-closed: a discovery failure surfaces a message and keeps manual entry.
     assert "Discovery unavailable" in APP_SRC_JS
 
 
-def test_csp_relaxation_is_exactly_the_two_azure_origins_no_frame_src() -> None:
-    assert "connect-src 'self' https://login.microsoftonline.com https://management.azure.com" in _CONSOLE_CSP
+def test_csp_relaxation_is_exactly_the_three_azure_origins_no_frame_src() -> None:
+    assert (
+        "connect-src 'self' https://login.microsoftonline.com https://management.azure.com https://graph.microsoft.com"
+        in _CONSOLE_CSP
+    )
     # The rest of the hardened policy is unchanged.
     assert "default-src 'none'" in _CONSOLE_CSP
     assert "script-src 'self'" in _CONSOLE_CSP

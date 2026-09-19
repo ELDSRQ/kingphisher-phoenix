@@ -838,7 +838,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
 # rest of the policy stays locked (default-src 'none', script/style/img 'self').
 _CONSOLE_CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; "
-    "connect-src 'self' https://login.microsoftonline.com https://management.azure.com; "
+    "connect-src 'self' https://login.microsoftonline.com https://management.azure.com https://graph.microsoft.com; "
     "img-src 'self'"
 )
 

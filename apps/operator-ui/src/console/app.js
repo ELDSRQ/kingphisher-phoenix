@@ -111,6 +111,8 @@
   var ARM_API = "2021-04-01";
   var DNS_API = "2018-05-01";
   var ACS_API = "2023-04-01";
+  var GRAPH = "https://graph.microsoft.com";
+  var GRAPH_SCOPE = "https://graph.microsoft.com/Application.Read.All openid profile";
   function _base64url(bytes) {
     let s = "";
     const arr = new Uint8Array(bytes);
@@ -126,13 +128,13 @@
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
     return _base64url(digest);
   }
-  function _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge }) {
+  function _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge, scope }) {
     const q = new URLSearchParams({
       client_id: clientId,
       response_type: "code",
       redirect_uri: redirectUri,
       response_mode: "query",
-      scope: SCOPE,
+      scope,
       state,
       code_challenge: codeChallenge,
       code_challenge_method: "S256",
@@ -179,14 +181,14 @@
       const timeout = setTimeout(() => finish(reject, new Error("Discovery sign-in timed out.")), 3e5);
     });
   }
-  async function _exchangeCode({ clientId, tenant, redirectUri, code, verifier }) {
+  async function _exchangeCode({ clientId, tenant, redirectUri, code, verifier, scope }) {
     const body = new URLSearchParams({
       client_id: clientId,
       grant_type: "authorization_code",
       code,
       redirect_uri: redirectUri,
       code_verifier: verifier,
-      scope: SCOPE
+      scope
     });
     const resp = await fetch(`${AUTHORITY}/${encodeURIComponent(tenant || "organizations")}/oauth2/v2.0/token`, {
       method: "POST",
@@ -210,14 +212,20 @@
     const data = await resp.json().catch(() => ({}));
     return Array.isArray(data.value) ? data.value : [];
   }
-  async function acquireArmToken({ clientId, tenant, redirectUri }) {
+  async function _acquireToken({ clientId, tenant, redirectUri, scope }) {
     if (!clientId) throw new Error("Azure discovery is not configured (no Entra client ID).");
     const verifier = _randomString(48);
     const state = _randomString(24);
     const codeChallenge = await _s256(verifier);
-    const url = _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge });
+    const url = _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge, scope });
     const code = await _popupForCode({ url, state, redirectOrigin: new URL(redirectUri).origin });
-    return _exchangeCode({ clientId, tenant, redirectUri, code, verifier });
+    return _exchangeCode({ clientId, tenant, redirectUri, code, verifier, scope });
+  }
+  async function acquireArmToken({ clientId, tenant, redirectUri }) {
+    return _acquireToken({ clientId, tenant, redirectUri, scope: SCOPE });
+  }
+  async function acquireGraphToken({ clientId, tenant, redirectUri }) {
+    return _acquireToken({ clientId, tenant, redirectUri, scope: GRAPH_SCOPE });
   }
   async function listSubscriptions(token2) {
     const subs = await _armGet(token2, `/subscriptions?api-version=${ARM_API}`);
@@ -244,6 +252,19 @@
       `/subscriptions/${subscriptionId}/providers/Microsoft.Communication/communicationServices?api-version=${ACS_API}`
     );
     return svcs.map((c) => ({ id: c.id, name: c.name }));
+  }
+  async function listEntraApplications({ clientId, tenant, redirectUri }) {
+    const token2 = await acquireGraphToken({ clientId, tenant, redirectUri });
+    const resp = await fetch(`${GRAPH}/v1.0/applications?$select=id,appId,displayName`, {
+      headers: { Authorization: `Bearer ${token2}`, Accept: "application/json" }
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      throw new Error(`Entra app list failed (${resp.status}). ${detail.slice(0, 200)}`);
+    }
+    const data = await resp.json().catch(() => ({}));
+    const apps = Array.isArray(data.value) ? data.value : [];
+    return apps.filter((a) => a.appId && a.displayName).map((a) => ({ objectId: a.id, appId: a.appId, name: a.displayName }));
   }
   async function discoverAzure({ clientId, tenant, redirectUri, subscriptionId } = {}) {
     const token2 = await acquireArmToken({ clientId, tenant, redirectUri });
@@ -2452,12 +2473,44 @@
           discoverBtn.disabled = false;
         }
       });
+      const entraBtn = el("button", { class: "btn small", type: "button", text: "Discover Entra apps" });
+      const entraStatus = el("div", { class: "assistant-answer", role: "status", "aria-live": "polite" });
+      const entraResults = el("div", { class: "assistant-suggestions", "aria-label": "Discovered Entra app registrations" });
+      entraBtn.addEventListener("click", async () => {
+        const clientId = collected.entra_client_id || "";
+        if (!clientId) {
+          entraStatus.textContent = "Set the Entra application (client) ID first \u2014 Entra discovery signs in with it and needs delegated Application.Read.All (admin consent).";
+          return;
+        }
+        entraBtn.disabled = true;
+        entraStatus.textContent = "Opening Azure sign-in for the app list\u2026";
+        entraResults.replaceChildren();
+        try {
+          const redirectUri = `${location.origin}/console/azure-redirect.html`;
+          const tenant = collected.entra_tenant_id || "organizations";
+          const apps = await listEntraApplications({ clientId, tenant, redirectUri });
+          if (!apps.length) {
+            entraStatus.textContent = "Signed in, but no app registrations were returned for this account.";
+            return;
+          }
+          entraStatus.textContent = `Found ${apps.length} app registration(s). Apply one to the deployment-identity field below.`;
+          entraResults.replaceChildren(...apps.slice(0, 40).map((a) => discoveryChip(a.name, "azure_deployment_client_id", a.appId)));
+        } catch (e) {
+          entraStatus.textContent = `Entra app discovery unavailable \u2014 enter values manually. (${e.message})`;
+        } finally {
+          entraBtn.disabled = false;
+        }
+      });
       form.appendChild(el("details", { class: "azure-discovery" }, [
         el("summary", { text: "Discover from Azure (optional)" }),
         el("p", { class: "field-help", text: "Sign in to Azure in a popup to auto-fill subscription, tenant, region, DNS zone, and resource group. Read-only; your Azure token is never sent to this server. Requires the Entra client ID (above) with delegated Azure Service Management permission." }),
         el("div", { class: "btn-row" }, [discoverBtn]),
         discoveryStatus,
-        discoveryResults
+        discoveryResults,
+        el("p", { class: "field-help", text: "List your Entra app registrations by friendly name to fill the deployment-identity client ID. Needs delegated Application.Read.All (admin consent) on the console application." }),
+        el("div", { class: "btn-row" }, [entraBtn]),
+        entraStatus,
+        entraResults
       ]));
       const normalFields = (step.fields || []).filter((field) => field.advanced !== true);
       const advancedFields = (step.fields || []).filter((field) => field.advanced === true);

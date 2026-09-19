@@ -323,7 +323,7 @@ function toast(message, type = "") {
 
 import { el, svg, SVG_NS } from "./dom.js";
 import { ledgerTrendChart } from "./chart.js";
-import { discoverAzure } from "./azure-discovery.js";
+import { discoverAzure, listEntraApplications } from "./azure-discovery.js";
 
 
 const CAMPAIGN_ACTION_FLAGS = Object.freeze([
@@ -2295,10 +2295,40 @@ views["azure-deployment"] = async (root) => {
         discoverBtn.disabled = false;
       }
     });
+    const entraBtn = el("button", { class: "btn small", type: "button", text: "Discover Entra apps" });
+    const entraStatus = el("div", { class: "assistant-answer", role: "status", "aria-live": "polite" });
+    const entraResults = el("div", { class: "assistant-suggestions", "aria-label": "Discovered Entra app registrations" });
+    entraBtn.addEventListener("click", async () => {
+      const clientId = collected.entra_client_id || "";
+      if (!clientId) {
+        entraStatus.textContent = "Set the Entra application (client) ID first — Entra discovery signs in with it and needs delegated Application.Read.All (admin consent).";
+        return;
+      }
+      entraBtn.disabled = true;
+      entraStatus.textContent = "Opening Azure sign-in for the app list…";
+      entraResults.replaceChildren();
+      try {
+        const redirectUri = `${location.origin}/console/azure-redirect.html`;
+        const tenant = collected.entra_tenant_id || "organizations";
+        const apps = await listEntraApplications({ clientId, tenant, redirectUri });
+        if (!apps.length) {
+          entraStatus.textContent = "Signed in, but no app registrations were returned for this account.";
+          return;
+        }
+        entraStatus.textContent = `Found ${apps.length} app registration(s). Apply one to the deployment-identity field below.`;
+        entraResults.replaceChildren(...apps.slice(0, 40).map((a) => discoveryChip(a.name, "azure_deployment_client_id", a.appId)));
+      } catch (e) {
+        entraStatus.textContent = `Entra app discovery unavailable — enter values manually. (${e.message})`;
+      } finally {
+        entraBtn.disabled = false;
+      }
+    });
     form.appendChild(el("details", { class: "azure-discovery" }, [
       el("summary", { text: "Discover from Azure (optional)" }),
       el("p", { class: "field-help", text: "Sign in to Azure in a popup to auto-fill subscription, tenant, region, DNS zone, and resource group. Read-only; your Azure token is never sent to this server. Requires the Entra client ID (above) with delegated Azure Service Management permission." }),
       el("div", { class: "btn-row" }, [discoverBtn]), discoveryStatus, discoveryResults,
+      el("p", { class: "field-help", text: "List your Entra app registrations by friendly name to fill the deployment-identity client ID. Needs delegated Application.Read.All (admin consent) on the console application." }),
+      el("div", { class: "btn-row" }, [entraBtn]), entraStatus, entraResults,
     ]));
     const normalFields = (step.fields || []).filter((field) => field.advanced !== true);
     const advancedFields = (step.fields || []).filter((field) => field.advanced === true);
