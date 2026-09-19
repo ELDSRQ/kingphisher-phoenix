@@ -60,8 +60,8 @@ def _digest(path: Path) -> str:
 
 def _load_cases(path: Path) -> tuple[str, list[dict[str, Any]]]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or data.get("set_version") != "1.0":
-        raise SystemExit(f"unsupported aggregation eval set (set_version must be 1.0): {path}")
+    if not isinstance(data, dict) or data.get("set_version") != "1.1":
+        raise SystemExit(f"unsupported aggregation eval set (set_version must be 1.1): {path}")
     cases = data.get("cases")
     if not isinstance(cases, list) or not cases:
         raise SystemExit(f"aggregation eval set has no cases: {path}")
