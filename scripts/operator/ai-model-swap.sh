@@ -3,17 +3,18 @@
 #
 # Alice (192.168.1.36) has a single 24 GB GPU shared by two models that cannot
 # fit at once:
-#   * gpt-oss-20b-aggregate  (llama.cpp, port 18082, ~12 GB)  — THIS build's
-#     current-campaign aggregation model. Served by a bare llama-server process
-#     (root-owned, auto-started at Windows/WSL boot, not systemd-managed).
+#   * qwen3-30b-a3b-aggregate (llama.cpp, port 18082, ~19 GB) — THIS build's
+#     generation + aggregation model (Qwen3-30B-A3B-Instruct-2507, MoE). Served
+#     by a bare llama-server process (root-owned, auto-started at Windows/WSL
+#     boot, not systemd-managed).
 #   * qwen3:32b              (Ollama, port 11434, ~20 GB)     — the operator's
 #     model for a separate system. Ollama is systemd-managed (Restart=always)
 #     and loads/unloads the model from VRAM on demand.
 #
-# Because 12 GB + 20 GB > 24 GB, exactly one of the two may be resident at a
+# Because ~19 GB + ~20 GB > 24 GB, exactly one of the two may be resident at a
 # time. This script makes the switch safe and reversible while preserving the
 # aggregation model's identity pin (the ai-gateway fails closed if the served
-# model does NOT self-report `gpt-oss-20b-aggregate`, so the restart below pins
+# model does NOT self-report `qwen3-30b-a3b-aggregate`, so the restart below pins
 # the exact alias and flags the boot path uses).
 #
 # Install (run once, on Alice inside WSL Ubuntu-24.04):
@@ -24,10 +25,10 @@
 #   sudo /opt/kp-ai010/kp-ai-swap.sh aggregate   # stop qwen3:32b, restore aggregation model
 set -euo pipefail
 
-AGG_MODEL="/opt/kp-ai010/gpt-oss-20b/gpt-oss-20b-MXFP4.gguf"
+AGG_MODEL="/opt/kp-ai010/qwen3-30b-a3b/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
 LLAMA_BIN="/opt/kp-ai010/llama.cpp/build-cuda/bin/llama-server"
 LLAMA_PORT=18082
-LLAMA_ALIAS="gpt-oss-20b-aggregate"
+LLAMA_ALIAS="qwen3-30b-a3b-aggregate"
 LLAMA_LOG="/var/log/kp-ai010-llama-swap.log"
 QWEN_MODEL="qwen3:32b"
 
@@ -36,7 +37,7 @@ llama_running() { pgrep -f "llama-server.*${AGG_MODEL}" >/dev/null 2>&1; }
 log() { printf '%s\n' "$*"; }
 
 swap_to_qwen() {
-  log "Stopping aggregation model (${LLAMA_ALIAS}) to free ~12 GB VRAM..."
+  log "Stopping aggregation model (${LLAMA_ALIAS}) to free ~19 GB VRAM..."
   if llama_running; then
     pkill -TERM -f "llama-server.*${AGG_MODEL}" 2>/dev/null || true
     local _
@@ -69,17 +70,17 @@ swap_to_aggregate() {
   log "Starting aggregation model (${LLAMA_ALIAS}) on :${LLAMA_PORT}..."
   nohup "$LLAMA_BIN" -m "$AGG_MODEL" \
     --host 0.0.0.0 --port "$LLAMA_PORT" \
-    --ctx-size 32768 --n-gpu-layers 999 --threads 16 --jinja \
+    --ctx-size 32768 -fa on -ctk q8_0 -ctv q8_0 -ngl 99 --threads 16 --jinja \
     --alias "$LLAMA_ALIAS" >>"$LLAMA_LOG" 2>&1 </dev/null &
   local _
-  for _ in $(seq 1 60); do
+  for _ in $(seq 1 90); do
     curl -sf "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1 && break
-    sleep 1
+    sleep 2
   done
   if curl -sf "http://127.0.0.1:${LLAMA_PORT}/health" >/dev/null 2>&1; then
     log "  healthy: $(curl -sf "http://127.0.0.1:${LLAMA_PORT}/health")"
   else
-    log "  WARNING: not healthy after 60s; see ${LLAMA_LOG}"
+    log "  WARNING: not healthy after 180s; see ${LLAMA_LOG}"
     return 1
   fi
 }
@@ -90,7 +91,7 @@ case "${1:-}" in
   *)
     log "usage: $0 {qwen|aggregate}" >&2
     log "  qwen       stop aggregation model, free GPU for qwen3:32b (Ollama)" >&2
-    log "  aggregate  stop qwen3:32b, restore aggregation model (gpt-oss-20b)" >&2
+    log "  aggregate  stop qwen3:32b, restore aggregation model (Qwen3-30B-A3B)" >&2
     exit 2
     ;;
 esac
