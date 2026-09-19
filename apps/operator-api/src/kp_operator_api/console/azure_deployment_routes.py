@@ -574,6 +574,7 @@ _AZURE_SUGGESTED_DEFAULTS: dict[str, str] = {
     "name_prefix": "kp",
     "location": "eastus2",
     "environment": "staging",
+    "ciphertext_active_key_id": "primary",
 }
 
 
