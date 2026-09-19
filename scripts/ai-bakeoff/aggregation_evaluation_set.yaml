@@ -16,7 +16,7 @@
 # This set is paired with aggregate_evaluate.py. Changes to the set must be
 # reviewed and recorded here (like evaluation_set.yaml's version discipline).
 
-set_version: "1.0"
+set_version: "1.1"
 cases:
   - id: recency_currency
     kind: ranking
@@ -114,5 +114,104 @@ cases:
         excerpt: "A general advisory listing several unrelated scam categories with no single campaign and no usable lure text."
         published_at: "2026-09-15"
         source_reference: "REV-2026-9014"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "multiple"
+
+  - id: value_over_recency
+    kind: ranking
+    gold_item_ids: ["feed-2026-0419-m"]
+    items:
+      - item_id: feed-2026-0419-m
+        title: "Live credential-capture kit with fresh lure text"
+        excerpt: "A complete, actionable kit: full lure text, a credential-capture URL pattern registered this week, and the exact sender display name. Slightly less recent than the generic advisory below, but far higher simulation value."
+        published_at: "2026-09-15"
+        source_reference: "REV-2026-9020"
+        claimed_actor: "Example Impostor"
+        claimed_target_sector: "financial services"
+      - item_id: feed-2026-0419-n
+        title: "Phishing volumes rose slightly today"
+        excerpt: "A same-day generic note that phishing volume ticked up, with no lure, no actor, no target, and no actionable material."
+        published_at: "2026-09-18"
+        source_reference: "REV-2026-9021"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "multiple"
+      - item_id: feed-2026-0311-o
+        title: "Quarterly malware summary"
+        excerpt: "A quarterly malware landscape summary with no email-lure material."
+        published_at: "2026-03-11"
+        source_reference: "REV-2026-3100"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "multiple"
+      - item_id: feed-2026-0410-p
+        title: "Defunct smishing campaign"
+        excerpt: "An SMS-based campaign (not email) that was shut down in April."
+        published_at: "2026-04-10"
+        source_reference: "REV-2026-4010"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "consumer mobile"
+
+  - id: near_tie_recency
+    kind: ranking
+    gold_item_ids: ["feed-2026-0419-q"]
+    items:
+      - item_id: feed-2026-0419-q
+        title: "Fresh invoice lure with live capture domain"
+        excerpt: "An invoice lure impersonating a payment processor with a capture domain registered yesterday and an active kit. Published today."
+        published_at: "2026-09-18"
+        source_reference: "REV-2026-9030"
+        claimed_actor: "Example Impostor"
+        claimed_target_sector: "retail"
+      - item_id: feed-2026-0415-r
+        title: "Similar invoice lure from three days ago"
+        excerpt: "A nearly identical invoice lure campaign, but its capture domain is three days old and its kit has been sinkholed since. Still specific, but marginally less current and no longer active."
+        published_at: "2026-09-15"
+        source_reference: "REV-2026-9031"
+        claimed_actor: "Example Impostor"
+        claimed_target_sector: "retail"
+      - item_id: feed-2026-0208-s
+        title: "Old loyalty-points phish"
+        excerpt: "A consumer loyalty-points phish from February with no recent activity."
+        published_at: "2026-02-08"
+        source_reference: "REV-2026-2001"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "consumer retail"
+      - item_id: feed-2026-0401-t
+        title: "Generic malspam advisory"
+        excerpt: "A low-signal malspam advisory with no distinct campaign."
+        published_at: "2026-04-01"
+        source_reference: "REV-2026-4001"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "multiple"
+
+  - id: stale_twin_disambiguation
+    kind: ranking
+    gold_item_ids: ["feed-2026-0419-u"]
+    items:
+      - item_id: feed-2026-0419-u
+        title: "Active payroll-redirect campaign (current)"
+        excerpt: "A payroll-redirect BEC campaign with a live reply-to mailbox and a fresh lure kit. Active as of this week."
+        published_at: "2026-09-17"
+        source_reference: "REV-2026-9040"
+        claimed_actor: "Example Impostor"
+        claimed_target_sector: "human resources"
+      - item_id: feed-2026-0419-v
+        title: "Same payroll-redirect campaign, stale report"
+        excerpt: "An older report describing the SAME payroll-redirect campaign, but with infrastructure that has since been sinkholed. The stale twin of feed-2026-0419-u."
+        published_at: "2026-06-01"
+        source_reference: "REV-2026-6040"
+        claimed_actor: "Example Impostor"
+        claimed_target_sector: "human resources"
+      - item_id: feed-2026-0315-w
+        title: "Unrelated tax-season phish"
+        excerpt: "A tax-season phishing campaign from March with no recent activity."
+        published_at: "2026-03-15"
+        source_reference: "REV-2026-3001"
+        claimed_actor: "Unattributed"
+        claimed_target_sector: "consumer finance"
+      - item_id: feed-2026-0405-x
+        title: "Vendor survey scam"
+        excerpt: "A low-value vendor survey scam with no credential capture."
+        published_at: "2026-04-05"
+        source_reference: "REV-2026-4005"
         claimed_actor: "Unattributed"
         claimed_target_sector: "multiple"
