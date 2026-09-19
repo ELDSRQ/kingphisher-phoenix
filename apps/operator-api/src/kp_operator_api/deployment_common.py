@@ -42,7 +42,7 @@ MAX_ACS_EVIDENCE_BYTES = 16 * 1024
 MAX_ACS_EVIDENCE_AGE_SECONDS = 24 * 60 * 60
 # Updated only when the fixed workflow and connector contract are reviewed
 # together. A repository ref that resolves to any other content is not ready.
-EXPECTED_WORKFLOW_SHA256 = "ac414dc1886a2fce5fceb42fd1bdbaa8af07da97ccb0f0cd3069665b8c1e5229"
+EXPECTED_WORKFLOW_SHA256 = "6d7535484aa2202a445f29f8037f971768daae10b249daffb8f064273fe140e7"
 REQUIRED_WORKFLOW_INPUTS = frozenset(
     {
         "environment",
@@ -110,6 +110,7 @@ ACS_EVIDENCE_ARTIFACT_ALLOWED_PATHS = frozenset(
         "acs-live-readiness.json",
         "acs-verification-initiation.json",
         "acs-finalize-readback.json",
+        "acs-delivery-readiness.json",
         "acs-stage-result.json",
         "checkpoints.ndjson",
     }
