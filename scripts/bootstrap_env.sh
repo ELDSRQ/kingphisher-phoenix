@@ -427,9 +427,12 @@ bootstrap_env() {
   if [ -z "$(_env_value KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD)" ]; then
     _set_line KP_WORKER_REPORTED_MAILBOX_BASIC_PASSWORD "$(_env_value MAILPIT_API_PASSWORD)"
   fi
-  if [ -z "$(_env_value KP_CONSOLE_PASSWORD)" ]; then
-    PASSWORD="$(openssl rand -base64 12 | tr -d '/+=' )"
-    _set_line KP_CONSOLE_PASSWORD "$PASSWORD"
+  # KP_CONSOLE_PASSWORD is intentionally NOT auto-generated here: a fresh local
+  # stack leaves it unset so the console's one-time first-run "set your password"
+  # flow writes it (POST /api/v1/console/password). An operator who knows the
+  # value may still set it in .env directly; the flow only runs while it is unset.
+  if [ -n "$(_env_value KP_CONSOLE_PASSWORD)" ]; then
+    echo "note: KP_CONSOLE_PASSWORD is already set; first-run flow will not show" >&2
   fi
 }
 

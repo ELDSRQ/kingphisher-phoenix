@@ -516,3 +516,39 @@ def _verify_console_password(path: Path, supplied: str) -> bool:
     if not stored:
         return False
     return hmac.compare_digest(stored, supplied)
+
+
+_MIN_CONSOLE_PASSWORD_LENGTH = 12
+
+
+def _console_password_unset(path: Path) -> bool:
+    """True while the console password has never been set (first run)."""
+    return not _console_password(path)
+
+
+def set_console_password(path: Path, new_password: str) -> None:
+    """One-time first-run write of the console password.
+
+    Only the caller's gate makes this a one-time action; this function itself
+    enforces the password policy and commits through the same atomic, durable
+    env path as every other configuration write. The value is never logged,
+    returned, or written to the audit store here.
+    """
+    if len(new_password) < _MIN_CONSOLE_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"console password must be at least {_MIN_CONSOLE_PASSWORD_LENGTH} characters",
+        )
+    if new_password != new_password.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="console password must not start or end with whitespace",
+        )
+    if not any(character.isalpha() for character in new_password) or not any(
+        character.isdigit() for character in new_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="console password must include at least one letter and one digit",
+        )
+    _atomic_update_env(path, {CONSOLE_PASSWORD_KEY: new_password})

@@ -285,6 +285,9 @@ _DEDICATED_OR_PUBLIC_ROUTES: dict[RouteKey, tuple[str, str]] = {
     # bootstrap rather than the normal bearer dependency.
     ("GET", "/api/v1/console/session"): ("kp_operator_api.console", "current_session"),
     ("POST", "/api/v1/console/session"): ("kp_operator_api.console", "create_session"),
+    # One-time first-run password setup; no bearer/cookie auth because there is
+    # no credential to authenticate against yet (dev mode + unset password only).
+    ("POST", "/api/v1/console/password"): ("kp_operator_api.console", "first_run_set_password"),
     # Logout only expires a cookie and intentionally works for an absent or
     # expired session. The global same-origin gate still protects cookie use.
     ("POST", "/api/v1/console/logout"): ("kp_operator_api.console", "logout"),

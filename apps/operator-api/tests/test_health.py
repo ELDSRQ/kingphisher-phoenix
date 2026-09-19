@@ -183,6 +183,7 @@ def test_audit_gate_exemptions_are_exact_and_intentional() -> None:
         ("PUT", "/api/v1/console/onboarding"),
         ("POST", "/api/v1/console/onboarding/assist"),
         ("POST", "/api/v1/console/onboarding/test"),
+        ("POST", "/api/v1/console/password"),
         ("POST", "/api/v1/console/restart"),
         ("POST", "/api/v1/console/session"),
         ("POST", "/api/v1/kill-switch"),

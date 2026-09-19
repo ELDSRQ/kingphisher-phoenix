@@ -1133,6 +1133,18 @@
     password.addEventListener("keydown", (e) => {
       if (e.key === "Enter") submit();
     });
+    const applySession = (data) => {
+      setToken(data.token);
+      setSessionInfo({
+        authMode: data.auth_mode,
+        principalId: data.principal_id,
+        approvalLimited: Boolean(data.approval_limited),
+        approvalPolicy: data.approval_policy || "single-admin",
+        roles: data.roles,
+        capabilities: data.capabilities
+      });
+      onboardingChecked = false;
+    };
     const submit = async () => {
       err.textContent = "";
       try {
@@ -1140,16 +1152,7 @@
           method: "POST",
           body: JSON.stringify({ password: password.value })
         });
-        setToken(data.token);
-        setSessionInfo({
-          authMode: data.auth_mode,
-          principalId: data.principal_id,
-          approvalLimited: Boolean(data.approval_limited),
-          approvalPolicy: data.approval_policy || "single-admin",
-          roles: data.roles,
-          capabilities: data.capabilities
-        });
-        onboardingChecked = false;
+        applySession(data);
         toast("Signed in", "success");
         render();
       } catch (e) {
@@ -1158,12 +1161,60 @@
           const seconds = (message.match(/(\d+)\s*second/i) || [])[1];
           err.textContent = seconds ? `Too many attempts. Try again in ${seconds} seconds.` : "Too many attempts. Wait a few minutes before trying again.";
           hint.hidden = false;
+        } else if (e.status === 428) {
+          showFirstRun();
         } else {
           err.textContent = message;
         }
       }
     };
-    const hint = el("p", { id: "login-hint", class: "login-hint", hidden: true, text: "Local development signs in with the console password from your .env file (KP_CONSOLE_PASSWORD). After signing in, set a memorable password under Settings. Managed Azure uses Microsoft identity sign-in and disables password login." });
+    const showFirstRun = () => {
+      err.textContent = "";
+      const newPassword = el("input", {
+        id: "first-run-password",
+        type: "password",
+        required: "required",
+        placeholder: "Letters and digits, 12+ characters",
+        autocomplete: "new-password"
+      });
+      const confirm = el("input", {
+        id: "first-run-confirm",
+        type: "password",
+        required: "required",
+        placeholder: "Repeat the password",
+        autocomplete: "new-password"
+      });
+      const submitNew = async () => {
+        err.textContent = "";
+        try {
+          const data = await api("/console/password", {
+            method: "POST",
+            body: JSON.stringify({ password: newPassword.value, confirm: confirm.value })
+          });
+          applySession(data);
+          toast("Console password set", "success");
+          render();
+        } catch (e2) {
+          err.textContent = String(e2.message || "");
+        }
+      };
+      confirm.addEventListener("keydown", (e2) => {
+        if (e2.key === "Enter") submitNew();
+      });
+      root.replaceChildren(el("div", { class: "login-wrap" }, [
+        el("div", { class: "login-card", "aria-labelledby": "login-title" }, [
+          el("h1", { id: "login-title", text: "Kingphisher-Phoenix" }),
+          el("p", { text: "First run \u2014 set your console password" }),
+          el("label", { for: "first-run-password", text: "New password" }),
+          newPassword,
+          el("label", { for: "first-run-confirm", text: "Confirm password" }),
+          confirm,
+          el("button", { class: "btn primary", type: "button", onclick: submitNew, text: "Set password and sign in" }),
+          err
+        ])
+      ]));
+    };
+    const hint = el("p", { id: "login-hint", class: "login-hint", hidden: true, text: "Sign in with the console password you chose at first run. If you have forgotten it, clear KP_CONSOLE_PASSWORD in the server's .env file and restart to set a new one. Managed Azure uses Microsoft identity sign-in and disables password login." });
     let authMode;
     try {
       const resp = await fetch(`${API}/console/auth-mode`);
