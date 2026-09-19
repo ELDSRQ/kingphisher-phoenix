@@ -19,6 +19,7 @@ returns 503 rather than attempting any egress.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -232,6 +233,67 @@ def _execute_run(
         logger.info("aggregation run %s: persist failed (%s); no candidates stored", run_id, type(exc).__name__)
         return
     logger.info("aggregation run %s: stored %d candidate(s)", run_id, len(resp.candidates))
+
+
+class AggregationScheduler:
+    """Periodically run the background aggregation pass (M3).
+
+    The operator-triggered ``POST /runs`` path exists, but a human must remember
+    to trigger it. This scheduler runs the SAME ``_execute_run`` body on a fixed
+    interval so the current-campaign ranking refreshes unattended. It only
+    INSERTS pending candidates for review; it NEVER promotes — promotion stays
+    the operator's explicit MANAGE_SOURCES action through
+    ``/candidates/{id}/promote``, so the approval/canary/allowlist governance
+    path is untouched. Errors never escape the loop; a failed pass is logged and
+    skipped.
+    """
+
+    def __init__(
+        self,
+        settings: OperatorApiSettings,
+        session_factory: Any,
+        *,
+        enabled: bool,
+        interval_seconds: float,
+        max_items: int,
+        max_candidates: int,
+        logger: Any | None = None,
+    ) -> None:
+        self._settings = settings
+        self._session_factory = session_factory
+        self._enabled = enabled
+        self._interval_seconds = max(0.0, float(interval_seconds))
+        self._max_items = max(1, int(max_items))
+        self._max_candidates = max(1, int(max_candidates))
+        self._logger = logger if logger is not None else get_logger("kp_operator_api.aggregation.scheduler")
+        self.status = "disabled" if not enabled else "pending"  # disabled | pending | ok | error
+
+    def _run_once_blocking(self) -> None:
+        """One aggregation pass. Never raises (a background pass must not)."""
+        if not self._settings.ai_gateway_url.strip():
+            return
+        try:
+            with self._session_factory() as session:
+                items = _load_governed_items(session, as_of=datetime.now(UTC), limit=self._max_items)
+        except Exception as exc:  # noqa: BLE001 - a background pass must never raise
+            self._logger.info("aggregation scheduler: item load failed (%s); skipping", type(exc).__name__)
+            return
+        if not items:
+            return
+        run_id = uuid.uuid4()
+        _execute_run(self._settings, self._session_factory, run_id, items, self._max_candidates)
+
+    async def run(self) -> None:
+        if not self._enabled:
+            return
+        while True:
+            try:
+                await asyncio.to_thread(self._run_once_blocking)
+                self.status = "ok"
+            except Exception as exc:  # noqa: BLE001 - keep the loop alive
+                self.status = "error"
+                self._logger.info("aggregation scheduler: run failed (%s)", type(exc).__name__)
+            await asyncio.sleep(self._interval_seconds)
 
 
 def _candidate_view(row: AggregationCandidate) -> dict[str, Any]:

@@ -180,6 +180,32 @@ class OperatorApiSettings(BaseSettings):
         ),
     )
 
+    # --- unattended periodic aggregation (M3) ---
+    # When enabled, a bounded scheduler runs the SAME background aggregation pass
+    # an operator can trigger via POST /runs on a fixed interval, so the
+    # current-campaign ranking refreshes without a human remembering to click.
+    # Candidates land as PENDING for human review — the scheduler NEVER promotes,
+    # so the approval/canary/allowlist governance path is untouched. Off by
+    # default (opt-in).
+    aggregation_scheduler_enabled: bool = Field(
+        default=False,
+        validation_alias="OPERATOR_API_AGGREGATION_SCHEDULER_ENABLED",
+    )
+    aggregation_scheduler_interval_seconds: float = Field(
+        default=6 * 60 * 60.0,
+        validation_alias="OPERATOR_API_AGGREGATION_SCHEDULER_INTERVAL_SECONDS",
+    )
+    aggregation_scheduler_max_items: int = Field(
+        default=50,
+        ge=1,
+        validation_alias="OPERATOR_API_AGGREGATION_SCHEDULER_MAX_ITEMS",
+    )
+    aggregation_scheduler_max_candidates: int = Field(
+        default=5,
+        ge=1,
+        validation_alias="OPERATOR_API_AGGREGATION_SCHEDULER_MAX_CANDIDATES",
+    )
+
     # --- send-safety policy (T-06) ---
     # Both accept a shared, unprefixed env var so an operator sets one value
     # for the API and the workers instead of two that can silently diverge.

@@ -44,6 +44,7 @@ from kp_operator_api.analytics_routes import router as analytics_router
 from kp_operator_api.auth import make_idp
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.console import router as console_router
+from kp_operator_api.console.aggregation_routes import AggregationScheduler
 from kp_operator_api.console.aggregation_routes import router as aggregation_router
 from kp_operator_api.console.discovery_routes import router as discovery_router
 from kp_operator_api.program_routes import router as program_router
@@ -570,6 +571,14 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
             audit_store,
             interval_seconds=_audit_verify_interval_seconds(),
         )
+        aggregation_scheduler = AggregationScheduler(
+            settings,
+            session_factory,
+            enabled=settings.aggregation_scheduler_enabled,
+            interval_seconds=settings.aggregation_scheduler_interval_seconds,
+            max_items=settings.aggregation_scheduler_max_items,
+            max_candidates=settings.aggregation_scheduler_max_candidates,
+        )
 
         rate_limit_backend = _RateLimitSettings().rate_limit_backend
         if rate_limit_backend == "redis" and not settings.redis_url.strip():
@@ -603,6 +612,9 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
         # Scheduled audit verification: first pass fires at startup, then every
         # interval. Cancelled on shutdown so exits stay graceful.
         verifier_task = asyncio.create_task(audit_verifier.run(), name="audit-verification")
+        # Unattended periodic aggregation (opt-in): same background pass as the
+        # operator-triggered POST /runs. Cancelled on shutdown.
+        aggregation_task = asyncio.create_task(aggregation_scheduler.run(), name="aggregation-scheduler")
         try:
             yield
         finally:
@@ -612,6 +624,9 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
                     await verifier_task
                 await audit_verifier.shutdown()
             finally:
+                aggregation_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await aggregation_task
                 orchestrator = getattr(app.state, "deployment_orchestrator", None)
                 close_orchestrator = getattr(orchestrator, "close_owned_resources", None)
                 if getattr(orchestrator, "owns_resources", False) and callable(close_orchestrator):
@@ -635,6 +650,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.audit_store = audit_store
     app.state.audit_verifier = audit_verifier
+    app.state.aggregation_scheduler = aggregation_scheduler
     # AUD-003 anchor-age gate. FEED: the anchor worker writes a Redis heartbeat
     # (kp:audit:last_successful_anchor_at) on every successful anchor via the
     # JobQueue both processes already share — no new Azure/Blob/Entra access, so
