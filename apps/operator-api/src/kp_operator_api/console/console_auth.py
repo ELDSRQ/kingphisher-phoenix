@@ -51,6 +51,14 @@ class SessionRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
+class SetPasswordRequest(BaseModel):
+    """First-run console password. The confirm field is compared before any
+    write so a typo cannot lock the operator out of a brand-new console."""
+
+    password: str = Field(min_length=1)
+    confirm: str = Field(min_length=1)
+
+
 class SessionResponse(BaseModel):
     token: str
     expires_in: int

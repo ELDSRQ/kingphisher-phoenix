@@ -525,7 +525,10 @@ def test_console_session_requires_configured_password(tmp_path) -> None:
     env_file = str(tmp_path / ".env")
     with TestClient(_app(env_file)) as client:
         resp = client.post("/api/v1/console/session", json={"password": CONSOLE_PASSWORD})
-        assert resp.status_code == 401
+        # Unset password now reports the first-run setup precondition (428)
+        # rather than a misleading "invalid password" (401); either way no
+        # session is issued.
+        assert resp.status_code == 428
 
 
 def test_console_config_read_never_returns_secret_values(env_file: str) -> None:

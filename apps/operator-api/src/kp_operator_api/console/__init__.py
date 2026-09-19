@@ -105,6 +105,7 @@ from kp_operator_api.console.console_auth import (
     OidcStartResponse,
     SessionRequest,
     SessionResponse,
+    SetPasswordRequest,
     _b64url,
     _oidc_metadata,
     _oidc_token_response,
@@ -122,10 +123,12 @@ from kp_operator_api.console.env_store import (
     _atomic_update_env,
     _AtomicEnvUpdateError,
     _console_password,
+    _console_password_unset,
     _env_path,
     _env_values,
     _reject_if_managed,
     _verify_console_password,
+    set_console_password,
 )
 from kp_operator_api.console.model_control import (
     ModelControlStatus,
@@ -439,27 +442,8 @@ def logout() -> RedirectResponse:
     return response
 
 
-@router.post("/session", response_model=SessionResponse)
-def create_session(
-    body: SessionRequest,
-    request: Request,
-) -> SessionResponse:
+def _mint_dev_session(request: Request) -> SessionResponse:
     settings = request.app.state.settings
-    if settings.oidc_mode != "dev":
-        raise AuthenticationError("console password login is disabled; sign in via the identity provider")
-    client_ip = request.client.host if request.client else "unknown"
-    throttle: LoginThrottle = request.app.state.login_throttle
-    if throttle.locked(client_ip):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="too many failed logins; try again later"
-        )
-
-    env_path = _env_path(request)
-    if not _verify_console_password(env_path, body.password):
-        throttle.record_failure(client_ip)
-        raise AuthenticationError("invalid console password")
-    throttle.record_success(client_ip)
-
     now = datetime.datetime.now(datetime.UTC)
     claims = {
         "sub": CONSOLE_OPERATOR_UUID,
@@ -477,9 +461,68 @@ def create_session(
         auth_mode="dev",
         principal_id=CONSOLE_OPERATOR_UUID,
         approval_limited=False,
-        approval_policy=request.app.state.settings.approval_policy.value,
+        approval_policy=settings.approval_policy.value,
         **_session_authority(principal),
     )
+
+
+@router.post("/session", response_model=SessionResponse)
+def create_session(
+    body: SessionRequest,
+    request: Request,
+) -> SessionResponse:
+    settings = request.app.state.settings
+    if settings.oidc_mode != "dev":
+        raise AuthenticationError("console password login is disabled; sign in via the identity provider")
+    client_ip = request.client.host if request.client else "unknown"
+    throttle: LoginThrottle = request.app.state.login_throttle
+    if throttle.locked(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="too many failed logins; try again later"
+        )
+
+    env_path = _env_path(request)
+    if _console_password_unset(env_path):
+        # First run: no password exists to verify, so point the operator at the
+        # one-time set-password flow instead of reporting a misleading "invalid
+        # password". The UI keys off this status + message.
+        raise HTTPException(
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+            detail="console password is not set; complete first-run setup",
+        )
+    if not _verify_console_password(env_path, body.password):
+        throttle.record_failure(client_ip)
+        raise AuthenticationError("invalid console password")
+    throttle.record_success(client_ip)
+    return _mint_dev_session(request)
+
+
+@router.post("/password", response_model=SessionResponse)
+def first_run_set_password(
+    body: SetPasswordRequest,
+    request: Request,
+) -> SessionResponse:
+    """One-time first-run console password setup.
+
+    Only reachable while the password is unset (a brand-new local dev stack);
+    once set, this refuses with 409 so it can never be used to silently rotate
+    the credential. The value is validated and committed atomically, never
+    logged, and never written to the audit store.
+    """
+    _reject_if_managed(request, MANAGED_CONFIG_MESSAGE)
+    settings = request.app.state.settings
+    if settings.oidc_mode != "dev":
+        raise AuthenticationError("console password login is disabled; sign in via the identity provider")
+    env_path = _env_path(request)
+    if not _console_password_unset(env_path):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="console password is already set")
+    if body.password != body.confirm:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="password and confirmation do not match",
+        )
+    set_console_password(env_path, body.password)
+    return _mint_dev_session(request)
 
 
 # FastAPI >=0.141 wraps ``include_router`` in a lazy ``_IncludedRouter`` instead
