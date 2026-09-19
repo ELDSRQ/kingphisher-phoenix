@@ -1,3 +1,5 @@
+> **CURRENT STATE (2026-09-17):** the platform now runs on-prem on Alice's RTX 3090 and the M3 aggregation feature is merged & live on `main`. The canonical current handoff is **`AI_HANDOFF_2026-09-17.md`** (repo root). The Docker-worker guidance below remains as historical, CI-pinned reference.
+
 # Next-session handoff
 
 > **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-13.md` (repo root) — read that
