@@ -27,6 +27,11 @@ const SCOPE = "https://management.azure.com/user_impersonation openid profile";
 const ARM_API = "2021-04-01"; // resource groups / subscriptions
 const DNS_API = "2018-05-01"; // Microsoft.Network dnszones
 const ACS_API = "2023-04-01"; // Microsoft.Communication communicationServices
+const GRAPH = "https://graph.microsoft.com";
+// Entra app-list discovery (A2b) uses delegated Application.Read.All, which an
+// admin must consent to for this console's app registration. It is requested
+// only by the Entra discovery step, never for the plain ARM reads.
+const GRAPH_SCOPE = "https://graph.microsoft.com/Application.Read.All openid profile";
 
 function _base64url(bytes) {
   let s = "";
@@ -46,13 +51,13 @@ async function _s256(verifier) {
   return _base64url(digest);
 }
 
-function _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge }) {
+function _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge, scope }) {
   const q = new URLSearchParams({
     client_id: clientId,
     response_type: "code",
     redirect_uri: redirectUri,
     response_mode: "query",
-    scope: SCOPE,
+    scope,
     state,
     code_challenge: codeChallenge,
     code_challenge_method: "S256",
@@ -105,14 +110,14 @@ function _popupForCode({ url, state, redirectOrigin }) {
   });
 }
 
-async function _exchangeCode({ clientId, tenant, redirectUri, code, verifier }) {
+async function _exchangeCode({ clientId, tenant, redirectUri, code, verifier, scope }) {
   const body = new URLSearchParams({
     client_id: clientId,
     grant_type: "authorization_code",
     code,
     redirect_uri: redirectUri,
     code_verifier: verifier,
-    scope: SCOPE,
+    scope,
   });
   const resp = await fetch(`${AUTHORITY}/${encodeURIComponent(tenant || "organizations")}/oauth2/v2.0/token`, {
     method: "POST",
@@ -138,16 +143,26 @@ async function _armGet(token, path) {
   return Array.isArray(data.value) ? data.value : [];
 }
 
-// Acquire a delegated ARM token via PKCE popup. Exported for the wiring layer;
-// `tenant` may be "organizations" when the operator does not yet know it.
-export async function acquireArmToken({ clientId, tenant, redirectUri }) {
+// Acquire a delegated access token via PKCE popup for a given resource scope.
+// `scope` selects the resource: ARM reads use SCOPE, Entra app-list uses
+// GRAPH_SCOPE. `tenant` may be "organizations" when the operator does not yet
+// know it.
+async function _acquireToken({ clientId, tenant, redirectUri, scope }) {
   if (!clientId) throw new Error("Azure discovery is not configured (no Entra client ID).");
   const verifier = _randomString(48);
   const state = _randomString(24);
   const codeChallenge = await _s256(verifier);
-  const url = _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge });
+  const url = _authorizeUrl({ clientId, tenant, redirectUri, state, codeChallenge, scope });
   const code = await _popupForCode({ url, state, redirectOrigin: new URL(redirectUri).origin });
-  return _exchangeCode({ clientId, tenant, redirectUri, code, verifier });
+  return _exchangeCode({ clientId, tenant, redirectUri, code, verifier, scope });
+}
+
+export async function acquireArmToken({ clientId, tenant, redirectUri }) {
+  return _acquireToken({ clientId, tenant, redirectUri, scope: SCOPE });
+}
+
+async function acquireGraphToken({ clientId, tenant, redirectUri }) {
+  return _acquireToken({ clientId, tenant, redirectUri, scope: GRAPH_SCOPE });
 }
 
 // Read-only ARM enumeration. Each is a thin GET; callers handle failures.
@@ -182,6 +197,25 @@ export async function listCommunicationServices(token, subscriptionId) {
     `/subscriptions/${subscriptionId}/providers/Microsoft.Communication/communicationServices?api-version=${ACS_API}`,
   );
   return svcs.map((c) => ({ id: c.id, name: c.name }));
+}
+
+// Entra app registrations by friendly name (A2b). Requires the console's app
+// registration to hold delegated Application.Read.All (admin consent) — the
+// token is requested only when the operator runs this step, never for ARM reads.
+export async function listEntraApplications({ clientId, tenant, redirectUri }) {
+  const token = await acquireGraphToken({ clientId, tenant, redirectUri });
+  const resp = await fetch(`${GRAPH}/v1.0/applications?$select=id,appId,displayName`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  });
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    throw new Error(`Entra app list failed (${resp.status}). ${detail.slice(0, 200)}`);
+  }
+  const data = await resp.json().catch(() => ({}));
+  const apps = Array.isArray(data.value) ? data.value : [];
+  return apps
+    .filter((a) => a.appId && a.displayName)
+    .map((a) => ({ objectId: a.id, appId: a.appId, name: a.displayName }));
 }
 
 // Orchestrate a full discovery pass for one subscription. `subscriptionId`
