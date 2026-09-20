@@ -41,12 +41,21 @@ until explicitly granted.
 
 PRIORITY ORDER (operator directive 2026-09-20): first make ON-PREM ready for
 human use, then AZURE. Deprioritize additional layered-security work.
-On-prem next: B1 Windows boot persistence on Alice (schtasks KP-Aggregate-Model,
-operator-run, classifier-blocked for the assistant) so a reboot does not
-silently drop the A3B model; then an on-prem human-acceptance dry run.
-Azure next: provision the second-identity approver (licensing@) — pattern
-self-approval is barred unconditionally, so a solo operator cannot complete a
-campaign — then an Azure campaign dry run. DOC-030 is DONE (PR #50).
+DONE on-prem: DOC-030 (PR #50) and B1 boot persistence (PR #52). On Alice the
+model now runs as the kp-aggregate systemd unit with the KP-Aggregate-Model
+logon task starting it — it had been a hand-started llama-server outside
+systemd, so nothing would have restarted it. The `-u root` in that task is
+load-bearing. Do NOT try WSL2 mirrored networking for LAN access: tried and
+reverted, it cannot work and regresses host-loopback forwarding; the platform
+defaults KP_MODEL_CONTROL_LLAMA_URL to http://127.0.0.1:18082, so use localhost
+or an SSH tunnel.
+
+REMAINING on-prem: the human-acceptance dry run — a non-technical operator
+drives a full campaign lifecycle unassisted. That is the definition of ready.
+REMAINING Azure: provision the second-identity approver (licensing@,
+AZURE_CONFIG_DIR="$HOME/.azure-licensing") — pattern self-approval is barred
+unconditionally, so a solo operator cannot complete a campaign — then an Azure
+campaign dry run.
 
 Production/RSA NO-GO stands
 until the cloud/browser/human acceptance gates pass. On-prem model is
