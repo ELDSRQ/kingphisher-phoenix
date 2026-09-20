@@ -1425,6 +1425,7 @@ jobs:
           -var="environment=$DEPLOYMENT_ENVIRONMENT"
           -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
           -var="deploy_workloads=false"
+          -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
           -var="acs_deployment_stage=foundation_bootstrap"
       - name: Enforce ACS foundation bootstrap plan allowlist
         if: inputs.deployment_phase == 'foundation_bootstrap'
@@ -1846,6 +1847,7 @@ jobs:
           -var-file="$RUNNER_TEMP/reviewed.auto.tfvars.json"
           -var="environment=$DEPLOYMENT_ENVIRONMENT"
           -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
+          -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
           -var="deploy_workloads=false"
           -var="acs_deployment_stage=foundation_finalize"
           -target=azurerm_communication_service_email_domain_association.main
