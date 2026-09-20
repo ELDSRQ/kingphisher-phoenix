@@ -108,6 +108,9 @@ jobs:
           -backend-config="container_name=$TF_STATE_CONTAINER"
           -backend-config="key=$DEPLOYMENT_ENVIRONMENT/kingphisher.tfstate"
           -backend-config="use_azuread_auth=true"
+      # Key Vault changed from a singleton to a counted resource. Terraform
+      # must see its source address while resolving that state move, but the
+      # change guard below still refuses any actual Key Vault mutation.
       - name: Plan the runner (targeted)
         working-directory: infrastructure/terraform
         run: >-
@@ -119,6 +122,7 @@ jobs:
           -var="deploy_workloads=false"
           -var="acs_deployment_stage=foundation_bootstrap"
           ${{ inputs.replace_runner_vm && '-replace=azurerm_linux_virtual_machine.ci_runner[0]' || '' }}
+          -target=azurerm_key_vault.main
           -target=azurerm_subnet.ci_runner
           -target=azurerm_public_ip.ci_runner_nat
           -target=azurerm_nat_gateway.ci_runner
