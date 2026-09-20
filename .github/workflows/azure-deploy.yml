@@ -898,7 +898,7 @@ jobs:
                   fail(f"{label} is not in a ready provisioning state")
               return state.lower()
 
-          def discover_one(resource_group, resource_type, label):
+          def discover_project_resources(resource_group, label):
               encoded_group = quote(resource_group, safe="._()-")
               selected = run_json(
                   [
@@ -915,7 +915,10 @@ jobs:
               values = selected.get("value")
               if not isinstance(values, list) or len(values) > 256:
                   fail(f"{label} discovery is malformed")
-              matches = [
+              return values
+
+          def matching_project_resource_ids(values, resource_type):
+              return [
                   item["id"] for item in values
                   if isinstance(item, dict)
                   and str(item.get("type", "")).lower() == resource_type.lower()
@@ -923,9 +926,6 @@ jobs:
                   and item.get("environment") == os.environ["DEPLOYMENT_ENVIRONMENT"]
                   and isinstance(item.get("id"), str)
               ]
-              if len(matches) != 1:
-                  fail(f"{label} discovery did not resolve exactly one project resource")
-              return matches[0]
 
           config_path = Path(os.environ["RUNNER_TEMP"]) / "reviewed.auto.tfvars.json"
           config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -977,17 +977,36 @@ jobs:
                       communication_service_id = None
                       email_domain_id = None
                   else:
-                      communication_service_id = discover_one(
-                          resource_group,
-                          "Microsoft.Communication/CommunicationServices",
-                          "Communication Service",
+                      inventory = discover_project_resources(resource_group, "ACS resource")
+                      communication_matches = matching_project_resource_ids(
+                          inventory, "Microsoft.Communication/CommunicationServices"
                       )
-                      email_service_id = discover_one(
-                          resource_group,
-                          "Microsoft.Communication/EmailServices",
-                          "Email Communication Service",
+                      email_matches = matching_project_resource_ids(
+                          inventory, "Microsoft.Communication/EmailServices"
                       )
-                      email_domain_id = f"{email_service_id}/domains/{sending_domain}"
+                      live_parent_ids = {
+                          str(item.get("id", "")).lower()
+                          for item in inventory
+                          if isinstance(item, dict)
+                          and str(item.get("type", "")).lower() in {
+                              "microsoft.communication/communicationservices",
+                              "microsoft.communication/emailservices",
+                          }
+                          and isinstance(item.get("id"), str)
+                      }
+                      if (
+                          not live_parent_ids
+                          and not communication_matches
+                          and not email_matches
+                          and phase == "foundation_bootstrap"
+                      ):
+                          communication_service_id = None
+                          email_domain_id = None
+                      elif len(communication_matches) != 1 or len(email_matches) != 1:
+                          fail("ACS discovery did not resolve exactly one complete project resource pair")
+                      else:
+                          communication_service_id = communication_matches[0]
+                          email_domain_id = f"{email_matches[0]}/domains/{sending_domain}"
               else:
                   if not isinstance(resources, dict) or set(resources) != {
                       "resource_group_name", "communication_service_id", "email_domain_id", "sender_username_id"
@@ -996,6 +1015,53 @@ jobs:
                   resource_group = resources["resource_group_name"]
                   communication_service_id = resources["communication_service_id"]
                   email_domain_id = resources["email_domain_id"]
+
+                  # A prior cost-idle or interrupted recovery can leave valid
+                  # output identities in state after the entire provisioned ACS
+                  # parent pair has been deleted. Bootstrap is the one phase
+                  # allowed to treat that complete absence as pending so the
+                  # guarded Terraform plan can recreate it. Inventory must be
+                  # readable, unpaginated, and contain neither parent type;
+                  # partial or divergent live state stays fail-closed.
+                  if phase == "foundation_bootstrap":
+                      communication_parts = split_resource_id(
+                          communication_service_id, 8, "Communication Service"
+                      )
+                      domain_parts = split_resource_id(email_domain_id, 10, "email domain")
+                      if communication_parts[6].lower() != "communicationservices":
+                          fail("Communication Service resource ID is malformed")
+                      if domain_parts[6].lower() != "emailservices" or domain_parts[8].lower() != "domains":
+                          fail("email domain resource ID is malformed")
+                      if domain_parts[9].lower() != sending_domain:
+                          fail("email domain resource ID does not match the reviewed sending domain")
+                      if (
+                          communication_parts[3].lower() != str(resource_group).lower()
+                          or domain_parts[3].lower() != str(resource_group).lower()
+                      ):
+                          fail("provisioned ACS resources do not belong to the Terraform resource group")
+                      expected_sender_id = f"{email_domain_id}/senderUsernames/{sender_local_part}"
+                      if str(resources["sender_username_id"]).lower() != expected_sender_id.lower():
+                          fail("stored sender username identity does not match the reviewed local part")
+                      inventory = discover_project_resources(resource_group, "stored ACS resource")
+                      live_parent_ids = {
+                          str(item.get("id", "")).lower()
+                          for item in inventory
+                          if isinstance(item, dict)
+                          and str(item.get("type", "")).lower() in {
+                              "microsoft.communication/communicationservices",
+                              "microsoft.communication/emailservices",
+                          }
+                          and isinstance(item.get("id"), str)
+                      }
+                      expected_parent_ids = {
+                          str(communication_service_id).lower(),
+                          ("/" + "/".join(domain_parts[:8])).lower(),
+                      }
+                      if not live_parent_ids:
+                          communication_service_id = None
+                          email_domain_id = None
+                      elif live_parent_ids != expected_parent_ids:
+                          fail("stored ACS control-plane resources are partially missing or divergent")
 
           # A sending-domain rotation is about to replace the ACS email domain, so
           # the reviewed (new) domain intentionally differs from whatever is live.

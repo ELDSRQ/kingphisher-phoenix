@@ -88,7 +88,25 @@ if args[:2] == ["account", "show"]:
     value = {{"subscriptionId": "{SUBSCRIPTION_ID}", "tenantId": "{TENANT_ID}"}}
 elif args[:2] == ["rest", "--method"]:
     uri = args[args.index("--uri") + 1].split("?", 1)[0]
-    if uri.endswith("{SENDER_ID}"):
+    if uri.endswith("/resources"):
+        inventory = os.environ.get("FAKE_ACS_INVENTORY", "full")
+        items = []
+        if inventory in {{"full", "communication-only"}}:
+            items.append({{
+                "id": "{COMMUNICATION_ID}",
+                "type": "Microsoft.Communication/CommunicationServices",
+                "application": "kingphisher-phoenix",
+                "environment": "staging",
+            }})
+        if inventory == "full":
+            items.append({{
+                "id": "{EMAIL_SERVICE_ID}",
+                "type": "Microsoft.Communication/EmailServices",
+                "application": "kingphisher-phoenix",
+                "environment": "staging",
+            }})
+        value = {{"value": items, "nextLink": None}}
+    elif uri.endswith("{SENDER_ID}"):
         value = {{
             "id": "{SENDER_ID}",
             "type": "Microsoft.Communication/EmailServices/Domains/SenderUsernames",
@@ -144,6 +162,33 @@ print(json.dumps(value, separators=(",", ":"), sort_keys=True))
     )
     fake_az.chmod(0o700)
 
+    fake_terraform = cli_dir / "terraform"
+    fake_terraform.write_text(
+        f"""#!/usr/bin/env python3
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+if args == ["-chdir=infrastructure/terraform", "output", "-json", "acs_control_plane_resources"]:
+    if os.environ.get("FAKE_TERRAFORM_ACS_OUTPUT", "present") == "missing":
+        raise SystemExit(1)
+    value = {{
+        "resource_group_name": "{RESOURCE_GROUP}",
+        "communication_service_id": "{COMMUNICATION_ID}",
+        "email_domain_id": "{DOMAIN_ID}",
+        "sender_username_id": "{SENDER_ID}",
+    }}
+elif args == ["-chdir=infrastructure/terraform", "output", "-json", "resource_group_name"]:
+    value = "{RESOURCE_GROUP}"
+else:
+    raise SystemExit(2)
+print(json.dumps(value, separators=(",", ":"), sort_keys=True))
+""",
+        encoding="utf-8",
+    )
+    fake_terraform.chmod(0o700)
+
     evidence_dir = tmp_path / "deployment-evidence"
     evidence_dir.mkdir()
     (tmp_path / "reviewed.auto.tfvars.json").write_text(
@@ -179,6 +224,23 @@ def run_program(program: Path, environment: dict[str, str]) -> subprocess.Comple
         timeout=30,
         check=False,
     )
+
+
+def provision_bootstrap_environment(environment: dict[str, str]) -> dict[str, str]:
+    """Switch the isolated program to Terraform-provisioned bootstrap mode."""
+
+    config_path = Path(environment["RUNNER_TEMP"]) / "reviewed.auto.tfvars.json"
+    config = reviewed_config()
+    config.update(
+        {
+            "acs_resource_mode": "provision",
+            "acs_existing_communication_service_id": "",
+            "acs_existing_email_endpoint": "",
+            "acs_existing_email_domain_id": "",
+        }
+    )
+    config_path.write_text(json.dumps(config, separators=(",", ":"), sort_keys=True), encoding="utf-8")
+    return {**environment, "DEPLOYMENT_PHASE": "foundation_bootstrap"}
 
 
 def test_live_readback_is_after_oidc_login_and_before_every_plan() -> None:
@@ -228,6 +290,61 @@ def test_workflow_queries_bounded_exact_resources_and_binds_evidence() -> None:
         assert contract in program
     assert "result.stderr" not in program
     assert "print(result." not in program
+
+
+def test_bootstrap_treats_a_fully_absent_stored_acs_pair_as_pending(
+    offline_live_readiness: tuple[Path, dict[str, str]],
+) -> None:
+    program, environment = offline_live_readiness
+    environment = provision_bootstrap_environment(environment)
+    result = run_program(program, {**environment, "FAKE_ACS_INVENTORY": "empty"})
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    runner_temp = Path(environment["RUNNER_TEMP"])
+    rewritten = json.loads((runner_temp / "reviewed.auto.tfvars.json").read_text(encoding="utf-8"))
+    for key in (
+        "acs_domain_verification_status",
+        "acs_spf_verification_status",
+        "acs_dkim_verification_status",
+        "acs_dkim2_verification_status",
+        "acs_sender_username_status",
+        "acs_domain_association_status",
+    ):
+        assert rewritten[key] == "not_observed"
+    assert rewritten["acs_readiness_checked_at"] == ""
+
+    evidence = json.loads((runner_temp / "deployment-evidence" / "acs-live-readiness.json").read_text())
+    assert evidence["result"] == "foundation_bootstrap_pending"
+    assert evidence["resource_ids"] == {}
+
+
+def test_bootstrap_with_no_stored_acs_output_accepts_an_empty_inventory(
+    offline_live_readiness: tuple[Path, dict[str, str]],
+) -> None:
+    program, environment = offline_live_readiness
+    environment = provision_bootstrap_environment(environment)
+    result = run_program(
+        program,
+        {
+            **environment,
+            "FAKE_TERRAFORM_ACS_OUTPUT": "missing",
+            "FAKE_ACS_INVENTORY": "empty",
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    evidence_path = Path(environment["RUNNER_TEMP"]) / "deployment-evidence" / "acs-live-readiness.json"
+    assert json.loads(evidence_path.read_text())["result"] == "foundation_bootstrap_pending"
+
+
+def test_bootstrap_refuses_partially_missing_stored_acs_resources(
+    offline_live_readiness: tuple[Path, dict[str, str]],
+) -> None:
+    program, environment = offline_live_readiness
+    environment = provision_bootstrap_environment(environment)
+    result = run_program(program, {**environment, "FAKE_ACS_INVENTORY": "communication-only"})
+    assert result.returncode != 0
+    assert "stored ACS control-plane resources are partially missing or divergent" in result.stderr
+    assert not (Path(environment["RUNNER_TEMP"]) / "deployment-evidence" / "acs-live-readiness.json").exists()
 
 
 def test_operator_entered_verified_values_cannot_unlock_failed_live_state(
