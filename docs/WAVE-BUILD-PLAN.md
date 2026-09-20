@@ -11,6 +11,14 @@ are in [the production-readiness task matrix](PRODUCTION-READINESS-TASK-MATRIX.m
 
 ## Current engineering topology
 
+> **RETIRED HOST — do not use.** The canonical local build/qualification worker
+> is the WSL2 native-`linux/amd64` Docker host `erikd@192.168.1.105`; its
+> preflight and clean-engine restore live in
+> `scripts/operator/wsl2-docker-worker/` (migration `.140`->`.105` DONE, commit
+> `fff07ce`; no build dependency on `.140` remains). Every reference below to
+> `192.168.1.140` / Colima / `DockerExternal` is **RETIRED and kept only as a
+> manual rollback reference.**
+
 The controller retains the workspace at
 `/Users/edierks/projects/codex-test/phishing-awareness-platform`. The target
 native ARM64 worker is `192.168.1.140`, with canonical source

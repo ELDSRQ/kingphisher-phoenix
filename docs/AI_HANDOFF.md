@@ -200,7 +200,10 @@ The worker supports nine roles inside one executable: ingestion, generation, del
 
 Engineering qualification is split across two hosts. The controller owns the
 workspace at `/Users/edierks/projects/codex-test/phishing-awareness-platform`.
-The target native ARM64 worker is `edierks@192.168.1.140`, with canonical source
+The canonical worker is the WSL2 native-`linux/amd64` Docker host
+`erikd@192.168.1.105` (`scripts/operator/wsl2-docker-worker/`; migration
+`.140`->`.105` DONE, commit `fff07ce`). The RETIRED rollback-only
+native ARM64 worker was `edierks@192.168.1.140`, with canonical source
 `/Users/edierks/Projects/kingphisher-phoenix` mounted read-only in the
 project-only `kingphisher` Colima VM. Its VM, cache, client metadata, and
 socket is fixed under `/Volumes/DockerExternal/KingPhisher-Phoenix`.

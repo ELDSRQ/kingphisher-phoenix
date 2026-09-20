@@ -115,7 +115,10 @@ in `packages/database/src/kp_database/audit_store.py`.
 
 **Decision:** **NO-GO for production and RSA Conference use.**
 
-**Engineering topology:** the controller retains this workspace. The current worker is
+**Engineering topology:** the controller retains this workspace. The current
+worker is the WSL2 native-`linux/amd64` Docker host `erikd@192.168.1.105`
+(`scripts/operator/wsl2-docker-worker/`; migration `.140`->`.105` DONE, commit
+`fff07ce`). The RETIRED rollback-only worker below is
 the native ARM64 worker `edierks@192.168.1.140`, canonical source
 `/Users/edierks/Projects/kingphisher-phoenix`, and a read-only source mount in
 the project-only `kingphisher` Colima VM. Its VM disks, cache, client metadata,
