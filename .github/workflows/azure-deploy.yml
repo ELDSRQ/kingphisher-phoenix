@@ -2253,34 +2253,6 @@ jobs:
           done
           echo "registry=$login_server" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      - name: Restore the registry network posture declared for this mode
-        if: always() && inputs.deployment_phase == 'workloads'
-        shell: bash
-        run: |
-          set -euo pipefail
-          registry="$(terraform -chdir=infrastructure/terraform output -raw container_registry_name)"
-          # Close the public window opened for the ACR Tasks build, whether the
-          # build succeeded or failed — but restore the posture TERRAFORM
-          # DECLARES for this network mode, not a blanket Disabled.
-          #
-          # main.tf sets public_network_access_enabled = local.public_data_plane,
-          # and public_data_plane = (network_mode == "starter"). Starter mode is
-          # public BY DESIGN: it provisions no private endpoint, so a blanket
-          # Disabled here locks out the GitHub-hosted runner (breaking the
-          # immutable-image scan and attestation verification) AND the Container
-          # Apps image pulls, and leaves live state drifting from the plan.
-          #
-          # This cannot expose production: a starter-mode production environment
-          # is already refused by the plan (see the starter/production guard in
-          # main.tf), so "starter" here always means a non-production posture
-          # that is public by explicit design.
-          if [ "$DEPLOYMENT_NETWORK_MODE" = "starter" ]; then
-            desired=Enabled
-          else
-            desired=Disabled
-          fi
-          az acr update --name "$registry" --set "publicNetworkAccess=$desired" >/dev/null
-          echo "registry public network access restored to ${desired} for network_mode=${DEPLOYMENT_NETWORK_MODE}"
       - name: Authenticate supply-chain tools to ACR
         if: inputs.deployment_phase == 'workloads'
         env:
@@ -2524,6 +2496,41 @@ jobs:
               fi
             done
           fi
+      # Moved to AFTER every step that talks to the registry data plane from
+      # the runner (scan pulls, attest pushes, attestation verify pulls).
+      # Closing the window straight after the build only works when a private
+      # endpoint already exists to fall back to; on the first private-mode
+      # deploy of an environment there is none, so the scan could not reach
+      # the registry at all. Closing it here still restores the declared
+      # posture before the plan and apply read it.
+      - name: Restore the registry network posture declared for this mode
+        if: always() && inputs.deployment_phase == 'workloads'
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="$(terraform -chdir=infrastructure/terraform output -raw container_registry_name)"
+          # Close the public window opened for the ACR Tasks build, whether the
+          # build succeeded or failed — but restore the posture TERRAFORM
+          # DECLARES for this network mode, not a blanket Disabled.
+          #
+          # main.tf sets public_network_access_enabled = local.public_data_plane,
+          # and public_data_plane = (network_mode == "starter"). Starter mode is
+          # public BY DESIGN: it provisions no private endpoint, so a blanket
+          # Disabled here locks out the GitHub-hosted runner (breaking the
+          # immutable-image scan and attestation verification) AND the Container
+          # Apps image pulls, and leaves live state drifting from the plan.
+          #
+          # This cannot expose production: a starter-mode production environment
+          # is already refused by the plan (see the starter/production guard in
+          # main.tf), so "starter" here always means a non-production posture
+          # that is public by explicit design.
+          if [ "$DEPLOYMENT_NETWORK_MODE" = "starter" ]; then
+            desired=Enabled
+          else
+            desired=Disabled
+          fi
+          az acr update --name "$registry" --set "publicNetworkAccess=$desired" >/dev/null
+          echo "registry public network access restored to ${desired} for network_mode=${DEPLOYMENT_NETWORK_MODE}"
       - name: Plan workloads
         if: inputs.deployment_phase == 'workloads'
         env:
