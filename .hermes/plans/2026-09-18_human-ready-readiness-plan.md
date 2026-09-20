@@ -62,8 +62,14 @@
 
 **Command (operator runs on Alice):**
 ```
-schtasks /Create /TN "KP-Aggregate-Model" /TR "wsl.exe -d Ubuntu-24.04 -e bash -lc /root/kp-aggregate-start.sh" /SC ONLOGON /RL HIGHEST /F
+schtasks /Create /TN "KP-Aggregate-Model" /TR "wsl.exe -d Ubuntu-24.04 -u root -e systemctl start kp-aggregate" /SC ONLOGON /RL HIGHEST /F
 ```
+> **The `-u root` matters.** WSL's default user on Alice is `erikd`, who cannot
+> execute a root-owned script in `/root`. The earlier form of this command omitted
+> `-u root` and invoked the start script directly: the task would have been created
+> successfully and then failed silently at every logon — the exact failure B1 exists
+> to prevent. Going through `systemctl start` is also idempotent. Use
+> `scripts/operator/alice-boot-persistence.sh`, which does the SSH and verifies.
 
 **Validation:** reboot Alice (or run the task manually) and confirm `/v1/models` on :18082 self-reports `qwen3-30b-a3b-aggregate` without any manual swap.
 
