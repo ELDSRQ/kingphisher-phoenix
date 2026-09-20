@@ -1,8 +1,8 @@
-> **CURRENT STATE (2026-09-17):** the platform now runs on-prem on Alice's RTX 3090 and the M3 aggregation feature is merged & live on `main`. The canonical current handoff is **`AI_HANDOFF_2026-09-17.md`** (repo root). The Docker-worker guidance below remains as historical, CI-pinned reference.
+> **STATE AS OF 2026-09-17 (superseded):** the platform now runs on-prem on Alice's RTX 3090 and the M3 aggregation feature is merged & live on `main`. The canonical current handoff is **`AI_HANDOFF_2026-09-17.md`** (repo root). The Docker-worker guidance below remains as historical, CI-pinned reference.
 
 # Next-session handoff
 
-> **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-13.md` (repo root) — read that
+> **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-19.md` (repo root) — read that
 > first.** It is current as of the merged + deployed P0–P3 pipeline, the
 > **deployed + verified P3 consumer**, and **complete DEP-010** (GUI Azure
 > deploy: browser discovery, cost estimate, roll-forward rollback). **Azure

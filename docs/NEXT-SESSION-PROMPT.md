@@ -1,6 +1,6 @@
 # Next-session resume prompt (copy/paste)
 
-> **⚠️ SUPERSEDED — read `AI_HANDOFF_2026-09-13.md` (repo root) instead.** The
+> **⚠️ SUPERSEDED — read `AI_HANDOFF_2026-09-19.md` (repo root) instead.** The
 > fenced copy/paste prompt below dates from 2026-09-05/06 and is far out of date.
 > Kept as history only.
 

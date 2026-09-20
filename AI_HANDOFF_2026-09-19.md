@@ -7,7 +7,9 @@ is the self-contained map. Copy-ready resume prompt: `NEXT_AI_PROMPT.md`.
 ## Azure staging is DEPLOYED — 2026-09-20
 
 All three phases are green and verified against the live control plane.
-`main` at `22de66b`+; PRs #42-#50 landed getting here.
+`main` at `5341c35`, CI green, zero open PRs. PRs #42-#52 landed this session.
+Azure is POWERED DOWN after the deploy (see Cost posture below) — bring it
+back up before any Azure work.
 
 | | |
 | --- | --- |
@@ -246,9 +248,15 @@ deprioritize additional layered-security work.**
    with `AZURE_CONFIG_DIR="$HOME/.azure-licensing"`.
 6. **Azure campaign dry run** — never yet run end to end.
 
-**Unverified / not yet triaged:** DEP-010 (browser discovery + GUI rollback) and
-MAIL-005 (provider positioning copy) come from the 2026-09-13 task matrix, which
-has already been stale once. Re-confirm against live code before working them.
+**DEP-010 and MAIL-005 are COMPLETE** — both landed 2026-09-13
+(`AI_HANDOFF_2026-09-13.md`, PRs #7 and #9). Do not re-do them.
+
+> **Caution on "complete" claims.** That same handoff also recorded DOC-030 as
+> done on 2026-09-13, yet 38 references to the retired `.140` worker were still
+> live in 16 markdown files on 2026-09-20 — including `README.md`, `RUNBOOK.md`
+> and `AGENTS.md` — and `docs/WAVE-BUILD-PLAN.md` still named it under a
+> "Current engineering topology" heading. DOC-030 was finally closed by PR #50.
+> Verify a completion claim against live code or live docs before trusting it.
 
 **Production/RSA NO-GO stands** until the full-suite, exact-final-image, native
 AMD64/registry, browser/WCAG, cloud/provider, recovery, and human-acceptance

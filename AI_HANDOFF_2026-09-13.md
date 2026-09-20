@@ -1,5 +1,9 @@
 # AI Handoff — 2026-09-13 (P0–P3 + P3 consumer deployed; DEP-010 complete; staging idled)
 
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-19.md`** (repo root), the canonical
+> current-state handoff as of 2026-09-20. Kept as history — in particular its
+> Foundry reference values are still the ones used to recreate that account.
+
 **Supersedes** `AI_HANDOFF_2026-09-12.md`. Design reference: `docs/AI_PIPELINE_REDESIGN_SPEC.md`,
 `docs/AI_PIPELINE_P1-P3_RESUME.md`, and `docs/design/DEP-010-BUILD-PLAN.md`.
 

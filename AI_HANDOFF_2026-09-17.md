@@ -1,6 +1,9 @@
 # AI Handoff — 2026-09-17
 
-Canonical current-state handoff. Supersedes `AI_HANDOFF_2026-09-13.md`. The
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-19.md`** (repo root), which is the
+> canonical current-state handoff as of 2026-09-20. Kept as history.
+
+Was the canonical handoff on 2026-09-17; superseded `AI_HANDOFF_2026-09-13.md`. The
 project's auto-memory (loaded each session) holds the fine-grained detail; this
 doc is the self-contained map. Read the memory index too.
 

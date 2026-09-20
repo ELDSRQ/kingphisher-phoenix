@@ -1,4 +1,4 @@
-> **CURRENT STATE (2026-09-20):** all human-readiness workstreams and PR #41 are merged on `main` (head `44ce5d8`, CI green). The canonical current handoff is **`AI_HANDOFF_2026-09-19.md`** (repo root); read its **Live Azure continuation — 2026-09-20** section first. C2 bootstrap run `35515814350` reached Terraform after ACS and Key Vault recovery, then found the staging PostgreSQL server stopped; it has been started and reads `Ready`, but no retry has run yet. The Docker-worker guidance below remains historical.
+> **CURRENT STATE (2026-09-20):** `main` is at `5341c35`, CI green, zero open PRs. Azure staging is FULLY DEPLOYED and verified (all Container Apps running, ACS Domain/SPF/DKIM/DKIM2 Verified, 5 private endpoints, network mode `private`), then POWERED DOWN via `scripts/operator/azure-nightly-shutdown.sh`. On-prem B1 boot persistence and DOC-030 are done. Read [`AI_HANDOFF_2026-09-19.md`](../AI_HANDOFF_2026-09-19.md) for the full current state and its six deploy constraints.
 
 # AI Handoff
 
