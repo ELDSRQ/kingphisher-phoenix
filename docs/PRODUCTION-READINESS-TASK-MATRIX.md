@@ -93,6 +93,14 @@ are not release claims.
 - The initial external Colima profile reserves a fixed 200 GiB data disk on
   this HFS+ filesystem; this reservation is preservation-required and must not
   be deleted or recreated as a cleanup shortcut.
+> **RETIRED HOST — do not use.** The canonical local build/qualification worker
+> is the WSL2 native-`linux/amd64` Docker host `erikd@192.168.1.105`; its
+> preflight and clean-engine restore live in
+> `scripts/operator/wsl2-docker-worker/` (migration `.140`->`.105` DONE, commit
+> `fff07ce`; no build dependency on `.140` remains). Every reference below to
+> `192.168.1.140` / Colima / `DockerExternal` is **RETIRED and kept only as a
+> manual rollback reference.**
+
 - Current state is post-restore: the external socket/profile and read-only
   source mount passed preflight; inactive `kp-external-mac` is created and
   reports `colima-kingphisher|aarch64|/var/lib/docker` at exact endpoint

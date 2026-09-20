@@ -770,7 +770,9 @@ candidates, ANA-010 key rotation, and the PROD-030 decision. NO-GO stands.
 
 Repository: `/Users/edierks/projects/codex-test/phishing-awareness-platform`
 
-Target engineering worker: `edierks@192.168.1.140`. Its canonical source is
+Target engineering worker: `erikd@192.168.1.105` (WSL2 native-`linux/amd64`;
+`scripts/operator/wsl2-docker-worker/`). The RETIRED rollback-only worker was
+`edierks@192.168.1.140`. Its canonical source is
 `/Users/edierks/Projects/kingphisher-phoenix`, mounted read-only inside the
 project-only native ARM64 Colima profile `kingphisher`; external VM/cache/client
 state and the socket are rooted at

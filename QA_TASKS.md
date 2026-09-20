@@ -71,7 +71,9 @@ all 8 processes under supervisor, browser console flows driven over HTTP as the 
 does). Full gate green before and after remediation (111 tests, ruff, mypy).
 
 > **Archived point-in-time record.** This file captures the 2026-08-04 host and
-> must not be used as current Docker or release guidance. The target worker is
+> must not be used as current Docker or release guidance. The canonical worker
+> is now `erikd@192.168.1.105` (`scripts/operator/wsl2-docker-worker/`); every
+> `192.168.1.140` reference below is retired rollback-only history. The target worker is
 > `192.168.1.140`; canonical source
 > `/Users/edierks/Projects/kingphisher-phoenix` will mount read-only in the
 > project-only `kingphisher` Colima engine rooted under
