@@ -15,13 +15,23 @@
 #       phase writes a fresh version.
 #   azurerm_role_assignment.audit_anchor_writer
 #       Binds azurerm_user_assigned_identity.workload["worker"].principal_id
-#       (main.tf:941). That identity (id-kp-staging-6117w-worker) no longer
-#       exists, so principal_id becomes known-after-apply and Terraform forces a
-#       replacement. The live assignment is orphaned to a deleted principal.
+#       (main.tf:941). When that identity has been deleted outside Terraform the
+#       principal_id becomes known-after-apply and Terraform forces a
+#       replacement, leaving the live assignment orphaned to a dead principal.
+#       This is drift, NOT a phase artifact: after a successful apply the
+#       assignment is healthy again and must be left alone. The script therefore
+#       reads principal_id out of state and removes the entry only when that
+#       principal no longer resolves in Entra.
 #
 # This is state-only surgery plus one optional orphan cleanup. It creates NO
 # Azure resources and deletes no data. A full state snapshot is written to disk
 # before anything is modified.
+#
+# Every candidate must PROVE it is stale before removal. Nothing is removed on
+# the strength of a guessed resource name: an earlier version guarded on a
+# hardcoded identity name that never existed (the suffix is "kp-staging", not
+# "kp-staging-6117w"), so the guard passed vacuously and would have removed a
+# healthy entry once the environment recovered.
 #
 # Overrides:
 #   REPO_ROOT=/abs/path   repo root (default: git toplevel from this script)
@@ -51,14 +61,22 @@ TF_STATE_STORAGE_ACCOUNT="kptfstatestg1165"
 TF_STATE_CONTAINER="tfstate"
 TF_STATE_KEY="staging/kingphisher.tfstate"
 SUBSCRIPTION_ID="169644fd-c81d-4935-af55-5770f8271022"
-DEAD_IDENTITY_RG="rg-kp-staging"
-DEAD_IDENTITY_NAME="id-kp-staging-6117w-worker"
 ORPHAN_ROLE_SCOPE="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/rg-kp-staging/providers/Microsoft.Storage/storageAccounts/stkpstagingaudit6117w/blobServices/default/containers/audit-head-anchors"
 
-STALE_ADDRESSES=(
+# Addresses whose staleness is proved by inspecting their principal: the state
+# entry is removed ONLY when the principal it binds no longer resolves in Entra.
+# A healthy assignment is left alone.
+PRINCIPAL_BOUND_ADDRESSES=(
+  'azurerm_role_assignment.audit_anchor_writer'
+)
+
+# Addresses that go stale purely because foundation_bootstrap plans with
+# deploy_workloads=false. These are only candidates while the manifest still
+# gates them on that flag; once the gate is fixed they can never collapse and
+# must never be removed.
+PHASE_COLLAPSE_ADDRESSES=(
   'random_password.ai_gateway_auth[0]'
   'azurerm_key_vault_secret.runtime["ai-gateway-auth-key"]'
-  'azurerm_role_assignment.audit_anchor_writer'
 )
 
 # ---------------------------------------------------------------- 1. discover
@@ -112,27 +130,57 @@ echo "     serial   = $SNAPSHOT_SERIAL"
 ok "state snapshot written ($(wc -c < "$SNAPSHOT" | tr -d ' ') bytes)"
 
 # -------------------------------------------------- 4. verify staleness live
-say "Confirming the worker identity really is absent from Azure"
-if az identity show -g "$DEAD_IDENTITY_RG" -n "$DEAD_IDENTITY_NAME" >/dev/null 2>&1; then
-  die "$DEAD_IDENTITY_NAME EXISTS — audit_anchor_writer is not stale. Stop and re-diagnose."
-fi
-ok "$DEAD_IDENTITY_NAME is absent, as expected"
-
-say "Listing which stale addresses are actually present in state"
+# Every candidate must PROVE it is stale. An earlier version of this script
+# trusted a hardcoded identity name (id-kp-staging-6117w-worker) that never
+# existed — the suffix is "kp-staging", not "kp-staging-6117w" — so the guard
+# passed vacuously and would have removed a perfectly healthy state entry.
+# Nothing here is name-guessed any more.
 STATE_LIST="$(terraform state list)"
 PRESENT=()
-for addr in "${STALE_ADDRESSES[@]}"; do
-  if printf '%s\n' "$STATE_LIST" | grep -Fxq "$addr"; then
-    echo "     present  $addr"
-    PRESENT+=("$addr")
+
+say "Proving staleness of principal-bound addresses"
+for addr in "${PRINCIPAL_BOUND_ADDRESSES[@]}"; do
+  if ! printf '%s\n' "$STATE_LIST" | grep -Fxq "$addr"; then
+    echo "     absent   $addr (not in state)"
+    continue
+  fi
+  principal="$(terraform state show -no-color "$addr" 2>/dev/null \
+    | awk -F'"' '/^[[:space:]]*principal_id[[:space:]]*=/ {print $2; exit}')"
+  if [ -z "$principal" ]; then
+    warn "SKIP     $addr (cannot read principal_id from state; refusing to guess)"
+    continue
+  fi
+  if az ad sp show --id "$principal" >/dev/null 2>&1; then
+    echo "     healthy  $addr (principal $principal still exists) — leaving alone"
   else
-    echo "     absent   $addr (already cleared)"
+    echo "     STALE    $addr (principal $principal no longer exists)"
+    PRESENT+=("$addr")
   fi
 done
+
+say "Checking whether the phase-collapse addresses still apply"
+# These only go stale while the manifest gates them on deploy_workloads. Once
+# that gate is removed they can never collapse under foundation_bootstrap, so
+# removing them would destroy live configuration rather than repair it.
+MANIFEST="$TF_DIR/main.tf"
+if grep -q 'count   = var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0' "$MANIFEST"; then
+  echo "     manifest still gates ai_gateway_auth on deploy_workloads — addresses apply"
+  for addr in "${PHASE_COLLAPSE_ADDRESSES[@]}"; do
+    if printf '%s\n' "$STATE_LIST" | grep -Fxq "$addr"; then
+      echo "     STALE    $addr (collapses under deploy_workloads=false)"
+      PRESENT+=("$addr")
+    else
+      echo "     absent   $addr (already cleared)"
+    fi
+  done
+else
+  ok "manifest no longer gates ai_gateway_auth on deploy_workloads — these can no longer collapse, skipping"
+fi
+
 if [ "${#PRESENT[@]}" -eq 0 ]; then
   ok "nothing to remove; state is already clean"
 else
-  ok "${#PRESENT[@]} address(es) to remove"
+  ok "${#PRESENT[@]} address(es) proved stale"
 fi
 
 # ----------------------------------------------------------- 5. orphan role
@@ -189,14 +237,20 @@ fi
 say "Verifying"
 STATE_LIST_AFTER="$(terraform state list)"
 FAILED=0
-for addr in "${STALE_ADDRESSES[@]}"; do
-  if printf '%s\n' "$STATE_LIST_AFTER" | grep -Fxq "$addr"; then
-    warn "STILL PRESENT: $addr"
-    FAILED=1
-  else
-    ok "cleared $addr"
-  fi
-done
+# Only the addresses proved stale should be gone. Anything left healthy was
+# deliberately not touched and must NOT be reported as a failure.
+if [ "${#PRESENT[@]}" -gt 0 ]; then
+  for addr in "${PRESENT[@]}"; do
+    if printf '%s\n' "$STATE_LIST_AFTER" | grep -Fxq "$addr"; then
+      warn "STILL PRESENT: $addr"
+      FAILED=1
+    else
+      ok "cleared $addr"
+    fi
+  done
+else
+  ok "no addresses needed removal"
+fi
 [ "$FAILED" -eq 0 ] || die "state still contains stale addresses; do not re-dispatch yet"
 echo "     resources remaining in state: $(printf '%s\n' "$STATE_LIST_AFTER" | wc -l | tr -d ' ')"
 ok "state repair complete; rollback snapshot at $SNAPSHOT"
