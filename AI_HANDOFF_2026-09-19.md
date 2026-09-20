@@ -174,6 +174,31 @@ Verified on merged main: full hermetic suite green (3318 passed), ruff + format
 clean, strict mypy clean (46 files), console bundle drift clean.
 
 ## On-prem is LIVE on Alice (192.168.1.36) — the operator's RTX 3090
+
+> **B1 boot persistence: DONE 2026-09-20.** `kp-aggregate` is `active` under
+> WSL systemd (it was previously a hand-started `llama-server` outside systemd,
+> so nothing would have restarted it), and the `KP-Aggregate-Model` logon task
+> starts that unit. Verified by a full WSL shutdown/restart cycle: the unit
+> brought `qwen3-30b-a3b-aggregate` back by itself. Use
+> `scripts/operator/alice-boot-persistence.sh`, which SSHes to Alice and checks
+> every precondition before creating anything.
+>
+> **Do NOT try WSL2 mirrored networking to expose the model on the LAN.** It was
+> tried and reverted on 2026-09-20. It does not work here: mirrored mode gives
+> WSL the host's own IP, so inbound LAN traffic is answered by the Windows stack
+> which has no listener and sends RST ("connection refused"). Neither a per-port
+> Hyper-V rule nor `DefaultInboundAction=Allow` changed that. It also REGRESSES
+> the Windows `127.0.0.1:18082` -> WSL forwarding that default NAT mode provides
+> for free (that needs `hostAddressLoopback=true` under mirrored mode).
+>
+> **The LAN gap is probably not a gap.** `model_control.py:39` defaults
+> `KP_MODEL_CONTROL_LLAMA_URL` to `http://127.0.0.1:18082`, i.e. the platform
+> expects the model on localhost. Either run the operator API on Alice, or use
+> an SSH tunnel as the handoffs already do for other Alice services:
+>
+> ```bash
+> ssh -N -o IdentitiesOnly=yes -i ~/.ssh/alice_dr_ed25519 -L 18082:127.0.0.1:18082 erikd@192.168.1.36
+> ```
 Reached via `ssh alice` (config alias, key `~/.ssh/alice_dr_ed25519`, user
 `erikd`). Windows 11 + WSL2 Ubuntu-24.04 (home `/root`, runs as root).
 
@@ -209,7 +234,7 @@ deprioritize additional layered-security work.**
 **On-prem (P0)**
 1. ~~DOC-030 — docs pointed at the retired `.140` worker~~ DONE (PR #50).
 2. **B1 — Windows boot persistence on Alice** (operator, classifier-blocked):
-   `schtasks /Create /TN "KP-Aggregate-Model" /TR "wsl.exe -d Ubuntu-24.04 -e bash -lc /root/kp-aggregate-start.sh" /SC ONLOGON /RL HIGHEST /F`
+   `schtasks /Create /TN "KP-Aggregate-Model" /TR "wsl.exe -d Ubuntu-24.04 -u root -e systemctl start kp-aggregate" /SC ONLOGON /RL HIGHEST /F`
    Without it a reboot silently drops the A3B model and aggregation dies unsignalled.
 3. **On-prem human-acceptance dry run** — a non-technical operator drives a full
    campaign lifecycle unassisted. This is the definition of ready; the rest is proxy.
