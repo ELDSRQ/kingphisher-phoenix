@@ -20,35 +20,35 @@ first (authoritative scope + preservation rules), then
 AI_HANDOFF_2026-09-19.md (canonical current state), then
 .hermes/plans/2026-09-18_human-ready-readiness-plan.md.
 
-STATE (2026-09-20): main is at 44ce5d8 and PR #41 is merged/green. Three
-bootstrap blockers were cleared in order: the missing Key Vault deployer
-binding, the stopped PostgreSQL server (now Ready), and stale Terraform state
-that made the plan non-create/update-only and tripped the foundation_bootstrap
-allowlist. The stale state was repaired with
-scripts/operator/deployment-preflight/repair-stale-bootstrap-state.sh (removes
-random_password.ai_gateway_auth[0],
-azurerm_key_vault_secret.runtime["ai-gateway-auth-key"], and
-azurerm_role_assignment.audit_anchor_writer, plus the orphaned audit-anchor
-role assignment). Run 35517495114 then passed qualification, the operator
-approved staging, and the allowlist gate passed. Continue from there through
-foundation_bootstrap -> foundation_finalize -> workloads.
+STATE (2026-09-20): AZURE STAGING IS FULLY DEPLOYED. All three phases green and
+verified live: operator/tracking/worker/ai-gateway Container Apps Running,
+migration job applied, ACS Domain+SPF+DKIM+DKIM2 all Verified, sender
+awareness@mail.floridamanevolved.us bound, 5 private endpoints, ACS Event Grid
+receipts active. Console:
+https://ca-kp-staging-operator.jollybeach-1b54592b.eastus2.azurecontainerapps.io
+Network mode is now PRIVATE (self-hosted azure-vnet runner), not starter.
+Azure is POWERED DOWN (azure-nightly-shutdown.sh: Postgres stopped, apps at
+min-replicas 0, runner VM deallocated); bring it back up before any deploy.
 
-foundation_bootstrap is GREEN (run 35520770863: 0 added, 0 changed, 0
-destroyed) and the ACS domain is fully Verified on all four of Domain, SPF,
-DKIM and DKIM2 — the stale ms-domain-verification token from the previous ACS
-domain was the cause of DnsRecordsNotMatched and has been removed. Dispatch
-later phases with dispatch-staging-finalize.sh (PHASE=workloads for the last).
+READ the "Azure staging is DEPLOYED" section of AI_HANDOFF_2026-09-19.md before
+touching the deploy. Six non-obvious constraints are recorded there, including:
+foundation_bootstrap CANNOT be re-run after foundation_finalize (prevent_destroy
+on the ACS association + sender username); foundation_finalize is -targeted at
+just those two resources so it converges nothing else; the AI Foundry account is
+NOT Terraform-managed and must be recreated out of band; and the operator holds
+no Key Vault data-plane role, so az keyvault secret commands fail Forbidden
+until explicitly granted.
 
-DO NOT run repair-stale-bootstrap-state.sh as a routine pre-dispatch step. PRs
-#43 and #45 stop the ai-gateway pair collapsing under foundation_bootstrap, and
-the script now detects that and skips them. It remains valid only for DRIFT — a
-role assignment orphaned because its identity was deleted outside Terraform.
-Run it read-only to diagnose a plan showing destroys; CONFIRM=yes only when it
-proves an address stale. Against healthy state it would remove live resources
-and make the next plan create duplicates. #45 is still unproven behaviourally:
-its real test is the first foundation_bootstrap AFTER a workloads deploy. See
-the live Azure continuation section in AI_HANDOFF_2026-09-19.md for run IDs,
-addresses, snapshots, and evidence boundaries. Production/RSA NO-GO stands
+PRIORITY ORDER (operator directive 2026-09-20): first make ON-PREM ready for
+human use, then AZURE. Deprioritize additional layered-security work.
+On-prem next: B1 Windows boot persistence on Alice (schtasks KP-Aggregate-Model,
+operator-run, classifier-blocked for the assistant) so a reboot does not
+silently drop the A3B model; then an on-prem human-acceptance dry run.
+Azure next: provision the second-identity approver (licensing@) — pattern
+self-approval is barred unconditionally, so a solo operator cannot complete a
+campaign — then an Azure campaign dry run. DOC-030 is DONE (PR #50).
+
+Production/RSA NO-GO stands
 until the cloud/browser/human acceptance gates pass. On-prem model is
 Qwen3-30B-A3B on llama.cpp :18082 on Alice. Never merge with --admin, never
 fabricate Azure evidence, work only on this repo.

@@ -4,114 +4,118 @@ Canonical current-state handoff. Supersedes `AI_HANDOFF_2026-09-17.md`. The
 project’s auto-memory (loaded each session) holds fine-grained detail; this doc
 is the self-contained map. Copy-ready resume prompt: `NEXT_AI_PROMPT.md`.
 
-## Live Azure continuation — 2026-09-20
+## Azure staging is DEPLOYED — 2026-09-20
 
-`main` is at `44ce5d8` (PR #41, merged with required CI green). The
-stale-Terraform-ACS repair is live. Three blockers were cleared in sequence
-this session; each is recorded below because the failure modes recur on every
-rebootstrap of a torn-down environment.
+All three phases are green and verified against the live control plane.
+`main` at `22de66b`+; PRs #42-#50 landed getting here.
 
-**1. Key Vault deployer binding (run `35515025480`).** The recovered Key Vault
-was missing the exact Terraform-managed deployer binding. Restored in Azure
-without state surgery:
+| | |
+| --- | --- |
+| Container apps | `operator`, `tracking`, `worker`, `ai-gateway` — Running |
+| Migration | `caj-kp-staging-migration`; migrate-and-qualify passed |
+| ACS domain | Domain, SPF, DKIM, DKIM2 — **all Verified** |
+| Sender | `awareness@mail.floridamanevolved.us` bound; domain associated |
+| Private endpoints | 5 — acr, vault, postgres, redis, audit-anchor |
+| Receipts | ACS Event Grid subscription activated and verified |
+| Operator console | `https://ca-kp-staging-operator.jollybeach-1b54592b.eastus2.azurecontainerapps.io` |
 
-- principal: `kp-phoenix-deploy-staging` (`9407ae13-324a-4f7d-bb3c-08f4ce0d3365`)
-- role: `Key Vault Secrets Officer`
-- assignment: `5186c3e9-46e8-bd62-fc99-5063549086ba`
-- scope: vault `kvkpstaging6117w` in `rg-kp-staging`
+**Network mode is now `private`, not `starter`.** The runner is therefore the
+self-hosted `azure-vnet` VM (`vm-kp-staging-runner`), selected automatically by
+`azure-deploy.yml:340` from `network_mode`.
 
-**2. Stopped PostgreSQL (run `35515814350`).** The plan failed with
-`ServerStoppedError` reading the `kingphisher` database and the
-`azure.extensions` configuration. `psql-kp-staging-6117w` was started and reads
-`Ready`.
+### Non-obvious things this took — read before touching the deploy
 
-**3. Stale state vs. the create/update-only allowlist (runs `35515814350`,
-`35516897770`).** With Postgres up, the plan was
-`62 to add, 3 to change, 3 to destroy` — and the step "Enforce ACS foundation
-bootstrap plan allowlist" (`.github/workflows/azure-deploy.yml:1429`) refuses
-*any* delete or replacement outside an explicit ACS domain rotation. All three
-were stale, not real:
+1. **`foundation_bootstrap` cannot be re-run after `foundation_finalize`.** The
+   bootstrap stage sets the ACS association and sender username to count 0, and
+   both carry `prevent_destroy` (`main.tf:580`, `:595`), so the plan aborts
+   before the allowlist. Verified by run `35531923482`.
+2. **`foundation_finalize` is `-target`ed** at exactly those two ACS resources,
+   so it plans nothing else — it cannot converge foundation networking. A
+   finalize that reports `0 added, 0 changed, 0 destroyed` is doing its job, not
+   skipping work.
+3. **Only `workloads` plans the full config.** That is why the starter->private
+   migration had to complete through the workloads phase, and why its supply
+   chain must work while the transition is incomplete (#49).
+4. **The Foundry account is NOT Terraform-managed.** `ais-kp-staging-6117w` died
+   with the 2026-09-14 teardown and had to be recreated out of band before
+   `azurerm_role_assignment.ai_gateway_foundry_user` could apply. Recreate with
+   `scripts/operator/deployment-preflight/recreate-foundry-and-finish.sh`.
+   Model formats differ: the GA models are `OpenAI`, the open-weight gpt-oss
+   family is `OpenAI-OSS`. Check with `az cognitiveservices model list -l eastus2`.
+5. **The operator has no Key Vault data-plane role.** Only the deploy SP
+   (`867a1a69-...`) holds Key Vault Secrets Officer on `kvkpstaging6117w`.
+   Subscription Owner does not grant data-plane access on an RBAC-model vault,
+   so `az keyvault secret ...` fails with Forbidden until an explicit grant is
+   made (and RBAC propagation needs ~2 minutes, not seconds).
+6. **A failed apply can orphan a Key Vault secret** — created in Azure, absent
+   from state, so the next apply fails with "a resource with the ID ... already
+   exists". Clear it by deleting AND purging the secret (soft-delete is on,
+   purge protection is off), then re-running.
 
-| Address | Action | Cause |
-| --- | --- | --- |
-| `random_password.ai_gateway_auth[0]` | destroy | `count = var.deploy_workloads && var.deploy_ai_gateway` (`main.tf:759`); `foundation_bootstrap` hardcodes `deploy_workloads=false` (`azure-deploy.yml:1427`) so the count collapses to 0. No Azure resource backs it. |
-| `azurerm_key_vault_secret.runtime["ai-gateway-auth-key"]` | destroy | reads `random_password.ai_gateway_auth[0].result` (`main.tf:1119`); falls with it. |
-| `azurerm_role_assignment.audit_anchor_writer` | replace | binds `azurerm_user_assigned_identity.workload["worker"].principal_id` (`main.tf:941`); that identity no longer exists, so `principal_id` became known-after-apply and forced replacement. The live assignment `e663f127-2265-96eb-fcf9-52ffe53b67f8` was orphaned to deleted principal `dc6b022c-b298-4700-a90f-645db8b6a68a`. |
+### Fixes landed this session
 
-Repaired by `scripts/operator/deployment-preflight/repair-stale-bootstrap-state.sh`
-(new, untracked). It snapshots state, re-verifies the worker identity is really
-absent, removes exactly those three addresses, deletes orphaned assignments
-whose principal no longer resolves, and verifies. It is read-only unless run
-with `CONFIRM=yes`. State went from serial 247 to 175 resources remaining;
-rollback snapshot:
-`.tf-state-snapshots/staging-kingphisher-20260920T144428Z.tfstate`.
+- **#42/#44** stale-state repair script, then the fix for its vacuous guard: it
+  keyed on `id-kp-staging-6117w-worker`, a name that never existed (the suffix
+  is `kp-staging`), so it protected nothing and would have removed a healthy
+  entry. It now proves staleness per address.
+- **#43/#45** ai-gateway bearer gating. #43 alone was a **no-op**: neither
+  foundation plan step passed `deploy_ai_gateway`, so it defaulted to `false`
+  and the count was 0 either way. #45 passes it in both foundation plan steps.
+- **#47** restore the ACR posture the network mode declares, not a blanket
+  `Disabled` — starter mode is public by design and a blanket close locked out
+  the runner and the Container App image pulls.
+- **#49** keep the registry window open across the whole supply chain (scan
+  pulls, attest pushes, verify pulls) instead of closing it right after the
+  build. Closing early only works when a private endpoint already exists.
+- **#46/#50** docs: corrected bootstrap guidance; retired the `.140` references.
 
-**How this was actually fixed (read before running the repair script).** The
-conflict had two independent halves, fixed in three PRs:
+> **Do NOT run `repair-stale-bootstrap-state.sh` routinely.** With #43/#45 the
+> ai-gateway pair can no longer collapse, and the script detects that and skips
+> it. It remains valid only for DRIFT — a role assignment orphaned because its
+> identity was deleted outside Terraform. Against healthy state it would remove
+> live resources and make the next plan create duplicates.
 
-- **#43** changed `random_password.ai_gateway_auth` (`main.tf:768`) to gate on
-  `deploy_ai_gateway` alone instead of `deploy_workloads && deploy_ai_gateway`,
-  with the Key Vault entry and both grants on it moved to match.
-- **#45** was needed because #43 alone did nothing: neither foundation plan
-  step passed `deploy_ai_gateway`, `staging.tfvars` does not set it, and it is
-  not among the 38 reviewed config keys, so it fell back to its declared
-  default of `false` and the count was 0 either way. #45 passes it in both the
-  bootstrap and finalize plan steps, as the workloads and receipt plans already
-  did. Both were required: fixing only bootstrap would have moved the destroy
-  into finalize and tripped that phase's allowlist instead.
-- **#44** fixed the repair script itself, which guarded on a hardcoded identity
-  name (`id-kp-staging-6117w-worker`) that never existed — the suffix is
-  `kp-staging` — so the guard passed vacuously. It now proves staleness per
-  address and leaves healthy entries alone.
-
-> **Do NOT run the repair script as a routine pre-dispatch step.** With #43 and
-> #45 in, the ai-gateway pair can no longer collapse under
-> `foundation_bootstrap`, and the script detects this and skips them. What it
-> still legitimately handles is *drift*: a role assignment orphaned because its
-> identity was deleted outside Terraform. That is not self-inflicted by the
-> phase and is not always present. Run it read-only to diagnose a plan that
-> shows destroys; run it with `CONFIRM=yes` only when it proves an address
-> stale. Running it against healthy state would remove live resources from
-> state and make the next plan create duplicates.
-
-**Runs.** `35517495114` was the first green `foundation_bootstrap` (after the
-manual state repair). `35520770863` then re-ran it on fixed `main` with no
-repair step: `Apply complete! Resources: 0 added, 0 changed, 0 destroyed`. Note
-that this run did **not** prove #43 worked — state was already clean; the
-`0 added` is the tell that the secret was still not being created. Superseded:
-`35516897770` (cancelled), `35515814350`, `35515025480`.
-
-To dispatch a phase:
+### Dispatching
 
 ```bash
 bash scripts/operator/deployment-preflight/dispatch-staging-bootstrap.sh
-bash scripts/operator/deployment-preflight/dispatch-staging-finalize.sh
-PHASE=workloads bash scripts/operator/deployment-preflight/dispatch-staging-finalize.sh
-gh api /repos/ELDSRQ/kingphisher-phoenix/actions/runs/RUN_ID/pending_deployments
+NETWORK_MODE=private PHASE=foundation_finalize bash scripts/operator/deployment-preflight/dispatch-staging-finalize.sh
+NETWORK_MODE=private PHASE=workloads bash scripts/operator/deployment-preflight/dispatch-staging-finalize.sh
 ```
 
-The success signal at the allowlist is **`0 to destroy`**. The gate runs before
-`terraform apply`, so a dirty plan costs time but mutates nothing — it is always
-safe to approve and let the gate answer.
+`scripts/operator/deployment-preflight/recreate-foundry-and-finish.sh` does
+Foundry-recreate + dispatch + approve + follow in one command.
 
-**Still unproven:** #45's behavioural test is the first `foundation_bootstrap`
-run *after* a workloads deploy, i.e. the first time the ai-gateway secret exists
-in state and must survive the phase rather than be destroyed. Until that run
-happens, treat the recurrence as fixed-in-theory only.
+Approval needs the quoted, typed form — `-f` sends a string and zsh globs `[]`:
 
-Then continue `foundation_bootstrap → foundation_finalize → workloads`. Do not
-claim C2 complete until Terraform evidence, ACS DNS records, domain/SPF/DKIM/
-DKIM2 verification, workloads, browser/WCAG, recovery, and human-acceptance
-gates all pass. Production/RSA remains NO-GO.
+```bash
+gh api --method POST /repos/ELDSRQ/kingphisher-phoenix/actions/runs/RUN_ID/pending_deployments -F 'environment_ids[]=20961255392' -f state=approved -f comment='...'
+```
 
-The preserved Terraform state blob was snapshotted before the ACS repair at
-`2026-09-20T13:20:53.0397783Z`. No *broad* state surgery was performed: the only
-state modification was the three-address removal described above, each verified
-stale against live Azure first, with a full local snapshot taken before the
-change. Current worktree user-owned uncommitted files are the handoff docs,
-`.hermes/`, `scripts/operator/merge-open-prs.sh`, and the new
-`scripts/operator/deployment-preflight/repair-stale-bootstrap-state.sh`;
-`.tf-state-snapshots/` is gitignored via `*.tfstate`. Do not `git add -A`.
+### Cost posture
+
+Azure was powered down after this deploy with
+`scripts/operator/azure-nightly-shutdown.sh` (Postgres stopped, Container Apps
+to `min-replicas 0`, runner VM deallocated) — reversible, and it keeps ACR and
+Redis so the next run needs no rebuild. `azure-idle.sh stop` is the deeper,
+cheaper idle that additionally destroys ACR and Redis; it forces a full image
+rebuild on resume.
+
+### Still open on Azure
+
+- **Second-identity approver is not provisioned.** Pattern self-approval is
+  barred unconditionally, so a solo operator cannot complete a campaign. Use
+  `licensing@` (`AZURE_CONFIG_DIR="$HOME/.azure-licensing"`).
+- **#45 is still behaviourally unproven for the recurrence it fixes.** Its real
+  test is the next `foundation_bootstrap` after a workloads deploy — the first
+  time the ai-gateway secret exists in state and must survive rather than be
+  destroyed. Note (1) above: that bootstrap cannot run on this environment now.
+- **Starter mode `workloads` has never completed.** Beyond #47/#49, the
+  `actions/attest` steps fail on a GitHub-hosted runner with
+  "No credentials found for registry" despite a valid `DOCKER_CONFIG`; the
+  action's own example uses `docker/login-action`. Unresolved, and only matters
+  if starter-mode workloads is wanted.
+- A campaign has **not** been run end to end on Azure.
 
 ---
 
@@ -199,15 +203,32 @@ GUI wizard drives `terraform apply` via `.github/workflows/azure-deploy.yml`
 projects — never touch.
 
 ## Remaining tasks / gates
-1. **C2 — Azure end-to-end integration run (in progress):** bootstrap must be
-   rerun with PostgreSQL `Ready`, then `foundation_finalize → workloads` must
-   complete. Capture the four DNS records and configure them at the external DNS
-   provider; do not claim domain/SPF/DKIM/DKIM2 readiness before Azure readback.
-2. **Windows schtasks (operator, classifier-blocked):**
+Operator directive 2026-09-20: **on-prem human-ready first, then Azure;
+deprioritize additional layered-security work.**
+
+**On-prem (P0)**
+1. ~~DOC-030 — docs pointed at the retired `.140` worker~~ DONE (PR #50).
+2. **B1 — Windows boot persistence on Alice** (operator, classifier-blocked):
    `schtasks /Create /TN "KP-Aggregate-Model" /TR "wsl.exe -d Ubuntu-24.04 -e bash -lc /root/kp-aggregate-start.sh" /SC ONLOGON /RL HIGHEST /F`
-3. **Production/RSA NO-GO stands** until the full-suite, exact-final-image,
-   native AMD64/registry, browser/WCAG, cloud/provider, recovery, and
-   human-acceptance gates are proven. Nothing in this session changes that.
+   Without it a reboot silently drops the A3B model and aggregation dies unsignalled.
+3. **On-prem human-acceptance dry run** — a non-technical operator drives a full
+   campaign lifecycle unassisted. This is the definition of ready; the rest is proxy.
+
+**Azure (P1)**
+4. ~~C2 — Azure end-to-end~~ DONE 2026-09-20; see the deployment section above.
+5. **Second-identity approver not provisioned** — pattern self-approval is barred
+   unconditionally, so a solo operator cannot complete a campaign. `licensing@`
+   with `AZURE_CONFIG_DIR="$HOME/.azure-licensing"`.
+6. **Azure campaign dry run** — never yet run end to end.
+
+**Unverified / not yet triaged:** DEP-010 (browser discovery + GUI rollback) and
+MAIL-005 (provider positioning copy) come from the 2026-09-13 task matrix, which
+has already been stale once. Re-confirm against live code before working them.
+
+**Production/RSA NO-GO stands** until the full-suite, exact-final-image, native
+AMD64/registry, browser/WCAG, cloud/provider, recovery, and human-acceptance
+gates are proven. Nothing in this session changes that.
+
 
 ## Known issues fixed this session
 - **Stale workflow-digest pin:** `tests/test_azure_idle_workflow_contract.py`
