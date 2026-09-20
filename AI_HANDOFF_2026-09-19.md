@@ -46,32 +46,58 @@ with `CONFIRM=yes`. State went from serial 247 to 175 resources remaining;
 rollback snapshot:
 `.tf-state-snapshots/staging-kingphisher-20260920T144428Z.tfstate`.
 
-> **This conflict is structural, not a one-off.** `foundation_bootstrap` always
-> passes `deploy_workloads=false`, so any state carrying a prior workloads
-> deploy will always plan workload-only destroys and always trip the
-> create/update-only allowlist. Every future rebootstrap hits it. The durable
-> fix — not yet written — is a PR teaching the allowlist to accept workload-only
-> resources whose count collapses under `deploy_workloads=false`, and role
-> assignments whose principal no longer exists. Until then, run the repair
-> script before each bootstrap dispatch.
+**How this was actually fixed (read before running the repair script).** The
+conflict had two independent halves, fixed in three PRs:
 
-**Current run.** After the repair, `35517495114` was dispatched
-(`reviewed_sha 44ce5d8`), passed qualification, and the operator approved the
-protected `staging` environment (env id `20961255392`). Superseded runs:
-`35516897770` (parked at the gate with a pre-repair plan — cancel, do not
-approve), `35515814350`, `35515025480`.
+- **#43** changed `random_password.ai_gateway_auth` (`main.tf:768`) to gate on
+  `deploy_ai_gateway` alone instead of `deploy_workloads && deploy_ai_gateway`,
+  with the Key Vault entry and both grants on it moved to match.
+- **#45** was needed because #43 alone did nothing: neither foundation plan
+  step passed `deploy_ai_gateway`, `staging.tfvars` does not set it, and it is
+  not among the 38 reviewed config keys, so it fell back to its declared
+  default of `false` and the count was 0 either way. #45 passes it in both the
+  bootstrap and finalize plan steps, as the workloads and receipt plans already
+  did. Both were required: fixing only bootstrap would have moved the destroy
+  into finalize and tripped that phase's allowlist instead.
+- **#44** fixed the repair script itself, which guarded on a hardcoded identity
+  name (`id-kp-staging-6117w-worker`) that never existed — the suffix is
+  `kp-staging` — so the guard passed vacuously. It now proves staleness per
+  address and leaves healthy entries alone.
 
-To dispatch and approve a fresh attempt:
+> **Do NOT run the repair script as a routine pre-dispatch step.** With #43 and
+> #45 in, the ai-gateway pair can no longer collapse under
+> `foundation_bootstrap`, and the script detects this and skips them. What it
+> still legitimately handles is *drift*: a role assignment orphaned because its
+> identity was deleted outside Terraform. That is not self-inflicted by the
+> phase and is not always present. Run it read-only to diagnose a plan that
+> shows destroys; run it with `CONFIRM=yes` only when it proves an address
+> stale. Running it against healthy state would remove live resources from
+> state and make the next plan create duplicates.
+
+**Runs.** `35517495114` was the first green `foundation_bootstrap` (after the
+manual state repair). `35520770863` then re-ran it on fixed `main` with no
+repair step: `Apply complete! Resources: 0 added, 0 changed, 0 destroyed`. Note
+that this run did **not** prove #43 worked — state was already clean; the
+`0 added` is the tell that the secret was still not being created. Superseded:
+`35516897770` (cancelled), `35515814350`, `35515025480`.
+
+To dispatch a phase:
 
 ```bash
-bash scripts/operator/deployment-preflight/repair-stale-bootstrap-state.sh
-CONFIRM=yes bash scripts/operator/deployment-preflight/repair-stale-bootstrap-state.sh
 bash scripts/operator/deployment-preflight/dispatch-staging-bootstrap.sh
+bash scripts/operator/deployment-preflight/dispatch-staging-finalize.sh
+PHASE=workloads bash scripts/operator/deployment-preflight/dispatch-staging-finalize.sh
 gh api /repos/ELDSRQ/kingphisher-phoenix/actions/runs/RUN_ID/pending_deployments
 ```
 
 The success signal at the allowlist is **`0 to destroy`**. The gate runs before
-`terraform apply`, so a dirty plan costs time but mutates nothing.
+`terraform apply`, so a dirty plan costs time but mutates nothing — it is always
+safe to approve and let the gate answer.
+
+**Still unproven:** #45's behavioural test is the first `foundation_bootstrap`
+run *after* a workloads deploy, i.e. the first time the ai-gateway secret exists
+in state and must survive the phase rather than be destroyed. Until that run
+happens, treat the recurrence as fixed-in-theory only.
 
 Then continue `foundation_bootstrap → foundation_finalize → workloads`. Do not
 claim C2 complete until Terraform evidence, ACS DNS records, domain/SPF/DKIM/

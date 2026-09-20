@@ -33,13 +33,22 @@ role assignment). Run 35517495114 then passed qualification, the operator
 approved staging, and the allowlist gate passed. Continue from there through
 foundation_bootstrap -> foundation_finalize -> workloads.
 
-KNOWN RECURRING TRAP: foundation_bootstrap always passes deploy_workloads=false,
-so any state carrying a prior workloads deploy will again plan workload-only
-destroys and again trip the create/update-only allowlist. Run the repair script
-(read-only first, then CONFIRM=yes) before each bootstrap dispatch, or land the
-durable allowlist patch described in AI_HANDOFF_2026-09-19.md. See the live
-Azure continuation section there for exact run IDs, addresses, snapshots, and
-evidence boundaries. Production/RSA NO-GO stands
+foundation_bootstrap is GREEN (run 35520770863: 0 added, 0 changed, 0
+destroyed) and the ACS domain is fully Verified on all four of Domain, SPF,
+DKIM and DKIM2 — the stale ms-domain-verification token from the previous ACS
+domain was the cause of DnsRecordsNotMatched and has been removed. Dispatch
+later phases with dispatch-staging-finalize.sh (PHASE=workloads for the last).
+
+DO NOT run repair-stale-bootstrap-state.sh as a routine pre-dispatch step. PRs
+#43 and #45 stop the ai-gateway pair collapsing under foundation_bootstrap, and
+the script now detects that and skips them. It remains valid only for DRIFT — a
+role assignment orphaned because its identity was deleted outside Terraform.
+Run it read-only to diagnose a plan showing destroys; CONFIRM=yes only when it
+proves an address stale. Against healthy state it would remove live resources
+and make the next plan create duplicates. #45 is still unproven behaviourally:
+its real test is the first foundation_bootstrap AFTER a workloads deploy. See
+the live Azure continuation section in AI_HANDOFF_2026-09-19.md for run IDs,
+addresses, snapshots, and evidence boundaries. Production/RSA NO-GO stands
 until the cloud/browser/human acceptance gates pass. On-prem model is
 Qwen3-30B-A3B on llama.cpp :18082 on Alice. Never merge with --admin, never
 fabricate Azure evidence, work only on this repo.
