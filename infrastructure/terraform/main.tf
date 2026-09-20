@@ -753,10 +753,19 @@ resource "random_password" "console" {
 # AI-016 fail-closed gateway auth. Shared bearer/API key the managed ai-gateway
 # REQUIRES (KP_AI_GATEWAY_REQUIRE_AUTH=true + KP_AI_GATEWAY_API_KEY) and the
 # generation worker presents on every /propose call (KP_WORKER_AI_BEARER_TOKEN).
-# Only generated when the gateway is actually deployed; the local/dev stack runs
-# the gateway with auth OFF and never sees this secret.
+# Only generated when the gateway is configured; the local/dev stack runs the
+# gateway with auth OFF and never sees this secret.
+#
+# Gated on deploy_ai_gateway ALONE, deliberately not on deploy_workloads. Key
+# Vault and every other runtime secret are foundation-resident, and
+# foundation_bootstrap always plans with deploy_workloads=false. Including that
+# flag here made the secret vanish from the bootstrap plan whenever state still
+# carried a prior workloads deploy, so the phase planned a destroy and tripped
+# its own create/update-only allowlist on every rebootstrap. The secret now
+# lives with the rest of the foundation and is simply unused until the gateway
+# deploys, mirroring the redis-url conditional.
 resource "random_password" "ai_gateway_auth" {
-  count   = var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0
+  count   = var.deploy_ai_gateway ? 1 : 0
   length  = 48
   special = false
 }
@@ -1113,9 +1122,11 @@ locals {
     },
     # redis-url only exists when the data plane (Redis) is deployed.
     local.data_plane ? { redis-url = local.redis_url } : {},
-    # ai-gateway-auth-key only exists when the managed ai-gateway is deployed;
+    # ai-gateway-auth-key only exists when the managed ai-gateway is configured;
     # it backs the AI-016 fail-closed bearer shared by the gateway and worker.
-    (var.deploy_workloads && var.deploy_ai_gateway) ? {
+    # Foundation-resident (see random_password.ai_gateway_auth) so the bootstrap
+    # phase never plans it as a destroy.
+    var.deploy_ai_gateway ? {
       ai-gateway-auth-key = random_password.ai_gateway_auth[0].result
     } : {},
     {
@@ -1158,8 +1169,13 @@ locals {
         ],
         # P3: the console calls the gateway's /discover on behalf of a
         # source curator, so it reads the shared gateway bearer (AI-016). Scoped
-        # only when the managed gateway is deployed.
-        var.deploy_workloads && var.deploy_ai_gateway ? ["ai-gateway-auth-key"] : [],
+        # only when the managed gateway is configured, and gated with the secret
+        # itself rather than on deploy_workloads: a grant that disappears under
+        # deploy_workloads=false is planned as a destroy on every rebootstrap and
+        # trips the foundation_bootstrap plan allowlist. The bearer is inert
+        # until the gateway container exists, so granting it with the foundation
+        # costs nothing.
+        var.deploy_ai_gateway ? ["ai-gateway-auth-key"] : [],
       ))
       tracking = toset([
         "tracking-database-url",
@@ -1175,7 +1191,10 @@ locals {
     # AI-016: the ai-gateway identity reads the shared auth key so the gateway
     # can enforce KP_AI_GATEWAY_REQUIRE_AUTH. Scoped to the gateway workload and
     # only when the gateway is deployed.
-    (var.deploy_workloads && var.deploy_ai_gateway) ? {
+    # Gated with the secret itself, not on deploy_workloads: the ai-gateway
+    # identity is already foundation-resident (local.workload_identities), and
+    # every other workload_secret grant is created during bootstrap.
+    var.deploy_ai_gateway ? {
       ai-gateway = toset(["ai-gateway-auth-key"])
     } : {},
     {

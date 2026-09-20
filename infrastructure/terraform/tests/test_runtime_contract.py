@@ -624,27 +624,29 @@ def test_deploy_ai_gateway_defaults_off() -> None:
 
 def test_ai_gateway_fail_closed_auth_is_shared_and_gated_to_managed() -> None:
     # AI-016 follow-up: the managed gateway must run fail-closed. A single shared
-    # secret is generated only when the gateway is actually deployed.
-    assert (
-        'resource "random_password" "ai_gateway_auth" {\n'
-        "  count   = var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0"
-    ) in MAIN
+    # secret is generated only when the gateway is configured.
+    #
+    # Gated on deploy_ai_gateway ALONE. This previously also required
+    # deploy_workloads, which broke rebootstrap: foundation_bootstrap always
+    # plans with deploy_workloads=false, so whenever state still carried a prior
+    # workloads deploy the secret and its password were planned as destroys and
+    # tripped the phase's own create/update-only plan allowlist. Key Vault and
+    # every other runtime secret are foundation-resident, so this one is too; it
+    # is simply unused until the gateway deploys. Do not reintroduce
+    # deploy_workloads here without fixing that allowlist interaction.
+    assert ('resource "random_password" "ai_gateway_auth" {\n  count   = var.deploy_ai_gateway ? 1 : 0') in MAIN
+    assert "var.deploy_workloads && var.deploy_ai_gateway ? 1 : 0" not in MAIN
     # The shared secret lands in Key Vault under the same runtime pattern, gated
-    # on the gateway being deployed (mirrors the redis-url conditional).
+    # on the gateway being configured (mirrors the redis-url conditional).
     assert (
-        "(var.deploy_workloads && var.deploy_ai_gateway) ? {\n"
-        "      ai-gateway-auth-key = random_password.ai_gateway_auth[0].result\n"
-        "    } : {}"
+        "var.deploy_ai_gateway ? {\n      ai-gateway-auth-key = random_password.ai_gateway_auth[0].result\n    } : {}"
     ) in MAIN
-    # The gateway identity reads the shared key.
+    # The gateway identity reads the shared key, gated with the secret itself so
+    # the grant is created alongside it during bootstrap.
     secret_access = MAIN.split("locals {\n  workload_secret_names", maxsplit=1)[1].split(
         'resource "azurerm_role_assignment" "workload_secret"', maxsplit=1
     )[0]
-    assert (
-        "(var.deploy_workloads && var.deploy_ai_gateway) ? {\n"
-        '      ai-gateway = toset(["ai-gateway-auth-key"])\n'
-        "    } : {}"
-    ) in secret_access
+    assert ('var.deploy_ai_gateway ? {\n      ai-gateway = toset(["ai-gateway-auth-key"])\n    } : {}') in secret_access
     # The generation worker deployment also reads it, gated identically.
     assert (
         '(var.deploy_ai_gateway && contains(roles, "generation")) ? toset(["ai-gateway-auth-key"]) : toset([])'
