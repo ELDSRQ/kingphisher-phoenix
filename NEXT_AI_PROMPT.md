@@ -1,13 +1,52 @@
 # Next AI Session Prompt — Phishing Awareness Platform
 
-> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-13.md`** — read that first. The
-> "Terraform Azure provider auth" blocker framing below is stale. The P0–P3
-> pipeline redesign is merged and deployed, the **P3 consumer is now deployed +
-> verified**, and **DEP-010 (GUI Azure deploy: discovery, cost, rollback) is
-> complete**. **Azure staging is currently powered off to save cost — bring it
-> back per §2 of the current handoff before staging work.** The live campaign
-> goal now sits only behind the pattern second-approver requirement. Kept as
-> history.
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-19.md`** (repo root) — that is now the
+> canonical current-state handoff and carries the copy-ready resume prompt.
+> Read it first. The Terraform/Entra framing below is stale history (2026-09-11);
+> the current state: all human-readiness workstreams and the ACS bootstrap repair
+> are merged on `main`
+> (Qwen3-30B-A3B permanent on-prem model, first-run console password, periodic
+> aggregation, ciphertext prefill, Entra app-list discovery, DNS click-to-copy,
+> eval hardening). The only remaining workstream is **C2 — Azure end-to-end**;
+> the tenant, protected environment, runner, and admin-consent setup are done.
+> Kept as history.
+
+## Copy-ready resume prompt (current)
+
+```text
+Resume the phishing-awareness-platform build at
+/Users/edierks/projects/codex-test/phishing-awareness-platform. Read AGENTS.md
+first (authoritative scope + preservation rules), then
+AI_HANDOFF_2026-09-19.md (canonical current state), then
+.hermes/plans/2026-09-18_human-ready-readiness-plan.md.
+
+STATE (2026-09-20): main is at 44ce5d8 and PR #41 is merged/green. Three
+bootstrap blockers were cleared in order: the missing Key Vault deployer
+binding, the stopped PostgreSQL server (now Ready), and stale Terraform state
+that made the plan non-create/update-only and tripped the foundation_bootstrap
+allowlist. The stale state was repaired with
+scripts/operator/deployment-preflight/repair-stale-bootstrap-state.sh (removes
+random_password.ai_gateway_auth[0],
+azurerm_key_vault_secret.runtime["ai-gateway-auth-key"], and
+azurerm_role_assignment.audit_anchor_writer, plus the orphaned audit-anchor
+role assignment). Run 35517495114 then passed qualification, the operator
+approved staging, and the allowlist gate passed. Continue from there through
+foundation_bootstrap -> foundation_finalize -> workloads.
+
+KNOWN RECURRING TRAP: foundation_bootstrap always passes deploy_workloads=false,
+so any state carrying a prior workloads deploy will again plan workload-only
+destroys and again trip the create/update-only allowlist. Run the repair script
+(read-only first, then CONFIRM=yes) before each bootstrap dispatch, or land the
+durable allowlist patch described in AI_HANDOFF_2026-09-19.md. See the live
+Azure continuation section there for exact run IDs, addresses, snapshots, and
+evidence boundaries. Production/RSA NO-GO stands
+until the cloud/browser/human acceptance gates pass. On-prem model is
+Qwen3-30B-A3B on llama.cpp :18082 on Alice. Never merge with --admin, never
+fabricate Azure evidence, work only on this repo.
+```
+
+---
+
 
 ## Context
 **Repo:** `/Users/edierks/projects/codex-test/phishing-awareness-platform`

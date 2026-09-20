@@ -1,10 +1,10 @@
-> **CURRENT STATE (2026-09-17):** the platform now runs on-prem on Alice's RTX 3090 and the M3 aggregation feature is merged & live on `main`. The canonical current handoff is **`AI_HANDOFF_2026-09-17.md`** (repo root). The Docker-worker guidance below remains as historical, CI-pinned reference.
+> **CURRENT STATE (2026-09-20):** all human-readiness workstreams and PR #41 are merged on `main` (head `44ce5d8`, CI green). The canonical current handoff is **`AI_HANDOFF_2026-09-19.md`** (repo root); read its **Live Azure continuation — 2026-09-20** section first. C2 bootstrap run `35515814350` reached Terraform after ACS and Key Vault recovery, then found the staging PostgreSQL server stopped; it has been started and reads `Ready`, but no retry has run yet. The Docker-worker guidance below remains historical.
 
 # AI Handoff
 
-> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-13.md` (repo root).** This file is the
-> pre-redesign history (last substantive addendum 2026-09-06). For current state —
-> P0–P3 merged + deployed, P3 consumer built — read `AI_HANDOFF_2026-09-13.md`.
+> **HISTORICAL CONTENT.** This file retains pre-redesign history (last
+> substantive addendum 2026-09-06). For current state, read the root
+> `AI_HANDOFF_2026-09-19.md`, especially its 2026-09-20 live Azure continuation.
 
 ## Addendum 2026-09-06 — REVIEW-FINDINGS wave LANDED (head `e47570f`, all pushed)
 
