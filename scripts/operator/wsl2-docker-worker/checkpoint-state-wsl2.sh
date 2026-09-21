@@ -42,7 +42,14 @@ esac
 
 fail() {
   printf 'CHECKPOINT BLOCKED: %s\n' "$*" >&2
-  printf 'Nothing was captured or modified. The running stack is untouched.\n' >&2
+  printf 'The running stack is untouched.\n' >&2
+  # Partial artifacts are removed so a retry is not blocked by the
+  # refuse-to-overwrite guard, and so a half-written checkpoint can never be
+  # mistaken for a verified one. Anything already verified is left alone.
+  if [ "${KP_PARTIAL:-0}" = "1" ]; then
+    rm -f "$KP_POSTGRES_DUMP" "$KP_REDIS_RDB"
+    printf 'Removed the partial checkpoint in %s.\n' "$KP_OUT" >&2
+  fi
   exit 1
 }
 say(){ printf '==> %s\n' "$*"; }
@@ -77,7 +84,12 @@ verify_artifacts() {
   say "verifying the Redis RDB"
   local rimg
   rimg="$(docker inspect "$KP_REDIS_CONTAINER" --format '{{.Config.Image}}' 2>/dev/null || true)"
-  docker run --rm --pull never --network none --read-only --user 999:999 \
+  # No --user here: docker cp preserves /data/dump.rdb's 0600 builder-owned
+  # perms, so uid 999 cannot read it. Widening the artifact to 0644 just to
+  # satisfy the check would leak Redis contents on this shared host, so the
+  # throwaway container reads it as root instead, still --read-only,
+  # --network none and --pull never.
+  docker run --rm --pull never --network none --read-only \
     --volume "$KP_OUT:/backup:ro" \
     --entrypoint redis-check-rdb "$rimg" /backup/redis.rdb >/dev/null \
     || fail "redis-check-rdb rejected the snapshot"
@@ -104,6 +116,7 @@ KP_TABLES="$(docker exec "$KP_POSTGRES_CONTAINER" psql -U "$KP_DB_USER" -d "$KP_
   || fail "source database has no public tables; refusing to capture an empty checkpoint"
 ok "source database has $KP_TABLES public tables"
 
+KP_PARTIAL=1
 mkdir -p "$KP_OUT"
 for f in "$KP_POSTGRES_DUMP" "$KP_REDIS_RDB"; do
   [ -e "$f" ] && fail "$f already exists; move the previous checkpoint aside rather than overwriting it"
@@ -139,6 +152,7 @@ docker cp "$KP_REDIS_CONTAINER:/data/dump.rdb" "$KP_REDIS_RDB" >/dev/null || fai
 ok "wrote $(wc -c < "$KP_REDIS_RDB" | tr -d ' ') bytes"
 
 verify_artifacts
+KP_PARTIAL=0
 
 # ------------------------------------------------------------------ manifest
 {
