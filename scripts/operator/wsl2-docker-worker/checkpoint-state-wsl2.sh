@@ -7,8 +7,15 @@
 # could not be proven end to end (readiness gate D5).
 #
 # It produces exactly what restore-state-wsl2.sh consumes:
+#   migration-checkpoint/globals.sql     cluster roles (pg_dumpall --globals-only)
 #   migration-checkpoint/postgres.dump   pg_dump custom format (pg_restore -Fc)
 #   migration-checkpoint/redis.rdb       RDB snapshot (redis-check-rdb clean)
+#
+# globals.sql is not optional. Postgres roles are CLUSTER-level, so a pg_dump of
+# one database contains GRANTs to roles it does not define. Restoring that into
+# a fresh cluster fails on the first GRANT, and the platform's per-worker
+# least-privilege model (kp_operator, kp_worker_*, audit_writer, audit_owner)
+# would be lost even if it did not.
 #   migration-checkpoint/MANIFEST.txt    sha256 digests, sizes, source identity
 #
 # READ-ONLY against the running stack. It never stops, restarts, reconfigures or
@@ -25,6 +32,7 @@ KP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 KP_OUT="$KP_ROOT/migration-checkpoint"
 KP_POSTGRES_DUMP="$KP_OUT/postgres.dump"
 KP_REDIS_RDB="$KP_OUT/redis.rdb"
+KP_GLOBALS_SQL="$KP_OUT/globals.sql"
 KP_MANIFEST="$KP_OUT/MANIFEST.txt"
 KP_POSTGRES_CONTAINER=phishing-awareness-platform-postgres-1
 KP_REDIS_CONTAINER=phishing-awareness-platform-redis-1
@@ -47,7 +55,7 @@ fail() {
   # refuse-to-overwrite guard, and so a half-written checkpoint can never be
   # mistaken for a verified one. Anything already verified is left alone.
   if [ "${KP_PARTIAL:-0}" = "1" ]; then
-    rm -f "$KP_POSTGRES_DUMP" "$KP_REDIS_RDB"
+    rm -f "$KP_POSTGRES_DUMP" "$KP_REDIS_RDB" "$KP_GLOBALS_SQL"
     printf 'Removed the partial checkpoint in %s.\n' "$KP_OUT" >&2
   fi
   exit 1
@@ -73,6 +81,7 @@ verify_artifacts() {
   img="$(docker inspect "$KP_POSTGRES_CONTAINER" --format '{{.Config.Image}}' 2>/dev/null || true)"
   [ -s "$KP_POSTGRES_DUMP" ] || fail "missing or empty $KP_POSTGRES_DUMP"
   [ -s "$KP_REDIS_RDB" ] || fail "missing or empty $KP_REDIS_RDB"
+  [ -s "$KP_GLOBALS_SQL" ] || fail "missing or empty $KP_GLOBALS_SQL"
 
   say "verifying the PostgreSQL archive is readable by pg_restore"
   docker run --rm --pull never --network none --read-only \
@@ -118,11 +127,17 @@ ok "source database has $KP_TABLES public tables"
 
 KP_PARTIAL=1
 mkdir -p "$KP_OUT"
-for f in "$KP_POSTGRES_DUMP" "$KP_REDIS_RDB"; do
+for f in "$KP_POSTGRES_DUMP" "$KP_REDIS_RDB" "$KP_GLOBALS_SQL"; do
   [ -e "$f" ] && fail "$f already exists; move the previous checkpoint aside rather than overwriting it"
 done
 
 # ------------------------------------------------------------------- postgres
+say "capturing cluster globals (roles and their grants)"
+docker exec "$KP_POSTGRES_CONTAINER" pg_dumpall -U "$KP_DB_USER" --globals-only \
+  > "$KP_GLOBALS_SQL" || fail "pg_dumpall --globals-only failed"
+grep -qE '^CREATE ROLE' "$KP_GLOBALS_SQL" || fail "globals.sql contains no CREATE ROLE statements"
+ok "wrote $(grep -c '^CREATE ROLE' "$KP_GLOBALS_SQL") roles"
+
 say "capturing PostgreSQL (custom format)"
 docker exec "$KP_POSTGRES_CONTAINER" pg_dump -U "$KP_DB_USER" -d "$KP_DB" --format=custom \
   > "$KP_POSTGRES_DUMP" || fail "pg_dump failed"
@@ -164,6 +179,8 @@ KP_PARTIAL=0
   echo "redis_image          $(docker inspect "$KP_REDIS_CONTAINER" --format '{{.Config.Image}}')"
   echo "postgres_dump_sha256 $(sha256sum "$KP_POSTGRES_DUMP" | awk '{print $1}')"
   echo "postgres_dump_bytes  $(wc -c < "$KP_POSTGRES_DUMP" | tr -d ' ')"
+  echo "globals_sql_sha256   $(sha256sum "$KP_GLOBALS_SQL" | awk '{print $1}')"
+  echo "globals_roles        $(grep -c '^CREATE ROLE' "$KP_GLOBALS_SQL")"
   echo "redis_rdb_sha256     $(sha256sum "$KP_REDIS_RDB" | awk '{print $1}')"
   echo "redis_rdb_bytes      $(wc -c < "$KP_REDIS_RDB" | tr -d ' ')"
 } > "$KP_MANIFEST"
