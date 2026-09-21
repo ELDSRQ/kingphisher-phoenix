@@ -125,12 +125,18 @@ docker run --rm \
   --entrypoint pg_restore \
   -i "$KP_POSTGRES_IMAGE" --list < "$KP_POSTGRES_DUMP" >/dev/null
 
+# No --user here. A checkpoint RDB produced by `docker cp` from the Redis
+# container keeps its 0600 owner-only permissions, so uid 999 cannot read it
+# and this check failed on a snapshot that was in fact valid. Loosening the
+# artifact to 0644 would expose Redis contents on a shared build host, so the
+# throwaway check container reads it as root instead; it is still --read-only,
+# --network none and --pull never, and the file is chowned to 999:999 later,
+# inside the Redis container, where it actually matters.
 docker run --rm \
   --name "kp-redis-rdb-check-$KP_RUN_ID" \
   --pull never \
   --network none \
   --read-only \
-  --user 999:999 \
   --volume "$KP_RDB_DIR:/backup:ro" \
   --entrypoint redis-check-rdb \
   "$KP_REDIS_IMAGE" "/backup/$KP_RDB_NAME" >/dev/null
