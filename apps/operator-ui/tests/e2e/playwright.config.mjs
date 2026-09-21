@@ -10,7 +10,7 @@ const baseURL = process.env.OPERATOR_CONSOLE_URL || "http://127.0.0.1:8000";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: /.*\.smoke\.spec\.mjs/,
+  testMatch: /.*\.(smoke|a11y)\.spec\.mjs/,
   // No webServer block on purpose: the operator owns stack lifecycle.
   fullyParallel: false,
   forbidOnly: true,
