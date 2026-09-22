@@ -6,10 +6,12 @@
   "scripts": {
     "build": "node scripts/build-console.mjs",
     "check": "node --check src/console/app.js",
-    "test:e2e": "playwright test -c tests/e2e/playwright.config.mjs",
-    "test:e2e:install": "playwright install chromium"
+    "test:e2e": "playwright test -c tests/e2e/playwright.config.mjs --grep-invert @a11y",
+    "test:e2e:install": "playwright install chromium",
+    "test:a11y": "playwright test -c tests/e2e/playwright.config.mjs --grep @a11y"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.10.1",
     "@playwright/test": "1.63.0",
     "esbuild": "0.25.0"
   }
