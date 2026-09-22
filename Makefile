@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PY := uv run --frozen
 COMPOSE := docker compose
 
-.PHONY: bootstrap install verify-install operational-readiness dev mock-stack lock-mock-services test test-unit test-postgres test-redis test-contract test-fresh-migration test-live-azure test-e2e test-e2e-console lint typecheck security-scan security-scan-bandit security-scan-semgrep security-scan-trivy security-scan-dependencies security-scan-images verify-images db-migrate db-rollback db-init seed build sbom sign verify-audit
+.PHONY: bootstrap install verify-install operational-readiness dev mock-stack lock-mock-services test test-unit test-postgres test-redis test-contract test-fresh-migration test-live-azure test-e2e test-e2e-console test-a11y-console lint typecheck security-scan security-scan-bandit security-scan-semgrep security-scan-trivy security-scan-dependencies security-scan-images verify-images db-migrate db-rollback db-init seed build sbom sign verify-audit
 
 ## One-shot installer: installs all dependencies and starts the full system.
 ## See scripts/install.sh for supported platforms (macOS, Debian/Ubuntu).
@@ -83,6 +83,17 @@ test-e2e-console:
 	@[ -d apps/operator-ui/node_modules/@playwright/test ] || { echo "Playwright is not installed: run 'npm --prefix apps/operator-ui install' then 'npm --prefix apps/operator-ui run test:e2e:install'" >&2; exit 2; }
 	@curl -sfo /dev/null --max-time 8 "$$OPERATOR_CONSOLE_URL/console/" || { echo "console not reachable at $$OPERATOR_CONSOLE_URL/console/ — is the SSH tunnel up?" >&2; exit 2; }
 	@npm --prefix apps/operator-ui run --silent test:e2e
+
+## Accessibility gate (readiness D3): axe-core over each console view against a
+## LIVE authenticated console. Operator-run only — CI has no browser. axe finds
+## roughly half of real WCAG issues, so a green run is necessary, never
+## sufficient: keyboard order and screen-reader flow still need a human pass.
+test-a11y-console:
+	@[ -n "$$OPERATOR_CONSOLE_URL" ] || { echo "OPERATOR_CONSOLE_URL is required (e.g. http://localhost:18000 via the .105 tunnel)" >&2; exit 2; }
+	@[ -n "$$OPERATOR_CONSOLE_PASSWORD" ] || [ -n "$$OPERATOR_CONSOLE_STORAGE_STATE" ] || { echo "set OPERATOR_CONSOLE_PASSWORD (local-stack KP_CONSOLE_PASSWORD) or OPERATOR_CONSOLE_STORAGE_STATE" >&2; exit 2; }
+	@[ -d apps/operator-ui/node_modules/@playwright/test ] || { echo "Playwright is not installed: run 'npm --prefix apps/operator-ui install' then 'npm --prefix apps/operator-ui run test:a11y:install'" >&2; exit 2; }
+	@curl -sfo /dev/null --max-time 8 "$$OPERATOR_CONSOLE_URL/console/" || { echo "console not reachable at $$OPERATOR_CONSOLE_URL/console/ — is the SSH tunnel up?" >&2; exit 2; }
+	@npm --prefix apps/operator-ui run --silent test:a11y
 
 ## Read-only live Azure smoke test. Requires explicit opt-in and subscription.
 test-live-azure:
