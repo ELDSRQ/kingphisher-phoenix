@@ -324,12 +324,34 @@ additional layered-security work.**
    non-technical operator drives a full campaign lifecycle unassisted against
    the live `.105` stack. This is the definition of ready; the rest is proxy.
 
-**Azure — deployed, powered down, one hard blocker**
+**Azure — deployed, powered down; the presumed blocker was already solved**
 4. ~~C2 end-to-end~~ DONE 2026-09-20.
-5. **Second-identity approver not provisioned — OPEN.** Pattern self-approval is
-   barred unconditionally, so a solo operator CANNOT complete a campaign. Use
-   `licensing@` with `AZURE_CONFIG_DIR="$HOME/.azure-licensing"` and verify by
-   token `oid`. Nothing else on the Azure path matters until this exists.
+5. ~~Second-identity approver not provisioned~~ **ALREADY PROVISIONED — verified
+   2026-09-22 against live Entra AND a real token.** Recorded as "the hard Azure
+   blocker" across several handoffs; it was never true. Do not rebuild it.
+
+   ```
+   upn   licensing@erikdierksgmail.onmicrosoft.com
+   oid   ee54cb16-6028-45c7-b37f-059aa2f95e8e
+   roles ['administrator']
+   aud   97466174-d0ac-460c-94e8-7b6ff3c83da5
+   primary operator oid: eacd7c6c-7a67-4b0d-9711-5d301d51244f (different)
+   ```
+
+   The administrator role grants all 25 capabilities including approve:pattern,
+   approve_security:campaign and approve_privacy:campaign, and the self-approval
+   guards compare the token oid, which differs. Re-check any time with
+   `scripts/operator/verify-second-approver.sh`.
+
+   Two auth gotchas that cost a cycle: `az login --allow-no-subscriptions`
+   WITHOUT `--tenant` enumerates tenants against Azure Resource Manager, which
+   this tenant requires MFA for (AADSTS50076); az CLI 2.89.1 then crashes in
+   `_subscription_selector.py` on an account with no subscription. Always pass
+   `--tenant`.
+
+   OPEN JUDGEMENT CALL, not a blocker: administrator is full admin, not a scoped
+   approver. A least-privilege second approver would hold source_curator +
+   security_approver + privacy_approver.
 6. **Azure campaign dry run — OPEN.** Requires 5. Bring Azure back up first
    (Postgres stopped, apps at min-replicas 0, runner VM deallocated).
 
