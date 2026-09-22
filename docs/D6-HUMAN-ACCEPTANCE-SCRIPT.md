@@ -19,24 +19,45 @@ being measured is whether a human can do the job without help.
 
 ## Before you start (operator, not the driver)
 
-The model must be warm — a cold start loads ~19.5 GB into VRAM and has been
-observed taking over twelve minutes. Generation will appear hung if you skip
-this.
+The model must be warm before you start. Generation will appear hung if you
+skip this.
+
+**Do not rely on a fixed wait — poll the endpoint.** Load time varies by more
+than an order of magnitude depending on whether the 18 GB weights file is
+already in the OS page cache:
+
+| Case | Observed |
+| --- | --- |
+| Warm (file in page cache, e.g. after a recent load) | ~30 seconds |
+| Cold (first read from disk after boot) | materially longer — minutes |
+
+An earlier version of this document claimed "over twelve minutes". That was
+wrong: the figure came from probing a service that was being repeatedly killed
+mid-load by GPU contention, so it never finished. Once the contention was
+resolved a warm load completed in 30 seconds. The honest answer is that the
+cold figure has not been cleanly measured, because doing so means dropping page
+cache on a host another product shares.
 
 ```bash
 ssh -o IdentitiesOnly=yes -i ~/.ssh/alice_dr_ed25519 erikd@192.168.1.36 \
   "wsl -d Ubuntu-24.04 -u root -e curl -s http://127.0.0.1:18082/v1/models"
 ```
 
-Expect `qwen3-30b-a3b-aggregate`. If it says `"Loading model"`, wait and retry —
-do not start the run until it answers.
+Expect `qwen3-30b-a3b-aggregate`. If it says `"Loading model"`, wait and retry
+until it answers — do not start the run, and do not assume a duration.
 
-> **KNOWN ISSUE, UNRESOLVED.** `kp-aggregate` on Alice has been observed being
-> stopped and restarted repeatedly by something outside systemd
-> (`NRestarts=0`, clean `Stopping`/`Deactivated successfully` entries). Each
-> cycle discards a partially loaded model. If generation stalls mid-run, check
-> the unit before blaming the console — and record it as an environment fault,
-> not a usability finding.
+> **GPU CONTENTION — RESOLVED 2026-09-22, but know the signature.** Alice's
+> single 24 GB RTX 3090 is shared with another product (Scribe on `.216`), whose
+> model is a similar size. Only one can be resident. For a period, something
+> outside systemd repeatedly issued `systemctl stop` against `kp-aggregate`
+> (`NRestarts=0`, clean `Deactivated successfully`), killing each load after
+> 19–42 seconds — just short of the ~30 seconds a warm load needs. The service
+> therefore appeared permanently stuck at `"Loading model"`.
+>
+> Verified resolved: 11 of 12 consecutive probes served over three minutes, with
+> 19.5 GB resident. If generation stalls mid-run, check
+> `journalctl -u kp-aggregate` for `Stopping` entries before blaming the
+> console — a recurrence is an environment fault, not a usability finding.
 
 Open the console tunnel and leave it running:
 
