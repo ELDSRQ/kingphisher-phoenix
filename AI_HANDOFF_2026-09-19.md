@@ -229,38 +229,140 @@ GUI wizard drives `terraform apply` via `.github/workflows/azure-deploy.yml`
 (digest-pinned `90473530bc5f…a5b3c`). Other RGs (`raven-*`, `atprod*`) are OTHER
 projects — never touch.
 
+## On-prem gates D1/D2/D3/D5 CLOSED, and the stack is LIVE — 2026-09-22
+
+**The platform is deployed and running on `.105`.** Before 2026-09-21 it ran
+nowhere: the Mac has no Docker daemon and `.105` had no phishing volumes at all.
+
+`.105` is a SHARED build host. `/home/builder` also holds AccessTracker,
+Procurement-build, Procurement-build-uat, at-idp and procurement-prod, and 15
+of their containers run continuously. Everything below was done without
+touching them, and `compose down -v` was always project-scoped. A
+`docker-destructive-guard` shim (installed by the technology-procurement team
+after a dev-volume-loss RCA) wraps docker there and refuses host-wide prunes —
+it is helpful, not an obstacle.
+
+### Running the on-prem stack on .105
+
+```bash
+ssh erikd@192.168.1.105
+wsl -e bash -lc 'cd ~/phishing-awareness-platform && ./scripts/install.sh --skip-deps'
+```
+
+- `--skip-deps` is required: the dependency phase would apt-install Docker on a
+  host that already has it.
+- `uv` lives at `/home/builder/.local/bin/uv` and is NOT on the default
+  non-interactive PATH. `verify_install.sh` reports
+  `required command not found: uv` because of this; the services are fine. Export
+  the PATH before running anything there.
+- `docker-compose.override.yml` remaps mock-idp to `127.0.0.1:8543:8443`,
+  because AccessTracker's TLS proxy holds `0.0.0.0:8443`. It uses `!override`:
+  Compose MERGES `ports` lists by default, so a plain override is additive and
+  binds BOTH ports, which fails.
+- Reach the console from the Mac with a tunnel:
+  `ssh -N -L 18000:127.0.0.1:8000 erikd@192.168.1.105` then
+  `http://localhost:18000/console/`. Password is `KP_CONSOLE_PASSWORD` in
+  `.env` on `.105`.
+
+### Gate results
+
+| Gate | Status | What it found |
+| --- | --- | --- |
+| **D1** full suite | CLOSED (#54) | A test time bomb that expired that day |
+| **D2** exact-final-image | CLOSED (#57) | Build was never running; `.105` tree was dirty |
+| **D3** accessibility | CLOSED (#56) — automated half only | Status pills below WCAG AA contrast |
+| **D5** recovery | CLOSED (#55) | Restore could not read its own input; recovery silently dropped every role |
+
+Every one of those gates found a real defect. None would have surfaced by
+reading code.
+
+### Traps these gates exposed — read before trusting a green run
+
+1. **A green suite can rot without a commit.** `make test` was green on
+   2026-09-20 and red on 2026-09-21 with no code change:
+   `test_source_fidelity_enters_the_bounded_reviewed_generation_evidence` pinned
+   `next_review_at = ingestion_as_of + 30 days`, which landed on 2026-09-21, and
+   generation checks governance against wall-clock now. Bracket the PRESENT in
+   tests, never a fixed date.
+2. **Recovery was not merely unproven, it was impossible.** Nothing could CREATE
+   a checkpoint on `.105` — the only creator is macOS/Colima/Keychain-bound.
+   Worse, the restore verified its RDB as `--user 999:999` while `docker cp`
+   preserves `0600`, and `pg_dump` captures one database while Postgres roles are
+   CLUSTER-level, so a "successful" restore would have dropped every
+   `kp_worker_*`, `kp_operator` and `audit_*` role. Capture with
+   `checkpoint-state-wsl2.sh`, restore with `restore-state-wsl2.sh --apply`.
+3. **`verify_images.sh` has six guards, each failing in seconds with one line.**
+   `DOCKER_HOST` must EQUAL the expected endpoint — unset is a mismatch, not a
+   default. The source digest is only knowable by letting it build the manifest
+   first. The Trivy cache must be absolute AND beneath the build storage path.
+   Use `scripts/operator/release/verify-images-105.sh`, which handles all of it
+   and refuses a dirty tree.
+4. **Do not trust `pgrep -f <script>` over SSH.** It matches its own command
+   string, so a long-dead build reads as running. Detect completion with a
+   marker written by the job itself.
+5. **axe-core is half the picture.** `make test-a11y-console` fails only on
+   serious/critical and cannot judge keyboard order, focus management or
+   screen-reader flow. A green run is necessary evidence for D3, never
+   sufficient.
+
+### Tooling added to .105 (user-scoped, removable)
+
+- Trivy 0.74.0 at `/home/builder/.local/bin/trivy`, sha256 `d89bcc65…`, required
+  by the D2 contract. `rm` it to undo.
+
 ## Remaining tasks / gates
-Operator directive 2026-09-20: **on-prem human-ready first, then Azure;
-deprioritize additional layered-security work.**
+Operator directive: **on-prem human-ready first, then Azure; deprioritize
+additional layered-security work.**
 
-**On-prem (P0)**
-1. ~~DOC-030 — docs pointed at the retired `.140` worker~~ DONE (PR #50).
-2. **B1 — Windows boot persistence on Alice** (operator, classifier-blocked):
-   `schtasks /Create /TN "KP-Aggregate-Model" /TR "wsl.exe -d Ubuntu-24.04 -u root -e systemctl start kp-aggregate" /SC ONLOGON /RL HIGHEST /F`
-   Without it a reboot silently drops the A3B model and aggregation dies unsignalled.
-3. **On-prem human-acceptance dry run** — a non-technical operator drives a full
-   campaign lifecycle unassisted. This is the definition of ready; the rest is proxy.
+**On-prem — everything automatable is done**
+1. ~~DOC-030~~ DONE (#50). ~~B1 boot persistence~~ DONE (#52).
+   ~~D1 full suite~~ DONE (#54). ~~D5 recovery~~ DONE (#55).
+   ~~D3 automated a11y~~ DONE (#56). ~~D2 exact-final-image~~ DONE (#57).
+2. **D3 manual half — OPEN.** Keyboard-only navigation, focus order and
+   screen-reader flow. axe cannot judge these.
+3. **D6 human-acceptance — OPEN, and now possible for the first time.** A
+   non-technical operator drives a full campaign lifecycle unassisted against
+   the live `.105` stack. This is the definition of ready; the rest is proxy.
 
-**Azure (P1)**
-4. ~~C2 — Azure end-to-end~~ DONE 2026-09-20; see the deployment section above.
-5. **Second-identity approver not provisioned** — pattern self-approval is barred
-   unconditionally, so a solo operator cannot complete a campaign. `licensing@`
-   with `AZURE_CONFIG_DIR="$HOME/.azure-licensing"`.
-6. **Azure campaign dry run** — never yet run end to end.
+**Azure — deployed, powered down; the presumed blocker was already solved**
+4. ~~C2 end-to-end~~ DONE 2026-09-20.
+5. ~~Second-identity approver not provisioned~~ **ALREADY PROVISIONED — verified
+   2026-09-22 against live Entra AND a real token.** Recorded as "the hard Azure
+   blocker" across several handoffs; it was never true. Do not rebuild it.
 
-**DEP-010 and MAIL-005 are COMPLETE** — both landed 2026-09-13
-(`AI_HANDOFF_2026-09-13.md`, PRs #7 and #9). Do not re-do them.
+   ```
+   upn   licensing@erikdierksgmail.onmicrosoft.com
+   oid   ee54cb16-6028-45c7-b37f-059aa2f95e8e
+   roles ['administrator']
+   aud   97466174-d0ac-460c-94e8-7b6ff3c83da5
+   primary operator oid: eacd7c6c-7a67-4b0d-9711-5d301d51244f (different)
+   ```
 
-> **Caution on "complete" claims.** That same handoff also recorded DOC-030 as
-> done on 2026-09-13, yet 38 references to the retired `.140` worker were still
-> live in 16 markdown files on 2026-09-20 — including `README.md`, `RUNBOOK.md`
-> and `AGENTS.md` — and `docs/WAVE-BUILD-PLAN.md` still named it under a
-> "Current engineering topology" heading. DOC-030 was finally closed by PR #50.
-> Verify a completion claim against live code or live docs before trusting it.
+   The administrator role grants all 25 capabilities including approve:pattern,
+   approve_security:campaign and approve_privacy:campaign, and the self-approval
+   guards compare the token oid, which differs. Re-check any time with
+   `scripts/operator/verify-second-approver.sh`.
 
-**Production/RSA NO-GO stands** until the full-suite, exact-final-image, native
-AMD64/registry, browser/WCAG, cloud/provider, recovery, and human-acceptance
-gates are proven. Nothing in this session changes that.
+   Two auth gotchas that cost a cycle: `az login --allow-no-subscriptions`
+   WITHOUT `--tenant` enumerates tenants against Azure Resource Manager, which
+   this tenant requires MFA for (AADSTS50076); az CLI 2.89.1 then crashes in
+   `_subscription_selector.py` on an account with no subscription. Always pass
+   `--tenant`.
+
+   OPEN JUDGEMENT CALL, not a blocker: administrator is full admin, not a scoped
+   approver. A least-privilege second approver would hold source_curator +
+   security_approver + privacy_approver.
+6. **Azure campaign dry run — OPEN.** Requires 5. Bring Azure back up first
+   (Postgres stopped, apps at min-replicas 0, runner VM deallocated).
+
+**DEP-010 and MAIL-005 are COMPLETE** — both landed 2026-09-13 (PRs #7, #9).
+
+> **Caution on "complete" claims.** That same handoff recorded DOC-030 as done
+> on 2026-09-13, yet 38 references to the retired `.140` worker were still live
+> on 2026-09-20. Verify against live code or live docs before trusting it.
+
+**Production/RSA NO-GO stands.** D3's manual half and D6 are unproven on both
+paths, and no campaign has been run end to end on either.
 
 
 ## Known issues fixed this session
