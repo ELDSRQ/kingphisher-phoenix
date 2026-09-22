@@ -9,6 +9,11 @@
   --accent-fill: #2f6fd6;
   --accent-2: #38c98b;
   --danger: #e5534b;
+  /* --danger is tuned for borders and fills. As TEXT on --panel-2 (#1c2440) it
+     measures ~4.1:1, under the 4.5:1 WCAG 2.1 AA minimum for normal-size text,
+     which axe-core flags as a serious violation on the dashboard status pills.
+     This lighter tint clears the threshold while reading as the same state. */
+  --danger-text: #ff8a80;
   --warn: #e0a83e;
   --focus: #8bb4ff;
   --mono: "SFMono-Regular", Menlo, monospace;
@@ -153,7 +158,7 @@ body {
   color: var(--muted);
 }
 .pill.ok { color: var(--accent-2); border-color: var(--accent-2); }
-.pill.down { color: var(--danger); border-color: var(--danger); }
+.pill.down { color: var(--danger-text); border-color: var(--danger); }
 
 /* Tables */
 table { width: 100%; border-collapse: collapse; }
