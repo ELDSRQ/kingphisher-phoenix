@@ -20,42 +20,58 @@ first (authoritative scope + preservation rules), then
 AI_HANDOFF_2026-09-19.md (canonical current state), then
 .hermes/plans/2026-09-18_human-ready-readiness-plan.md.
 
-STATE (2026-09-20): AZURE STAGING IS FULLY DEPLOYED. All three phases green and
-verified live: operator/tracking/worker/ai-gateway Container Apps Running,
-migration job applied, ACS Domain+SPF+DKIM+DKIM2 all Verified, sender
-awareness@mail.floridamanevolved.us bound, 5 private endpoints, ACS Event Grid
-receipts active. Console:
-https://ca-kp-staging-operator.jollybeach-1b54592b.eastus2.azurecontainerapps.io
-Network mode is now PRIVATE (self-hosted azure-vnet runner), not starter.
-Azure is POWERED DOWN (azure-nightly-shutdown.sh: Postgres stopped, apps at
-min-replicas 0, runner VM deallocated); bring it back up before any deploy.
+STATE (2026-09-22). Read AI_HANDOFF_2026-09-19.md first; it is canonical
+despite the filename. Two sections matter: "Azure staging is DEPLOYED" and
+"On-prem gates D1/D2/D3/D5 CLOSED, and the stack is LIVE".
 
-READ the "Azure staging is DEPLOYED" section of AI_HANDOFF_2026-09-19.md before
-touching the deploy. Six non-obvious constraints are recorded there, including:
-foundation_bootstrap CANNOT be re-run after foundation_finalize (prevent_destroy
-on the ACS association + sender username); foundation_finalize is -targeted at
-just those two resources so it converges nothing else; the AI Foundry account is
-NOT Terraform-managed and must be recreated out of band; and the operator holds
-no Key Vault data-plane role, so az keyvault secret commands fail Forbidden
-until explicitly granted.
+ON-PREM IS DEPLOYED AND RUNNING on .105 (it ran nowhere before 2026-09-21).
+.105 is a SHARED build host also running AccessTracker and Procurement - 15 of
+their containers run continuously. Never touch them; keep compose scoped to this
+project. Start with:
+  ssh erikd@192.168.1.105
+  wsl -e bash -lc 'cd ~/phishing-awareness-platform && ./scripts/install.sh --skip-deps'
+uv is at /home/builder/.local/bin/uv and NOT on the default non-interactive
+PATH - export it or verify_install.sh reports "uv not found" while the services
+are actually healthy. Reach the console from the Mac via
+  ssh -N -L 18000:127.0.0.1:8000 erikd@192.168.1.105
+then http://localhost:18000/console/ with KP_CONSOLE_PASSWORD from .env on .105.
 
-PRIORITY ORDER (operator directive 2026-09-20): first make ON-PREM ready for
-human use, then AZURE. Deprioritize additional layered-security work.
-DONE on-prem: DOC-030 (PR #50) and B1 boot persistence (PR #52). On Alice the
-model now runs as the kp-aggregate systemd unit with the KP-Aggregate-Model
-logon task starting it — it had been a hand-started llama-server outside
-systemd, so nothing would have restarted it. The `-u root` in that task is
-load-bearing. Do NOT try WSL2 mirrored networking for LAN access: tried and
-reverted, it cannot work and regresses host-loopback forwarding; the platform
-defaults KP_MODEL_CONTROL_LLAMA_URL to http://127.0.0.1:18082, so use localhost
-or an SSH tunnel.
+GATES CLOSED 2026-09-21/22: D1 full suite (#54), D5 recovery (#55), D3
+automated accessibility (#56), D2 exact-final-image (#57). Every one found a
+real defect. MERGE ORDER MATTERS: #54 fixes a test time bomb that still exists
+on main, so #55/#56/#57 fail CI until #54 lands and their branches are updated.
 
-REMAINING on-prem: the human-acceptance dry run — a non-technical operator
-drives a full campaign lifecycle unassisted. That is the definition of ready.
-REMAINING Azure: provision the second-identity approver (licensing@,
-AZURE_CONFIG_DIR="$HOME/.azure-licensing") — pattern self-approval is barred
-unconditionally, so a solo operator cannot complete a campaign — then an Azure
-campaign dry run.
+FIVE TRAPS, all learned the hard way:
+ 1. A green suite can rot without a commit - a test pinned next_review_at to a
+    fixed date and expired on 2026-09-21. Bracket the present in tests.
+ 2. Recovery was impossible, not just unproven: no WSL2 checkpoint creator, the
+    restore could not read its own 0600 RDB, and pg_dump omits CLUSTER-level
+    roles so a "successful" restore silently dropped every kp_worker_*/audit_*
+    role. Use checkpoint-state-wsl2.sh then restore-state-wsl2.sh --apply.
+ 3. verify_images.sh has six guards; DOCKER_HOST unset is a MISMATCH not a
+    default, and the Trivy cache must sit beneath the build storage path. Use
+    scripts/operator/release/verify-images-105.sh.
+ 4. Never trust `pgrep -f <script>` over SSH - it matches its own command
+    string, so a dead build reads as running. Use a marker the job writes.
+ 5. Compose MERGES ports lists; the .105 override needs !override to replace
+    mock-idp's 8443, which AccessTracker already holds.
+
+WHAT IS LEFT, in priority order (operator directive: on-prem first, then Azure,
+deprioritize additional layered-security work):
+ A. D3 MANUAL half - keyboard order, focus management, screen-reader flow. axe
+    covers roughly half of WCAG; the automated gate passing is NOT sufficient.
+ B. D6 human-acceptance on-prem - a non-technical operator drives a full
+    campaign lifecycle unassisted. Possible for the first time now. OPERATOR
+    ACTION, not an AI task.
+ C. Azure second-identity approver (licensing@, AZURE_CONFIG_DIR=
+    "$HOME/.azure-licensing", verify by token oid). Pattern self-approval is
+    barred unconditionally, so a solo operator CANNOT finish a campaign.
+    Nothing else on the Azure path matters until this exists.
+ D. Azure campaign dry run - needs C, and Azure brought back up (it is powered
+    down: Postgres stopped, apps at min-replicas 0, runner VM deallocated).
+
+DO NOT redo DEP-010 or MAIL-005 (complete 2026-09-13). Do not retry WSL2
+mirrored networking on Alice - tried and reverted, it cannot work there.
 
 Production/RSA NO-GO stands
 until the cloud/browser/human acceptance gates pass. On-prem model is
