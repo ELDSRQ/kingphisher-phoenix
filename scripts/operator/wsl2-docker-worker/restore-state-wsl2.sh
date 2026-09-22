@@ -18,6 +18,7 @@ set -euo pipefail
 KP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 KP_POSTGRES_DUMP="$KP_ROOT/migration-checkpoint/postgres.dump"
 KP_REDIS_RDB="$KP_ROOT/migration-checkpoint/redis.rdb"
+KP_GLOBALS_SQL="$KP_ROOT/migration-checkpoint/globals.sql"
 KP_POSTGRES_CONTAINER=phishing-awareness-platform-postgres-1
 KP_REDIS_CONTAINER=phishing-awareness-platform-redis-1
 KP_POSTGRES_VOLUME=phishing-awareness-platform_postgres_data
@@ -125,12 +126,18 @@ docker run --rm \
   --entrypoint pg_restore \
   -i "$KP_POSTGRES_IMAGE" --list < "$KP_POSTGRES_DUMP" >/dev/null
 
+# No --user here. A checkpoint RDB produced by `docker cp` from the Redis
+# container keeps its 0600 owner-only permissions, so uid 999 cannot read it
+# and this check failed on a snapshot that was in fact valid. Loosening the
+# artifact to 0644 would expose Redis contents on a shared build host, so the
+# throwaway check container reads it as root instead; it is still --read-only,
+# --network none and --pull never, and the file is chowned to 999:999 later,
+# inside the Redis container, where it actually matters.
 docker run --rm \
   --name "kp-redis-rdb-check-$KP_RUN_ID" \
   --pull never \
   --network none \
   --read-only \
-  --user 999:999 \
   --volume "$KP_RDB_DIR:/backup:ro" \
   --entrypoint redis-check-rdb \
   "$KP_REDIS_IMAGE" "/backup/$KP_RDB_NAME" >/dev/null
@@ -152,6 +159,21 @@ fi
 docker exec "$KP_POSTGRES_CONTAINER" psql -U kingphisher -d kingphisher -Atc \
   "select 1 from pg_roles where rolname = 'audit_writer';" | grep -qx 1 \
   || fail "required audit_writer role is absent"
+
+# Cluster roles first. pg_dump captures one database, so its GRANTs reference
+# roles that do not exist in a fresh cluster; without these every GRANT fails
+# and the per-worker least-privilege model is lost. Pre-16 dumps may lack IF
+# NOT EXISTS guards, so a role that already exists is tolerated.
+if [ -s "$KP_GLOBALS_SQL" ]; then
+  docker exec -i "$KP_POSTGRES_CONTAINER" psql -U kingphisher -d postgres -v ON_ERROR_STOP=0 \
+    < "$KP_GLOBALS_SQL" >/dev/null 2>&1 || true
+  KP_ROLE_COUNT="$(docker exec "$KP_POSTGRES_CONTAINER" psql -U kingphisher -d postgres -Atc \
+    "select count(*) from pg_roles where rolname like 'kp\\_%' or rolname like 'audit\\_%';")"
+  [ "${KP_ROLE_COUNT:-0}" -gt 0 ] || fail "cluster globals restored no project roles"
+  printf 'restored %s project roles from globals.sql\n' "$KP_ROLE_COUNT"
+else
+  fail "missing $KP_GLOBALS_SQL; capture a checkpoint with checkpoint-state-wsl2.sh"
+fi
 
 docker exec "$KP_POSTGRES_CONTAINER" createdb -U kingphisher "$KP_VERIFY_DB"
 docker exec -i "$KP_POSTGRES_CONTAINER" pg_restore \
