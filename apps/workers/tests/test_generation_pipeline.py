@@ -653,8 +653,13 @@ def test_source_fidelity_enters_the_bounded_reviewed_generation_evidence(
         automation_ok=True,
         redistribution_ok=True,
         retention_ok=True,
-        terms_reviewed_at=ingestion_as_of - timedelta(days=1),
-        next_review_at=ingestion_as_of + timedelta(days=30),
+        # Governance currency is evaluated against wall-clock now
+        # (kp_workers/jobs.py passes as_of=datetime.now(UTC)), so these must
+        # bracket the PRESENT, not the fixed ingestion date. Pinning them to
+        # ingestion_as_of gave this test a 30-day fuse that burned out on
+        # 2026-09-21, turning a healthy suite red with no code change.
+        terms_reviewed_at=datetime.now(UTC) - timedelta(days=1),
+        next_review_at=datetime.now(UTC) + timedelta(days=30),
         enabled=True,
     )
     session = _GenerationSession(  # type: ignore[arg-type]
