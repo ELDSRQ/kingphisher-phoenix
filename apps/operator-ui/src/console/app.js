@@ -2914,6 +2914,22 @@
     const enforcing = policy === "enforce";
     root.appendChild(el("h2", { text: "Campaigns" }));
     root.appendChild(el("p", { class: "sub", text: "Create, review and run awareness campaigns." }));
+    root.appendChild(el("details", { class: "context-help" }, [
+      el("summary", { text: "New here? How to set up a campaign, start to finish" }),
+      el("p", { text: "A campaign moves through these stages. Each one must finish before the next becomes available, so if a button looks disabled, the answer is usually an earlier stage." }),
+      el("ol", { class: "prerequisite-list" }, [
+        el("li", { text: "Verify a sending domain and sign the Rules of Engagement. Under Domains & RoE you prove you control the domain via DNS, then sign the RoE that authorizes delivery to it. Nothing can be sent to a domain without this." }),
+        el("li", { text: 'Import your recipients. Under Recipients, upload a CSV of who is in scope. Open "How should my spreadsheet be laid out?" there for the exact format.' }),
+        el("li", { text: "Choose or generate a template. Under Template review, pick an approved template or generate one, then have it reviewed." }),
+        el("li", { text: "Create the campaign here, selecting the domain, recipients and template." }),
+        el("li", { text: "Submit it for review. This freezes the campaign so what was approved is exactly what sends." }),
+        el("li", { text: "Get it approved. Approval needs a SECOND person: you cannot approve your own campaign, by design." }),
+        el("li", { text: "Send the canary first. A small test cohort goes out and you confirm delivery looks right before anything wider." }),
+        el("li", { text: "Publish in full, then watch results and the audit trail. You can stop a campaign at any point." })
+      ]),
+      el("p", { class: "field-help", text: "The two stages that most often surprise people: the domain and RoE must exist BEFORE you create a campaign, and approval requires a second person. If you are working alone you will reach approval and be unable to continue - that is the safety rule working, not a fault." }),
+      el("button", { class: "link-button", type: "button", text: "Open the searchable help center", onclick: () => navigateTo("help") })
+    ]));
     const banner = el("div", { class: "policy-banner" });
     banner.appendChild(el("strong", { text: enforcing ? "Two-person approval is required. " : "Single-admin mode. " }));
     banner.appendChild(document.createTextNode(enforcing ? "A campaign must collect separate security and privacy approval facets before it can be scheduled. The creator cannot approve either facet; one different authorized operator may complete both, though the facets may also be split between authorized reviewers. Submit a draft for approval to start that process." : "One administrator can schedule a campaign without separate approvals. This is intended for the offline evaluation stack; deployments using an identity provider always require two-person approval."));
@@ -6513,6 +6529,43 @@
       root.appendChild(el("div", { class: "card" }, [
         el("h3", { text: "Import CSV" }),
         el("p", { text: "Preview is non-mutating and shows only counts plus bounded row-number error codes. Apply is bound to the exact CSV, mapping, options, domain policy, and current recipient state." }),
+        // D6 acceptance finding: an operator could reach this form with no idea
+        // what the spreadsheet should contain. The header aliases and limits below
+        // are the ones recipient_import.py actually accepts - keep them in step
+        // with _HEADER_ALIASES and the MAX_RECIPIENT_CSV_* constants.
+        el("details", { class: "context-help" }, [
+          el("summary", { text: "How should my spreadsheet be laid out?" }),
+          el("p", { text: "One recipient per row, with a header row naming the columns. Only the email column is required; everything else is optional." }),
+          el("table", { class: "help-table" }, [
+            el("thead", {}, [el("tr", {}, [
+              el("th", { text: "Column" }),
+              el("th", { text: "Required" }),
+              el("th", { text: "Header names accepted" })
+            ])]),
+            el("tbody", {}, [
+              el("tr", {}, [
+                el("td", { text: "Email address" }),
+                el("td", { text: "Yes" }),
+                el("td", { text: "email, email address, mail, mailbox, user principal name, upn" })
+              ]),
+              el("tr", {}, [
+                el("td", { text: "Name" }),
+                el("td", { text: "No" }),
+                el("td", { text: "display name, full name, name" })
+              ]),
+              el("tr", {}, [
+                el("td", { text: "Department" }),
+                el("td", { text: "No" }),
+                el("td", { text: "department, dept, division, team" })
+              ])
+            ])
+          ]),
+          el("p", { class: "field-help", text: 'Header matching ignores case, spaces and punctuation, so "Email Address", "email_address" and "EMAILADDRESS" are all recognised. If your headers use different words, pick "Use the first populated row as headers" above and map the columns by hand.' }),
+          el("p", { text: "Example:" }),
+          el("pre", { class: "help-example", text: "email,name,department\nada@example.com,Ada Lovelace,Engineering\ngrace@example.com,Grace Hopper,Engineering\nalan@example.com,Alan Turing,Research" }),
+          el("p", { class: "field-help", text: "Limits: at most 5,000 rows, 50 columns, 512 KiB, and 1,024 characters per cell. Save from Excel or Sheets as CSV (comma separated) - .xlsx files are not read directly." }),
+          el("p", { class: "field-help", text: "Preview first. It changes nothing and reports the row numbers of any rows it cannot use, so you can fix the spreadsheet and try again before anything is written." })
+        ]),
         el("label", { for: "r-file", text: "Choose a CSV file" }),
         filePicker,
         el("p", { class: "modal-help", text: "The browser refuses files over 512 KiB or 5,000 lines. File contents stay in this page until Preview." }),
