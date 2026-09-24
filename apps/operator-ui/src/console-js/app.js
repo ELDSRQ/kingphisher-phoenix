@@ -520,6 +520,11 @@ function promptDialog({ title, description, fields, submitLabel = "Save" }) {
       } else if (field.type === "textarea") {
         input = el("textarea", { id, name: field.name, rows: "3", maxlength: field.maxLength, placeholder: field.placeholder || "" });
         input.value = field.value || "";
+      } else if (field.type === "checkbox") {
+        // Checkboxes carry their answer in .checked, not .value, so they need
+        // their own read path on submit as well as here.
+        input = el("input", { id, name: field.name, type: "checkbox" });
+        input.checked = Boolean(field.value);
       } else {
         input = el("input", { id, name: field.name, type: field.type || "text", maxlength: field.maxLength, placeholder: field.placeholder || "" });
         input.value = field.value || "";
@@ -538,6 +543,17 @@ function promptDialog({ title, description, fields, submitLabel = "Save" }) {
     const submit = () => {
       const values = {};
       for (const field of fields) {
+        if (field.type === "checkbox") {
+          const checked = Boolean(inputs[field.name].checked);
+          // "Required" on a checkbox means it must be TICKED, not merely present.
+          if (field.required && !checked) {
+            errorLine.textContent = `${field.label} must be confirmed.`;
+            inputs[field.name].focus();
+            return;
+          }
+          values[field.name] = checked;
+          continue;
+        }
         const value = String(inputs[field.name].value || "").trim();
         if (field.required && !value) {
           errorLine.textContent = `${field.label} is required.`;
@@ -2465,6 +2481,55 @@ views.dashboard = async (root) => {
   const isApprover = hasAnyCapability(CAPABILITY.APPROVE_SECURITY, CAPABILITY.APPROVE_PRIVACY);
   root.appendChild(el("h2", { text: "Dashboard" }));
   root.appendChild(el("p", { class: "sub", text: "System health and recent campaign activity." }));
+
+  // D6 acceptance finding: "there should be some type of a guide for a user
+  // after the configuration is setup on what to do 1st, 2nd, 3rd". A static
+  // page would go stale and would not know where the operator had got to, so
+  // this reads live state and shows the NEXT action rather than a wall of
+  // steps. It renders before the heavier dashboard queries so it appears even
+  // if those are slow, and it never blocks the page if a probe fails.
+  const gettingStarted = el("section", { class: "card" });
+  root.appendChild(gettingStarted);
+  (async () => {
+    const count = async (path) => {
+      try { return (await boundedCollection(path) || []).length; } catch { return null; }
+    };
+    const [domainCount, roeCount, templateCount, campaignCount] = await Promise.all([
+      count("/sending-domains"), count("/roe"), count("/templates"), count("/campaigns"),
+    ]);
+    const steps = [
+      { done: domainCount > 0, label: "Verify a sending domain", view: "domains",
+        why: "Proves you control the domain you will send from. Nothing can be sent until this exists." },
+      { done: roeCount > 0, label: "Record authorization for that domain", view: "domains",
+        why: "Confirms the domain owner has authorized this exercise, and for what period." },
+      { done: null, label: "Import your recipients", view: "recipients",
+        why: "A CSV of who is in scope. A single column of email addresses is enough." },
+      { done: templateCount > 0, label: "Have a template ready", view: "templates",
+        why: "The message that will be sent. Generate one or pick an approved template." },
+      { done: campaignCount > 0, label: "Create a campaign", view: "campaigns",
+        why: "Ties the domain, recipients and template together." },
+      { done: null, label: "Submit it, get a second person to approve, then send the canary first", view: "campaigns",
+        why: "You cannot approve your own campaign. The canary is a small test cohort before anything wider." },
+    ];
+    const next = steps.find((s) => s.done === false);
+    gettingStarted.replaceChildren(
+      el("h3", { text: "Getting started" }),
+      el("p", { class: "sub", text: next
+        ? `Next: ${next.label.toLowerCase()}.`
+        : "The basics are in place. Work through a campaign from the Campaigns screen." }),
+      el("ol", { class: "prerequisite-list" }, steps.map((s) => el("li", {}, [
+        el("span", { text: s.done === true ? "Done - " : s.done === false ? "To do - " : "" }),
+        el("button", { class: "link-button", type: "button", text: s.label, onclick: () => navigateTo(s.view) }),
+        el("div", { class: "field-help", text: s.why }),
+      ]))),
+      el("p", { class: "field-help", text: "Steps without a Done marker cannot be checked automatically - open them to see where you are." }),
+    );
+  })().catch(() => {
+    gettingStarted.replaceChildren(
+      el("h3", { text: "Getting started" }),
+      el("p", { class: "field-help", text: "Could not read setup progress. Open Campaigns and expand \"New here?\" for the full sequence." }),
+    );
+  });
   let status, campaigns, audit, needsDecision;
   try {
     [status, campaigns, audit, needsDecision] = await Promise.all([
@@ -2748,6 +2813,26 @@ views.campaigns = async (root) => {
 
   root.appendChild(el("h2", { text: "Campaigns" }));
   root.appendChild(el("p", { class: "sub", text: "Create, review and run awareness campaigns." }));
+
+  // D6 acceptance finding: an operator arriving here has no idea what the whole
+  // journey looks like or what must exist before a campaign can be created.
+  // Collapsed by default so it does not nag a returning operator.
+  root.appendChild(el("details", { class: "context-help" }, [
+    el("summary", { text: "New here? How to set up a campaign, start to finish" }),
+    el("p", { text: "A campaign moves through these stages. Each one must finish before the next becomes available, so if a button looks disabled, the answer is usually an earlier stage." }),
+    el("ol", { class: "prerequisite-list" }, [
+      el("li", { text: "Verify a sending domain and sign the Rules of Engagement. Under Domains & RoE you prove you control the domain via DNS, then sign the RoE that authorizes delivery to it. Nothing can be sent to a domain without this." }),
+      el("li", { text: "Import your recipients. Under Recipients, upload a CSV of who is in scope. Open \"How should my spreadsheet be laid out?\" there for the exact format." }),
+      el("li", { text: "Choose or generate a template. Under Template review, pick an approved template or generate one, then have it reviewed." }),
+      el("li", { text: "Create the campaign here, selecting the domain, recipients and template." }),
+      el("li", { text: "Submit it for review. This freezes the campaign so what was approved is exactly what sends." }),
+      el("li", { text: "Get it approved. Approval needs a SECOND person: you cannot approve your own campaign, by design." }),
+      el("li", { text: "Send the canary first. A small test cohort goes out and you confirm delivery looks right before anything wider." }),
+      el("li", { text: "Publish in full, then watch results and the audit trail. You can stop a campaign at any point." }),
+    ]),
+    el("p", { class: "field-help", text: "The two stages that most often surprise people: the domain and RoE must exist BEFORE you create a campaign, and approval requires a second person. If you are working alone you will reach approval and be unable to continue - that is the safety rule working, not a fault." }),
+    el("button", { class: "link-button", type: "button", text: "Open the searchable help center", onclick: () => navigateTo("help") }),
+  ]));
 
   // The approval rule is the single most confusing thing about this screen, so
   // state it up front rather than letting an operator discover it as a 409.
@@ -4109,22 +4194,67 @@ views.sending = async (root) => {
     const prefillDomains = Array.isArray(prefill.target_domains) && prefill.target_domains.length
       ? prefill.target_domains.join(", ")
       : verifiedDomains.join(", ");
-    const values = await promptDialog({
-      title: prefill.roe_id ? "Re-sign a Rules-of-Engagement for a new window" : "Sign a Rules-of-Engagement",
-      description: "The signature binds terms + signer + timestamp under the shared RoE key. Every target domain must already be DNS-verified, and the window must cover the campaigns it authorizes.",
+    // D6 acceptance finding: the operator asked for "a checkbox to indicate it
+    // has been approved by the domain owner" instead of a five-field form. The
+    // confirmation below IS that checkbox. What it records underneath is still
+    // the signed authorization, because scheduling and delivery re-verify the
+    // signature, the domain set and the window (roe_covers_schedule,
+    // recipient_domain_roe_covered): dropping the artifact would mean deleting
+    // those checks, not just simplifying a form. So the defaults do the work -
+    // the domains you just verified, standard terms, and a one-year window -
+    // and "Set custom terms or window" reopens the full form when it matters.
+    const DEFAULT_ROE_MONTHS = 12;
+    const defaultTerms = (party, domains) =>
+      `${party} authorizes simulated phishing awareness exercises to ${domains}. ` +
+      "Recipients are confined to those verified domains. Lures are training material and are disclosed as such. " +
+      "Authorization may be revoked at any time, which stops its campaigns immediately.";
+
+    const quick = await promptDialog({
+      title: prefill.roe_id ? "Re-confirm authorization for a new period" : "Confirm domain owner authorization",
+      description: `Confirms that the owner of ${prefillDomains} has authorized this exercise. Recorded with their name and the time you confirmed it.`,
       fields: [
-        { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp", value: prefill.authorizing_party || "" },
-        { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training.", value: prefill.terms || "" },
-        { name: "window_start", label: "Window start (your local time)", type: "datetime-local", required: true },
-        { name: "window_end", label: "Window end (your local time)", type: "datetime-local", required: true },
-        { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: prefillDomains },
+        { name: "confirmed", label: "The domain owner has authorized this simulated phishing exercise", type: "checkbox", required: true,
+          help: "Tick only if you have that authorization. This is recorded in the audit trail against your account." },
+        { name: "authorizing_party", label: "Who authorized it", type: "text", required: true, placeholder: "Example Corp", value: prefill.authorizing_party || "",
+          help: "The organisation or person who gave permission." },
+        { name: "custom", label: "Set custom terms or window instead", type: "checkbox",
+          help: `Leave unticked to use standard terms covering ${prefillDomains} for the next ${DEFAULT_ROE_MONTHS} months.` },
       ],
-      submitLabel: prefill.roe_id ? "Sign new RoE" : "Sign RoE",
+      submitLabel: "Confirm authorization",
     });
-    if (!values) return;
+    if (!quick) return;
+
+    let values;
+    if (quick.custom) {
+      values = await promptDialog({
+        title: "Authorization details",
+        description: "The signature binds terms + signer + timestamp under the shared RoE key. Every target domain must already be DNS-verified, and the window must cover the campaigns it authorizes.",
+        fields: [
+          { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp", value: quick.authorizing_party },
+          { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training.", value: prefill.terms || "" },
+          { name: "window_start", label: "Window start (your local time)", type: "datetime-local", required: true },
+          { name: "window_end", label: "Window end (your local time)", type: "datetime-local", required: true },
+          { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: prefillDomains },
+        ],
+        submitLabel: prefill.roe_id ? "Sign new RoE" : "Sign RoE",
+      });
+      if (!values) return;
+    } else {
+      const now = new Date();
+      const until = new Date(now); until.setMonth(until.getMonth() + DEFAULT_ROE_MONTHS);
+      values = {
+        authorizing_party: quick.authorizing_party,
+        terms: defaultTerms(quick.authorizing_party, prefillDomains),
+        window_start: now.toISOString(),
+        window_end: until.toISOString(),
+        target_domains: prefillDomains,
+        _preresolved: true,
+      };
+    }
+
     try {
-      const start = localDateTimeToIso(values.window_start, "Window start");
-      const end = localDateTimeToIso(values.window_end, "Window end");
+      const start = values._preresolved ? values.window_start : localDateTimeToIso(values.window_start, "Window start");
+      const end = values._preresolved ? values.window_end : localDateTimeToIso(values.window_end, "Window end");
       if (new Date(end) <= new Date(start)) throw new Error("Window end must be after window start");
       const targets = values.target_domains.split(",").map((d) => d.trim()).filter(Boolean);
       if (!targets.length) throw new Error("At least one target domain is required");
@@ -6102,6 +6232,41 @@ views.recipients = async (root) => {
     root.appendChild(el("div", { class: "card" }, [
       el("h3", { text: "Import CSV" }),
       el("p", { text: "Preview is non-mutating and shows only counts plus bounded row-number error codes. Apply is bound to the exact CSV, mapping, options, domain policy, and current recipient state." }),
+      // D6 acceptance finding: an operator could reach this form with no idea
+      // what the spreadsheet should contain. The header aliases and limits below
+      // are the ones recipient_import.py actually accepts - keep them in step
+      // with _HEADER_ALIASES and the MAX_RECIPIENT_CSV_* constants.
+      el("details", { class: "context-help" }, [
+        el("summary", { text: "How should my spreadsheet be laid out?" }),
+        el("p", { text: "The simplest file that works is a single column of email addresses with the header \"email\". A name column is nice to have. Nothing else is needed." }),
+        el("pre", { class: "help-example", text: "email\nada@example.com\ngrace@example.com" }),
+        el("p", { text: "Or with names:" }),
+        el("pre", { class: "help-example", text: "email,name\nada@example.com,Ada Lovelace\ngrace@example.com,Grace Hopper" }),
+        el("p", { class: "field-help", text: "Extra columns are ignored unless you map them, so exporting straight from your HR system or address book usually just works." }),
+        el("p", { text: "Full list of recognised headers:" }),
+        el("table", { class: "help-table" }, [
+          el("thead", {}, [el("tr", {}, [
+            el("th", { text: "Column" }), el("th", { text: "Required" }), el("th", { text: "Header names accepted" }),
+          ])]),
+          el("tbody", {}, [
+            el("tr", {}, [
+              el("td", { text: "Email address" }), el("td", { text: "Yes" }),
+              el("td", { text: "email, email address, mail, mailbox, user principal name, upn" }),
+            ]),
+            el("tr", {}, [
+              el("td", { text: "Name" }), el("td", { text: "No" }),
+              el("td", { text: "display name, full name, name" }),
+            ]),
+            el("tr", {}, [
+              el("td", { text: "Department" }), el("td", { text: "No" }),
+              el("td", { text: "department, dept, division, team" }),
+            ]),
+          ]),
+        ]),
+        el("p", { class: "field-help", text: "Header matching ignores case, spaces and punctuation, so \"Email Address\", \"email_address\" and \"EMAILADDRESS\" are all recognised. If your headers use different words, pick \"Use the first populated row as headers\" above and map the columns by hand." }),
+        el("p", { class: "field-help", text: "Limits: at most 5,000 rows, 50 columns, 512 KiB, and 1,024 characters per cell. Save from Excel or Sheets as CSV (comma separated) - .xlsx files are not read directly." }),
+        el("p", { class: "field-help", text: "Preview first. It changes nothing and reports the row numbers of any rows it cannot use, so you can fix the spreadsheet and try again before anything is written." }),
+      ]),
       el("label", { for: "r-file", text: "Choose a CSV file" }),
       filePicker,
       el("p", { class: "modal-help", text: "The browser refuses files over 512 KiB or 5,000 lines. File contents stay in this page until Preview." }),
@@ -6109,18 +6274,27 @@ views.recipients = async (root) => {
       csvArea,
       el("label", { for: "r-header-mode", text: "Header row handling" }), headerMode,
       el("p", { class: "modal-help", text: "For nonstandard header names, choose first-row headers and Preview once to load safe, bounded labels. Review the mappings, then Preview again before Apply." }),
-      el("label", { for: "r-map-mailbox", text: "Mailbox column" }), mappingControls.mailbox,
-      el("label", { for: "r-map-name", text: "Name column" }), mappingControls.display_name,
-      el("label", { for: "r-map-department", text: "Department column" }), mappingControls.department,
-      el("label", { for: "r-dept", text: "Default department when the mapped value is blank" }),
-      defaultDepartment,
-      el("label", { for: "r-merge", text: "Existing recipient merge choice" }), mergeExisting,
-      el("p", { class: "modal-help", text: "Update changes mapped name and department fields for non-directory recipients and marks those records as CSV-managed. It does not override explicit exclusions." }),
-      el("label", { for: "r-deactivate" }, [
-        deactivateMissing,
-        document.createTextNode(" Deactivate CSV-managed recipients missing from this file"),
+      // D6 acceptance finding: "all the other stuff is noise". Column mapping
+      // auto-detects, and the merge/deactivate options only matter on a re-import,
+      // so a first-time operator should not have to read past them. They stay
+      // fully available - collapsed, not removed - because a re-import genuinely
+      // needs them.
+      el("details", { class: "context-help" }, [
+        el("summary", { text: "Advanced: column mapping and re-import options" }),
+        el("p", { class: "field-help", text: "You can ignore all of this for a normal first import. Columns are detected automatically; change these only if detection got something wrong or you are re-importing over existing recipients." }),
+        el("label", { for: "r-map-mailbox", text: "Mailbox column" }), mappingControls.mailbox,
+        el("label", { for: "r-map-name", text: "Name column" }), mappingControls.display_name,
+        el("label", { for: "r-map-department", text: "Department column" }), mappingControls.department,
+        el("label", { for: "r-dept", text: "Default department when the mapped value is blank" }),
+        defaultDepartment,
+        el("label", { for: "r-merge", text: "Existing recipient merge choice" }), mergeExisting,
+        el("p", { class: "modal-help", text: "Update changes mapped name and department fields for non-directory recipients and marks those records as CSV-managed. It does not override explicit exclusions." }),
+        el("label", { for: "r-deactivate" }, [
+          deactivateMissing,
+          document.createTextNode(" Deactivate CSV-managed recipients missing from this file"),
+        ]),
+        el("p", { class: "modal-help", text: "Deactivate missing never hard-deletes, never changes directory-owned recipients, and requires a clean preview plus a second confirmation." }),
       ]),
-      el("p", { class: "modal-help", text: "Deactivate missing never hard-deletes, never changes directory-owned recipients, and requires a clean preview plus a second confirmation." }),
       el("div", { class: "btn-row" }, [previewButton, applyButton]),
       previewStatus,
     ]));
