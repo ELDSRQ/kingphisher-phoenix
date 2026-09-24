@@ -2465,6 +2465,55 @@ views.dashboard = async (root) => {
   const isApprover = hasAnyCapability(CAPABILITY.APPROVE_SECURITY, CAPABILITY.APPROVE_PRIVACY);
   root.appendChild(el("h2", { text: "Dashboard" }));
   root.appendChild(el("p", { class: "sub", text: "System health and recent campaign activity." }));
+
+  // D6 acceptance finding: "there should be some type of a guide for a user
+  // after the configuration is setup on what to do 1st, 2nd, 3rd". A static
+  // page would go stale and would not know where the operator had got to, so
+  // this reads live state and shows the NEXT action rather than a wall of
+  // steps. It renders before the heavier dashboard queries so it appears even
+  // if those are slow, and it never blocks the page if a probe fails.
+  const gettingStarted = el("section", { class: "card" });
+  root.appendChild(gettingStarted);
+  (async () => {
+    const count = async (path) => {
+      try { return (await boundedCollection(path) || []).length; } catch { return null; }
+    };
+    const [domainCount, roeCount, templateCount, campaignCount] = await Promise.all([
+      count("/sending-domains"), count("/roe"), count("/templates"), count("/campaigns"),
+    ]);
+    const steps = [
+      { done: domainCount > 0, label: "Verify a sending domain", view: "domains",
+        why: "Proves you control the domain you will send from. Nothing can be sent until this exists." },
+      { done: roeCount > 0, label: "Record authorization for that domain", view: "domains",
+        why: "Confirms the domain owner has authorized this exercise, and for what period." },
+      { done: null, label: "Import your recipients", view: "recipients",
+        why: "A CSV of who is in scope. A single column of email addresses is enough." },
+      { done: templateCount > 0, label: "Have a template ready", view: "templates",
+        why: "The message that will be sent. Generate one or pick an approved template." },
+      { done: campaignCount > 0, label: "Create a campaign", view: "campaigns",
+        why: "Ties the domain, recipients and template together." },
+      { done: null, label: "Submit it, get a second person to approve, then send the canary first", view: "campaigns",
+        why: "You cannot approve your own campaign. The canary is a small test cohort before anything wider." },
+    ];
+    const next = steps.find((s) => s.done === false);
+    gettingStarted.replaceChildren(
+      el("h3", { text: "Getting started" }),
+      el("p", { class: "sub", text: next
+        ? `Next: ${next.label.toLowerCase()}.`
+        : "The basics are in place. Work through a campaign from the Campaigns screen." }),
+      el("ol", { class: "prerequisite-list" }, steps.map((s) => el("li", {}, [
+        el("span", { text: s.done === true ? "Done - " : s.done === false ? "To do - " : "" }),
+        el("button", { class: "link-button", type: "button", text: s.label, onclick: () => navigateTo(s.view) }),
+        el("div", { class: "field-help", text: s.why }),
+      ]))),
+      el("p", { class: "field-help", text: "Steps without a Done marker cannot be checked automatically - open them to see where you are." }),
+    );
+  })().catch(() => {
+    gettingStarted.replaceChildren(
+      el("h3", { text: "Getting started" }),
+      el("p", { class: "field-help", text: "Could not read setup progress. Open Campaigns and expand \"New here?\" for the full sequence." }),
+    );
+  });
   let status, campaigns, audit, needsDecision;
   try {
     [status, campaigns, audit, needsDecision] = await Promise.all([
@@ -6128,7 +6177,12 @@ views.recipients = async (root) => {
       // with _HEADER_ALIASES and the MAX_RECIPIENT_CSV_* constants.
       el("details", { class: "context-help" }, [
         el("summary", { text: "How should my spreadsheet be laid out?" }),
-        el("p", { text: "One recipient per row, with a header row naming the columns. Only the email column is required; everything else is optional." }),
+        el("p", { text: "The simplest file that works is a single column of email addresses with the header \"email\". A name column is nice to have. Nothing else is needed." }),
+        el("pre", { class: "help-example", text: "email\nada@example.com\ngrace@example.com" }),
+        el("p", { text: "Or with names:" }),
+        el("pre", { class: "help-example", text: "email,name\nada@example.com,Ada Lovelace\ngrace@example.com,Grace Hopper" }),
+        el("p", { class: "field-help", text: "Extra columns are ignored unless you map them, so exporting straight from your HR system or address book usually just works." }),
+        el("p", { text: "Full list of recognised headers:" }),
         el("table", { class: "help-table" }, [
           el("thead", {}, [el("tr", {}, [
             el("th", { text: "Column" }), el("th", { text: "Required" }), el("th", { text: "Header names accepted" }),
@@ -6149,8 +6203,6 @@ views.recipients = async (root) => {
           ]),
         ]),
         el("p", { class: "field-help", text: "Header matching ignores case, spaces and punctuation, so \"Email Address\", \"email_address\" and \"EMAILADDRESS\" are all recognised. If your headers use different words, pick \"Use the first populated row as headers\" above and map the columns by hand." }),
-        el("p", { text: "Example:" }),
-        el("pre", { class: "help-example", text: "email,name,department\nada@example.com,Ada Lovelace,Engineering\ngrace@example.com,Grace Hopper,Engineering\nalan@example.com,Alan Turing,Research" }),
         el("p", { class: "field-help", text: "Limits: at most 5,000 rows, 50 columns, 512 KiB, and 1,024 characters per cell. Save from Excel or Sheets as CSV (comma separated) - .xlsx files are not read directly." }),
         el("p", { class: "field-help", text: "Preview first. It changes nothing and reports the row numbers of any rows it cannot use, so you can fix the spreadsheet and try again before anything is written." }),
       ]),
@@ -6161,18 +6213,27 @@ views.recipients = async (root) => {
       csvArea,
       el("label", { for: "r-header-mode", text: "Header row handling" }), headerMode,
       el("p", { class: "modal-help", text: "For nonstandard header names, choose first-row headers and Preview once to load safe, bounded labels. Review the mappings, then Preview again before Apply." }),
-      el("label", { for: "r-map-mailbox", text: "Mailbox column" }), mappingControls.mailbox,
-      el("label", { for: "r-map-name", text: "Name column" }), mappingControls.display_name,
-      el("label", { for: "r-map-department", text: "Department column" }), mappingControls.department,
-      el("label", { for: "r-dept", text: "Default department when the mapped value is blank" }),
-      defaultDepartment,
-      el("label", { for: "r-merge", text: "Existing recipient merge choice" }), mergeExisting,
-      el("p", { class: "modal-help", text: "Update changes mapped name and department fields for non-directory recipients and marks those records as CSV-managed. It does not override explicit exclusions." }),
-      el("label", { for: "r-deactivate" }, [
-        deactivateMissing,
-        document.createTextNode(" Deactivate CSV-managed recipients missing from this file"),
+      // D6 acceptance finding: "all the other stuff is noise". Column mapping
+      // auto-detects, and the merge/deactivate options only matter on a re-import,
+      // so a first-time operator should not have to read past them. They stay
+      // fully available - collapsed, not removed - because a re-import genuinely
+      // needs them.
+      el("details", { class: "context-help" }, [
+        el("summary", { text: "Advanced: column mapping and re-import options" }),
+        el("p", { class: "field-help", text: "You can ignore all of this for a normal first import. Columns are detected automatically; change these only if detection got something wrong or you are re-importing over existing recipients." }),
+        el("label", { for: "r-map-mailbox", text: "Mailbox column" }), mappingControls.mailbox,
+        el("label", { for: "r-map-name", text: "Name column" }), mappingControls.display_name,
+        el("label", { for: "r-map-department", text: "Department column" }), mappingControls.department,
+        el("label", { for: "r-dept", text: "Default department when the mapped value is blank" }),
+        defaultDepartment,
+        el("label", { for: "r-merge", text: "Existing recipient merge choice" }), mergeExisting,
+        el("p", { class: "modal-help", text: "Update changes mapped name and department fields for non-directory recipients and marks those records as CSV-managed. It does not override explicit exclusions." }),
+        el("label", { for: "r-deactivate" }, [
+          deactivateMissing,
+          document.createTextNode(" Deactivate CSV-managed recipients missing from this file"),
+        ]),
+        el("p", { class: "modal-help", text: "Deactivate missing never hard-deletes, never changes directory-owned recipients, and requires a clean preview plus a second confirmation." }),
       ]),
-      el("p", { class: "modal-help", text: "Deactivate missing never hard-deletes, never changes directory-owned recipients, and requires a clean preview plus a second confirmation." }),
       el("div", { class: "btn-row" }, [previewButton, applyButton]),
       previewStatus,
     ]));
