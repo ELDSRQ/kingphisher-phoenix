@@ -520,6 +520,11 @@ function promptDialog({ title, description, fields, submitLabel = "Save" }) {
       } else if (field.type === "textarea") {
         input = el("textarea", { id, name: field.name, rows: "3", maxlength: field.maxLength, placeholder: field.placeholder || "" });
         input.value = field.value || "";
+      } else if (field.type === "checkbox") {
+        // Checkboxes carry their answer in .checked, not .value, so they need
+        // their own read path on submit as well as here.
+        input = el("input", { id, name: field.name, type: "checkbox" });
+        input.checked = Boolean(field.value);
       } else {
         input = el("input", { id, name: field.name, type: field.type || "text", maxlength: field.maxLength, placeholder: field.placeholder || "" });
         input.value = field.value || "";
@@ -538,6 +543,17 @@ function promptDialog({ title, description, fields, submitLabel = "Save" }) {
     const submit = () => {
       const values = {};
       for (const field of fields) {
+        if (field.type === "checkbox") {
+          const checked = Boolean(inputs[field.name].checked);
+          // "Required" on a checkbox means it must be TICKED, not merely present.
+          if (field.required && !checked) {
+            errorLine.textContent = `${field.label} must be confirmed.`;
+            inputs[field.name].focus();
+            return;
+          }
+          values[field.name] = checked;
+          continue;
+        }
         const value = String(inputs[field.name].value || "").trim();
         if (field.required && !value) {
           errorLine.textContent = `${field.label} is required.`;
@@ -4178,22 +4194,67 @@ views.sending = async (root) => {
     const prefillDomains = Array.isArray(prefill.target_domains) && prefill.target_domains.length
       ? prefill.target_domains.join(", ")
       : verifiedDomains.join(", ");
-    const values = await promptDialog({
-      title: prefill.roe_id ? "Re-sign a Rules-of-Engagement for a new window" : "Sign a Rules-of-Engagement",
-      description: "The signature binds terms + signer + timestamp under the shared RoE key. Every target domain must already be DNS-verified, and the window must cover the campaigns it authorizes.",
+    // D6 acceptance finding: the operator asked for "a checkbox to indicate it
+    // has been approved by the domain owner" instead of a five-field form. The
+    // confirmation below IS that checkbox. What it records underneath is still
+    // the signed authorization, because scheduling and delivery re-verify the
+    // signature, the domain set and the window (roe_covers_schedule,
+    // recipient_domain_roe_covered): dropping the artifact would mean deleting
+    // those checks, not just simplifying a form. So the defaults do the work -
+    // the domains you just verified, standard terms, and a one-year window -
+    // and "Set custom terms or window" reopens the full form when it matters.
+    const DEFAULT_ROE_MONTHS = 12;
+    const defaultTerms = (party, domains) =>
+      `${party} authorizes simulated phishing awareness exercises to ${domains}. ` +
+      "Recipients are confined to those verified domains. Lures are training material and are disclosed as such. " +
+      "Authorization may be revoked at any time, which stops its campaigns immediately.";
+
+    const quick = await promptDialog({
+      title: prefill.roe_id ? "Re-confirm authorization for a new period" : "Confirm domain owner authorization",
+      description: `Confirms that the owner of ${prefillDomains} has authorized this exercise. Recorded with their name and the time you confirmed it.`,
       fields: [
-        { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp", value: prefill.authorizing_party || "" },
-        { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training.", value: prefill.terms || "" },
-        { name: "window_start", label: "Window start (your local time)", type: "datetime-local", required: true },
-        { name: "window_end", label: "Window end (your local time)", type: "datetime-local", required: true },
-        { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: prefillDomains },
+        { name: "confirmed", label: "The domain owner has authorized this simulated phishing exercise", type: "checkbox", required: true,
+          help: "Tick only if you have that authorization. This is recorded in the audit trail against your account." },
+        { name: "authorizing_party", label: "Who authorized it", type: "text", required: true, placeholder: "Example Corp", value: prefill.authorizing_party || "",
+          help: "The organisation or person who gave permission." },
+        { name: "custom", label: "Set custom terms or window instead", type: "checkbox",
+          help: `Leave unticked to use standard terms covering ${prefillDomains} for the next ${DEFAULT_ROE_MONTHS} months.` },
       ],
-      submitLabel: prefill.roe_id ? "Sign new RoE" : "Sign RoE",
+      submitLabel: "Confirm authorization",
     });
-    if (!values) return;
+    if (!quick) return;
+
+    let values;
+    if (quick.custom) {
+      values = await promptDialog({
+        title: "Authorization details",
+        description: "The signature binds terms + signer + timestamp under the shared RoE key. Every target domain must already be DNS-verified, and the window must cover the campaigns it authorizes.",
+        fields: [
+          { name: "authorizing_party", label: "Authorizing party", type: "text", required: true, placeholder: "Example Corp", value: quick.authorizing_party },
+          { name: "terms", label: "Terms", type: "textarea", required: true, placeholder: "Q3 training: recipients confined to the verified target domains; lures disclosed as training.", value: prefill.terms || "" },
+          { name: "window_start", label: "Window start (your local time)", type: "datetime-local", required: true },
+          { name: "window_end", label: "Window end (your local time)", type: "datetime-local", required: true },
+          { name: "target_domains", label: "Target domains (comma-separated, must be verified)", type: "text", required: true, value: prefillDomains },
+        ],
+        submitLabel: prefill.roe_id ? "Sign new RoE" : "Sign RoE",
+      });
+      if (!values) return;
+    } else {
+      const now = new Date();
+      const until = new Date(now); until.setMonth(until.getMonth() + DEFAULT_ROE_MONTHS);
+      values = {
+        authorizing_party: quick.authorizing_party,
+        terms: defaultTerms(quick.authorizing_party, prefillDomains),
+        window_start: now.toISOString(),
+        window_end: until.toISOString(),
+        target_domains: prefillDomains,
+        _preresolved: true,
+      };
+    }
+
     try {
-      const start = localDateTimeToIso(values.window_start, "Window start");
-      const end = localDateTimeToIso(values.window_end, "Window end");
+      const start = values._preresolved ? values.window_start : localDateTimeToIso(values.window_start, "Window start");
+      const end = values._preresolved ? values.window_end : localDateTimeToIso(values.window_end, "Window end");
       if (new Date(end) <= new Date(start)) throw new Error("Window end must be after window start");
       const targets = values.target_domains.split(",").map((d) => d.trim()).filter(Boolean);
       if (!targets.length) throw new Error("At least one target domain is required");
