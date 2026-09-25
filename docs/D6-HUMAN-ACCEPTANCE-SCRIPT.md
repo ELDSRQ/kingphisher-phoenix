@@ -74,6 +74,46 @@ ssh erikd@192.168.1.105 \
 
 Console: **http://localhost:18000/console/**
 
+## Pre-run state, verified on `.105` 2026-09-25
+
+Checked before scheduling a driver, because three of these would have wasted
+the run. Each was observed, not assumed.
+
+| Thing | State | Consequence for the run |
+| --- | --- | --- |
+| Console | **up** — `127.0.0.1:8000/console/` returns `Kingphisher-Phoenix Operator Console` | steps 1-4 are runnable |
+| API / workers | **up** ~16 h — `kp-operator-api`, `kp-tracking-api`, and the ingestion, generation, delivery, retention and mailbox workers | generation worker is listening |
+| Supporting services | **up** 3 d — postgres, redis, mailpit, mock-idp, mock-graph, mock-ai, otel | — |
+| Real AI gateway | **down** — nothing on `:18081`; the `ai` compose profile is not started | see below |
+| `KP_WORKER_AI_BASE_URL` | **empty** | falls back to `mock_ai_url`; generation is served by `mock-ai`, which answers `/propose` in ~3 ms |
+| Generation ever run? | **no** — `transactional_outbox` holds `mailbox` and `retention` topics only, zero `generate` rows | step 5 has never executed here |
+| Identities | **one** (console password; OIDC 404s) | steps 5-7 blocked, see the correction above |
+
+### What this means for step 5
+
+Step 5 asks "did AI generation complete? how long?". As the instance stands
+that question cannot be answered honestly, for two independent reasons, and
+fixing one does not fix the other.
+
+1. **It cannot be reached.** Generation is queued by pattern approval
+   (`routes/patterns.py`), and approval refuses `pattern.created_by ==
+   principal_id`. With a single identity the only operator who can create a
+   pattern is the one barred from approving it, so no `generate` message is
+   ever enqueued. This is the same bar as step 7, arriving two steps earlier.
+2. **It would not mean anything if it were reached.** With
+   `KP_WORKER_AI_BASE_URL` empty the draft is produced by `mock-ai` in about
+   3 ms. Timing a mock tells you nothing about whether a human finds real
+   generation acceptably fast, which is what the step is for.
+
+Note that `/extract` 404s against `mock-ai`, which looks alarming and is not:
+`jobs.py` degrades that to "no record" and generates from the pattern alone, by
+design.
+
+**Recommendation: do not run step 5 until an identity provider and a generation
+backend are chosen.** Both are configuration, not development. Running before
+then produces a confident-looking pass that measures a mock and a bypassed
+gate.
+
 ## The run
 
 Give the driver the URL and password and nothing else. No walkthrough.
@@ -101,7 +141,19 @@ exactly the kind of thing this gate exists to surface.
 
 (On Azure the second identity is provisioned and verified:
 `licensing@erikdierksgmail.onmicrosoft.com`, a distinct `oid`, `administrator`
-role. On-prem has no equivalent second login configured.)
+role.)
+
+**Correction, 2026-09-25.** This section used to say on-prem had no second
+login configured, which understated the problem in one direction and overstated
+it in the other. On-prem ships *five* distinct role-bearing identities —
+`infrastructure/mock-services/mock_idp.py` defines `author`, `security`,
+`privacy`, `operator` and `administrator`, each with its own stable UUID. The
+capability is not missing. What is missing is the wiring: the running `.105`
+instance authenticates with `KP_CONSOLE_PASSWORD` only, no `KP_OIDC_*` is set,
+and `/api/v1/console/oidc/login` returns 404. So the run has exactly one
+identity available, and every second-identity gate is unreachable — not because
+the product lacks the concept, but because this deployment is not configured
+for it. See "Pre-run state" below: this blocks step 5 as well as step 7.
 
 ## Recording the result
 
