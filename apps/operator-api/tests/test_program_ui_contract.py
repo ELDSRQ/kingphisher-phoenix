@@ -32,7 +32,7 @@ def test_program_api_routes_match_gui_contract() -> None:
 
 
 def test_program_planner_is_a_complete_gui_workflow() -> None:
-    assert '["programs", "Programs"]' in APP
+    assert '["programs", "Repeat on a schedule", "more"]' in APP
     assert "views.programs = async (root) =>" in PROGRAM_VIEW
     assert 'boundedCollection("/programs")' in PROGRAM_VIEW
     assert "api(`/programs/${program.campaign_program_id}`)" in PROGRAM_VIEW
@@ -52,9 +52,14 @@ def test_program_planner_shows_exact_utc_and_independent_review_boundaries() -> 
     assert "`Run ${occurrence.occurrenceNumber} (UTC)`" in PROGRAM_VIEW
     assert 'el("th", { text: "Start UTC" })' in PROGRAM_VIEW
     assert 'el("th", { text: "End UTC" })' in PROGRAM_VIEW
-    assert "Every later occurrence is a separate draft with an unfrozen audience" in PROGRAM_VIEW
-    assert "no copied approvals and no Rules-of-Engagement binding" in PROGRAM_VIEW
-    assert "Review, freeze, approve and schedule each one from Campaigns" in PROGRAM_VIEW
+    # Reworded 2026-09-25 for an operator who asked what this panel was for.
+    # The three guarantees are pinned, not the sentence that carried them:
+    # each repeat starts unfrozen, unapproved and unbound, and reaching a send
+    # means walking the whole campaign path again.
+    assert "its audience is unfrozen" in PROGRAM_VIEW
+    assert "it has no approvals" in PROGRAM_VIEW
+    assert "not bound to any Rules of Engagement" in PROGRAM_VIEW
+    assert "review, freeze, approve and schedule it from Campaigns" in PROGRAM_VIEW
     assert "does not recall or cancel work that is already scheduled or queued" in PROGRAM_VIEW
     assert "fixed elapsed days in UTC" in PROGRAM_VIEW
     assert "local wall-clock time can shift when daylight-saving time changes" in PROGRAM_VIEW
