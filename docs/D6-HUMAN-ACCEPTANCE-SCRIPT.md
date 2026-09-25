@@ -89,6 +89,49 @@ the run. Each was observed, not assumed.
 | Generation ever run? | **no** — `transactional_outbox` holds `mailbox` and `retention` topics only, zero `generate` rows | step 5 has never executed here |
 | Identities | **one** (console password; OIDC 404s) | steps 5-7 blocked, see the correction above |
 
+### Step 5 was run on 2026-09-25 — RESULT
+
+Driven against `.105` through the product's own API as the single console
+identity. **The step now completes.**
+
+| Stage | Result |
+| --- | --- |
+| Clone an approved pattern into a draft I own | `approval_state: draft` |
+| **Approve that pattern myself** | `HTTP 200`, `generation_request_recorded: true` |
+| `generate` enqueued | first such row ever written on this instance |
+| Draft template produced | **5 s** |
+| **Approve the draft I requested myself** | `HTTP 200`, `approval_state: approved` |
+| Audit trail | `pattern.approve … self_approved=true`, `template.approve … self_reviewed=true` |
+
+Two findings came out of the run, both real.
+
+**1. The shipped local stack could never generate a template.** `.env.example`
+pinned `KP_WORKER_AI_MODEL_ID` to the llama.cpp identity while
+`KP_WORKER_AI_BASE_URL` was empty — which falls back to the bundled `mock-ai`,
+self-reporting `mock-ai/0.2.0`. Every generation job failed the pin:
+
+```
+AIResponseError: AI response model does not match the pinned generation model
+kp_worker_ai_model_mismatch_total: 2.0
+```
+
+It failed the *right* way — closed, audited, retried, then dead-lettered — but
+the shipped configuration could not produce a template at all. It had gone
+unnoticed because the separation-of-duties bar stopped anyone reaching
+generation, so the queue stayed empty and the mismatch never got a chance to
+show itself. Fixed, with a regression test that compares the shipped pin against
+the bundled mock's advertised id.
+
+**2. The timing is still meaningless.** The 5 s above is `mock-ai` answering in
+about 3 ms plus queue latency. It proves the *pipeline* end to end; it says
+nothing about whether a human finds real generation acceptably fast. A driver
+should not be asked "how long did it take?" until a real model is behind the
+gateway.
+
+**So step 5 passes as a pipeline test and remains open as a human-experience
+test.** Note `.105` now has `KP_WORKER_AI_MODEL_ID=mock-ai/0.2.0`; that must go
+back to the served model's exact identity when a real gateway is attached.
+
 ### What this means for step 5
 
 Step 5 asks "did AI generation complete? how long?". As the instance stands
