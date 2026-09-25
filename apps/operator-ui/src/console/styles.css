@@ -493,3 +493,14 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   .pill.ok { border-style: double; }
   .pill.down { border-style: dashed; }
 }
+
+/* Guidance blocks added for the D6 acceptance findings: recipient CSV layout
+   and the campaign walkthrough. Kept close to .context-help so collapsed help
+   reads consistently wherever it appears. */
+.help-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 13px; }
+.help-table th, .help-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.help-table th { color: var(--muted); font-weight: 600; }
+.help-example {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; overflow-x: auto; font-size: 12px; line-height: 1.5; margin: 6px 0;
+}
