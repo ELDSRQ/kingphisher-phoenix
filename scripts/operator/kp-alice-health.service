@@ -1,0 +1,23 @@
+# Installed on Alice inside WSL Ubuntu-24.04 at
+# /etc/systemd/system/kp-alice-health.service, then:
+#   systemctl daemon-reload && systemctl enable --now kp-alice-health.service
+#
+# WHY A UNIT AND NOT nohup: the first attempt was launched with nohup and died
+# in the 9/23 shutdown it existed to explain, leaving nine lines and no way to
+# catch the next one. A monitor that does not outlive the event is not a
+# monitor. The distro itself is kept alive across reboots by the S4U task in
+# alice-boot-persistence.sh, so a unit here is genuinely persistent.
+[Unit]
+Description=Rolling health sampler for Alice (GPU temp/power + kp-aggregate state)
+After=kp-aggregate.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/alice-health-monitor.sh
+Restart=always
+RestartSec=10
+# nvidia-smi lives in /usr/lib/wsl/lib on WSL and is not on the default PATH.
+Environment=PATH=/usr/lib/wsl/lib:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

@@ -18,8 +18,13 @@
 # power-related death should show power.draw spiking toward the limit; a thermal
 # one should show temperature climbing.
 #
-# Run (detached, survives your SSH session):
-#   nohup bash scripts/operator/alice-health-monitor.sh >/dev/null 2>&1 &
+# Run it as a systemd unit inside WSL, NOT with nohup. The first attempt used
+# nohup and was killed by the very 9/23 shutdown it was meant to explain,
+# leaving nine lines and nothing watching for the next one. Install
+# kp-alice-health.service from this directory alongside it:
+#   install -m 0755 alice-health-monitor.sh /usr/local/bin/
+#   install -m 0644 kp-alice-health.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now kp-alice-health.service
 #
 # Read the log:
 #   tail -40 /var/log/alice-health.log
