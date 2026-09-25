@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import html
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -25,7 +26,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
-ISSUER = "http://localhost:8443/realms/kingphisher"
+# The issuer is what this IdP advertises in discovery, and every endpoint the
+# client is told to use is built from it. It must therefore be the URL the
+# *client* reaches, which is not always the port this app listens on: `.105`
+# already has AccessTracker's TLS proxy on 8443, so our mock-idp is published on
+# 8543 there (see docker-compose.override.yml). Hardcoding 8443 sent discovery
+# clients to AccessTracker's nginx, which answered "400 The plain HTTP request
+# was sent to HTTPS port" - a confusing failure a long way from its cause.
+ISSUER = os.environ.get("KP_MOCK_IDP_ISSUER", "http://localhost:8443/realms/kingphisher").rstrip("/")
 AUDIENCE = "kp-operator-api"
 CLIENT_ID = "kp-operator-console"
 REDIRECT_URI = "http://localhost:8000/api/v1/console/oidc/callback"
