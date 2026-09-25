@@ -96,3 +96,27 @@ def test_code_is_one_time_and_pkce_is_enforced() -> None:
         # Failed verification consumes the code, preventing online verifier guessing.
         form["code_verifier"] = "v" * 48
         assert client.post("/realms/kingphisher/protocol/openid-connect/token", data=form).status_code == 400
+
+
+def test_issuer_is_configurable_for_hosts_where_8443_is_taken(monkeypatch) -> None:
+    """Discovery must advertise the URL the *client* reaches, not our listen port.
+
+    `.105` already has another project's TLS proxy on 8443, so this IdP is
+    published on 8543 there. A hardcoded issuer sent clients to that proxy,
+    which answered "400 The plain HTTP request was sent to HTTPS port" - a long
+    way from the actual cause.
+    """
+    import importlib
+
+    monkeypatch.setenv("KP_MOCK_IDP_ISSUER", "http://localhost:8543/realms/kingphisher")
+    reloaded = importlib.reload(mock_idp)
+    try:
+        with TestClient(reloaded.app) as client:
+            payload = client.get("/realms/kingphisher/.well-known/openid-configuration").json()
+        assert payload["issuer"] == "http://localhost:8543/realms/kingphisher"
+        # Every advertised endpoint is built from the issuer, so all of them move.
+        assert payload["token_endpoint"].startswith("http://localhost:8543/")
+        assert payload["jwks_uri"].startswith("http://localhost:8543/")
+    finally:
+        monkeypatch.delenv("KP_MOCK_IDP_ISSUER", raising=False)
+        importlib.reload(mock_idp)
