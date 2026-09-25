@@ -87,12 +87,34 @@ def test_single_operator_is_permitted_without_a_dev_stack() -> None:
     assert settings.dev_stack is False
 
 
-def test_single_operator_does_not_unlock_the_empty_allowlist() -> None:
-    # The separation-of-duties relaxation must not drag the recipient-domain
-    # control with it: that is what bounds who can actually be mailed.
-    settings = _settings(approval_policy="single-operator", allowed_recipient_domains="")
+def test_single_operator_admits_an_unset_allowlist() -> None:
+    """Reversed 2026-09-25, deliberately. This previously asserted a refusal.
+
+    The original reasoning was that the recipient-domain control is what bounds
+    who can be mailed, so the separation-of-duties relaxation must not drag it
+    along. That reasoning was wrong about which control does the bounding.
+    Delivery refuses any recipient outside the signed RoE target domains
+    (`recipient_domain_roe_covered`), an RoE is mandatory to schedule or publish
+    at all, and jobs.py states that check "cannot be switched off by config".
+    The env allowlist is a second, redundant bound.
+
+    Keeping it mandatory only produced a dead end: a lone operator holding a
+    valid signed RoE still could not import the recipients it authorised. The
+    boundary is unchanged - it is enforced one layer down, by the artifact the
+    domain owner actually attested to.
+    """
+    allowlist, unrestricted = resolve_recipient_policy(
+        _settings(approval_policy="single-operator", allowed_recipient_domains="")
+    )
+    assert allowlist == frozenset()
+    assert unrestricted is True
+
+
+def test_enforce_still_fails_closed_on_an_unset_allowlist() -> None:
+    # The relaxation above is scoped to single-operator. A two-approver
+    # deployment has someone to set the allowlist, so it keeps the redundancy.
     with pytest.raises(ValidationError_):
-        resolve_recipient_policy(settings)
+        resolve_recipient_policy(_settings(approval_policy="enforce", allowed_recipient_domains=""))
 
 
 def test_single_operator_still_honours_a_configured_allowlist() -> None:
