@@ -241,6 +241,10 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
         _routes(
             "POST /api/v1/sending-domains/challenge",
             "POST /api/v1/sending-domains/verify",
+            # Read-only sibling of /verify: reports each required record's live
+            # state and records nothing. Same capability because it discloses
+            # the same challenge value /challenge already returns.
+            "POST /api/v1/sending-domains/diagnose",
             "GET /api/v1/sending-domains",
             "POST /api/v1/sending-domains/{domain}/revoke",
             "GET /api/v1/sending-domains/generate",
