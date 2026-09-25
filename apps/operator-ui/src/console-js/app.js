@@ -1139,27 +1139,33 @@ function sidebarEmergencyStop() {
 }
 
 /* ---------- shell ---------- */
+// Twenty flat entries meant an operator whose whole job is "run a campaign" had
+// to work out which six of them mattered and in what order. The third element
+// is the group: "run" is the path to a live campaign, in the order you walk it;
+// everything else is real but occasional, and sits behind "More" so it stops
+// competing for attention. Nothing is removed - hiding a capability an operator
+// has is worse than burying it one click deep.
 const NAV = [
-  ["getstarted", "Get started"],
-  ["onboarding", "Setup wizard"],
-  ["azure-deployment", "Azure deployment"],
-  ["help", "Help"],
-  ["dashboard", "Dashboard"],
-  ["campaigns", "Campaigns"],
-  ["programs", "Programs"],
-  ["trends", "Executive trends"],
-  ["sending", "Domains & RoE"],
-  ["recipients", "Recipients"],
-  ["sources", "Sources"],
-  ["aggregation", "Threat aggregation"],
-  ["patterns", "Patterns"],
-  ["templates", "Template review"],
-  ["training", "Training lessons"],
-  ["privacy", "Privacy"],
-  ["queues", "Failed jobs"],
-  ["audit", "Audit"],
-  ["modelcontrol", "AI model"],
-  ["settings", "Settings"],
+  ["getstarted", "Get started", "run"],
+  ["sending", "Domains & RoE", "run"],
+  ["recipients", "Recipients", "run"],
+  ["templates", "Template review", "run"],
+  ["training", "Training lessons", "run"],
+  ["campaigns", "Campaigns", "run"],
+  ["dashboard", "Dashboard", "run"],
+  ["onboarding", "Setup wizard", "more"],
+  ["programs", "Repeat on a schedule", "more"],
+  ["trends", "Executive trends", "more"],
+  ["patterns", "Patterns", "more"],
+  ["sources", "Sources", "more"],
+  ["aggregation", "Threat aggregation", "more"],
+  ["audit", "Audit", "more"],
+  ["queues", "Failed jobs", "more"],
+  ["privacy", "Privacy", "more"],
+  ["modelcontrol", "AI model", "more"],
+  ["azure-deployment", "Azure deployment", "more"],
+  ["settings", "Settings", "more"],
+  ["help", "Help", "more"],
 ];
 
 const NAV_CAPABILITIES = Object.freeze({
@@ -1212,15 +1218,26 @@ function shell() {
   const viewChanged = active !== lastRenderedView;
   lastRenderedView = active;
   const nav = el("nav", { "aria-label": "Operator sections" });
-  for (const [id, label] of visible) {
-    nav.appendChild(el("button", {
-      type: "button",
-      "data-nav": id,
-      class: id === active ? "active" : "",
-      "aria-current": id === active ? "page" : null,
-      text: label,
-      onclick: () => navigateTo(id),
-    }));
+  const navButton = ([id, label]) => el("button", {
+    type: "button",
+    "data-nav": id,
+    class: id === active ? "active" : "",
+    "aria-current": id === active ? "page" : null,
+    text: label,
+    onclick: () => navigateTo(id),
+  });
+  const primary = visible.filter(([, , group]) => group !== "more");
+  const secondary = visible.filter(([, , group]) => group === "more");
+  for (const entry of primary) nav.appendChild(navButton(entry));
+  if (secondary.length) {
+    // Stays open if the operator is already inside one of these, so navigating
+    // to Audit does not make the section they are standing in disappear.
+    const activeInMore = secondary.some(([id]) => id === active);
+    const more = el("details", { class: "nav-more", open: activeInMore ? "open" : null }, [
+      el("summary", { text: "More" }),
+    ]);
+    for (const entry of secondary) more.appendChild(navButton(entry));
+    nav.appendChild(more);
   }
   // UX-011 §5: a "needs my decision" count badge on Campaigns, visible from
   // every screen. Best-effort and read-only; it never gates anything.
@@ -3049,6 +3066,59 @@ views.campaigns = async (root) => {
     ]));
   }
 
+  // Eleven blank fields, of which the operator genuinely chooses maybe two. The
+  // rest are either already known to the platform (which domain you verified,
+  // how many recipients you imported) or have one sensible answer (start soon,
+  // run a fortnight). Blank fields read as eleven decisions; prefilled ones read
+  // as a draft to check. Everything here stays editable - this is a starting
+  // point, not a lock.
+  async function prefillNewCampaign() {
+    const value = (id, v) => {
+      const node = document.getElementById(id);
+      if (node && !node.value && v != null && v !== "") node.value = v;
+    };
+    const pad = (n) => String(n).padStart(2, "0");
+    const localInput = (d) =>
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+    // Start at the next whole hour rather than "now": a start already in the
+    // past is the single most common reason a first campaign will not schedule.
+    const start = new Date();
+    start.setMinutes(0, 0, 0);
+    start.setHours(start.getHours() + 1);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 14);
+    value("c-start", localInput(start));
+    value("c-end", localInput(end));
+
+    const pattern = approvedPatterns[0];
+    if (pattern) {
+      const month = start.toLocaleString(undefined, { month: "long", year: "numeric" });
+      const subject = String(pattern.lure_category || "awareness").replace(/_/g, " ");
+      value("c-title", `${subject.charAt(0).toUpperCase()}${subject.slice(1)} exercise — ${month}`);
+    }
+
+    // Best-effort: a prefill that cannot be computed is simply left blank, and
+    // the operator fills it in as before. It must never block the form.
+    try {
+      const [domains, recipients] = await Promise.all([
+        boundedCollection("/sending-domains").catch(() => []),
+        boundedCollection("/recipients", "items").catch(() => []),
+      ]);
+      const verified = domains.filter((d) => d.active !== false).map((d) => d.domain).filter(Boolean);
+      if (verified.length === 1) {
+        // Only when there is exactly one: guessing between several would put a
+        // wrong From address on real mail, which is worse than an empty field.
+        value("c-sender", `security-awareness@${verified[0]}`);
+        value("c-tdomain", `training.${verified[0]}`);
+      }
+      const max = document.getElementById("c-max");
+      if (max && recipients.length && max.value === "1000") max.value = String(recipients.length);
+    } catch {
+      /* leave the fields blank; they are still editable */
+    }
+  }
+
   const form = el("fieldset", { disabled: canCreateCampaign ? null : "disabled" }, [
     el("legend", { text: "New campaign" }),
     el("div", { class: "form-grid" }, [
@@ -3657,6 +3727,9 @@ views.campaigns = async (root) => {
   ]);
 
   root.appendChild(form);
+  // After the fields exist in the DOM, and deliberately not awaited: the two
+  // lookups it makes must never hold up rendering the page.
+  if (canCreateCampaign) prefillNewCampaign();
   root.appendChild(groupCard);
   root.appendChild(el("div", { class: "card" }, [el("h3", { text: "All campaigns" }), list]));
 
@@ -3802,22 +3875,17 @@ views.programs = async (root) => {
   if (!requireAnyCapability(root, CAPABILITY.VIEW_AGGREGATE)) return;
   const canCreateProgram = hasCapability(CAPABILITY.CREATE_CAMPAIGN);
   const canChangeProgramState = hasCapability(CAPABILITY.SCHEDULE_CAMPAIGN);
-  root.appendChild(el("h2", { text: "Program planner" }));
+  // Operator feedback: "unclear what it does or what I need to do". It opened
+  // with "Program planner" and three paragraphs of caveats, so the one sentence
+  // that explains the point was the fourth thing read - and for a new operator
+  // the panel is inert anyway, because it needs a campaign that is already
+  // scheduled. Lead with what it is for, say plainly when it cannot be used yet,
+  // and keep the caveats where they belong: next to the control they constrain.
+  root.appendChild(el("h2", { text: "Repeat a campaign on a schedule" }));
   root.appendChild(el("p", {
     class: "sub",
-    text: "Create a bounded timeline of independent campaign drafts from one reviewed, scheduled campaign.",
-  }));
-  root.appendChild(el("div", { class: "policy-banner" }, [
-    el("strong", { text: "Independent review remains mandatory. " }),
-    document.createTextNode("The first occurrence is the existing scheduled source. Every later occurrence is a separate draft with an unfrozen audience, no copied approvals and no Rules-of-Engagement binding. Review, freeze, approve and schedule each one from Campaigns."),
-  ]));
-  root.appendChild(el("p", {
-    class: "modal-warn",
-    text: "Pausing blocks future scheduling attempts. It does not recall or cancel work that is already scheduled or queued; use the campaign Recall or emergency-stop controls when those actions are required.",
-  }));
-  root.appendChild(el("p", {
-    class: "field-help",
-    text: "Cadence uses fixed elapsed days in UTC. A local wall-clock time can shift when daylight-saving time changes.",
+    text: "Optional. Take a campaign you have already scheduled and lay out repeats of it every so many days — "
+      + "a quarterly refresher, say. You never need this to run a campaign.",
   }));
 
   let programs;
@@ -3837,6 +3905,17 @@ views.programs = async (root) => {
     && campaign.audience_frozen && campaign.roe_bound
     && Date.parse(campaign.schedule_start || "") > Date.now()
     && !existingSources.has(campaign.campaign_id));
+  if (!sources.length) {
+    root.appendChild(el("div", { class: "card" }, [
+      el("h3", { text: "Nothing to repeat yet" }),
+      el("p", {
+        text: "This needs a campaign that is already scheduled, with its audience frozen, its Rules of Engagement "
+          + "bound, and a start date still in the future. Once you have run one campaign you can come back and "
+          + "set it to repeat.",
+      }),
+      el("button", { class: "btn", type: "button", text: "Go to Campaigns", onclick: () => navigateTo("campaigns") }),
+    ]));
+  }
   const sourceSelect = el("select", { id: "program-source", disabled: sources.length ? null : "disabled" },
     sources.map((campaign) => el("option", {
       value: campaign.campaign_id,
@@ -3923,15 +4002,35 @@ views.programs = async (root) => {
     },
   });
   root.appendChild(el("fieldset", { disabled: canCreateProgram ? null : "disabled" }, [
-    el("legend", { text: "New finite program" }),
+    el("legend", { text: "Set up the repeats" }),
     el("div", { class: "form-grid" }, [
-      el("div", {}, [el("label", { for: "program-source", text: "Reviewed scheduled source" }), sourceSelect]),
+      el("div", {}, [el("label", { for: "program-source", text: "Campaign to repeat" }), sourceSelect]),
       el("div", {}, [
-        el("label", { for: "program-cadence", text: "Cadence" }), cadenceSelect,
-        el("label", { for: "program-count", text: "Total occurrences" }), countInput,
+        el("label", { for: "program-cadence", text: "Repeat every" }), cadenceSelect,
+        el("label", { for: "program-count", text: "How many times in total" }), countInput,
       ]),
     ]),
     timelinePreview,
+    // These two used to sit at the top of the page, where they were read before
+    // the reader knew what the feature was. They constrain this control, so
+    // they belong beside it.
+    // Line breaks are placed so each pinned guarantee stays inside one string
+    // literal; test_program_ui_contract reads this source, and a phrase split
+    // across a `+` is invisible to it.
+    el("p", { class: "field-help", text:
+      "Each repeat is created as its own draft and carries nothing forward: "
+      + "its audience is unfrozen, it has no approvals, and it is "
+      + "not bound to any Rules of Engagement. Nothing can send until you "
+      + "review, freeze, approve and schedule it from Campaigns"
+      + ", exactly as you did the first one." }),
+    el("p", { class: "field-help", text:
+      "Repeats are counted in "
+      + "fixed elapsed days in UTC"
+      + ", so a "
+      + "local wall-clock time can shift when daylight-saving time changes"
+      + ". Pausing stops future repeats being created; it "
+      + "does not recall or cancel work that is already scheduled or queued"
+      + " - use Recall on the campaign, or the emergency stop, for that." }),
     sources.length ? null : el("p", {
       class: "modal-warn",
       text: "No eligible source is available. Schedule a campaign with a frozen audience and bound Rules-of-Engagement first.",

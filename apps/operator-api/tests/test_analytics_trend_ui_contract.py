@@ -13,7 +13,7 @@ TREND_VIEW = APP[
 
 
 def test_executive_trend_is_a_bounded_gui_route() -> None:
-    assert '["trends", "Executive trends"]' in APP
+    assert '["trends", "Executive trends", "more"]' in APP
     assert "views.trends = async (root) =>" in TREND_VIEW
     assert "365 * 24 * 60 * 60 * 1000" in TREND_VIEW
     assert 'limit: "12"' in TREND_VIEW

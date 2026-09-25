@@ -122,6 +122,25 @@ body {
 }
 .sidebar nav button:hover { background: var(--panel-2); color: var(--text); }
 .sidebar nav button.active { background: var(--accent-fill); color: #fff; }
+/* The occasional sections, folded away so the campaign path is what reads as
+   the navigation. `details` keeps this keyboard- and screen-reader-native. */
+/* A real flex column rather than `display: contents`: the latter removes the
+   details box, and whether a closed <details> still hides slotted children in
+   that state is not something to bet the navigation on. */
+.sidebar nav .nav-more { display: flex; flex-direction: column; gap: 2px; }
+.sidebar nav .nav-more > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 9px 12px;
+  margin-top: 6px;
+  border-top: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  color: var(--muted);
+  font-size: 13px;
+}
+.sidebar nav .nav-more > summary::-webkit-details-marker { display: none; }
+.sidebar nav .nav-more > summary::after { content: " ▾"; }
+.sidebar nav .nav-more[open] > summary::after { content: " ▴"; }
+.sidebar nav .nav-more > summary:hover { color: var(--text); }
 .sidebar .footer { padding: 10px; color: var(--muted); font-size: 12px; }
 .sidebar .footer button {
   width: 100%;

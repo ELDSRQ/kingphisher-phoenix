@@ -53,7 +53,12 @@ def test_navigation_is_filtered_by_server_derived_capabilities() -> None:
     assert all(entry in APP for entry in expected)
     assert "function visibleNavigation()" in APP
     assert "function canNavigateTo(viewId)" in APP
-    assert "for (const [id, label] of visible)" in APP
+    # The nav is built from the capability-filtered list. It is now rendered in
+    # two groups (the campaign path, then a collapsed "More"), so this pins the
+    # builder and both loops rather than one flat iteration.
+    assert "const navButton = ([id, label]) =>" in APP
+    assert "for (const entry of primary) nav.appendChild(navButton(entry));" in APP
+    assert "for (const entry of secondary) more.appendChild(navButton(entry));" in APP
     assert "hasAnyCapability(...required)" in APP
 
 

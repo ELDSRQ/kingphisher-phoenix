@@ -12,7 +12,7 @@ def test_sources_area_is_extended_into_one_threat_campaigns_workbench() -> None:
     assert 'el("h3", { text: "Configured sources" })' in SOURCES
     assert 'el("h3", { text: "New source" })' in SOURCES
     assert "supported RSS, STIX, and bulk-download source adapters" in SOURCES
-    assert '["sources", "Sources"]' in APP
+    assert '["sources", "Sources", "more"]' in APP
 
 
 def test_threat_queue_uses_only_bounded_server_pagination_and_filters() -> None:

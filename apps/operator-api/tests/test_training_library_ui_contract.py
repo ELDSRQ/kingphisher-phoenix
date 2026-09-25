@@ -16,7 +16,8 @@ TRAINING = APP[
 
 
 def test_training_navigation_and_view_use_either_existing_capability() -> None:
-    assert '["training", "Training lessons"]' in APP
+    # Third element is the nav group; training is on the campaign path.
+    assert '["training", "Training lessons", "run"]' in APP
     assert "training: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE]" in APP
     assert "requireAnyCapability(root, CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE)" in TRAINING
     assert "const canAuthorTraining = hasCapability(CAPABILITY.CREATE_CAMPAIGN);" in TRAINING

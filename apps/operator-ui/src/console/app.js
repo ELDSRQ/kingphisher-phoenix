@@ -1357,26 +1357,26 @@
     return container;
   }
   var NAV = [
-    ["getstarted", "Get started"],
-    ["onboarding", "Setup wizard"],
-    ["azure-deployment", "Azure deployment"],
-    ["help", "Help"],
-    ["dashboard", "Dashboard"],
-    ["campaigns", "Campaigns"],
-    ["programs", "Programs"],
-    ["trends", "Executive trends"],
-    ["sending", "Domains & RoE"],
-    ["recipients", "Recipients"],
-    ["sources", "Sources"],
-    ["aggregation", "Threat aggregation"],
-    ["patterns", "Patterns"],
-    ["templates", "Template review"],
-    ["training", "Training lessons"],
-    ["privacy", "Privacy"],
-    ["queues", "Failed jobs"],
-    ["audit", "Audit"],
-    ["modelcontrol", "AI model"],
-    ["settings", "Settings"]
+    ["getstarted", "Get started", "run"],
+    ["sending", "Domains & RoE", "run"],
+    ["recipients", "Recipients", "run"],
+    ["templates", "Template review", "run"],
+    ["training", "Training lessons", "run"],
+    ["campaigns", "Campaigns", "run"],
+    ["dashboard", "Dashboard", "run"],
+    ["onboarding", "Setup wizard", "more"],
+    ["programs", "Repeat on a schedule", "more"],
+    ["trends", "Executive trends", "more"],
+    ["patterns", "Patterns", "more"],
+    ["sources", "Sources", "more"],
+    ["aggregation", "Threat aggregation", "more"],
+    ["audit", "Audit", "more"],
+    ["queues", "Failed jobs", "more"],
+    ["privacy", "Privacy", "more"],
+    ["modelcontrol", "AI model", "more"],
+    ["azure-deployment", "Azure deployment", "more"],
+    ["settings", "Settings", "more"],
+    ["help", "Help", "more"]
   ];
   var NAV_CAPABILITIES = Object.freeze({
     getstarted: [CAPABILITY.MANAGE_ROLES],
@@ -1418,15 +1418,24 @@
     const viewChanged = active !== lastRenderedView;
     lastRenderedView = active;
     const nav = el("nav", { "aria-label": "Operator sections" });
-    for (const [id, label] of visible) {
-      nav.appendChild(el("button", {
-        type: "button",
-        "data-nav": id,
-        class: id === active ? "active" : "",
-        "aria-current": id === active ? "page" : null,
-        text: label,
-        onclick: () => navigateTo(id)
-      }));
+    const navButton = ([id, label]) => el("button", {
+      type: "button",
+      "data-nav": id,
+      class: id === active ? "active" : "",
+      "aria-current": id === active ? "page" : null,
+      text: label,
+      onclick: () => navigateTo(id)
+    });
+    const primary = visible.filter(([, , group]) => group !== "more");
+    const secondary = visible.filter(([, , group]) => group === "more");
+    for (const entry of primary) nav.appendChild(navButton(entry));
+    if (secondary.length) {
+      const activeInMore = secondary.some(([id]) => id === active);
+      const more = el("details", { class: "nav-more", open: activeInMore ? "open" : null }, [
+        el("summary", { text: "More" })
+      ]);
+      for (const entry of secondary) more.appendChild(navButton(entry));
+      nav.appendChild(more);
     }
     if (hasAnyCapability(CAPABILITY.APPROVE_SECURITY, CAPABILITY.APPROVE_PRIVACY) && visible.some(([id]) => id === "campaigns")) {
       (async () => {
@@ -3232,6 +3241,41 @@
         ])))
       ]));
     }
+    async function prefillNewCampaign() {
+      const value = (id, v) => {
+        const node = document.getElementById(id);
+        if (node && !node.value && v != null && v !== "") node.value = v;
+      };
+      const pad = (n) => String(n).padStart(2, "0");
+      const localInput = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const start = /* @__PURE__ */ new Date();
+      start.setMinutes(0, 0, 0);
+      start.setHours(start.getHours() + 1);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 14);
+      value("c-start", localInput(start));
+      value("c-end", localInput(end));
+      const pattern = approvedPatterns[0];
+      if (pattern) {
+        const month = start.toLocaleString(void 0, { month: "long", year: "numeric" });
+        const subject = String(pattern.lure_category || "awareness").replace(/_/g, " ");
+        value("c-title", `${subject.charAt(0).toUpperCase()}${subject.slice(1)} exercise \u2014 ${month}`);
+      }
+      try {
+        const [domains, recipients2] = await Promise.all([
+          boundedCollection("/sending-domains").catch(() => []),
+          boundedCollection("/recipients", "items").catch(() => [])
+        ]);
+        const verified = domains.filter((d) => d.active !== false).map((d) => d.domain).filter(Boolean);
+        if (verified.length === 1) {
+          value("c-sender", `security-awareness@${verified[0]}`);
+          value("c-tdomain", `training.${verified[0]}`);
+        }
+        const max = document.getElementById("c-max");
+        if (max && recipients2.length && max.value === "1000") max.value = String(recipients2.length);
+      } catch {
+      }
+    }
     const form = el("fieldset", { disabled: canCreateCampaign ? null : "disabled" }, [
       el("legend", { text: "New campaign" }),
       el("div", { class: "form-grid" }, [
@@ -3923,6 +3967,7 @@
       }))
     ]);
     root.appendChild(form);
+    if (canCreateCampaign) prefillNewCampaign();
     root.appendChild(groupCard);
     root.appendChild(el("div", { class: "card" }, [el("h3", { text: "All campaigns" }), list]));
     function act(path, successMsg) {
@@ -4083,22 +4128,10 @@
     if (!requireAnyCapability(root, CAPABILITY.VIEW_AGGREGATE)) return;
     const canCreateProgram = hasCapability(CAPABILITY.CREATE_CAMPAIGN);
     const canChangeProgramState = hasCapability(CAPABILITY.SCHEDULE_CAMPAIGN);
-    root.appendChild(el("h2", { text: "Program planner" }));
+    root.appendChild(el("h2", { text: "Repeat a campaign on a schedule" }));
     root.appendChild(el("p", {
       class: "sub",
-      text: "Create a bounded timeline of independent campaign drafts from one reviewed, scheduled campaign."
-    }));
-    root.appendChild(el("div", { class: "policy-banner" }, [
-      el("strong", { text: "Independent review remains mandatory. " }),
-      document.createTextNode("The first occurrence is the existing scheduled source. Every later occurrence is a separate draft with an unfrozen audience, no copied approvals and no Rules-of-Engagement binding. Review, freeze, approve and schedule each one from Campaigns.")
-    ]));
-    root.appendChild(el("p", {
-      class: "modal-warn",
-      text: "Pausing blocks future scheduling attempts. It does not recall or cancel work that is already scheduled or queued; use the campaign Recall or emergency-stop controls when those actions are required."
-    }));
-    root.appendChild(el("p", {
-      class: "field-help",
-      text: "Cadence uses fixed elapsed days in UTC. A local wall-clock time can shift when daylight-saving time changes."
+      text: "Optional. Take a campaign you have already scheduled and lay out repeats of it every so many days \u2014 a quarterly refresher, say. You never need this to run a campaign."
     }));
     let programs;
     let campaigns;
@@ -4113,6 +4146,15 @@
     }
     const existingSources = new Set(programs.map((program) => program.source_campaign_id));
     const sources = campaigns.filter((campaign) => campaign.state === "scheduled" && campaign.audience_frozen && campaign.roe_bound && Date.parse(campaign.schedule_start || "") > Date.now() && !existingSources.has(campaign.campaign_id));
+    if (!sources.length) {
+      root.appendChild(el("div", { class: "card" }, [
+        el("h3", { text: "Nothing to repeat yet" }),
+        el("p", {
+          text: "This needs a campaign that is already scheduled, with its audience frozen, its Rules of Engagement bound, and a start date still in the future. Once you have run one campaign you can come back and set it to repeat."
+        }),
+        el("button", { class: "btn", type: "button", text: "Go to Campaigns", onclick: () => navigateTo("campaigns") })
+      ]));
+    }
     const sourceSelect = el(
       "select",
       { id: "program-source", disabled: sources.length ? null : "disabled" },
@@ -4207,17 +4249,25 @@
       }
     });
     root.appendChild(el("fieldset", { disabled: canCreateProgram ? null : "disabled" }, [
-      el("legend", { text: "New finite program" }),
+      el("legend", { text: "Set up the repeats" }),
       el("div", { class: "form-grid" }, [
-        el("div", {}, [el("label", { for: "program-source", text: "Reviewed scheduled source" }), sourceSelect]),
+        el("div", {}, [el("label", { for: "program-source", text: "Campaign to repeat" }), sourceSelect]),
         el("div", {}, [
-          el("label", { for: "program-cadence", text: "Cadence" }),
+          el("label", { for: "program-cadence", text: "Repeat every" }),
           cadenceSelect,
-          el("label", { for: "program-count", text: "Total occurrences" }),
+          el("label", { for: "program-count", text: "How many times in total" }),
           countInput
         ])
       ]),
       timelinePreview,
+      // These two used to sit at the top of the page, where they were read before
+      // the reader knew what the feature was. They constrain this control, so
+      // they belong beside it.
+      // Line breaks are placed so each pinned guarantee stays inside one string
+      // literal; test_program_ui_contract reads this source, and a phrase split
+      // across a `+` is invisible to it.
+      el("p", { class: "field-help", text: "Each repeat is created as its own draft and carries nothing forward: its audience is unfrozen, it has no approvals, and it is not bound to any Rules of Engagement. Nothing can send until you review, freeze, approve and schedule it from Campaigns, exactly as you did the first one." }),
+      el("p", { class: "field-help", text: "Repeats are counted in fixed elapsed days in UTC, so a local wall-clock time can shift when daylight-saving time changes. Pausing stops future repeats being created; it does not recall or cancel work that is already scheduled or queued - use Recall on the campaign, or the emergency stop, for that." }),
       sources.length ? null : el("p", {
         class: "modal-warn",
         text: "No eligible source is available. Schedule a campaign with a frozen audience and bound Rules-of-Engagement first."
