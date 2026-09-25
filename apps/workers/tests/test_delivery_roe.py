@@ -172,6 +172,7 @@ def _run(
     send_error: Exception | None = None,
     stop_engaged: bool = False,
     suppressed: bool = False,
+    approval_policy: str = "single-admin",
     excluded: set[uuid.UUID] | None = None,
     test_send: bool = False,
     launch_gate_reasons: list[str | None] | None = None,
@@ -221,8 +222,8 @@ def _run(
         _env_file=None,
         roe_signing_key=roe_key,
         runtime_mode="development",
-        approval_policy="single-admin",
-        dev_stack=True,
+        approval_policy=approval_policy,
+        dev_stack=approval_policy == "single-admin",
     )
     context = WorkerContext(settings, factory, audit, SimpleNamespace())  # type: ignore[arg-type]
     sent: list[bool] = []
@@ -807,3 +808,36 @@ def test_batch_gates_and_sends_the_same_recipients_regardless_of_batch_size(
         (dm.SendState.FAILED, "target_domain_not_roe_covered"),
         (dm.SendState.ACCEPTED, None),
     ]
+
+
+@pytest.mark.parametrize("approval_policy", ["single-admin", "single-operator"])
+def test_roe_targets_bound_delivery_even_when_the_allowlist_is_unrestricted(
+    monkeypatch: pytest.MonkeyPatch, approval_policy: str
+) -> None:
+    """The signed RoE is the authorization boundary, not the env allowlist.
+
+    Both these postures leave an unset KP_ALLOWED_RECIPIENT_DOMAINS meaning
+    "no env-level restriction", so this is the case where the allowlist
+    contributes nothing. Delivery must still refuse a recipient outside the
+    RoE target domains - jobs.py calls that check independent of the allowlist
+    and says it "cannot be switched off by config". This is what makes it safe
+    for single-operator to admit an unset allowlist rather than fail closed.
+    """
+    roe = _make_roe(target_domains=["example.com"])
+    campaign = _make_campaign(roe=roe)
+    recipient = _make_recipient("user@not-authorised.example.net")
+    assignment = _make_assignment(campaign, recipient.recipient_id)
+
+    _context, _audit, sent = _run(
+        monkeypatch,
+        campaign=campaign,
+        roe=roe,
+        template=_make_template(),
+        assignments=[assignment],
+        recipients=[recipient],
+        approval_policy=approval_policy,
+    )
+
+    assert sent == []
+    assert assignment.send_state == dm.SendState.FAILED
+    assert assignment.failure_reason == "target_domain_not_roe_covered"
