@@ -131,6 +131,45 @@ def mailbox_domain(mailbox: str) -> str | None:
     return normalize_policy_domain(domain)
 
 
+def allowlist_unrestricted(
+    allowlist: frozenset[str],
+    approval_policy: ApprovalPolicy,
+    *,
+    dev_relaxations_allowed: bool = False,
+) -> bool:
+    """True when an UNSET recipient allowlist should admit rather than refuse.
+
+    Only ever relevant when ``allowlist`` is empty; a configured allowlist is
+    always enforced. Two postures say yes, for two different reasons:
+
+    * ``SINGLE_ADMIN`` — the explicitly-marked throwaway dev stack, where
+      allow-all keeps the offline demo working. Genuinely unbounded, which is
+      why that posture is confined to a dev stack.
+    * ``SINGLE_OPERATOR`` — a real single-operator deployment. This is NOT
+      unbounded: delivery independently refuses any recipient outside the
+      signed Rules-of-Engagement target domains
+      (``recipient_domain_roe_covered``), an RoE is mandatory to schedule or
+      publish at all, and that check "cannot be switched off by config"
+      (jobs.py). The env allowlist is a second, redundant bound there, and
+      making it mandatory only produced a dead end: a lone operator with a
+      perfectly good signed RoE still could not import a recipient.
+
+    ``ENFORCE`` is unchanged and still fails closed: a deployment with two
+    approvers has someone to set the allowlist, and the redundancy is cheap.
+
+    ``dev_relaxations_allowed`` keeps the pre-existing marked-dev-stack rule
+    intact. It is NOT the same test as ``approval_policy is SINGLE_ADMIN``: a
+    stack carrying the dev markers while running ``ENFORCE`` was allow-all
+    before and must stay that way, so the two conditions are kept separate
+    rather than collapsed into one.
+    """
+    if allowlist:
+        return False
+    if dev_relaxations_allowed:
+        return True
+    return approval_policy in {ApprovalPolicy.SINGLE_ADMIN, ApprovalPolicy.SINGLE_OPERATOR}
+
+
 def is_recipient_allowed(mailbox: str, allowlist: frozenset[str]) -> bool:
     """True when ``mailbox`` sits in an allowed domain or a subdomain of one.
 

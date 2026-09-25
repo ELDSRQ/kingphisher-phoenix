@@ -27,7 +27,7 @@ from kp_database.models import (
 )
 from kp_database.training import TrainingBearerPurpose, training_bearer, training_bearer_verifier
 from kp_domain_models import models as dm
-from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
+from kp_domain_models.policy import allowlist_unrestricted, is_recipient_allowed
 from kp_domain_models.roe import roe_active_at
 from sqlalchemy import select
 
@@ -65,7 +65,7 @@ def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # Mirror the delivery worker's recipient rule: an unset allowlist is
         # allow-all only for the single-admin offline stack, and fail-closed
         # under an enforced (OIDC-shaped) policy.
-        unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+        unrestricted = allowlist_unrestricted(allowlist, ctx.settings.approval_policy)
         for _ in range(ctx.settings.reminder_batch_size):
             # The global emergency stop halts every outbound send, reminders
             # included. It is a singleton row; once engaged, no later row in this

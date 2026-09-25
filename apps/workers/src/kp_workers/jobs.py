@@ -85,7 +85,7 @@ from kp_database.models import (
 )
 from kp_database.outbox import dispatch_after_commit, enqueue_queue
 from kp_domain_models import models as dm
-from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed, resolve_sender
+from kp_domain_models.policy import ApprovalPolicy, allowlist_unrestricted, is_recipient_allowed, resolve_sender
 from kp_domain_models.roe import (
     recipient_domain_roe_covered,
     roe_active_at,
@@ -1430,7 +1430,7 @@ def process_proof_send(ctx: WorkerContext, message: dict[str, Any]) -> None:
         allowlist = ctx.settings.recipient_domain_allowlist()
         # Same rule as delivery: an unset allowlist is allow-all only for the
         # explicitly-marked dev stack, and fails closed everywhere else.
-        unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+        unrestricted = allowlist_unrestricted(allowlist, ctx.settings.approval_policy)
         if not unrestricted and not is_recipient_allowed(recipient.mailbox or "", allowlist):
             blocked("domain_not_allowed")
             return
@@ -1805,7 +1805,7 @@ def _authorize_delivery(
     allowlist = ctx.settings.recipient_domain_allowlist()
     # Mirror the import rule: unset is fail-closed under OIDC-shaped
     # deployments and allow-all only for the offline dev stack.
-    unrestricted = not allowlist and ctx.settings.approval_policy is ApprovalPolicy.SINGLE_ADMIN
+    unrestricted = allowlist_unrestricted(allowlist, ctx.settings.approval_policy)
     # Check the domain that will actually send, not the one configured on
     # the campaign: under ACS they differ, and checking the wrong one gave
     # an SPF verdict about a domain absent from the message.
