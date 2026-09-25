@@ -3,9 +3,27 @@
 # reboot of Alice. Run this FROM THIS MAC; it does the SSH to Alice for you.
 #
 # WHY: WSL systemd `kp-aggregate.service` is enabled inside Ubuntu-24.04, but the
-# Windows-side trigger that starts WSL at logon was deleted during earlier
-# clean-state work. Without it a reboot silently drops the A3B model and
-# aggregation stops with no signal.
+# Windows-side trigger that starts WSL was deleted during earlier clean-state
+# work. Without it a reboot silently drops the A3B model and aggregation stops
+# with no signal.
+#
+# THE TRIGGER MUST BE AN S4U TASK, NOT A LOGON TASK AND NOT SYSTEM. Measured on
+# Alice 2026-09-25:
+#   * `/SC ONLOGON` only fires when erikd logs in interactively. An unattended
+#     reboot leaves the model down until someone sits at the console, which is
+#     exactly the failure this script exists to prevent.
+#   * `/RU SYSTEM` is not merely wrong, it is impossible. The task runs and
+#     returns Last Result -1; the captured stderr is
+#       Running WSL as local system is not supported.
+#       Error code: Wsl/WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED
+#     No amount of task configuration works around that.
+#   * S4U ("service for user") as alice\erikd runs at startup with no stored
+#     password, no interactive logon and no MSA password prompt, and WSL starts
+#     normally under it. Verified: task state Running, holder resident,
+#     llama-server loaded in 9.1s, :18082 answering 200.
+# schtasks.exe cannot express S4U (`/NP` still prompts for a password here), so
+# the task is registered through PowerShell's Register-ScheduledTask with
+# -LogonType S4U.
 #
 # WHAT IT DOES
 #   1. proves Alice is reachable over SSH
@@ -16,7 +34,18 @@
 #
 # Alice is Windows: SSH lands in cmd.exe, so the remote commands are cmd syntax.
 #
-# The task runs WSL as ROOT and goes through systemd. The command previously
+# The task must STAY RESIDENT, not just start the unit. kp-aggregate-start.sh
+# runs llama-server in the foreground precisely so a live WSL session keeps it
+# and the distro alive. A task that ran `systemctl start` and exited left
+# nothing holding that session, so every wsl.exe invocation created a
+# short-lived session whose teardown sent SIGINT to the foreground process
+# group: llama-server logged 637 starts and 633 "Received second interrupt"
+# deaths, each ~17-20s after a ~3.7s load. Holding one session open for 120s
+# produced zero kills. /usr/local/bin/kp-hold-session.sh starts the unit and
+# then sleeps forever; the sleep IS the fix.
+#
+# The task runs WSL as ROOT *inside* the distro (-u root) while the Windows-side
+# principal is erikd; those are two different things and both matter. The command previously
 # recorded in the readiness plan omitted `-u root` and invoked the start script
 # directly; WSL's default user on Alice is `erikd`, who cannot execute a
 # root-owned script in /root, so that task would have been created fine and
@@ -39,6 +68,8 @@ SSH_KEY="${SSH_KEY-$HOME/.ssh/alice_dr_ed25519}"
 TASK="KP-Aggregate-Model"
 WSL_DISTRO="Ubuntu-24.04"
 START_SH="/root/kp-aggregate-start.sh"
+HOLD_SH="/usr/local/bin/kp-hold-session.sh"
+TASK_USER="alice\\erikd"
 UNIT="kp-aggregate"
 MODEL_PORT=18082
 
@@ -98,16 +129,49 @@ else
 fi
 
 # --------------------------------------------------------------- 3. create
-say "Creating the logon task on Alice"
-alice "schtasks /Create /TN \"$TASK\" /TR \"wsl.exe -d $WSL_DISTRO -u root -e systemctl start $UNIT\" /SC ONLOGON /RL HIGHEST /F" \
-  2>&1 | tr -d '\r' || die "schtasks create failed (see the message above)"
-ok "created"
+# Registered through PowerShell, not schtasks.exe, because only
+# Register-ScheduledTask can set -LogonType S4U. See the header for why S4U is
+# the only principal that works. The PowerShell is shipped base64-encoded: the
+# path Mac -> ssh -> cmd.exe -> powershell mangles quoting otherwise, and this
+# script had already been bitten by that several times.
+say "Registering the S4U boot task on Alice"
+
+read -r -d '' PS_SCRIPT <<PSEOF || true
+\$ErrorActionPreference = 'Stop'
+\$a = New-ScheduledTaskAction -Execute 'C:\Windows\System32\wsl.exe' \`
+     -Argument '-d $WSL_DISTRO -u root -e $HOLD_SH'
+\$t1 = New-ScheduledTaskTrigger -AtStartup
+\$t2 = New-ScheduledTaskTrigger -AtLogOn -User '$TASK_USER'
+\$p  = New-ScheduledTaskPrincipal -UserId '$TASK_USER' -LogonType S4U -RunLevel Highest
+\$s  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries \`
+       -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 \`
+       -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew -StartWhenAvailable
+\$s.DisallowStartOnRemoteAppSession = \$false
+Register-ScheduledTask -TaskName '$TASK' -Action \$a -Trigger \$t1,\$t2 \`
+  -Principal \$p -Settings \$s -Force | Out-Null
+Write-Output 'REGISTERED_OK'
+PSEOF
+
+# ExecutionTimeLimit 0 matters: the task is a resident holder, so the default
+# 3-day limit would eventually stop it and resurrect the kill cycle.
+PS_B64="$(printf '%s\n' "$PS_SCRIPT" | base64 | tr -d '\n')"
+reg_out="$(alice "powershell -NoProfile -Command \"\$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$PS_B64')); Set-Content -Path \$env:TEMP\\kp-boot-task.ps1 -Value \$d -Encoding UTF8; powershell -NoProfile -ExecutionPolicy Bypass -File \$env:TEMP\\kp-boot-task.ps1\"" 2>&1 | tr -d '\r')"
+printf '%s\n' "$reg_out" | grep -q REGISTERED_OK \
+  || die "Register-ScheduledTask failed:
+$reg_out"
+ok "registered as S4U (no password stored, fires at startup)"
 
 # --------------------------------------------------------------- 4. verify
-say "Verifying the task exists"
-alice "schtasks /Query /TN \"$TASK\" /V /FO LIST" 2>/dev/null | tr -d '\r' \
+say "Verifying the task exists and has the right principal"
+task_info="$(alice "schtasks /Query /TN \"$TASK\" /V /FO LIST" 2>/dev/null | tr -d '\r')"
+printf '%s\n' "$task_info" \
   | grep -Ei "TaskName|Status|Run As User|Schedule Type|Task To Run" \
   || die "task was not found after creation"
+# A task that came back as SYSTEM would run and fail with
+# WSL_E_LOCAL_SYSTEM_NOT_SUPPORTED, so fail closed here rather than at boot.
+if printf '%s\n' "$task_info" | grep -Eiq "Run As User: *(SYSTEM|NT AUTHORITY)"; then
+  die "task is registered as SYSTEM; WSL cannot run as SYSTEM. Re-run with FORCE=1."
+fi
 ok "task verified on Alice"
 
 # ------------------------------------------------- 5. optional run + probe
