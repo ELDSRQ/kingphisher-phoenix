@@ -3007,7 +3007,7 @@
         el("li", { text: "Choose or generate a template. Under Template review, pick an approved template or generate one, then have it reviewed." }),
         el("li", { text: "Create the campaign here, selecting the domain, recipients and template." }),
         el("li", { text: "Submit it for review. This freezes the campaign so what was approved is exactly what sends." }),
-        el("li", { text: "Get it approved. Approval needs a SECOND person: you cannot approve your own campaign, by design." }),
+        el("li", { text: enforcing ? "Get it approved. Approval needs a SECOND person: you cannot approve your own campaign, by design." : "Get it approved. In this deployment submitting for review approves it, so no second person is needed; the decision is recorded against you." }),
         el("li", { text: "Send the canary first. A small test cohort goes out and you confirm delivery looks right before anything wider." }),
         el("li", { text: "Publish in full, then watch results and the audit trail. You can stop a campaign at any point." })
       ]),
@@ -3015,8 +3015,11 @@
       el("button", { class: "link-button", type: "button", text: "Open the searchable help center", onclick: () => navigateTo("help") })
     ]));
     const banner = el("div", { class: "policy-banner" });
-    banner.appendChild(el("strong", { text: enforcing ? "Two-person approval is required. " : "Single-admin mode. " }));
-    banner.appendChild(document.createTextNode(enforcing ? "A campaign must collect separate security and privacy approval facets before it can be scheduled. The creator cannot approve either facet; one different authorized operator may complete both, though the facets may also be split between authorized reviewers. Submit a draft for approval to start that process." : "One administrator can schedule a campaign without separate approvals. This is intended for the offline evaluation stack; deployments using an identity provider always require two-person approval."));
+    const singleOperator = policy === "single-operator";
+    banner.appendChild(el("strong", {
+      text: enforcing ? "Two-person approval is required. " : singleOperator ? "Single-operator mode. " : "Single-admin mode. "
+    }));
+    banner.appendChild(document.createTextNode(enforcing ? "A campaign must collect separate security and privacy approval facets before it can be scheduled. The creator cannot approve either facet; one different authorized operator may complete both, though the facets may also be split between authorized reviewers. Submit a draft for approval to start that process." : singleOperator ? "You can run the whole campaign yourself: submitting for review approves it, and no second approver is needed. Every decision is still recorded against your identity in the audit trail, and delivery is still limited to the domains your signed Rules of Engagement names." : "One administrator can schedule a campaign without separate approvals. This is intended for the offline evaluation stack."));
     root.appendChild(banner);
     let campaigns;
     try {
@@ -5420,7 +5423,7 @@
     const banner = el("div", { class: "policy-banner" });
     banner.appendChild(el("strong", { text: "Nothing here has been sent. " }));
     banner.appendChild(document.createTextNode(
-      "Drafts are produced from approved threat patterns by the configured AI gateway, re-checked by the safety validator, and can only be used in a campaign once approved below. Managed deployment validation requires that gateway. You cannot approve a draft whose generation you requested."
+      "Drafts are produced from approved threat patterns by the configured AI gateway, re-checked by the safety validator, and can only be used in a campaign once approved below. Managed deployment validation requires that gateway." + ((sessionInfo() || {}).approvalPolicy === "single-operator" ? " You may approve a draft you requested yourself; the decision is recorded against your identity." : " You cannot approve a draft whose generation you requested.")
     ));
     root.appendChild(banner);
     if (canCreateCampaign) {
