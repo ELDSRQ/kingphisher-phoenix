@@ -82,6 +82,7 @@ def _decide(template: TemplateVersion, decision: dm.ApprovalDecision) -> tuple[d
     result = decide_template(
         template.template_version_id,
         TemplateDecision(decision=decision, rationale="Human review complete"),
+        settings=_settings(),
         session=session,  # type: ignore[arg-type]
         audit=audit,  # type: ignore[arg-type]
         principal=_principal(),
@@ -119,6 +120,7 @@ def test_direct_approval_rejects_incomplete_canonical_content_before_mutation(te
         decide_template(
             template.template_version_id,
             TemplateDecision(decision=dm.ApprovalDecision.APPROVED, rationale="Reviewed"),
+            settings=_settings(),
             session=session,  # type: ignore[arg-type]
             audit=audit,  # type: ignore[arg-type]
             principal=_principal(),
@@ -171,6 +173,7 @@ def test_requester_still_cannot_approve_valid_generated_content() -> None:
         decide_template(
             template.template_version_id,
             TemplateDecision(decision=dm.ApprovalDecision.APPROVED, rationale="Self review"),
+            settings=_settings(),
             session=session,  # type: ignore[arg-type]
             audit=audit,  # type: ignore[arg-type]
             principal=requester,
@@ -204,7 +207,14 @@ def test_seed_and_generated_canonical_shapes_satisfy_approval_gate() -> None:
         assert result["approval_state"] == "approved"
 
 
-def _settings() -> OperatorApiSettings:
+def _settings(policy: str = "enforce", *, dev_stack: bool = False) -> OperatorApiSettings:
+    """Real settings, so these tests also prove each posture is a valid config.
+
+    `decide_template` takes settings through `Depends(get_settings)`, so calling
+    it directly without them passes the `Depends` marker itself - which surfaces
+    only as an AttributeError, and only on the branch that reads the policy.
+    Every direct call therefore states the posture it is exercising.
+    """
     return OperatorApiSettings(
         audit_hmac_key=_HMAC,
         ciphertext_kek=_KEK,
@@ -212,6 +222,8 @@ def _settings() -> OperatorApiSettings:
         console_static_dir="/nonexistent-console-dir",
         database_url="postgresql+psycopg://unused:unused@localhost:1/unused",
         audit_database_url="postgresql+psycopg://unused:unused@localhost:1/unused",
+        approval_policy=policy,
+        dev_stack=dev_stack,
     )
 
 
@@ -264,3 +276,66 @@ def test_api_failed_approval_is_stable_and_has_no_side_effects() -> None:
     assert template.approval_state == dm.TemplateApprovalState.DRAFT
     assert session.commits == 0
     assert audit.events == []
+
+
+def test_single_operator_may_approve_content_they_requested() -> None:
+    """The one-operator posture drops the second person, not the record.
+
+    Approving a pattern is what requests generation, so under ENFORCE the
+    requester and reviewer are necessarily different people. A deployment that
+    has declared it has one operator cannot satisfy that, and the draft would
+    sit unapprovable forever - the generation pipeline's only output, permanently
+    unusable. The decision is still audited, and marked as self-reviewed.
+    """
+    template = _template()
+    session = _Session(template)
+    audit = _Audit()
+    requester = Principal(str(_REQUESTER_ID), {Role.SECURITY_APPROVER})
+
+    result = decide_template(
+        template.template_version_id,
+        TemplateDecision(decision=dm.ApprovalDecision.APPROVED, rationale="Sole operator review"),
+        settings=_settings("single-operator"),
+        session=session,  # type: ignore[arg-type]
+        audit=audit,  # type: ignore[arg-type]
+        principal=requester,
+    )
+
+    assert result["approval_state"] == "approved"
+    assert template.approval_state == dm.TemplateApprovalState.APPROVED
+    assert session.commits == 1
+    assert [event["action"] for event in audit.events] == ["template.approve"]
+    # The relaxation must be visible to anyone auditing the trail afterwards.
+    assert audit.events[0]["detail"]["self_reviewed"] is True
+
+
+def test_single_operator_relaxation_does_not_leak_into_other_postures() -> None:
+    """Only SINGLE_OPERATOR relaxes it - ENFORCE and SINGLE_ADMIN must not.
+
+    SINGLE_ADMIN is the dev-only relaxation that also unlocks the empty-allowlist
+    allow-all at delivery; it must not quietly acquire content self-approval too.
+    """
+    # SINGLE_ADMIN cannot even be constructed without the dev markers, which is
+    # itself the guard working; supply them so the relaxation is still tested.
+    postures = (_settings("enforce"), _settings("single-admin", dev_stack=True))
+    for settings in postures:
+        template = _template()
+        requester = Principal(str(_REQUESTER_ID), {Role.SECURITY_APPROVER})
+        with pytest.raises(PermissionDeniedError, match="requested this generation"):
+            decide_template(
+                template.template_version_id,
+                TemplateDecision(decision=dm.ApprovalDecision.APPROVED, rationale="Self review"),
+                settings=settings,
+                session=_Session(template),  # type: ignore[arg-type]
+                audit=_Audit(),  # type: ignore[arg-type]
+                principal=requester,
+            )
+        assert template.approval_state == dm.TemplateApprovalState.DRAFT
+
+
+def test_a_distinct_reviewer_is_never_marked_self_reviewed() -> None:
+    template = _template()
+
+    _result, _session, audit = _decide(template, dm.ApprovalDecision.APPROVED)
+
+    assert audit.events[0]["detail"]["self_reviewed"] is False

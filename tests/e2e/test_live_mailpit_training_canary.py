@@ -276,6 +276,11 @@ def test_mailpit_delivery_training_and_reporting_canary(monkeypatch: pytest.Monk
                 decide_template(
                     template_id,
                     TemplateDecision(decision=dm.ApprovalDecision.APPROVED, rationale="Local canary review"),
+                    # Duck-typed: the content gate reads only `approval_policy`,
+                    # and this run's posture is the one the worker is using. The
+                    # reviewer here is a distinct identity from `requested_by`
+                    # above, so the self-review branch is not taken either way.
+                    settings=settings,  # type: ignore[arg-type]
                     session=session,
                     audit=audit_store,
                     principal=Principal(str(uuid.uuid4()), {Role.SECURITY_APPROVER}),

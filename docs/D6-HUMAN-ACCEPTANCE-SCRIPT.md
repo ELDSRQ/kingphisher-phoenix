@@ -95,11 +95,14 @@ Step 5 asks "did AI generation complete? how long?". As the instance stands
 that question cannot be answered honestly, for two independent reasons, and
 fixing one does not fix the other.
 
-1. **It cannot be reached.** Generation is queued by pattern approval
+1. **It cannot be reached.** ~~Generation is queued by pattern approval
    (`routes/patterns.py`), and approval refuses `pattern.created_by ==
-   principal_id`. With a single identity the only operator who can create a
-   pattern is the one barred from approving it, so no `generate` message is
-   ever enqueued. This is the same bar as step 7, arriving two steps earlier.
+   principal_id`.~~ **FIXED 2026-09-25.** Both content bars now honour the
+   `single-operator` posture, so the sole operator can approve the pattern they
+   curated and the draft they requested; each decision is audited with
+   `self_approved` / `self_reviewed`. The stack must actually be set to
+   `single-operator` — `.105` was on `single-admin`, which relaxes neither bar
+   and additionally makes an empty allowlist allow-all.
 2. **It would not mean anything if it were reached.** With
    `KP_WORKER_AI_BASE_URL` empty the draft is produced by `mock-ai` in about
    3 ms. Timing a mock tells you nothing about whether a human finds real

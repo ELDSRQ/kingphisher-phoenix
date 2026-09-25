@@ -22,6 +22,7 @@ from kp_database.models import (
 )
 from kp_database.outbox import dispatch_after_commit, enqueue_queue
 from kp_domain_models import models as dm
+from kp_domain_models.policy import ApprovalPolicy
 from kp_domain_models.source_governance import source_governance_is_current
 from kp_telemetry.errors import (
     ConflictError,
@@ -35,7 +36,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_capability
-from kp_operator_api.deps import get_audit_store, get_session
+from kp_operator_api.config import OperatorApiSettings
+from kp_operator_api.deps import get_audit_store, get_session, get_settings
 from kp_operator_api.routes.shared import (
     _principal_uuid,
 )
@@ -102,6 +104,18 @@ def _require_active_pattern_source(session: Session, pattern: CampaignPattern) -
     return source_item_id
 
 
+def _single_operator(settings: OperatorApiSettings) -> bool:
+    """True when this deployment is the supported one-operator posture.
+
+    SINGLE_OPERATOR drops the second *person*, not the record: every relaxed
+    approval below still writes an audit event naming the actor and marking the
+    decision as self-approved, so accountability survives even though
+    separation of duties does not. It deliberately does NOT widen the recipient
+    allowlist - that stays fail-closed - and ENFORCE is unaffected.
+    """
+    return settings.approval_policy is ApprovalPolicy.SINGLE_OPERATOR
+
+
 @router.post("/patterns/{pattern_id}/approve", status_code=status.HTTP_200_OK)
 def approve_pattern(
     pattern_id: uuid.UUID,
@@ -128,7 +142,14 @@ def approve_pattern(
     if _pattern_source_item_id(pattern) != source_item_id:
         raise ConflictError("pattern source evidence changed; review again")
     principal_id = _principal_uuid(principal)
-    if pattern.created_by == principal_id:
+    # Curating a source makes you the pattern's creator (threat_routes.py), so
+    # under ENFORCE the person who found a threat can never be the one who
+    # vouches for it. That is the point when two operators exist. When the
+    # deployment has declared it has one, that rule cannot be satisfied at all
+    # and silently ends the lifecycle here: no approval, so nothing is ever
+    # queued for generation, so no template is ever drafted.
+    self_approved = pattern.created_by == principal_id
+    if self_approved and not _single_operator(request.app.state.settings):
         raise PermissionDeniedError("self-approval of your own pattern is prohibited")
     if pattern.approval_state not in {dm.PatternApprovalState.DRAFT, dm.PatternApprovalState.PENDING}:
         raise ConflictError("pattern is not awaiting approval")
@@ -143,6 +164,7 @@ def approve_pattern(
         action="pattern.approve",
         object_type="campaign_pattern",
         object_id=str(pattern_id),
+        detail={"self_approved": self_approved},
     )
     # Nothing published to the generate topic, so the generation worker idled
     # forever and approved patterns never became draft templates (P-1). Approval
@@ -195,6 +217,7 @@ def _require_approvable_template_content(template: TemplateVersion) -> None:
 def decide_template(
     template_version_id: uuid.UUID,
     body: TemplateDecision,
+    settings: OperatorApiSettings = Depends(get_settings),
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
     principal: Principal = Depends(require_capability(Capability.APPROVE_TEMPLATE)),
@@ -215,7 +238,13 @@ def decide_template(
     # requester is recorded at generation time; when it is unknown (older rows,
     # or a self-published job) we cannot check, and say so in the audit trail.
     requested_by = (template.raw_proposal or {}).get("requested_by")
-    if requested_by and str(requested_by) == principal.principal_id:
+    # Approving a pattern is what requests generation, so under ENFORCE the
+    # requester and the reviewer are necessarily different people. A
+    # one-operator deployment has already declared they are the same person;
+    # keeping the bar there would mean drafts could be generated and then never
+    # approved, leaving the pipeline's only output permanently unusable.
+    self_reviewed = bool(requested_by) and str(requested_by) == principal.principal_id
+    if self_reviewed and not _single_operator(settings):
         raise PermissionDeniedError(
             "you requested this generation; approval of AI-generated content must come from someone else"
         )
@@ -237,6 +266,7 @@ def decide_template(
         detail={
             "rationale": body.rationale,
             "requester_known": bool(requested_by),
+            "self_reviewed": self_reviewed,
         },
     )
     session.commit()
