@@ -209,3 +209,201 @@ def required_dns_records(
         )
     )
     return records
+
+
+#: Status of one required DNS record, as observed in live DNS.
+#:
+#: ``absent`` and ``mismatch`` are deliberately distinct. They look identical in
+#: a pass/fail check and mean opposite things to the operator: ``absent`` with
+#: nothing else at that name is almost always propagation still in flight, while
+#: ``mismatch`` means something IS published and is wrong — a bad paste, a stale
+#: challenge, or a registrar that rewrote the zone. Collapsing them is what
+#: makes DNS setup feel like guesswork.
+RecordStatus = Literal["ok", "absent", "mismatch", "not_checkable", "dns_error"]
+
+
+@dataclass(frozen=True)
+class RecordCheck:
+    """What one required record should be, and what DNS actually returns."""
+
+    record_type: str
+    name: str
+    purpose: str
+    expected: str
+    status: RecordStatus
+    observed: tuple[str, ...] = ()
+    detail: str = ""
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class DomainDiagnosis:
+    """Per-record view of a domain's setup, not just a pass/fail."""
+
+    domain: str
+    verified: bool
+    checks: tuple[RecordCheck, ...]
+
+    @property
+    def blocking(self) -> tuple[RecordCheck, ...]:
+        """Required checks that are not yet satisfied."""
+        return tuple(c for c in self.checks if c.required and c.status != "ok")
+
+    @property
+    def likely_propagating(self) -> bool:
+        """True when everything unsatisfied is simply not visible yet.
+
+        Distinguishes "keep waiting" from "go and fix something", which is the
+        question an operator staring at a failed verification actually has.
+        """
+        blocking = self.blocking
+        return bool(blocking) and all(c.status == "absent" for c in blocking)
+
+
+def _txt_values(name: str, *, resolver_timeout: float) -> tuple[list[str], str | None]:
+    """TXT strings at ``name`` and an error, using the module's fail-closed rules."""
+    return _resolve_txt(name, resolver_timeout=resolver_timeout)
+
+
+def diagnose_domain(
+    domain: str,
+    *,
+    signing_key: bytes,
+    relay: RelayKind = "smtp",
+    relay_address: str | None = None,
+    dmarc_address: str | None = None,
+    resolver_timeout: float = 5.0,
+) -> DomainDiagnosis:
+    """Check every record :func:`required_dns_records` asked for, one by one.
+
+    :func:`verify_domain` answers "is this domain verified", which is the
+    authorization question and stays the gate. This answers the operator's
+    question instead — "what have I not finished yet, and is it my mistake or
+    just DNS being slow" — by reporting each record separately with what was
+    actually observed.
+
+    Only the ownership challenge is ``required``: SPF and DMARC are
+    deliverability, and a domain can legitimately carry an operator's own SPF
+    policy that this tool did not author. DKIM cannot be checked at all without
+    knowing the relay's selector, and says so rather than silently passing.
+    """
+    normalized = normalize_domain(domain)
+    if normalized is None:
+        raise ValueError(f"not a usable domain: {domain!r}")
+
+    wanted = required_dns_records(
+        normalized,
+        signing_key=signing_key,
+        relay=relay,
+        relay_address=relay_address,
+        dmarc_address=dmarc_address,
+    )
+    apex_values, apex_error = _txt_values(normalized, resolver_timeout=resolver_timeout)
+    dmarc_name = f"_dmarc.{normalized}"
+    dmarc_values, dmarc_error = _txt_values(dmarc_name, resolver_timeout=resolver_timeout)
+
+    checks: list[RecordCheck] = []
+    for record in wanted:
+        is_challenge = record.value.startswith(f"{CHALLENGE_PREFIX}=")
+        is_dmarc = record.name == dmarc_name
+        is_dkim = "_domainkey" in record.name
+
+        if is_dkim:
+            checks.append(
+                RecordCheck(
+                    record_type=record.record_type,
+                    name=record.name,
+                    purpose="DKIM",
+                    expected=record.value,
+                    status="not_checkable",
+                    detail=(
+                        "the relay provider chooses the selector, so this record's name is not "
+                        "known here; confirm it in the relay's dashboard"
+                    ),
+                    required=False,
+                )
+            )
+            continue
+
+        values, error = (dmarc_values, dmarc_error) if is_dmarc else (apex_values, apex_error)
+        observed = tuple(values)
+        if error is not None:
+            checks.append(
+                RecordCheck(
+                    record_type=record.record_type,
+                    name=record.name,
+                    purpose="ownership challenge" if is_challenge else ("DMARC" if is_dmarc else "SPF"),
+                    expected=record.value,
+                    status="dns_error",
+                    observed=observed,
+                    detail=f"dns error: {error}",
+                    required=is_challenge,
+                )
+            )
+            continue
+
+        if is_challenge:
+            status: RecordStatus
+            prefix = f"{CHALLENGE_PREFIX}="
+            same_prefix = [v for v in values if v.startswith(prefix)]
+            if record.value in values:
+                status, detail = "ok", "ownership proven"
+            elif same_prefix:
+                status = "mismatch"
+                detail = (
+                    "a verification TXT is published but its value is not the one this deployment "
+                    "issued — republish the exact value above (a stale challenge from an earlier "
+                    "attempt will not verify)"
+                )
+            else:
+                status = "absent"
+                detail = (
+                    "no verification TXT at this name yet; DNS changes commonly take minutes and "
+                    "can take hours, so this usually means it has not propagated"
+                )
+            checks.append(
+                RecordCheck(
+                    record_type=record.record_type,
+                    name=record.name,
+                    purpose="ownership challenge",
+                    expected=record.value,
+                    status=status,
+                    observed=tuple(same_prefix),
+                    detail=detail,
+                    required=True,
+                )
+            )
+            continue
+
+        deliverability_status: RecordStatus
+        marker = "v=DMARC1" if is_dmarc else "v=spf1"
+        present = [v for v in values if v.lower().startswith(marker.lower())]
+        if not present:
+            deliverability_status = "absent"
+            detail = (
+                f"no {marker} record found. Mail can still be sent, but receivers are far more "
+                "likely to reject or spam-folder it."
+            )
+        elif record.value in present:
+            deliverability_status, detail = "ok", "published exactly as recommended"
+        else:
+            deliverability_status = "ok"
+            detail = (
+                f"a {marker} record is published, but not the one recommended here. That is fine if "
+                "it is deliberate — check it authorizes the relay you send through."
+            )
+        checks.append(
+            RecordCheck(
+                record_type=record.record_type,
+                name=record.name,
+                purpose="DMARC" if is_dmarc else "SPF",
+                expected=record.value,
+                status=deliverability_status,
+                observed=tuple(present),
+                detail=detail,
+                required=False,
+            )
+        )
+
+    challenge_ok = any(c.purpose == "ownership challenge" and c.status == "ok" for c in checks)
+    return DomainDiagnosis(domain=normalized, verified=challenge_ok, checks=tuple(checks))

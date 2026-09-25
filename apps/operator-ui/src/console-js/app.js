@@ -4148,14 +4148,109 @@ views.sending = async (root) => {
           }),
         ]));
       }
+      // Was a bare "Verify now" that returned one pass/fail toast. Publishing
+      // DNS is the one step that cannot be automated - it needs the registrar -
+      // but everything either side of it can be. So the console now watches DNS
+      // itself and records the authorization the moment it is provable, instead
+      // of asking the operator to keep clicking a button to find out whether
+      // propagation has finished.
+      const status = el("div", { class: "dns-status" });
+      const checklist = el("div", {});
+      const summary = el("p", { class: "modal-help", text: "Waiting for the first DNS check…" });
+      status.appendChild(summary);
+      status.appendChild(checklist);
+      form.appendChild(status);
+
+      const STATUS_TEXT = {
+        ok: "✓ found",
+        absent: "· not visible yet",
+        mismatch: "✗ wrong value published",
+        not_checkable: "· cannot be checked from here",
+        dns_error: "✗ DNS lookup failed",
+      };
+
+      let polling = true;
+      let attempts = 0;
+      // "Check now" must actually interrupt the wait, not just reset a counter
+      // and leave the operator watching a stale panel for another 15 seconds.
+      let wake = () => {};
+      const sleep = (ms) => new Promise((resolve) => {
+        const timer = setTimeout(resolve, ms);
+        wake = () => { clearTimeout(timer); resolve(); };
+      });
+      const stop = () => { polling = false; wake(); };
+      dlg.addEventListener("close", stop);
+
+      const render = (report) => {
+        checklist.replaceChildren();
+        for (const check of report.checks) {
+          const row = el("div", { class: `dns-check ${check.status}` }, [
+            el("strong", { text: `${check.purpose} — ${STATUS_TEXT[check.status] || check.status}` }),
+            el("p", { class: "modal-help", text: check.detail }),
+          ]);
+          // Showing what IS published is what separates "my paste is wrong"
+          // from "it has not propagated"; without it both look the same.
+          if (check.status === "mismatch" && check.observed.length) {
+            row.appendChild(el("p", { class: "modal-help mono", text: `published: ${check.observed.join(" | ")}` }));
+          }
+          checklist.appendChild(row);
+        }
+      };
+
+      const poll = async () => {
+        while (polling) {
+          attempts += 1;
+          let report;
+          try {
+            report = await api("/sending-domains/diagnose", {
+              method: "POST",
+              body: JSON.stringify({
+                domain: challenge.domain,
+                relay: values.relay,
+                relay_address: values.relay_address || null,
+                dmarc_address: values.dmarc_address || null,
+              }),
+            });
+          } catch (err) {
+            summary.textContent = `Could not check DNS: ${err.message}`;
+            return;
+          }
+          if (!polling) return;
+          render(report);
+
+          if (report.verified) {
+            // Proven: record it without making them click anything.
+            summary.textContent = "Ownership proven — recording authorization…";
+            stop();
+            dlg.close();
+            await verifyDomain(challenge.domain);
+            return;
+          }
+          if (report.likely_propagating) {
+            summary.textContent =
+              `Not visible in DNS yet (check ${attempts}). This is normal — DNS changes usually appear within ` +
+              "minutes but can take hours. You can close this and come back; nothing is lost.";
+          } else {
+            summary.textContent =
+              `Something needs fixing (check ${attempts}) — see below. Waiting longer will not help.`;
+            if (attempts >= 2) {
+              // A real, repeatedly-hit trap: some registrars silently drop
+              // custom records when a mail/forwarding feature is enabled.
+              summary.textContent +=
+                " If the records looked right when you saved them, check your registrar has not removed them — " +
+                "enabling an email-forwarding feature does exactly that on some providers.";
+            }
+          }
+          await sleep(15000);
+        }
+      };
+
       form.appendChild(el("div", { class: "modal-actions" }, [
-        el("button", { class: "btn", type: "button", text: "Close", onclick: () => dlg.close() }),
-        el("button", { class: "btn primary", type: "button", text: "Verify now", onclick: async () => {
-          dlg.close();
-          await verifyDomain(challenge.domain);
-        } }),
+        el("button", { class: "btn", type: "button", text: "Close", onclick: () => { stop(); dlg.close(); } }),
+        el("button", { class: "btn primary", type: "button", text: "Check now", onclick: () => wake() }),
       ]));
       openDialog(dlg);
+      poll();
     } catch (err) { toast(err.message, "error"); }
   }
 

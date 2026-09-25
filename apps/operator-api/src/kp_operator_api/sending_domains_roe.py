@@ -30,6 +30,7 @@ from kp_domain_models.roe import (
 from kp_domain_verification.lookalike import candidate_sending_domains
 from kp_domain_verification.verification import (
     RelayKind,
+    diagnose_domain,
     normalize_domain,
     required_dns_records,
     verify_domain,
@@ -186,6 +187,56 @@ def sending_domain_verify(
     )
     session.commit()
     return {"domain": result.domain, "verified": True}
+
+
+@router.post("/sending-domains/diagnose", status_code=status.HTTP_200_OK)
+def sending_domain_diagnose(
+    body: SendingDomainChallenge,
+    request: Request,
+    principal: Principal = Depends(require_capability(Capability.VERIFY_DOMAIN)),
+) -> dict[str, Any]:
+    """Report every required record's live state, without recording anything.
+
+    ``/verify`` answers "is this domain verified" and writes the proof; that
+    stays the authorization gate and the only thing that records. This is the
+    diagnostic beside it, so the console can poll while DNS propagates and show
+    what is outstanding instead of replaying the same failure.
+
+    The distinction that matters is ``absent`` versus ``mismatch``: a pass/fail
+    check renders them identically, but the first means keep waiting and the
+    second means go and fix something. Read-only and safe to poll.
+    """
+    settings = request.app.state.settings
+    try:
+        diagnosis = diagnose_domain(
+            body.domain,
+            signing_key=_domain_verification_key(settings),
+            relay=body.relay,
+            relay_address=body.relay_address,
+            dmarc_address=body.dmarc_address,
+        )
+    except ValueError as exc:
+        raise ValidationError_(str(exc)) from exc
+    return {
+        "domain": diagnosis.domain,
+        "verified": diagnosis.verified,
+        # Lets the console say "still propagating" rather than "failed" when
+        # nothing is wrong except time.
+        "likely_propagating": diagnosis.likely_propagating,
+        "checks": [
+            {
+                "type": c.record_type,
+                "name": c.name,
+                "purpose": c.purpose,
+                "expected": c.expected,
+                "status": c.status,
+                "observed": list(c.observed),
+                "detail": c.detail,
+                "required": c.required,
+            }
+            for c in diagnosis.checks
+        ],
+    }
 
 
 @router.get("/sending-domains", status_code=status.HTTP_200_OK)
