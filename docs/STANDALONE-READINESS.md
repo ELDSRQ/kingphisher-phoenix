@@ -175,3 +175,24 @@ standalone but not on Azure, suspect the standalone posture is the weaker one.**
 and nothing else. It does **not** unlock the empty-allowlist allow-all that `SINGLE_ADMIN`
 does — the recipient-domain control still fails closed. `ENFORCE` remains the default.
 
+**Extended 2026-09-25 to cover content approval.** `single-operator` originally
+relaxed only the *campaign* path — submit-for-review moves straight to `APPROVED`
+(`campaigns.py`), so one operator could already schedule and publish. The two
+*content* bars stayed unconditional, and that left a dead end nobody had walked:
+
+- approving a pattern is what enqueues generation, and curating a source makes
+  you that pattern's creator, so the sole operator was barred from approving it;
+- nothing was ever queued, so no draft was ever produced;
+- and had one been produced, the requester could not approve it either.
+
+A one-operator deployment could therefore run a campaign but could never obtain
+a template through the AI pipeline. Both bars now honour `single-operator`, and
+every relaxed decision is audited with `self_approved` / `self_reviewed` set, so
+the record still names who did both halves. `ENFORCE` and `SINGLE_ADMIN` are
+unchanged.
+
+**Switching an existing `single-admin` stack to `single-operator` will stop
+delivery unless you also set the allowlist.** Under `SINGLE_ADMIN` an empty
+`KP_ALLOWED_RECIPIENT_DOMAINS` means allow-all; under `single-operator` it fails
+closed, so an empty allowlist allows nobody. Set the domains in the same change.
+
