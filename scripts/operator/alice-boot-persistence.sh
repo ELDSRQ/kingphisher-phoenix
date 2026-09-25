@@ -16,6 +16,16 @@
 #
 # Alice is Windows: SSH lands in cmd.exe, so the remote commands are cmd syntax.
 #
+# The task must STAY RESIDENT, not just start the unit. kp-aggregate-start.sh
+# runs llama-server in the foreground precisely so a live WSL session keeps it
+# and the distro alive. A task that ran `systemctl start` and exited left
+# nothing holding that session, so every wsl.exe invocation created a
+# short-lived session whose teardown sent SIGINT to the foreground process
+# group: llama-server logged 637 starts and 633 "Received second interrupt"
+# deaths, each ~17-20s after a ~3.7s load. Holding one session open for 120s
+# produced zero kills. /usr/local/bin/kp-hold-session.sh starts the unit and
+# then sleeps forever; the sleep IS the fix.
+#
 # The task runs WSL as ROOT and goes through systemd. The command previously
 # recorded in the readiness plan omitted `-u root` and invoked the start script
 # directly; WSL's default user on Alice is `erikd`, who cannot execute a
@@ -99,7 +109,7 @@ fi
 
 # --------------------------------------------------------------- 3. create
 say "Creating the logon task on Alice"
-alice "schtasks /Create /TN \"$TASK\" /TR \"wsl.exe -d $WSL_DISTRO -u root -e systemctl start $UNIT\" /SC ONLOGON /RL HIGHEST /F" \
+alice "schtasks /Create /TN \"$TASK\" /TR \"wsl.exe -d $WSL_DISTRO -u root -e /usr/local/bin/kp-hold-session.sh\" /SC ONLOGON /RL HIGHEST /F" \
   2>&1 | tr -d '\r' || die "schtasks create failed (see the message above)"
 ok "created"
 
