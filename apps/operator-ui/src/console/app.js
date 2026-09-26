@@ -6631,6 +6631,12 @@
         if (preview.deactivation_requires_clean_preview) {
           content.push(el("p", { class: "modal-warn", role: "alert", text: "Deactivate missing is blocked until every invalid, blocked, and duplicate row is fixed." }));
         }
+        const roe = preview.roe_coverage;
+        if (roe && roe.checked && roe.uncovered > 0) {
+          content.push(el("p", { class: "modal-warn", role: "alert", text: `${roe.uncovered} recipient${roe.uncovered === 1 ? "" : "s"} will import but cannot be sent to: ${roe.uncovered === 1 ? "its domain is" : "their domains are"} not covered by any active Rules of Engagement. Uncovered: ${roe.uncovered_domains.join(", ")}. Sign or extend an RoE covering ${roe.uncovered_domains.length === 1 ? "it" : "them"}, or drop those rows. Currently authorized: ${(roe.active_roe_domains || []).join(", ") || "none"}.` }));
+        } else if (roe && !roe.checked) {
+          content.push(el("p", { class: "modal-help", text: "No active Rules of Engagement yet, so recipients can't be checked against a delivery boundary. You'll sign an RoE under Domains & RoE before a campaign can send." }));
+        }
         if ((preview.errors || []).length) {
           const list = el("ul", { class: "modal-errors", "aria-label": "Bounded non-PII CSV row errors" });
           for (const issue of preview.errors) list.appendChild(el("li", { text: `Row ${issue.row}: ${issue.code}` }));

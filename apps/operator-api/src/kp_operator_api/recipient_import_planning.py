@@ -22,10 +22,13 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 
-from kp_database.models import Recipient
+from kp_database.models import Recipient, RulesOfEngagement
 from kp_domain_models import models as dm
+from kp_domain_models.policy import mailbox_domain
+from kp_domain_models.roe import recipient_domain_roe_covered, roe_active_at
 from kp_telemetry.errors import ValidationError_
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy import select, text
@@ -118,6 +121,58 @@ class _RecipientImportPlan:
     counts: dict[str, int]
     digest: str
     can_apply: bool
+    #: Advisory only. Whether the imported recipients sit in domains an active
+    #: signed RoE covers. Import never blocks on this — recipients can be
+    #: imported before an RoE is signed, and an RoE can be signed afterward — but
+    #: delivery WILL refuse any recipient outside the RoE target domains
+    #: (recipient_domain_roe_covered, "cannot be switched off by config"), so
+    #: surfacing it at import time turns a silent send-time skip into something
+    #: the operator sees while they can still act on it.
+    roe_coverage: dict[str, Any]
+
+
+def _roe_coverage_advisory(session: Session, recipients: tuple[ParsedRecipient, ...]) -> dict[str, Any]:
+    """Report how many recipients fall outside every active, in-window RoE.
+
+    Read-only and advisory. Only DOMAINS are surfaced, never mailboxes — the
+    domain set is exactly what the operator needs to act on and is already
+    cleartext in the RoE itself, whereas the recipient addresses are not.
+    """
+    now = datetime.now(UTC)
+    active_targets: set[str] = set()
+    any_active = False
+    for roe in session.scalars(select(RulesOfEngagement)):
+        if roe_active_at(
+            revoked_at=roe.revoked_at,
+            window_start=roe.window_start,
+            window_end=roe.window_end,
+            when=now,
+        ):
+            any_active = True
+            active_targets.update(roe.target_domains or [])
+
+    if not any_active:
+        # Nothing to check against yet. Not a fault — the getting-started flow
+        # signs an RoE before a campaign runs — so say so rather than flagging
+        # every recipient as "uncovered", which would be noise.
+        return {"checked": False, "active_roe_domains": [], "uncovered": 0, "uncovered_domains": []}
+
+    targets = frozenset(active_targets)
+    uncovered_domains: set[str] = set()
+    uncovered = 0
+    for recipient in recipients:
+        if not recipient_domain_roe_covered(recipient.mailbox, targets):
+            uncovered += 1
+            domain = mailbox_domain(recipient.mailbox)
+            if domain is not None:
+                uncovered_domains.add(domain)
+    return {
+        "checked": True,
+        "active_roe_domains": sorted(active_targets),
+        "uncovered": uncovered,
+        # Bounded so a pathological CSV cannot balloon the response.
+        "uncovered_domains": sorted(uncovered_domains)[:20],
+    }
 
 
 def _recipient_is_directory_owned(recipient: Recipient) -> bool:
@@ -309,6 +364,7 @@ def _recipient_import_plan(
         counts=counts,
         digest=recipient_import_digest(settings.require_recipient_import_digest_key(), digest_payload),
         can_apply=deactivation_safe,
+        roe_coverage=_roe_coverage_advisory(session, parsed.recipients),
     )
 
 
@@ -330,6 +386,10 @@ def _recipient_import_audit_detail(
     body: RecipientImportPreviewRequest,
     plan: _RecipientImportPlan,
 ) -> dict[str, Any]:
+    # Deliberately NO roe_coverage here: it carries uncovered_domains derived
+    # from recipient mailboxes, and the audit detail must not persist recipient
+    # domains (enforced by test_recipient_csv_import). The advisory is returned
+    # to the operator in the preview payload, which is the right place for it.
     return {
         "counts": plan.counts,
         "options": _recipient_import_options(body, plan),
@@ -384,4 +444,5 @@ def _recipient_import_preview_payload(
         ),
         "can_apply": plan.can_apply,
         "deactivation_requires_clean_preview": body.deactivate_missing and not plan.can_apply,
+        "roe_coverage": plan.roe_coverage,
     }
