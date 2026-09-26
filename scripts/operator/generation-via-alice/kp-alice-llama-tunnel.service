@@ -1,0 +1,13 @@
+[Unit]
+Description=KP: SSH tunnel .105:18081 -> Alice 192.168.1.36:18082 (shared aggregation/generation model)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=builder
+ExecStart=/usr/bin/ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -o BatchMode=yes -i /home/builder/.ssh/alice_llama_tunnel_ed25519 -L 127.0.0.1:18081:127.0.0.1:18082 erikd@192.168.1.36
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=KP: AI gateway (/propose+/extract, proxies to the tunnelled Alice model)
+After=network-online.target kp-alice-llama-tunnel.service
+Wants=network-online.target
+
+[Service]
+User=builder
+WorkingDirectory=/home/builder/phishing-awareness-platform
+Environment=KP_AI_GATEWAY_HOST=127.0.0.1
+Environment=KP_AI_GATEWAY_PORT=8090
+Environment=KP_AI_GATEWAY_LLAMA_BASE_URL=http://127.0.0.1:18081/v1
+Environment=KP_AI_GATEWAY_MODEL_ID=qwen3-30b-a3b-aggregate
+ExecStart=/home/builder/phishing-awareness-platform/.venv/bin/kp-ai-gateway
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
