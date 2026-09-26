@@ -111,6 +111,16 @@ body {
 .sidebar .brand small { grid-column: 2; display: block; color: var(--muted); font-weight: 400; }
 .sidebar nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
 .sidebar nav button {
+  /* Block-level flex row, not the default inline-block. Two reasons: inside the
+     "More" <details>, setting display:flex on the <details> does NOT make its
+     content a flex column in Chrome (the buttons land in the ::details-content
+     box), so inline-block buttons wrapped two-per-row; block-level buttons
+     stack. And space-between lets a count badge sit at the right edge. */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
   text-align: left;
   padding: 9px 12px;
   border: 0;
@@ -119,6 +129,18 @@ body {
   color: var(--muted);
   cursor: pointer;
   font-size: 14px;
+}
+.sidebar nav .nav-badge {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent-fill);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
 }
 .sidebar nav button:hover { background: var(--panel-2); color: var(--text); }
 .sidebar nav button.active { background: var(--accent-fill); color: #fff; }
