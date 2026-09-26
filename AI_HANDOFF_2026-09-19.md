@@ -1,5 +1,8 @@
 # AI Handoff — 2026-09-19
 
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-25.md`** (repo root) — read that first.
+> It is canonical: single-operator lifecycle live, console simplified, mail.floridamanevolved.us verified, Azure floored, Alice S4U persistence. Kept as history.
+
 Canonical current-state handoff. Supersedes `AI_HANDOFF_2026-09-17.md`. The
 project’s auto-memory (loaded each session) holds fine-grained detail; this doc
 is the self-contained map. Copy-ready resume prompt: `NEXT_AI_PROMPT.md`.
