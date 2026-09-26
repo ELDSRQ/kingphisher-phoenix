@@ -85,8 +85,13 @@ but it should cost one tick, not a five-field form.
 
 ## What is left
 
-- **Recipient import** could preflight against the RoE target domains and say
-  "18 of these 200 are outside your authorized domains and will not receive
-  mail" at import time rather than at send time.
-- **SPF** is checked here but only advisorily, while delivery separately warns
-  when a sending domain publishes none. Those two could share one verdict.
+- **Recipient import** ~~could preflight against the RoE target domains~~
+  **DONE (2026-09-26, PR #74)**: the import preview now reports how many
+  recipients sit in domains no active RoE covers, at import time.
+- **SPF**: ~~the domain-verify check and the delivery check could share one
+  verdict.~~ **On inspection, they should NOT be merged.** They intentionally
+  check different things: domain-verify (`diagnose`) checks whether the
+  *verified domain* publishes an SPF record; delivery (`jobs.py`) checks the
+  *effective sender address's* domain, which under ACS deliberately differs from
+  the campaign's configured domain (an earlier bug came from checking the wrong
+  one). Two correct checks at two times, not one duplicated verdict. Left as is.
