@@ -2,7 +2,7 @@
 
 # Next-session handoff
 
-> **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-19.md` (repo root) — read that
+> **⚠️ Newer handoff exists: `AI_HANDOFF_2026-09-25.md` (repo root) — read that
 > first.** It is current as of the merged + deployed P0–P3 pipeline, the
 > **deployed + verified P3 consumer**, and **complete DEP-010** (GUI Azure
 > deploy: browser discovery, cost estimate, roll-forward rollback). **Azure

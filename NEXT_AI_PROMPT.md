@@ -1,6 +1,6 @@
 # Next AI Session Prompt — Phishing Awareness Platform
 
-> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-19.md`** (repo root) — that is now the
+> **⚠️ SUPERSEDED by `AI_HANDOFF_2026-09-25.md`** (repo root) — that is now the
 > canonical current-state handoff and carries the copy-ready resume prompt.
 > Read it first. The Terraform/Entra framing below is stale history (2026-09-11);
 > the current state: all human-readiness workstreams and the ACS bootstrap repair
@@ -17,11 +17,11 @@
 Resume the phishing-awareness-platform build at
 /Users/edierks/projects/codex-test/phishing-awareness-platform. Read AGENTS.md
 first (authoritative scope + preservation rules), then
-AI_HANDOFF_2026-09-19.md (canonical current state), then
+AI_HANDOFF_2026-09-25.md (canonical current state), then
 .hermes/plans/2026-09-18_human-ready-readiness-plan.md.
 
-STATE (2026-09-22). Read AI_HANDOFF_2026-09-19.md first; it is canonical
-despite the filename. Two sections matter: "Azure staging is DEPLOYED" and
+STATE (2026-09-25). Read AI_HANDOFF_2026-09-25.md first; it is canonical.
+Single-operator runs the whole lifecycle; console is simplified; mail.floridamanevolved.us is a verified sending domain; Azure is floored; Alice boot persistence is fixed. Biggest open item: a human browser pass over the console. Two sections matter: "Azure staging is DEPLOYED" and
 "On-prem gates D1/D2/D3/D5 CLOSED, and the stack is LIVE".
 
 ON-PREM IS DEPLOYED AND RUNNING on .105 (it ran nowhere before 2026-09-21).
