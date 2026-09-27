@@ -363,9 +363,9 @@ def test_azure_deployment_wizard_contract() -> None:
         "ciphertext_active_key_id": "primary",
         "ciphertext_prior_key_ids": "",
         "ciphertext_prior_keys_secret_id": "",
-        "tf_state_resource_group": "rg-kp-state",
-        "tf_state_storage_account": "kptfstateprod",
-        "tf_state_container": "tfstate",
+        # tf_state_* keys were removed from the wizard schema (Terraform state is
+        # CI/backend-managed, not operator-entered); the validate endpoint
+        # fail-closes on unrecognized keys, so they must not be submitted here.
         "runner_label": "azure-vnet",
     }
     validation_status, validation = _json_request(
