@@ -246,16 +246,27 @@ def _audit_mutation_state_is_healthy(
             return False
     except (KeyError, TypeError, ValueError, OSError, RuntimeError):
         return False
-    if (
-        anchor_interval_seconds is not None
-        and last_successful_anchor_at is not None
-        and last_successful_anchor_at.tzinfo is not None
-    ):
-        current = now or datetime.now(UTC)
-        if current - last_successful_anchor_at > timedelta(seconds=2 * anchor_interval_seconds):
-            # A present but stale witness -> the anchor worker has stalled.
-            return False
-    return True
+    # A present but stale witness means the anchor worker has stalled -> fail closed.
+    return not _anchor_heartbeat_is_stale(last_successful_anchor_at, anchor_interval_seconds, now=now)
+
+
+def _anchor_heartbeat_is_stale(
+    last_successful_anchor_at: datetime | None,
+    anchor_interval_seconds: float | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """True only for a PRESENT heartbeat older than two anchor intervals.
+
+    Shared by the mutation gate and the AUD-003 alert seam so both agree on
+    exactly what "stale" means. Absence / disabled gate / a naive timestamp are
+    NOT stale (the gate fails open on those); only a present, tz-aware, stale
+    heartbeat trips.
+    """
+    if anchor_interval_seconds is None or last_successful_anchor_at is None or last_successful_anchor_at.tzinfo is None:
+        return False
+    current = now or datetime.now(UTC)
+    return current - last_successful_anchor_at > timedelta(seconds=2 * anchor_interval_seconds)
 
 
 def _make_anchor_heartbeat_reader(queue: Any, logger: Any) -> Callable[[], datetime | None]:
@@ -287,6 +298,64 @@ def _make_anchor_heartbeat_reader(queue: Any, logger: Any) -> Callable[[], datet
         return when
 
     return read
+
+
+def _default_anchor_alert_sink(logger: Any) -> Callable[[datetime | None, float | None], None]:
+    """Default AUD-003 alert sink: a loud, structured ERROR.
+
+    A Tier-2 change replaces this with a system-alert channel (webhook/ntfy)
+    shared with the decision-needed notifications (H8). The sink is called at
+    most once per staleness episode by ``_make_audit_health_check``.
+    """
+
+    def emit(last_anchor_at: datetime | None, interval_seconds: float | None) -> None:
+        logger.error(
+            "audit_anchor_stale",
+            extra={
+                "event": "audit_anchor_stale",
+                "last_successful_anchor_at": last_anchor_at.isoformat() if last_anchor_at else None,
+                "anchor_interval_seconds": interval_seconds,
+                "impact": "audit anchoring has stalled; privileged changes are gated (503) until it recovers",
+            },
+        )
+
+    return emit
+
+
+def _make_audit_health_check(app_state: Any, *, logger: Any) -> Callable[[], bool]:
+    """Build the per-request audit-health gate, announcing AUD-003 staleness once.
+
+    Returns the same bool the gate has always returned. Additionally, on the
+    transition into a stale-anchor episode it calls ``app_state
+    .audit_anchor_alert_sink`` exactly once (and logs recovery once on exit), so
+    the trip is no longer silent. The alert path is wrapped so a sink failure
+    can never turn a health check into a 500 — the gate's job comes first.
+    """
+    episode = {"stale": False}
+
+    def check() -> bool:
+        anchor_at = app_state.last_successful_anchor_at()
+        interval = app_state.audit_anchor_gate_interval_seconds
+        stale = _anchor_heartbeat_is_stale(anchor_at, interval)
+        if stale and not episode["stale"]:
+            episode["stale"] = True
+            sink = getattr(app_state, "audit_anchor_alert_sink", None)
+            if callable(sink):
+                try:
+                    sink(anchor_at, interval)
+                except Exception:  # noqa: BLE001 - an alert failure must never gate the console
+                    logger.exception("audit_anchor_alert_sink_failed")
+        elif not stale and episode["stale"]:
+            episode["stale"] = False
+            logger.warning("audit_anchor_recovered")
+        return _audit_mutation_state_is_healthy(
+            app_state.audit_verifier,
+            app_state.audit_store,
+            last_successful_anchor_at=anchor_at,
+            anchor_interval_seconds=interval,
+        )
+
+    return check
 
 
 def _normalized_origin(value: str, *, configured_url: bool = False) -> str | None:
@@ -657,20 +726,22 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     # this works identically for the local WORM and Azure Blob providers. The
     # gate reads that heartbeat here and trips only on a PRESENT-but-stale value
     # (> 2x the interval); it fails OPEN on absence or a Redis blip. Default ON.
-    # TODO(AUD-003): when the gate trips, also raise an Azure Monitor alert
-    # (Terraform / out of scope for this draft) — wire the hook here.
-    app.state.last_successful_anchor_at = _make_anchor_heartbeat_reader(queue, get_logger("kp.audit.anchor_gate"))
+    # AUD-003 (F1): the staleness trip used to be silent — no log, no alert — so
+    # the single most safety-critical event (audit anchoring stopped) reached no
+    # operator. It is now announced once per episode through the sink below.
+    # The default sink logs a structured ERROR; a Tier-2 change swaps in a
+    # system-alert channel (webhook/ntfy) shared with the "decision-needed"
+    # notifications (H8), since the existing alert provider is campaign-scoped
+    # and cannot carry a system event as-is.
+    anchor_gate_logger = get_logger("kp.audit.anchor_gate")
+    app.state.last_successful_anchor_at = _make_anchor_heartbeat_reader(queue, anchor_gate_logger)
     app.state.audit_anchor_gate_interval_seconds = (
         float(settings.audit_anchor_interval_seconds) if settings.audit_anchor_gate_enabled else None
     )
+    app.state.audit_anchor_alert_sink = _default_anchor_alert_sink(anchor_gate_logger)
     # Deliberate test seam: production uses the real chain/outbox state below;
     # focused unit tests may replace this zero-argument checker with a fake.
-    app.state.audit_health_check = lambda: _audit_mutation_state_is_healthy(
-        app.state.audit_verifier,
-        app.state.audit_store,
-        last_successful_anchor_at=app.state.last_successful_anchor_at(),
-        anchor_interval_seconds=app.state.audit_anchor_gate_interval_seconds,
-    )
+    app.state.audit_health_check = _make_audit_health_check(app.state, logger=anchor_gate_logger)
     app.state.queue = queue
     app.state.event_grid_token_verifier = event_grid_token_verifier
     app.state.idp = idp
