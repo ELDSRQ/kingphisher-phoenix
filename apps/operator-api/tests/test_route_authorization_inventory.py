@@ -152,6 +152,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "POST /api/v1/console/discover/search",
             "GET /api/v1/console/discover/allowed-domains",
             "POST /api/v1/console/aggregate/runs",
+            "GET /api/v1/console/aggregate/status",
             "GET /api/v1/console/aggregate/candidates",
             "POST /api/v1/console/aggregate/candidates/{candidate_id}/promote",
             "POST /api/v1/console/aggregate/candidates/{candidate_id}/dismiss",

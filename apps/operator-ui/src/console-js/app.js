@@ -7620,6 +7620,38 @@ views.aggregation = async (root) => {
     text: "A background AI pass ranks the most current campaigns from the ingested threat-feed pool for you to review and promote into a simulation pattern.",
   }));
 
+  // F2: the automatic refresh ships OFF by default, so trend/candidate data can
+  // sit stale with nothing on-screen to say so. Surface the scheduler state and
+  // tell the operator exactly how to act (run now, or set the env var). The
+  // banner is best-effort — it never blocks the candidate list.
+  const schedulerBanner = el("div", { "aria-live": "polite" });
+  root.appendChild(schedulerBanner);
+  (async () => {
+    let sched;
+    try {
+      sched = (await api("/console/aggregate/status")).scheduler;
+    } catch {
+      return; // advisory only; a status hiccup must not disrupt the view
+    }
+    if (!sched) return;
+    if (!sched.enabled) {
+      schedulerBanner.replaceChildren(el("div", { class: "policy-banner" }, [
+        el("strong", { text: "Automatic refresh is OFF. " }),
+        document.createTextNode(
+          "Candidates only update when you click \"Run aggregation\" below. "
+          + `Last automatic run: ${sched.last_run_at ? formatInstant(sched.last_run_at) : "never"}. `
+          + "To refresh unattended, set OPERATOR_API_AGGREGATION_SCHEDULER_ENABLED=1 and restart the stack.",
+        ),
+      ]));
+    } else if (sched.status === "error") {
+      schedulerBanner.replaceChildren(el("p", { class: "modal-warn", role: "alert", text:
+        `Automatic refresh is ON but its last pass failed (last run: ${sched.last_run_at ? formatInstant(sched.last_run_at) : "never"}). Run manually and check the AI gateway.` }));
+    } else {
+      schedulerBanner.replaceChildren(el("p", { class: "field-help", text:
+        `Automatic refresh is ON (every ${Math.round((sched.interval_seconds || 0) / 60)} min). Last run: ${sched.last_run_at ? formatInstant(sched.last_run_at) : "pending first pass"}.` }));
+    }
+  })();
+
   const listContent = el("div", { "aria-live": "polite", "aria-busy": "false" });
 
   const recordRow = (label, value) => el("p", { text: `${label}: ${bounded(value, 255)}` });
