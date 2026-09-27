@@ -621,6 +621,27 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
                 object_id=str(template.template_version_id),
                 idempotency_key=f"template.generate:{idempotency_key}",
             )
+            # H8: a freshly generated draft is now awaiting review. Enqueue a
+            # system alert in the SAME transaction (via the outbox) so it commits
+            # atomically with the draft. Delivery is gated at the worker: if no
+            # system-alert channel is configured it is a no-op, so this is safe
+            # to always enqueue. Idempotency-keyed on the template so a retried
+            # generation cannot double-notify.
+            enqueue_queue(
+                session,
+                topic="alert",
+                payload={
+                    "scope": "system",
+                    "event_type": "decision.needed",
+                    "occurred_at": datetime.now(UTC).isoformat(),
+                    "detail": {
+                        "kind": "draft_awaiting_review",
+                        "template_version_id": str(template.template_version_id),
+                        "subject": (response.subject or "")[:200],
+                    },
+                },
+                idempotency_key=f"sysalert:decision:{template.template_version_id}",
+            )
             session.commit()
         except IntegrityError:
             # Another worker may have passed the initial lookup before either
