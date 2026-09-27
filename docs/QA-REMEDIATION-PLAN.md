@@ -34,6 +34,20 @@ Do the console smoke test first in this tier; it de-risks every subsequent UI ch
 
 ## Tier 3 — real features, bigger, gate each
 
+Status (2026-09-27):
+- **H8** system-alert channel + decision-needed nudge — DONE (settings-based; no migration).
+- **H11** post-publish closure banner — DONE.
+- **H12** recipient free-text search — **descoped as specified.** The report wanted a
+  server-side `?q=` prefix filter, but `recipients.mailbox`, `.display_name` and
+  `.department` are all `CipherText` (encrypted at rest), so the database cannot
+  search them; only exact mailbox lookup (via `mailbox_sha256`) is possible, and
+  it already exists. A client-side filter over the loaded page is feasible but
+  marginal at the 125-recipient target where department filtering already exists.
+  Recorded rather than half-built.
+- **H10** weekly digest — reuses the H8 channel.
+- **H9** send-time spread — held for explicit review (only item that changes delivery behavior).
+
+
 Decision-needed notifications (H8 — reuses the F1 alert wiring), post-publish
 closure banner (H11), recipient free-text search (H12), send-time spread
 (H9, per UX-011 §6), weekly digest (H10).
