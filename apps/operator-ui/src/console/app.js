@@ -5672,13 +5672,15 @@
       return;
     }
     const principalId = sessionInfo()?.principalId;
+    const enforcingDraftReview = ((sessionInfo() || {}).approvalPolicy || "single-admin") === "enforce";
     if (!pending.length) {
       root.appendChild(el("div", { class: "card" }, [
         el("h3", { text: "Nothing awaiting review" }),
         el("p", { class: "modal-help", text: "Approving a threat pattern queues a draft for generation; it will appear here once the generation worker has produced it." })
       ]));
     } else for (const draft of pending) {
-      const canReviewDraft = !draft.requested_by || typeof principalId === "string" && principalId.length > 0 && draft.requested_by !== principalId;
+      const canReviewDraft = !enforcingDraftReview || !draft.requested_by || typeof principalId === "string" && principalId.length > 0 && draft.requested_by !== principalId;
+      const selfReviewing = canReviewDraft && !!draft.requested_by && typeof principalId === "string" && draft.requested_by === principalId;
       const card = el("div", { class: "card" }, [
         el("h3", { text: draft.subject || "(no subject)" }),
         el("p", { class: "modal-help", text: `Model: ${draft.model_id || "unknown"}` })
@@ -5708,7 +5710,12 @@
         })] : [],
         ...canReviewDraft ? [
           el("button", { class: "btn small primary", type: "button", text: "Approve", onclick: decide(draft, "approved") }),
-          el("button", { class: "btn small danger", type: "button", text: "Reject", onclick: decide(draft, "rejected") })
+          el("button", { class: "btn small danger", type: "button", text: "Reject", onclick: decide(draft, "rejected") }),
+          ...selfReviewing ? [el("span", {
+            class: "modal-help",
+            role: "status",
+            text: "You requested this generation; single-operator mode lets you approve it, recorded as a self-review in the audit trail."
+          })] : []
         ] : [el("span", {
           class: "modal-help",
           role: "status",
