@@ -3940,25 +3940,6 @@
               "aria-label": `Start a new draft campaign prefilled from ${c.title}`,
               onclick: () => cloneCampaignIntoForm(c)
             }));
-            if (["scheduled", "sending", "active"].includes(c.state) && hasCapability(CAPABILITY.USE_KILL_SWITCH)) actions.push(el("button", { class: "btn small danger", type: "button", text: "Kill switch", "aria-label": `Engage kill switch for ${c.title}`, onclick: async (e) => {
-              const ok = await confirmDialog({
-                title: "Engage scoped kill switch?",
-                message: `This revokes queued deliveries and tracking tokens for "${c.title}". It cannot be undone.`,
-                confirmLabel: "Engage kill switch",
-                danger: true
-              });
-              if (!ok) return;
-              e.target.disabled = true;
-              try {
-                const res = await api("/kill-switch", { method: "POST", body: JSON.stringify({ campaign_id: c.campaign_id, confirm: true }) });
-                toast(`Kill switch: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
-                await render();
-              } catch (err) {
-                toast(err.message, "error");
-              } finally {
-                if (e.target.isConnected) e.target.disabled = false;
-              }
-            } }));
             actions.push(el("button", { class: "btn small", type: "button", text: "Report", "aria-label": `Open aggregate report for ${c.title}`, onclick: async (e) => {
               e.target.disabled = true;
               try {

@@ -3731,23 +3731,13 @@ views.campaigns = async (root) => {
           "aria-label": `Start a new draft campaign prefilled from ${c.title}`,
           onclick: () => cloneCampaignIntoForm(c),
         }));
-        // Emergency stop, reports and owner-scoped alert subscriptions use
-        // separate server controls and are intentionally not campaign flags.
-        if (["scheduled", "sending", "active"].includes(c.state) && hasCapability(CAPABILITY.USE_KILL_SWITCH)) actions.push(el("button", { class: "btn small danger", type: "button", text: "Kill switch", "aria-label": `Engage kill switch for ${c.title}`, onclick: (async (e) => {
-          const ok = await confirmDialog({
-            title: "Engage scoped kill switch?",
-            message: `This revokes queued deliveries and tracking tokens for "${c.title}". It cannot be undone.`,
-            confirmLabel: "Engage kill switch", danger: true,
-          });
-          if (!ok) return;
-          e.target.disabled = true;
-          try {
-            const res = await api("/kill-switch", { method: "POST", body: JSON.stringify({ campaign_id: c.campaign_id, confirm: true }) });
-            toast(`Kill switch: ${res.cancelled} cancelled, ${res.tokens_revoked} tokens revoked`, "success");
-            await render();
-          } catch (err) { toast(err.message, "error"); }
-          finally { if (e.target.isConnected) e.target.disabled = false; }
-        }) }));
+        // H3: the per-campaign "Kill switch" button was dropped as a redundant
+        // third red control. Recall (above) stops THIS campaign — cancels its
+        // queued mail and revokes its tracking tokens — and the GLOBAL emergency
+        // stop in the sidebar stops everything at once. The kill-switch endpoint
+        // and capability are unchanged; only this duplicate row affordance is
+        // removed, so an operator under stress chooses between two clearly
+        // different scopes (this campaign vs everything), not three.
         actions.push(el("button", { class: "btn small", type: "button", text: "Report", "aria-label": `Open aggregate report for ${c.title}`, onclick: async (e) => {
           e.target.disabled = true;
           try {
