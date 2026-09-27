@@ -97,6 +97,12 @@ services:
     pids_limit: 128
 
   otel-collector:
+    # F3: opt-in only. No app or package imports the OpenTelemetry SDK, so with
+    # nothing exporting OTLP the collector received nothing in the default stack.
+    # Start it explicitly (`docker compose --profile observability up -d
+    # otel-collector`) once a real exporter is wired; it is no longer part of the
+    # default stack or the readiness gate.
+    profiles: ["observability"]
     image: otel/opentelemetry-collector-contrib:0.107.0@sha256:b65527791431d76d058b2813748a3f4a8912540d7b23beac2f6b4e02c872f5b7
     command: ["--config", "/etc/otel-collector.yaml"]
     volumes:

@@ -132,7 +132,7 @@ start_infra() {
   run_deployment_preflight prestart
   run_base_image_qualification
   echo "starting infrastructure (postgres, redis, mailpit, mocks)..."
-  bounded 120 dc up -d --no-recreate postgres redis mailpit otel-collector mock-graph mock-ai mock-idp \
+  bounded 120 dc up -d --no-recreate postgres redis mailpit mock-graph mock-ai mock-idp \
     || die "Docker Compose could not start local infrastructure within 120s. Inspect Docker diagnostics and relaunch."
   echo "waiting for postgres and redis to be healthy..."
   for _ in $(seq 1 60); do

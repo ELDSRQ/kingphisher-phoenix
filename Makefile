@@ -20,7 +20,7 @@ operational-readiness:
 ## Install pinned toolchain and dependencies, start local infra.
 bootstrap:
 	@UV_PYTHON_DOWNLOADS=never uv sync --frozen --all-packages
-	@$(COMPOSE) up -d postgres redis otel-collector mock-graph mock-ai mock-idp mailpit
+	@$(COMPOSE) up -d postgres redis mock-graph mock-ai mock-idp mailpit
 	@make db-init
 
 ## Regenerate the complete hash-verified dependency lock for disposable mocks.
@@ -29,7 +29,7 @@ lock-mock-services:
 
 ## Start application services for local development.
 dev:
-	@$(COMPOSE) up -d postgres redis otel-collector mock-graph mock-ai mock-idp mailpit
+	@$(COMPOSE) up -d postgres redis mock-graph mock-ai mock-idp mailpit
 	@$(PY) uvicorn kp_operator_api.main:app --reload --port 8000 &
 	@$(PY) uvicorn kp_tracking_api.main:app --reload --port 8001 &
 

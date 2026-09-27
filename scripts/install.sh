@@ -269,7 +269,7 @@ run_base_image_qualification
 
 step "starting infrastructure (postgres, redis, mailpit, mocks)"
 bounded "$INFRASTRUCTURE_START_TIMEOUT_SECONDS" \
-  dc up -d --no-recreate postgres redis mailpit otel-collector mock-graph mock-ai mock-idp \
+  dc up -d --no-recreate postgres redis mailpit mock-graph mock-ai mock-idp \
   || die "Docker Compose did not complete local infrastructure startup within ${INFRASTRUCTURE_START_TIMEOUT_SECONDS}s. Existing containers, images, and pull/build progress were preserved; inspect 'docker compose ps', then re-run with --skip-deps. For cold pulls or slow external storage, set KP_LOCAL_INFRASTRUCTURE_START_TIMEOUT_SECONDS to at most 3600."
 
 step "waiting for postgres and redis to become healthy"
@@ -368,7 +368,7 @@ cat <<EOF
     - Postgres :5432, Redis :6379, Mailpit :1025/:8025, mocks :8443/:8181/:8282
     - operator-api :8000, tracking-api :8001
     - supervised worker services
-    - otel-collector :4317/:4318
+    - otel-collector :4317/:4318 (opt-in: docker compose --profile observability up -d otel-collector)
 
   Useful commands (from the repo root)
     ./scripts/verify_install.sh   # health check for the running system
