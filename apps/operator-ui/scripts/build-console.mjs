@@ -24,6 +24,15 @@ await build({
   outfile,
   bundle: true,
   format: "iife",
+  // F4: mark the committed output as generated so an ad-hoc edit to the wrong
+  // file is obvious on sight. The drift gate still enforces byte-equality with
+  // this build, so the banner cannot go stale.
+  banner: {
+    js:
+      "// GENERATED FILE — DO NOT EDIT.\n" +
+      "// Source of truth: apps/operator-ui/src/console-js/ (edit there, then run `npm run build`).\n" +
+      "// Built by apps/operator-ui/scripts/build-console.mjs; kept in sync by the bundle-drift gate.",
+  },
   // Keep it readable and source-matching: no minification, no mangling. The
   // console's strict CSP forbids eval; esbuild never emits eval here.
   minify: false,

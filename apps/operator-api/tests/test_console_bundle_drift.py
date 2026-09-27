@@ -25,6 +25,15 @@ _CONSOLE_SRC_DIR = _REPOSITORY_ROOT / "apps" / "operator-ui" / "src" / "console-
 _COMMITTED_BUNDLE = _CONSOLE_DIR / "app.js"
 _ESBUILD = _REPOSITORY_ROOT / "apps" / "operator-ui" / "node_modules" / ".bin" / "esbuild"
 
+# Must stay byte-identical to the `banner.js` string in
+# apps/operator-ui/scripts/build-console.mjs (F4). If the two diverge, this gate
+# fails, which is the intended safety net.
+_BUNDLE_BANNER = (
+    "// GENERATED FILE — DO NOT EDIT.\n"
+    "// Source of truth: apps/operator-ui/src/console-js/ (edit there, then run `npm run build`).\n"
+    "// Built by apps/operator-ui/scripts/build-console.mjs; kept in sync by the bundle-drift gate."
+)
+
 pytestmark = pytest.mark.console_ui
 
 
@@ -50,6 +59,7 @@ def test_committed_console_bundle_matches_a_fresh_build() -> None:
             "--minify=false",
             "--legal-comments=inline",
             "--log-level=warning",
+            f"--banner:js={_BUNDLE_BANNER}",
         ],
         check=True,
         capture_output=True,
