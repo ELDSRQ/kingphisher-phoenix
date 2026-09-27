@@ -269,6 +269,13 @@ class WorkerSupervisor:
                 state.last_self_publish = now
             if spec.topic == "retention" and now - state.last_self_publish >= settings.retention_interval_seconds:
                 jobs.maybe_publish_retention(spec.context, self._utcnow())
+                # H10: piggy-back the weekly digest on the retention cadence. It
+                # self-dedupes to one enqueue per ISO week via its idempotency
+                # key, so running it at retention cadence is safe, and it is a
+                # no-op unless the digest is enabled.
+                from kp_workers.digest_jobs import maybe_publish_weekly_digest
+
+                maybe_publish_weekly_digest(spec.context, self._utcnow())
                 state.last_self_publish = now
             if spec.topic == "mailbox" and now - state.last_self_publish >= 60:
                 from kp_workers.reported_mail_jobs import maybe_publish_mailbox

@@ -299,6 +299,10 @@ class WorkerSettings(BaseSettings):
     system_alert_channel: str = Field(default="none")  # none | webhook | ntfy
     system_alert_destination: str = Field(default="", max_length=2048)
     system_alert_signing_secret: str = Field(default="", max_length=256)
+    # H10: a once-a-week aggregate ("this week: X sent / Y opened / Z reported")
+    # delivered through the system-alert channel above. Off by default; needs a
+    # configured system-alert channel to actually send.
+    weekly_digest_enabled: bool = Field(default=False)
     tracking_base_url: str = "http://localhost:8001"
     training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
     training_domains: str = "example.com,127.0.0.1"
