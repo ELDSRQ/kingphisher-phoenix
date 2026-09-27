@@ -3763,6 +3763,40 @@ views.campaigns = async (root) => {
   // lookups it makes must never hold up rendering the page.
   if (canCreateCampaign) prefillNewCampaign();
   root.appendChild(groupCard);
+
+  // H11: after a campaign is sent, nothing prompted the close-out steps, even
+  // though the pieces (results, evidence bundle, repeat scheduling) all exist.
+  // Surface a wrap-up banner for the most recent still-live/just-finished
+  // campaign, with the three actions inline. Pure console; reuses existing
+  // endpoints and adds none.
+  const wrapUp = campaigns.find((c) => ["sending", "active", "completed"].includes(c.state));
+  if (wrapUp) {
+    const wrapActions = el("div", { class: "btn-row", role: "group", "aria-label": `Wrap up ${wrapUp.title}` }, [
+      el("button", { class: "btn small", type: "button", text: "Review results", onclick: async (e) => {
+        e.target.disabled = true;
+        try { await openCampaignAnalytics(wrapUp); } catch (err) { toast(err.message, "error"); }
+        finally { if (e.target.isConnected) e.target.disabled = false; }
+      } }),
+      ...(hasCapability(CAPABILITY.EXPORT_BULK) ? [el("button", { class: "btn small", type: "button", text: "Export evidence bundle", onclick: async (e) => {
+        e.target.disabled = true;
+        try {
+          await downloadCampaignExport(
+            `/campaigns/${wrapUp.campaign_id}/evidence.zip`,
+            `campaign-${wrapUp.campaign_id}-evidence.zip`,
+            "application/zip",
+          );
+        } catch (err) { toast(err.message, "error"); }
+        finally { if (e.target.isConnected) e.target.disabled = false; }
+      } })] : []),
+      el("button", { class: "btn small", type: "button", text: "Set up a repeat", onclick: () => navigateTo("programs") }),
+    ]);
+    root.appendChild(el("div", { class: "policy-banner" }, [
+      el("strong", { text: `“${wrapUp.title}” has been sent. ` }),
+      document.createTextNode("Close it out when you are ready: review who was reached, export the evidence bundle for your records, or set it to repeat on a schedule."),
+      wrapActions,
+    ]));
+  }
+
   root.appendChild(el("div", { class: "card" }, [el("h3", { text: "All campaigns" }), list]));
 
   function act(path, successMsg) {
