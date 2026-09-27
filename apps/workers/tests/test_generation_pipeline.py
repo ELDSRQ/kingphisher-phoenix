@@ -539,6 +539,13 @@ class _GenerationSession:
     def add(self, value: object) -> None:
         self.added.append(value)
 
+    def execute(self, statement: object, params: object | None = None) -> None:
+        # H8: generation now enqueues a "decision.needed" system alert into the
+        # outbox in the same transaction as the draft insert. This fake models
+        # the outbox write as a no-op that records the call.
+        self.executed = getattr(self, "executed", [])
+        self.executed.append((statement, params))
+
     def commit(self) -> None:
         if self.race_winner is not None or self.commit_error is not None:
             raise self.commit_error or IntegrityError("insert", {}, RuntimeError("duplicate draft"))
@@ -824,6 +831,10 @@ def test_concurrent_same_key_generation_calls_provider_once_after_pattern_lock(
 
         def add(self, value: object) -> None:
             self.pending = value
+
+        def execute(self, _statement: object, _params: object | None = None) -> None:
+            # H8: draft insert now also enqueues a system alert (outbox); no-op here.
+            return None
 
         def commit(self) -> None:
             with state.value_lock:

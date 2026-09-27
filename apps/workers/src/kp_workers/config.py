@@ -291,6 +291,14 @@ class WorkerSettings(BaseSettings):
         validation_alias=AliasChoices("KP_WORKER_TRAINING_TOKEN_HMAC_KEY", "TRAINING_TOKEN_HMAC_KEY"),
     )
     alert_webhook_domains: str = ""
+    # H8: the system-alert channel — a single team destination for events that
+    # are NOT tied to one campaign (a draft awaiting review, the audit anchor
+    # stalling, a weekly digest). Off by default, so no deployment gains an
+    # outbound alert without opting in. Distinct from the per-campaign
+    # AlertSubscription rows, which stay as they are.
+    system_alert_channel: str = Field(default="none")  # none | webhook | ntfy
+    system_alert_destination: str = Field(default="", max_length=2048)
+    system_alert_signing_secret: str = Field(default="", max_length=256)
     tracking_base_url: str = "http://localhost:8001"
     training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
     training_domains: str = "example.com,127.0.0.1"
@@ -835,3 +843,12 @@ class WorkerSettings(BaseSettings):
 
     def alert_webhook_domain_set(self) -> set[str]:
         return {d.strip().lower() for d in self.alert_webhook_domains.split(",") if d.strip()}
+
+    @property
+    def system_alert_enabled(self) -> bool:
+        """True only when a system-alert destination is fully configured."""
+        return (
+            self.system_alert_channel in {"webhook", "ntfy"}
+            and bool(self.system_alert_destination.strip())
+            and bool(self.system_alert_signing_secret.strip())
+        )
