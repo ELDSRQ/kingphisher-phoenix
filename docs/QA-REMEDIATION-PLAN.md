@@ -44,8 +44,20 @@ Status (2026-09-27):
   it already exists. A client-side filter over the loaded page is feasible but
   marginal at the 125-recipient target where department filtering already exists.
   Recorded rather than half-built.
-- **H10** weekly digest — reuses the H8 channel.
-- **H9** send-time spread — held for explicit review (only item that changes delivery behavior).
+- **H10** weekly digest — DONE (reuses the H8 channel).
+- **H9** send-time spread — DONE. Opt-in `campaigns.spread_over_hours` (migration
+  `0040`, nullable, bounded 1..168; null = the original single burst, so every
+  existing campaign is unchanged). The spread is applied at publish time in
+  `_publish_delivery_batches`: when set, only the **full** phase subdivides the
+  audience into smaller, time-slotted batches whose `available_at` is staggered
+  evenly across the window from the start time. This changes only *when* each
+  batch becomes claimable — the delivery worker's gate order (emergency stop →
+  state → launch → template → manifest → approval → RoE → per-recipient →
+  capacity) is untouched and runs in full for every batch. The **canary** phase
+  is never spread (evidence must land promptly), and batch size never exceeds
+  the configured cap, so the 1 MiB queue-payload guarantee holds. Console
+  exposes an optional "Send-time spread (hours)" field on campaign create.
+  Tests: `apps/operator-api/tests/test_send_time_spread.py`.
 
 
 Decision-needed notifications (H8 — reuses the F1 alert wiring), post-publish

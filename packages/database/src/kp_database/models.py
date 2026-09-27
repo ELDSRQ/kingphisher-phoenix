@@ -366,6 +366,10 @@ class Campaign(Base):
             "training_resource_digest IS NULL OR training_resource_digest ~ '^[0-9a-f]{64}$'",
             name="training_resource_digest_hex",
         ),
+        CheckConstraint(
+            "spread_over_hours IS NULL OR (spread_over_hours BETWEEN 1 AND 168)",
+            name="spread_over_hours_bounded",
+        ),
     )
 
     campaign_id = _pk()
@@ -386,6 +390,11 @@ class Campaign(Base):
     schedule_start = mapped_column(DateTime(timezone=True), nullable=True)
     schedule_end = mapped_column(DateTime(timezone=True), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    #: Optional send-time spread. When set, the full-audience publish staggers
+    #: delivery evenly across this many hours from the campaign's start instead
+    #: of releasing every batch at once. NULL preserves the original burst
+    #: behavior; the canary phase is never spread. Bounded 1..168 (one week).
+    spread_over_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_recipients: Mapped[int] = mapped_column(Integer)
     retention_policy_id = mapped_column(
         UUID(as_uuid=True), ForeignKey("retention_policies.retention_policy_id"), nullable=True
