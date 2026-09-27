@@ -1,0 +1,53 @@
+# QA Remediation Plan — response to QA-REVIEW-2026-09-27
+
+Companion to `docs/QA-REVIEW-2026-09-27.md`. That report's findings were
+spot-verified against live code before this plan was written — F1
+(`main.py:660` TODO + `providers/alerts.py` exists), F2 (`config.py`
+`default=False`), F9 (`api()` has no `AbortSignal`) and H5
+(`OPERATOR-GUIDE.md` stated two-person approval as unconditional) were all
+confirmed true. The report is accurate.
+
+Prioritisation here is re-ordered against the operator's standing directive —
+**get on-prem ready for human use first; deprioritise overengineering** — not
+adopted from the report's ordering wholesale. Nothing changes the **NO-GO**
+status or the rules in `AGENTS.md`; all work is additive and gate-tested.
+
+## Tier 1 — safety-critical + trivially correct (in progress)
+
+| Item | Finding | Status |
+| --- | --- | --- |
+| Correct the OPERATOR-GUIDE approval rule to be mode-aware (and fix a second contradiction the report missed: the allowlist "fails closed" claim, changed by PR #68 for single-operator) | H5 | **this PR** |
+| Wire the AUD-003 anchor-staleness gate to the existing alert provider, with a hermetic test | F1 | Tier 1 |
+| Add a fetch timeout + one idempotent-GET retry to the console `api()` helper | F9 | Tier 1 |
+
+## Tier 2 — human-usable for the 1–2 operator case
+
+| Item | Finding |
+| --- | --- |
+| Surface aggregation scheduler / data-staleness state in the Aggregation view | F2 |
+| Consolidate stop controls (one Stop, two scopes) and launch verbs ("Send test to canary" / "Send to everyone") | H3, H4 |
+| First-campaign "what's missing" checklist as the landing view until first publish | §2.2-1 |
+| Combined pattern + draft review on one screen in single-operator mode | §2.2-3 |
+| **CI-able console behavioural smoke test** — elevated: the 2026-09-26 browser pass found two real bugs (badge glue, More-wrap) that all ~25 string-grep contract tests missed, so the behavioural-coverage gap is proven, not theoretical | F10 |
+
+Do the console smoke test first in this tier; it de-risks every subsequent UI change.
+
+## Tier 3 — real features, bigger, gate each
+
+Decision-needed notifications (H8 — reuses the F1 alert wiring), post-publish
+closure banner (H11), recipient free-text search (H12), send-time spread
+(H9, per UX-011 §6), weekly digest (H10).
+
+## Dropped or deferred (over-engineering / low value for this tenant)
+
+- **F13** app.js module split — pure maintainability churn; skip unless it starts hurting.
+- **F8** test-date semgrep, **F5** supervise per-role DB env, **F12** `_as_utc` writer discipline — CI/edge hygiene, low value for a single-tenant on-prem deploy. Backlog.
+- **F3** otel-collector — just *remove* it from the default compose stack (zero producers), rather than the "wire a real exporter" option. One-line cleanup, folded into Tier 2/3 opportunistically.
+- **F4** bundle "generated" banner + **F6** stale-handoff archive — cheap; fold the banner into the smoke-test PR, archive handoffs opportunistically.
+- **H1** Azure console surface reduction — deferred with Azure itself.
+
+## Sequencing
+
+Tier 1 (3 small PRs) → Tier 2 console smoke first → Tier 2 UI changes →
+Tier 3 interleaved by gate-review capacity. The alert wiring (F1) is a shared
+dependency of H8, so it lands early.
