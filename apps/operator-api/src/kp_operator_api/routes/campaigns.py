@@ -109,6 +109,10 @@ _MAX_COVERING_ROE_CANDIDATES = 100
 
 
 _CANARY_EVIDENCE_TTL = timedelta(hours=24)
+#: Send-time spread granularity: how finely a spread window is sliced and the
+#: ceiling on how many time-slotted delivery batches one publish may create.
+_SPREAD_SLOTS_PER_HOUR = 4
+_SPREAD_MAX_SLOTS = 500
 
 
 # UX-011 §2b — proof send ("show me how this lands in a real mail client").
@@ -163,6 +167,11 @@ class CampaignCreate(BaseModel):
     schedule_end: datetime
     timezone: str = Field(default="UTC", min_length=1, max_length=64)
     max_recipients: int = Field(gt=0, le=10_000)
+    #: Optional send-time spread, in hours (1..168). When set, the full-audience
+    #: publish trickles delivery evenly across this window from the campaign's
+    #: start instead of releasing every batch at once. Omitted/None keeps the
+    #: original single-burst behavior; the canary phase is never spread.
+    spread_over_hours: int | None = Field(default=None, ge=1, le=168)
     template_version_id: uuid.UUID
     training_resource_id: uuid.UUID
 
@@ -397,6 +406,7 @@ def create_campaign(
         schedule_end=body.schedule_end,
         timezone=body.timezone,
         max_recipients=body.max_recipients,
+        spread_over_hours=body.spread_over_hours,
         created_by=uuid.UUID(principal.principal_id) if principal.principal_id != "anonymous" else None,
         expires_at=body.schedule_end,
     )
@@ -416,6 +426,7 @@ def create_campaign(
             "training_resource_id": str(training_resource.training_resource_id),
             "training_resource_version": training_resource.version,
             "training_resource_digest": campaign.training_resource_digest,
+            "spread_over_hours": campaign.spread_over_hours,
         },
     )
     session.commit()
@@ -485,6 +496,7 @@ def get_campaign_review(
         "title": campaign.title,
         "state": campaign.state.value,
         "manifest_hash": campaign.manifest_hash,
+        "spread_over_hours": campaign.spread_over_hours,
         "launch_review": {
             "ready": launch_error is None,
             "error": launch_error,
@@ -1011,6 +1023,7 @@ def _publish_delivery_batches(
     delivery_phase: str,
     launch_gate: CampaignLaunchGate,
     available_at: float | None = None,
+    spread_over_hours: int | None = None,
 ) -> int:
     """Publish delivery work in bounded batches.
 
@@ -1020,9 +1033,34 @@ def _publish_delivery_batches(
     the rotated verifier generation form the idempotency key: replaying one
     committed intent is suppressed, while a deliberate re-schedule can carry
     newly rotated bearers. Assignment claims remain the final send guard.
+
+    When ``spread_over_hours`` is set (only the full-audience phase passes it),
+    the audience is subdivided into smaller, time-slotted batches whose
+    ``available_at`` is staggered evenly across the window from ``base``, so a
+    real campaign trickles out instead of releasing in one burst. This changes
+    only *when* each batch becomes claimable; the delivery worker's gate order
+    still runs in full for every batch. With no spread the original single
+    batch size and uniform ``available_at`` are preserved exactly.
     """
-    batch_size = max(1, request.app.state.settings.delivery_batch_size)
-    batches = [assignment_ids[i : i + batch_size] for i in range(0, len(assignment_ids), batch_size)] or [[]]
+    default_batch_size = max(1, request.app.state.settings.delivery_batch_size)
+    count = len(assignment_ids)
+    base_at = datetime.fromtimestamp(available_at, tz=UTC) if available_at is not None else None
+    if spread_over_hours is not None and base_at is not None and count > 1:
+        # Enough slots for a meaningful stagger without flooding the queue.
+        # batch_size never exceeds the configured cap, so the 1MiB payload
+        # guarantee holds even for large audiences over a short window.
+        slots = min(count, _SPREAD_MAX_SLOTS, max(2, spread_over_hours * _SPREAD_SLOTS_PER_HOUR))
+        batch_size = min(default_batch_size, max(1, -(-count // slots)))
+        batches = [assignment_ids[i : i + batch_size] for i in range(0, count, batch_size)] or [[]]
+        interval = (float(spread_over_hours) * 3600.0) / len(batches)
+        # Batch 0 fires at base; the last fires strictly before window end, so
+        # the whole audience is released within the configured window.
+        batch_available_at: list[datetime | None] = [
+            base_at + timedelta(seconds=index * interval) for index in range(len(batches))
+        ]
+    else:
+        batches = [assignment_ids[i : i + default_batch_size] for i in range(0, count, default_batch_size)] or [[]]
+        batch_available_at = [base_at] * len(batches)
     for index, batch in enumerate(batches):
         payload: dict[str, Any] = {
             "campaign_id": campaign_id,
@@ -1055,7 +1093,7 @@ def _publish_delivery_batches(
             topic="deliver",
             payload=payload,
             idempotency_key=f"{idempotency_prefix}:{index}:{payload_generation}",
-            available_at=datetime.fromtimestamp(available_at, tz=UTC) if available_at is not None else None,
+            available_at=batch_available_at[index],
         )
     dispatch_after_commit(
         session,
@@ -1457,6 +1495,7 @@ def publish_campaign(
         delivery_phase="full",
         launch_gate=gate,
         available_at=max(campaign.schedule_start.timestamp(), now.timestamp()),
+        spread_over_hours=campaign.spread_over_hours,
     )
     gate.state = "full_published"
     gate.full_published_at = now
@@ -1470,6 +1509,7 @@ def publish_campaign(
         detail={
             "queued": len(assignment_ids),
             "batches": batches,
+            "spread_over_hours": campaign.spread_over_hours,
             "launch_manifest_hash": gate.review_manifest_hash,
             "canary_evidence_hash": gate.canary_evidence_hash,
             "provider": gate.provider,

@@ -3356,7 +3356,17 @@
             required: "required",
             "aria-describedby": "c-time-help"
           }),
-          el("p", { id: "c-time-help", class: "field-help", text: `Times will be stored as absolute instants. Browser timezone: ${browserTimeZone()}.` })
+          el("p", { id: "c-time-help", class: "field-help", text: `Times will be stored as absolute instants. Browser timezone: ${browserTimeZone()}.` }),
+          el("label", { for: "c-spread", text: "Send-time spread (hours, optional)" }),
+          el("input", {
+            id: "c-spread",
+            type: "number",
+            min: "1",
+            max: "168",
+            placeholder: "Leave blank to send all at once",
+            "aria-describedby": "c-spread-help"
+          }),
+          el("p", { id: "c-spread-help", class: "field-help", text: "When set, the full send is trickled out evenly across this many hours from the start time, instead of all at once. The canary is always sent promptly. Leave blank for the original single-burst behavior." })
         ].filter(Boolean))
       ]),
       el("div", { id: "campaign-create-error", class: "modal-error", role: "alert", tabindex: "-1" }),
@@ -3393,6 +3403,14 @@
               const start = localDateTimeToIso(document.getElementById("c-start").value, "Start");
               const end = localDateTimeToIso(document.getElementById("c-end").value, "End");
               if (new Date(end) <= new Date(start)) throw new Error("End must be after start");
+              const spreadRaw = document.getElementById("c-spread").value.trim();
+              let spreadOverHours = null;
+              if (spreadRaw) {
+                spreadOverHours = Number(spreadRaw);
+                if (!Number.isInteger(spreadOverHours) || spreadOverHours < 1 || spreadOverHours > 168) {
+                  throw new Error("Send-time spread must be a whole number of hours between 1 and 168, or left blank");
+                }
+              }
               await api("/campaigns", { method: "POST", body: JSON.stringify({
                 pattern_id: document.getElementById("c-pattern").value,
                 title,
@@ -3403,6 +3421,7 @@
                 schedule_end: end,
                 timezone: browserTimeZone(),
                 max_recipients: Number(document.getElementById("c-max").value),
+                spread_over_hours: spreadOverHours,
                 template_version_id: document.getElementById("c-template").value,
                 training_resource_id: trainingResourceId
               }) });
