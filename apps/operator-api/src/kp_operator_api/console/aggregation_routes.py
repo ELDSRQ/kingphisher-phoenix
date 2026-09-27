@@ -267,6 +267,19 @@ class AggregationScheduler:
         self._max_candidates = max(1, int(max_candidates))
         self._logger = logger if logger is not None else get_logger("kp_operator_api.aggregation.scheduler")
         self.status = "disabled" if not enabled else "pending"  # disabled | pending | ok | error
+        # F2: surface staleness. The Aggregation view reads this so an operator
+        # can tell whether trend data is refreshing automatically or sitting
+        # stale behind a scheduler that ships OFF by default.
+        self.last_run_at: datetime | None = None
+
+    def status_snapshot(self) -> dict[str, Any]:
+        """Operator-facing scheduler state for the Aggregation view (F2)."""
+        return {
+            "enabled": self._enabled,
+            "status": self.status,
+            "interval_seconds": self._interval_seconds,
+            "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
+        }
 
     def _run_once_blocking(self) -> None:
         """One aggregation pass. Never raises (a background pass must not)."""
@@ -293,6 +306,7 @@ class AggregationScheduler:
             except Exception as exc:  # noqa: BLE001 - keep the loop alive
                 self.status = "error"
                 self._logger.info("aggregation scheduler: run failed (%s)", type(exc).__name__)
+            self.last_run_at = datetime.now(UTC)
             await asyncio.sleep(self._interval_seconds)
 
 
@@ -346,6 +360,18 @@ def create_run(
     session_factory = request.app.state.session_factory
     background_tasks.add_task(_execute_run, settings, session_factory, run_id, items, body.max_candidates)
     return {"run_id": str(run_id), "status": "started", "items_considered": len(items)}
+
+
+@router.get("/status", status_code=status.HTTP_200_OK)
+def aggregation_status(
+    request: Request,
+    _principal: Principal = Depends(require_capability(Capability.MANAGE_SOURCES)),
+) -> dict[str, Any]:
+    """Scheduler state so the view can warn when trend data is stale (F2)."""
+    scheduler = getattr(request.app.state, "aggregation_scheduler", None)
+    if scheduler is None or not hasattr(scheduler, "status_snapshot"):
+        return {"scheduler": {"enabled": False, "status": "disabled", "interval_seconds": None, "last_run_at": None}}
+    return {"scheduler": scheduler.status_snapshot()}
 
 
 @router.get("/candidates", status_code=status.HTTP_200_OK)
