@@ -21,8 +21,8 @@ def test_campaign_console_builds_one_truthful_readiness_gate() -> None:
 
     assert "check.required && check.ready === false" in APP
     assert '"data-readiness-blockers"' in APP
-    assert 'text: "Review & run canary"' in APP
-    assert 'text: "Publish full audience"' in APP
+    assert 'text: "Send test to canary"' in APP
+    assert 'text: "Send to everyone"' in APP
     assert 'disabled: blockers.length ? "disabled" : null' in APP
     assert "The scheduling API will revalidate it and fail closed" in APP
 
@@ -105,8 +105,8 @@ def test_campaign_actions_and_readiness_are_named_per_campaign() -> None:
     assert "`${campaignTitle}: ${blockers.length} readiness blocker" in APP
     assert '"aria-label": `Actions for ${c.title}`' in APP
     for phrase in (
-        "Review and run locked canary for",
-        "Publish exact full audience for",
+        "Send the test (canary) for",
+        "Send to everyone (publish full audience) for",
         "Review campaign ${c.title}",
         "Open aggregate report for",
     ):

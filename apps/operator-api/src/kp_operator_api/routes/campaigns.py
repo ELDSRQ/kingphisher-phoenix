@@ -1506,7 +1506,7 @@ def test_send_campaign(
     session.commit()
     del request
     raise ConflictError(
-        "ad-hoc test sends are disabled; use Review & run canary so successful evidence can gate full publication"
+        "ad-hoc test sends are disabled; use Send test to canary so successful evidence can gate full publication"
     )
 
 

@@ -3894,10 +3894,10 @@
                 const scheduleButton = el("button", {
                   class: "btn small primary",
                   type: "button",
-                  text: "Review & run canary",
-                  "aria-label": `Review and run locked canary for ${c.title}`,
+                  text: "Send test to canary",
+                  "aria-label": `Send the test (canary) for ${c.title}`,
                   disabled: blockers.length ? "disabled" : null,
-                  title: blockers.length ? blockedReason : null,
+                  title: blockers.length ? blockedReason : "Sends the reviewed, locked canary cohort \u2014 a small test send whose success gates sending to everyone.",
                   onclick: scheduleAct(c, readiness)
                 });
                 actions.push(scheduleButton);
@@ -3906,10 +3906,10 @@
                 actions.push(el("button", {
                   class: "btn small primary",
                   type: "button",
-                  text: "Publish full audience",
-                  "aria-label": `Publish exact full audience for ${c.title}`,
+                  text: "Send to everyone",
+                  "aria-label": `Send to everyone (publish full audience) for ${c.title}`,
                   disabled: blockers.length ? "disabled" : null,
-                  title: blockers.length ? blockedReason : "Uses the exact reviewed manifest and successful canary evidence.",
+                  title: blockers.length ? blockedReason : "Publishes to the full reviewed audience \u2014 the exact reviewed manifest, gated by successful canary evidence.",
                   onclick: publishAct(c)
                 }));
               }
