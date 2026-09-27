@@ -98,9 +98,11 @@ def test_stale_authority_responses_refresh_before_actions_are_offered_again() ->
 
 
 def test_preserved_campaign_controls_stay_on_their_separate_authority_paths() -> None:
-    assert "separate server controls and are intentionally not campaign flags" in CAMPAIGNS
-    assert "hasCapability(CAPABILITY.USE_KILL_SWITCH)" in CAMPAIGNS
     assert "if (canSubscribeAlerts) actions.push" in CAMPAIGNS
-    assert 'type: "button", text: "Kill switch"' in CAMPAIGNS
     assert 'type: "button", text: "Report"' in CAMPAIGNS
     assert 'type: "button", text: alertsLoaded ? "Manage alerts"' in CAMPAIGNS
+    # H3: the redundant per-campaign "Kill switch" button was dropped. Recall
+    # stops this campaign; the global emergency stop (sidebar) stops everything.
+    # The kill-switch endpoint/capability are unchanged — only the row button is
+    # gone, so this asserts its absence from the campaign actions.
+    assert 'text: "Kill switch"' not in CAMPAIGNS
