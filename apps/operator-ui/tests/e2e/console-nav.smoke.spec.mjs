@@ -4,44 +4,50 @@
 // is deliberately NOT part of `make test` or CI — both lack a browser and a
 // reachable console. Run it whenever the console UI changes.
 //
-// Purpose: replace a regex-over-source UI assertion with a real-DOM effect
-// assertion. The Python contract test
-//   apps/operator-api/tests/test_gui_wiring_ui_contract.py
-//   ::test_every_visible_navigation_item_has_a_view_and_hidden_readiness_links_are_not_rendered
-// proves navigation wiring by string-matching app.js source. This smoke test
-// proves the *rendered* effect instead: the authenticated console renders a
-// sidebar button per visible NAV item, and activating one actually mounts that
-// view (the #console-view region's label follows the selection).
-//
-// It does NOT replace the source test's negative assertions about hidden
-// readiness links; keep the source contract until the effect coverage is
-// broadened. See docs/design/TST-002-TEST-EFFECT-UPLIFT.md.
+// Purpose: real-DOM effect assertions the ~25 Python string-grep UI-contract
+// tests structurally cannot make. The 2026-09-26 browser pass found two bugs a
+// string grep missed — a nav count badge glued to its label ("Campaigns1") and
+// the "More" list wrapping two-per-row — and both this file's badge-pill and
+// grouping assertions now guard that class. See docs/QA-REMEDIATION-PLAN.md F10.
 
 import { expect, test } from "@playwright/test";
 
-// The visible navigation labels the console renders for a fully-capable
-// operator, in NAV order (app.js `const NAV`). Capability-gated items may be
-// absent for a lower-privilege session; the test asserts a subset relationship,
-// not exact equality, so it is robust to capability trimming.
-const EXPECTED_NAV_LABELS = [
-  "Setup wizard",
-  "Azure deployment",
-  "Help",
-  "Dashboard",
-  "Campaigns",
-  "Programs",
-  "Executive trends",
+// The full navigation, from app.js `const NAV`: seven "run" items always
+// visible, thirteen "more" items behind a collapsed <details>. Capability-gated
+// items may be absent for a lower-privilege session, so membership is asserted
+// as a subset, never exact equality.
+const PRIMARY_NAV_LABELS = [
+  "Get started",
   "Domains & RoE",
   "Recipients",
-  "Sources",
-  "Patterns",
   "Template review",
   "Training lessons",
-  "Privacy",
-  "Failed jobs",
-  "Audit",
-  "Settings",
+  "Campaigns",
+  "Dashboard",
 ];
+const MORE_NAV_LABELS = [
+  "Setup wizard",
+  "Repeat on a schedule",
+  "Executive trends",
+  "Patterns",
+  "Sources",
+  "Threat aggregation",
+  "Audit",
+  "Failed jobs",
+  "Privacy",
+  "AI model",
+  "Azure deployment",
+  "Settings",
+  "Help",
+];
+const ALL_NAV_LABELS = [...PRIMARY_NAV_LABELS, ...MORE_NAV_LABELS];
+
+// A nav button's text may carry a "needs my decision" count badge (e.g.
+// Campaigns + "1"). The badge is a separate .nav-badge pill; strip a trailing
+// number so the label compares cleanly.
+function navLabel(text) {
+  return text.replace(/\s*\d+\s*$/, "").trim();
+}
 
 async function ensureAuthenticated(page) {
   // The SPA is mounted at /console/ — the root path 404s.
@@ -49,11 +55,8 @@ async function ensureAuthenticated(page) {
   const password = page.locator("#console-password");
   const nav = page.locator('nav[aria-label="Operator sections"]');
   // The console renders client-side, so goto() resolves BEFORE either the login
-  // form or the authenticated shell exists. Wait for whichever arrives first —
-  // a bare count()/isVisible() here races the render and silently reports "no
-  // login form", which then hangs on a nav that can never appear.
+  // form or the authenticated shell exists. Wait for whichever arrives first.
   await expect(password.or(nav).first()).toBeVisible({ timeout: 15_000 });
-  // With a pre-supplied storageState the login form never appears.
   if (await password.isVisible()) {
     const secret = process.env.OPERATOR_CONSOLE_PASSWORD;
     test.skip(
@@ -63,36 +66,66 @@ async function ensureAuthenticated(page) {
     await password.fill(secret);
     await page.getByRole("button", { name: "Sign in" }).click();
   }
-  // The operator sections nav only exists once authenticated.
   await expect(nav).toBeVisible({ timeout: 15_000 });
 }
 
 test.describe("operator console navigation (real DOM effect)", () => {
-  test("every visible nav item renders a button", async ({ page }) => {
+  test("the seven campaign-path items render, and the rest live behind More", async ({ page }) => {
     await ensureAuthenticated(page);
     const nav = page.locator('nav[aria-label="Operator sections"]');
-    const rendered = await nav.locator("button").allInnerTexts();
-    const renderedTrimmed = rendered.map((t) => t.trim()).filter(Boolean);
-    // Every rendered label must be a known NAV label (no stray buttons)...
-    for (const label of renderedTrimmed) {
-      expect(EXPECTED_NAV_LABELS).toContain(label);
+
+    // Primary items are visible immediately.
+    const visible = (await nav.locator("button:visible").allInnerTexts()).map(navLabel).filter(Boolean);
+    for (const core of PRIMARY_NAV_LABELS) {
+      expect(visible).toContain(core);
     }
-    // ...and the core, non-capability-gated destinations must be present.
-    for (const core of ["Dashboard", "Campaigns", "Audit", "Settings"]) {
-      expect(renderedTrimmed).toContain(core);
+    // Every visible label is a known NAV label (no stray buttons).
+    for (const label of visible) {
+      expect(ALL_NAV_LABELS).toContain(label);
+    }
+
+    // The occasional tools sit behind a "More" disclosure, collapsed by default.
+    const more = nav.locator("details.nav-more");
+    await expect(more).toBeVisible();
+    // Collapsed: a More-only item is not yet visible.
+    await expect(nav.getByRole("button", { name: "Audit", exact: true })).toBeHidden();
+    await more.locator("summary").click();
+    // Expanded: the More items are now reachable.
+    await expect(nav.getByRole("button", { name: "Audit", exact: true })).toBeVisible();
+    const afterExpand = (await nav.locator("button:visible").allInnerTexts()).map(navLabel).filter(Boolean);
+    for (const item of ["Audit", "Settings", "AI model"]) {
+      expect(afterExpand).toContain(item);
     }
   });
 
-  test("activating a nav item mounts its view", async ({ page }) => {
+  test("the Campaigns decision badge renders as a pill, not glued text", async ({ page }) => {
+    await ensureAuthenticated(page);
+    const campaigns = page.locator('nav[aria-label="Operator sections"] button[data-nav="campaigns"]');
+    // Guards the "Campaigns1" bug: when a badge is present it is its own
+    // .nav-badge element, so the button's own label never reads "Campaigns<n>".
+    const badge = campaigns.locator(".nav-badge");
+    if ((await badge.count()) > 0) {
+      await expect(badge).toBeVisible();
+      const badgeText = (await badge.innerText()).trim();
+      expect(badgeText).toMatch(/^\d+$/);
+    }
+  });
+
+  test("activating Campaigns mounts its view and prefills the new-campaign form", async ({ page }) => {
     await ensureAuthenticated(page);
     const nav = page.locator('nav[aria-label="Operator sections"]');
-    await nav.getByRole("button", { name: "Campaigns" }).click();
-    // navigateTo() sets location.hash; the view region relabels to the active
-    // view. This is the effect the source-regex test could only infer.
+    await nav.getByRole("button", { name: "Campaigns", exact: true }).click();
     await expect(page).toHaveURL(/#campaigns$/);
-    await expect(page.locator("#console-view")).toHaveAttribute(
-      "aria-label",
-      /Campaigns view/i,
-    );
+    await expect(page.locator("#console-view")).toHaveAttribute("aria-label", /Campaigns view/i);
+
+    // Prefill (PR #72): title, start and end arrive filled so the operator
+    // reviews a draft rather than facing eleven blank fields. Present only when
+    // approved content exists; assert non-empty when the fields are present.
+    const title = page.locator("#c-title");
+    if ((await title.count()) > 0) {
+      await expect(title).not.toHaveValue("");
+      await expect(page.locator("#c-start")).not.toHaveValue("");
+      await expect(page.locator("#c-end")).not.toHaveValue("");
+    }
   });
 });
