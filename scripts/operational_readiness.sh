@@ -168,7 +168,7 @@ require_running_service() {
 for service in postgres redis mailpit; do
   require_healthy_service "$service"
 done
-for service in otel-collector mock-idp mock-graph mock-ai; do
+for service in mock-idp mock-graph mock-ai; do
   require_running_service "$service"
 done
 

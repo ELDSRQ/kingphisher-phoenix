@@ -71,7 +71,7 @@ step "docker infrastructure"
 check "postgres healthy" compose_healthy postgres
 check "redis healthy" compose_healthy redis
 check "mailpit healthy" compose_healthy mailpit
-check "otel-collector running" compose_running otel-collector
+# F3: otel-collector is opt-in (observability profile), no longer part of the default stack.
 check "mock-idp running" compose_running mock-idp
 check "mock-graph running" compose_running mock-graph
 check "mock-ai running" compose_running mock-ai

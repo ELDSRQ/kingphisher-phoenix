@@ -111,16 +111,27 @@ test.describe("operator console navigation (real DOM effect)", () => {
     }
   });
 
-  test("a campaign-capable operator lands on Campaigns by default (§2.2-1)", async ({ page }) => {
+  test("a campaign-capable operator defaults off the dashboard to the campaign path (§2.2-1)", async ({ page }) => {
     await ensureAuthenticated(page); // goes to /console/ with no explicit hash
-    // The campaign page is the launch console, so it is the default landing.
-    await expect(page.locator("#console-view")).toHaveAttribute("aria-label", /Campaigns view/i);
+    // §2.2-1 moved the default landing off the Dashboard: a campaign-capable
+    // operator lands on the Campaigns launch console. One higher-priority flow
+    // legitimately intercepts it — an operator with MANAGE_ROLES whose
+    // onboarding is not yet complete is sent to "Get started" first
+    // (render() forces #getstarted). So assert the intent precisely: the
+    // default is never the dashboard, and is one of the two campaign-path homes.
+    await expect(page.locator("#console-view")).toHaveAttribute(
+      "aria-label",
+      /(Campaigns|Get started) view/i,
+    );
   });
 
   test("activating Campaigns mounts its view and prefills the new-campaign form", async ({ page }) => {
     await ensureAuthenticated(page);
     const nav = page.locator('nav[aria-label="Operator sections"]');
-    await nav.getByRole("button", { name: "Campaigns", exact: true }).click();
+    // Locate by data-nav, not the accessible name: a "needs my decision" badge
+    // appends " <n> awaiting your decision" to the button's name, so an
+    // exact-name match for "Campaigns" misses it whenever a decision is pending.
+    await nav.locator('button[data-nav="campaigns"]').click();
     await expect(page).toHaveURL(/#campaigns$/);
     await expect(page.locator("#console-view")).toHaveAttribute("aria-label", /Campaigns view/i);
 
