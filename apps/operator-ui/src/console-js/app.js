@@ -1231,7 +1231,14 @@ function canNavigateTo(viewId) {
 
 function shell() {
   const visible = visibleNavigation();
-  const requested = location.hash.slice(1) || "dashboard";
+  // §2.2-1: for an operator whose job is running campaigns, the campaign page —
+  // which computes what is still missing and links to each step — is the useful
+  // home, so default there rather than the dashboard when no view is requested.
+  // An explicit hash always wins, so returning operators keep their place.
+  const defaultView = hasCapability(CAPABILITY.CREATE_CAMPAIGN) && visible.some(([id]) => id === "campaigns")
+    ? "campaigns"
+    : "dashboard";
+  const requested = location.hash.slice(1) || defaultView;
   const active = visible.find(([id]) => id === requested)?.[0]
     || visible.find(([id]) => id === "help")?.[0]
     || visible[0]?.[0];
@@ -2856,7 +2863,12 @@ views.campaigns = async (root) => {
   // D6 acceptance finding: an operator arriving here has no idea what the whole
   // journey looks like or what must exist before a campaign can be created.
   // Collapsed by default so it does not nag a returning operator.
-  root.appendChild(el("details", { class: "context-help" }, [
+  // §2.2-1: the campaign page is the launch console. For a fresh operator (no
+  // campaigns yet) this guide opens expanded so the whole journey and what is
+  // still missing is the landing view; once campaigns exist it collapses so it
+  // does not nag a returning operator. The `.open` is set after the campaign
+  // list loads, below.
+  const campaignGuide = el("details", { class: "context-help" }, [
     el("summary", { text: "New here? How to set up a campaign, start to finish" }),
     el("p", { text: "A campaign moves through these stages. Each one must finish before the next becomes available, so if a button looks disabled, the answer is usually an earlier stage." }),
     el("ol", { class: "prerequisite-list" }, [
@@ -2871,9 +2883,12 @@ views.campaigns = async (root) => {
       el("li", { text: "Send the canary first. A small test cohort goes out and you confirm delivery looks right before anything wider." }),
       el("li", { text: "Publish in full, then watch results and the audit trail. You can stop a campaign at any point." }),
     ]),
-    el("p", { class: "field-help", text: "The two stages that most often surprise people: the domain and RoE must exist BEFORE you create a campaign, and approval requires a second person. If you are working alone you will reach approval and be unable to continue - that is the safety rule working, not a fault." }),
+    el("p", { class: "field-help", text: enforcing
+      ? "The two stages that most often surprise people: the domain and RoE must exist BEFORE you create a campaign, and approval requires a second person. If you are working alone you will reach approval and be unable to continue - that is the safety rule working, not a fault."
+      : "The stage that most often surprises people: the domain and RoE must exist BEFORE you create a campaign. In this single-operator deployment you approve your own work, so you will not be blocked at approval - each decision is simply recorded against you." }),
     el("button", { class: "link-button", type: "button", text: "Open the searchable help center", onclick: () => navigateTo("help") }),
-  ]));
+  ]);
+  root.appendChild(campaignGuide);
 
   // The approval rule is the single most confusing thing about this screen, so
   // state it up front rather than letting an operator discover it as a 409.
@@ -2904,6 +2919,9 @@ views.campaigns = async (root) => {
   } catch (e) {
     root.appendChild(collectionLoadError(`Failed to load campaigns: ${e.message}`, () => render())); return;
   }
+  // §2.2-1: expand the start-to-finish guide as the landing surface for a fresh
+  // operator (no campaigns yet); leave it collapsed once campaigns exist.
+  campaignGuide.open = campaigns.length === 0;
 
   const dependencyResults = await Promise.allSettled([
     canCreateCampaign ? boundedCollection("/patterns") : Promise.resolve([]),

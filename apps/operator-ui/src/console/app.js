@@ -1425,7 +1425,8 @@
   }
   function shell() {
     const visible = visibleNavigation();
-    const requested = location.hash.slice(1) || "dashboard";
+    const defaultView = hasCapability(CAPABILITY.CREATE_CAMPAIGN) && visible.some(([id]) => id === "campaigns") ? "campaigns" : "dashboard";
+    const requested = location.hash.slice(1) || defaultView;
     const active = visible.find(([id]) => id === requested)?.[0] || visible.find(([id]) => id === "help")?.[0] || visible[0]?.[0];
     const activeLabel = visible.find(([id]) => id === active)?.[1] || "Operator console";
     document.title = `${activeLabel} \u2014 Kingphisher-Phoenix Operator Console`;
@@ -3021,7 +3022,7 @@
     const enforcing = policy === "enforce";
     root.appendChild(el("h2", { text: "Campaigns" }));
     root.appendChild(el("p", { class: "sub", text: "Create, review and run awareness campaigns." }));
-    root.appendChild(el("details", { class: "context-help" }, [
+    const campaignGuide = el("details", { class: "context-help" }, [
       el("summary", { text: "New here? How to set up a campaign, start to finish" }),
       el("p", { text: "A campaign moves through these stages. Each one must finish before the next becomes available, so if a button looks disabled, the answer is usually an earlier stage." }),
       el("ol", { class: "prerequisite-list" }, [
@@ -3034,9 +3035,10 @@
         el("li", { text: "Send the canary first. A small test cohort goes out and you confirm delivery looks right before anything wider." }),
         el("li", { text: "Publish in full, then watch results and the audit trail. You can stop a campaign at any point." })
       ]),
-      el("p", { class: "field-help", text: "The two stages that most often surprise people: the domain and RoE must exist BEFORE you create a campaign, and approval requires a second person. If you are working alone you will reach approval and be unable to continue - that is the safety rule working, not a fault." }),
+      el("p", { class: "field-help", text: enforcing ? "The two stages that most often surprise people: the domain and RoE must exist BEFORE you create a campaign, and approval requires a second person. If you are working alone you will reach approval and be unable to continue - that is the safety rule working, not a fault." : "The stage that most often surprises people: the domain and RoE must exist BEFORE you create a campaign. In this single-operator deployment you approve your own work, so you will not be blocked at approval - each decision is simply recorded against you." }),
       el("button", { class: "link-button", type: "button", text: "Open the searchable help center", onclick: () => navigateTo("help") })
-    ]));
+    ]);
+    root.appendChild(campaignGuide);
     const banner = el("div", { class: "policy-banner" });
     const singleOperator = policy === "single-operator";
     banner.appendChild(el("strong", {
@@ -3052,6 +3054,7 @@
       root.appendChild(collectionLoadError(`Failed to load campaigns: ${e.message}`, () => render()));
       return;
     }
+    campaignGuide.open = campaigns.length === 0;
     const dependencyResults = await Promise.allSettled([
       canCreateCampaign ? boundedCollection("/patterns") : Promise.resolve([]),
       canCreateCampaign ? boundedCollection("/templates") : Promise.resolve([]),

@@ -111,6 +111,12 @@ test.describe("operator console navigation (real DOM effect)", () => {
     }
   });
 
+  test("a campaign-capable operator lands on Campaigns by default (§2.2-1)", async ({ page }) => {
+    await ensureAuthenticated(page); // goes to /console/ with no explicit hash
+    // The campaign page is the launch console, so it is the default landing.
+    await expect(page.locator("#console-view")).toHaveAttribute("aria-label", /Campaigns view/i);
+  });
+
   test("activating Campaigns mounts its view and prefills the new-campaign form", async ({ page }) => {
     await ensureAuthenticated(page);
     const nav = page.locator('nav[aria-label="Operator sections"]');
