@@ -78,19 +78,24 @@ closure banner (H11), recipient free-text search (H12), send-time spread
   handoffs* that must carry the external-worker/.140 boundary truth. That guard
   belongs to the DR/external-worker workstream, so relocating those two is out of
   this lane; archiving them would require changing that contract.
-- **F3** otel-collector removal — **DEFERRED (not the one-liner the report
-  assumed).** `otel-collector` is not just an unconditional compose service; it is
-  in the **operational-readiness gate** (`operational_readiness.sh:171` requires it
-  running), `install.sh` (×2), and the readiness test mock
-  (`test_readiness_harness.py`). Removing it from the default stack is a
-  coordinated 4-file change with readiness-gate implications — worth doing, but
-  not a safe tail-of-session cleanup. Backlog with this note.
+- **F3** otel-collector removal — **DONE.** Gated behind an opt-in
+  `observability` compose profile (mirrors `ai-gateway`'s `ai` profile) and
+  removed from every default bring-up and the readiness contract:
+  `docker-compose.yml`, `operational_readiness.sh`, `run_console.sh`,
+  `install.sh`, `verify_install.sh`, `Makefile` (dev + mock-stack) and the
+  readiness test mock (`test_readiness_harness.py`). Start it explicitly once a
+  real OTLP exporter is wired: `docker compose --profile observability up -d
+  otel-collector`. Reversible — nothing deleted.
 
 ## Dropped or deferred (over-engineering / low value for this tenant)
 
 - **F13** app.js module split — pure maintainability churn; skip unless it starts hurting.
 - **F8** test-date semgrep, **F5** supervise per-role DB env, **F12** `_as_utc` writer discipline — CI/edge hygiene, low value for a single-tenant on-prem deploy. Backlog.
-- **F10** tunnel-free CI console smoke — the nav smoke spec was improved and proven green against the live .105 console, but a `docker-compose.e2e.yml`-based `make` target that runs it without a manual tunnel was not added. Backlog.
+- **F10** — the nav smoke spec was made robust to live state (badge-independent
+  `data-nav` locator; onboarding-aware §2.2-1 landing assertion) and all four
+  specs pass against the live .105 console. The remaining backlog piece is a
+  *tunnel-free* CI target (`docker-compose.e2e.yml`-based `make` target) so the
+  behavioural net runs without a manual tunnel; the specs themselves are sound.
 - **F7** AI model-pin self-check, **F11** remaining `slice(0,8)` UUID label sites — backlog.
 - **H1** Azure console surface reduction, **H2** Mailpit-first onboarding finish, **H6** sidebar count, **H7** Program Planner vocabulary — UX polish; H1 deferred with Azure itself.
 
