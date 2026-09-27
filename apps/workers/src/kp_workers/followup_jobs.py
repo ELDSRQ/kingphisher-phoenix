@@ -245,8 +245,55 @@ def process_reminder(ctx: WorkerContext, message: dict[str, Any]) -> None:
         session.commit()
 
 
+_SYSTEM_ALERT_EVENTS = frozenset({"decision.needed", "audit.anchor_stale", "digest.weekly"})
+
+
+def _deliver_system_alert(ctx: WorkerContext, payload: dict[str, Any]) -> None:
+    """H8: deliver a non-campaign system alert to the configured team channel.
+
+    Off unless a destination is configured, so a deployment that has not opted
+    in silently no-ops (the enqueue side always runs; this side is the gate).
+    Reuses the same signed sender and domain allowlist as campaign alerts.
+    """
+    event_type = payload.get("event_type")
+    if event_type not in _SYSTEM_ALERT_EVENTS:
+        raise ValueError("unsupported system alert event type")
+    if not ctx.settings.system_alert_enabled:
+        return
+    sender = SignedWebhookSender(ctx.settings.alert_webhook_domain_set(), timeout=ctx.settings.provider_timeout_seconds)
+    alert_payload = {
+        "event_type": event_type,
+        "occurred_at": payload.get("occurred_at"),
+        "detail": payload.get("detail", {}),
+        "scope": "system",
+    }
+    destination = ctx.settings.system_alert_destination
+    secret = ctx.settings.system_alert_signing_secret
+    if ctx.settings.system_alert_channel == "ntfy":
+        with provider_call("ntfy", "send"):
+            sender.send_ntfy(destination, secret, alert_payload)
+    else:
+        with provider_call("webhook", "send"):
+            sender.send(destination, secret, alert_payload)
+    with ctx.session_factory() as session:
+        ctx.audit_store.record(
+            session=session,
+            actor="worker:system_alert",
+            action="system_alert.deliver",
+            object_type="system_alert",
+            object_id=str(event_type),
+            detail={"event_type": event_type},
+        )
+        session.commit()
+
+
 def process_alert(ctx: WorkerContext, message: dict[str, Any]) -> None:
     payload = message.get("payload", {})
+    # H8: system (non-campaign) alerts travel on the same topic but carry no
+    # subscription; they dispatch to the configured team channel instead.
+    if payload.get("scope") == "system":
+        _deliver_system_alert(ctx, payload)
+        return
     subscription_id = payload.get("subscription_id")
     if not subscription_id:
         raise ValueError("alert message missing subscription_id")
