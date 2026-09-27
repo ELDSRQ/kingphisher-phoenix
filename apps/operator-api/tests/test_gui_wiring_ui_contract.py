@@ -22,7 +22,8 @@ ONBOARDING = _section("views.onboarding = async (root) =>", 'views["azure-deploy
 
 
 def test_authenticated_console_responses_are_never_browser_cached() -> None:
-    assert 'fetch(`${API}${path}`, { ...options, cache: "no-store", headers })' in APP
+    # F9 added a per-request AbortSignal timeout; cache: "no-store" is unchanged.
+    assert 'fetch(`${API}${path}`, { ...options, cache: "no-store", headers, signal })' in APP
     assert 'fetch(`${API}${path}`, { headers, credentials: "same-origin", cache: "no-store" })' in APP
     assert 'fetch(`${API}/console/session`, { credentials: "same-origin", cache: "no-store" })' in APP
 
