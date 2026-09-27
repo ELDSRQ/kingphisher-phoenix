@@ -362,10 +362,24 @@
     ]));
     return false;
   }
+  var API_TIMEOUT_MS = 3e4;
   async function api(path, options = {}) {
     const headers = { "Content-Type": "application/json", ...options.headers || {} };
     if (token()) headers.Authorization = `Bearer ${token()}`;
-    const resp = await fetch(`${API}${path}`, { ...options, cache: "no-store", headers });
+    const method = (options.method || "GET").toUpperCase();
+    const canRetry = method === "GET" && !options.signal;
+    let resp;
+    for (let attempt = 0; ; attempt++) {
+      const signal = options.signal || AbortSignal.timeout(API_TIMEOUT_MS);
+      try {
+        resp = await fetch(`${API}${path}`, { ...options, cache: "no-store", headers, signal });
+        break;
+      } catch (err) {
+        const timedOut = err && err.name === "TimeoutError";
+        if (canRetry && attempt === 0 && !timedOut) continue;
+        throw new Error(timedOut ? "The request timed out \u2014 the server may be busy or unreachable." : err && err.message || "Network error");
+      }
+    }
     if (resp.status === 401 && path !== "/console/session") {
       clearToken();
       render();
