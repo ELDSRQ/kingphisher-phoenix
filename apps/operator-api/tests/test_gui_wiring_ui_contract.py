@@ -74,12 +74,24 @@ def test_new_campaign_does_not_ship_local_or_example_delivery_defaults() -> None
     assert "training_domain: trainingDomain" in CAMPAIGNS
 
 
-def test_template_requester_does_not_receive_known_dead_review_controls() -> None:
+def test_template_requester_review_gate_is_mode_aware() -> None:
+    # Under ENFORCE the requester still cannot review their own draft (the
+    # "different authorized reviewer" message shows). Under single-operator the
+    # gate opens for the requester, recorded as a self-review — matching the
+    # server (PR #67). The gate keys on enforcingDraftReview, not an
+    # unconditional requester check.
     assert "const principalId = sessionInfo()?.principalId;" in TEMPLATES
-    assert "const canReviewDraft = !draft.requested_by" in TEMPLATES
+    assert (
+        'const enforcingDraftReview = ((sessionInfo() || {}).approvalPolicy || "single-admin") === "enforce";'
+        in TEMPLATES
+    )
+    assert "const canReviewDraft = !enforcingDraftReview" in TEMPLATES
     assert "draft.requested_by !== principalId" in TEMPLATES
     assert "...(canReviewDraft ? [" in TEMPLATES
+    # ENFORCE-only message still present for the two-person case.
     assert "A different authorized reviewer must record its decision." in TEMPLATES
+    # Single-operator self-review is surfaced, not hidden.
+    assert "recorded as a self-review in the audit trail" in TEMPLATES
 
 
 def test_mutations_use_their_exact_capabilities() -> None:

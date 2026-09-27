@@ -5424,6 +5424,12 @@ views.templates = async (root) => {
     root.appendChild(collectionLoadError(`Failed to load pending templates: ${e.message}`, () => render())); return;
   }
   const principalId = sessionInfo()?.principalId;
+  // The requester-cannot-review rule is a TWO-PERSON rule only. Under
+  // single-operator (and the dev single-admin stack) the server allows the
+  // requester to approve their own draft — recorded as self_reviewed — so the
+  // console must offer the button too, or the lone operator hits a dead end the
+  // server would actually permit. Only ENFORCE keeps the second-reviewer bar.
+  const enforcingDraftReview = ((sessionInfo() || {}).approvalPolicy || "single-admin") === "enforce";
 
   if (!pending.length) {
     root.appendChild(el("div", { class: "card" }, [
@@ -5431,8 +5437,11 @@ views.templates = async (root) => {
       el("p", { class: "modal-help", text: "Approving a threat pattern queues a draft for generation; it will appear here once the generation worker has produced it." }),
     ]));
   } else for (const draft of pending) {
-    const canReviewDraft = !draft.requested_by
+    const canReviewDraft = !enforcingDraftReview
+      || !draft.requested_by
       || (typeof principalId === "string" && principalId.length > 0 && draft.requested_by !== principalId);
+    const selfReviewing = canReviewDraft && !!draft.requested_by
+      && typeof principalId === "string" && draft.requested_by === principalId;
     const card = el("div", { class: "card" }, [
       el("h3", { text: draft.subject || "(no subject)" }),
       el("p", { class: "modal-help", text: `Model: ${draft.model_id || "unknown"}` }),
@@ -5467,6 +5476,10 @@ views.templates = async (root) => {
       ...(canReviewDraft ? [
         el("button", { class: "btn small primary", type: "button", text: "Approve", onclick: decide(draft, "approved") }),
         el("button", { class: "btn small danger", type: "button", text: "Reject", onclick: decide(draft, "rejected") }),
+        ...(selfReviewing ? [el("span", {
+          class: "modal-help", role: "status",
+          text: "You requested this generation; single-operator mode lets you approve it, recorded as a self-review in the audit trail.",
+        })] : []),
       ] : [el("span", {
         class: "modal-help", role: "status",
         text: "You requested this generation. A different authorized reviewer must record its decision.",
