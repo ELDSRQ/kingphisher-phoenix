@@ -1,3 +1,6 @@
+// GENERATED FILE — DO NOT EDIT.
+// Source of truth: apps/operator-ui/src/console-js/ (edit there, then run `npm run build`).
+// Built by apps/operator-ui/scripts/build-console.mjs; kept in sync by the bundle-drift gate.
 "use strict";
 (() => {
   // src/console-js/dom.js

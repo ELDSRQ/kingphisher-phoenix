@@ -64,13 +64,35 @@ Decision-needed notifications (H8 — reuses the F1 alert wiring), post-publish
 closure banner (H11), recipient free-text search (H12), send-time spread
 (H9, per UX-011 §6), weekly digest (H10).
 
+## Cheap wins — status (2026-09-27)
+
+- **F4** bundle "generated" banner — **DONE.** `build-console.mjs` now emits a
+  three-line `GENERATED FILE — DO NOT EDIT` banner via esbuild `banner.js`; the
+  drift gate mirrors the same string in its direct esbuild invocation, so the
+  banner can never go stale.
+- **F6** stale-handoff archive — **PARTIAL (done for the 8 that were safe).**
+  `git mv`'d the six dated `AI_HANDOFF_2026-09-*.md`, `AUDIT_REPORT_2026-09-14.md`
+  and `NEXT_AI_PROMPT.md` into `docs/archive/` (history preserved) with a pointer
+  README. **`RESUME-HERE.md` and `QA_TASKS.md` were deliberately left at the root**:
+  `tests/test_external_worker_handoff_contract.py` pins them as *current-state
+  handoffs* that must carry the external-worker/.140 boundary truth. That guard
+  belongs to the DR/external-worker workstream, so relocating those two is out of
+  this lane; archiving them would require changing that contract.
+- **F3** otel-collector removal — **DEFERRED (not the one-liner the report
+  assumed).** `otel-collector` is not just an unconditional compose service; it is
+  in the **operational-readiness gate** (`operational_readiness.sh:171` requires it
+  running), `install.sh` (×2), and the readiness test mock
+  (`test_readiness_harness.py`). Removing it from the default stack is a
+  coordinated 4-file change with readiness-gate implications — worth doing, but
+  not a safe tail-of-session cleanup. Backlog with this note.
+
 ## Dropped or deferred (over-engineering / low value for this tenant)
 
 - **F13** app.js module split — pure maintainability churn; skip unless it starts hurting.
 - **F8** test-date semgrep, **F5** supervise per-role DB env, **F12** `_as_utc` writer discipline — CI/edge hygiene, low value for a single-tenant on-prem deploy. Backlog.
-- **F3** otel-collector — just *remove* it from the default compose stack (zero producers), rather than the "wire a real exporter" option. One-line cleanup, folded into Tier 2/3 opportunistically.
-- **F4** bundle "generated" banner + **F6** stale-handoff archive — cheap; fold the banner into the smoke-test PR, archive handoffs opportunistically.
-- **H1** Azure console surface reduction — deferred with Azure itself.
+- **F10** tunnel-free CI console smoke — the nav smoke spec was improved and proven green against the live .105 console, but a `docker-compose.e2e.yml`-based `make` target that runs it without a manual tunnel was not added. Backlog.
+- **F7** AI model-pin self-check, **F11** remaining `slice(0,8)` UUID label sites — backlog.
+- **H1** Azure console surface reduction, **H2** Mailpit-first onboarding finish, **H6** sidebar count, **H7** Program Planner vocabulary — UX polish; H1 deferred with Azure itself.
 
 ## Sequencing
 
