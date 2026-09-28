@@ -12,12 +12,20 @@ landed on `main` and deployed to .105. Gate evidence collected this session:
 | --- | --- | --- |
 | D1 hermetic suite | ~3.4k no-skip unit/contract tests | ✅ `3424 passed` (local, 2026-09-27) |
 | D1 postgres/redis | integration on a disposable migrated DB | ✅ green on every PR CI (self-hosted .105 runner) |
-| D1 live lifecycle | a real campaign end-to-end | ⏳ run below (`make test-e2e`) |
-| D2 release images | every release image builds + runs from a clean context | ⏳ run below (`make verify-images`) |
+| D1 live lifecycle | a real campaign end-to-end | ✅ Mailpit send/track/train/report canary passed (.105, 2026-09-27) |
+| D2 release images | every release image builds + runs from a clean context | ✅ **passed** (.105, 2026-09-27) — all images qualified linux/amd64; evidence `data/qualification/release-images/20260927T235417Z-952358-21110/` |
 | D3 accessibility | axe-core WCAG 2.1 AA, no blocking violations | ✅ `5 passed` live console (2026-09-27) |
 | D3 manual WCAG | keyboard order + screen-reader pass (axe finds ~half) | ⏳ human |
-| D5 recovery | backup/restore drill of app data | ⏳ see below |
+| D5 recovery | backup/restore drill of app data | ✅ backup→restore to disposable DB in 3 s, schema `0040`, data intact, dropped clean (.105, 2026-09-27) |
 | D6 human acceptance | a non-builder drives a full campaign unassisted | ⏳ human — `docs/D6-HUMAN-ACCEPTANCE-SCRIPT.md` |
+
+Two live-console *contract* caveats surfaced during the D1 run (neither is a
+product defect): the azure-wizard e2e sent three `tf_state_*` keys the schema
+dropped — fixed (the endpoint correctly fail-closes on unknown keys); and the
+onboarding `identity` connector self-test fails on the `.105` dev-auth stack
+because no reachable OIDC issuer is wired there (graph/ai/smtp pass) — an
+expected dev-stack artifact left for a decision (wire mock-idp as the issuer,
+or skip `identity` under dev auth), not force-passed.
 
 All commands run from the WSL2 working copy on .105 unless noted:
 `ssh -p 2222 builder@192.168.1.105` then `cd ~/phishing-awareness-platform`.
