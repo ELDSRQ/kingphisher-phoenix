@@ -33,14 +33,14 @@ const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 // Views reachable from the operator nav for a fully-capable session. Each is
 // audited independently: a violation on one view must not mask another.
 const VIEWS = [
-  "Dashboard",
-  "Campaigns",
-  "Recipients",
-  "Sources",
-  "Patterns",
-  "Template review",
-  "Audit",
-  "Settings",
+  { label: "Dashboard", id: "dashboard" },
+  { label: "Campaigns", id: "campaigns" },
+  { label: "Recipients", id: "recipients" },
+  { label: "Sources", id: "sources" },
+  { label: "Patterns", id: "patterns" },
+  { label: "Template review", id: "templates" },
+  { label: "Audit", id: "audit" },
+  { label: "Settings", id: "settings" },
 ];
 
 async function ensureAuthenticated(page) {
@@ -104,11 +104,22 @@ test.describe("@a11y operator console accessibility (axe-core, WCAG 2.1 AA)", ()
     await auditCurrentView(page, "Login");
   });
 
-  for (const label of VIEWS) {
+  for (const { label, id } of VIEWS) {
     test(`@a11y ${label} view has no blocking violations`, async ({ page }) => {
       await ensureAuthenticated(page);
       const nav = page.locator('nav[aria-label="Operator sections"]');
-      const button = nav.getByRole("button", { name: label, exact: true });
+      // Occasional tools (Sources, Patterns, Audit, Settings, …) live behind a
+      // collapsed "More" <details>. Content in a closed <details> is hidden from
+      // the accessibility tree and not clickable, so expand it first — otherwise
+      // those views silently skip.
+      const more = nav.locator("details.nav-more");
+      if ((await more.count()) > 0 && !(await more.evaluate((d) => d.open))) {
+        await more.locator("summary").click();
+      }
+      // Locate by data-nav, not accessible name: the Campaigns button gains an
+      // async "N awaiting your decision" badge after render, which changes its
+      // name and races an exact-name click. data-nav is stable.
+      const button = nav.locator(`button[data-nav="${id}"]`);
       // Capability-gated views may be absent for a lower-privilege session;
       // skipping is honest, whereas failing would punish a valid posture.
       test.skip((await button.count()) === 0, `${label} is not present for this session's capabilities.`);
