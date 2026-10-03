@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from kp_authorization.rbac import Capability, Principal
@@ -25,6 +26,7 @@ from kp_database.outbox import dispatch_after_commit, enqueue_queue
 from kp_domain_models import models as dm
 from kp_domain_models.policy import ApprovalPolicy
 from kp_domain_models.source_governance import source_governance_is_current
+from kp_safety_validation.validator import SafetyValidator
 from kp_telemetry.errors import (
     ConflictError,
     NotFoundError,
@@ -40,6 +42,7 @@ from kp_operator_api.auth import require_capability
 from kp_operator_api.clone_service import CloneError, clone_real_message
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
+from kp_operator_api.logo_service import LogoError, apply_logo
 from kp_operator_api.routes.shared import (
     _principal_uuid,
 )
@@ -275,6 +278,94 @@ def decide_template(
     return {
         "template_version_id": str(template_version_id),
         "approval_state": template.approval_state.value,
+    }
+
+
+class TemplateLogoRequest(BaseModel):
+    """Operator-supplied logo for a DRAFT template, or empty to remove it."""
+
+    # An https URL to the brand's logo asset, or a self-contained data:image.
+    # Empty removes any previously-applied logo, leaving the stylized branding.
+    logo: str = Field(default="", max_length=400_000)
+
+
+@router.post("/templates/{template_version_id}/logo", status_code=status.HTTP_200_OK)
+def set_template_logo(
+    template_version_id: uuid.UUID,
+    body: TemplateLogoRequest,
+    settings: OperatorApiSettings = Depends(get_settings),
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, Any]:
+    """Attach (or clear) a logo on a DRAFT template's HTML body.
+
+    The operator can paste a real brand logo (an https URL or a self-contained
+    data:image) to brand a generated/cloned lure, or send an empty logo to
+    remove it and keep the stylized branding as-is. The logo is injected into
+    ``safe_html``, so it is covered by the approval hash and re-run through the
+    same allow-list sanitizer and SafetyValidator as all other content. Only
+    DRAFT templates can be edited; approved content is immutable.
+    """
+    template = session.get(TemplateVersion, template_version_id)
+    if template is None:
+        raise NotFoundError("template not found")
+    if template.approval_state != dm.TemplateApprovalState.DRAFT:
+        raise ConflictError(f"template is already {template.approval_state.value}; only DRAFT templates can be branded")
+    if not isinstance(template.safe_html, str) or not template.safe_html.strip():
+        raise ValidationError_("template has no HTML body to brand")
+
+    previous_logo_src = None
+    if isinstance(template.edited_content, dict):
+        stored = template.edited_content.get("operator_logo_src")
+        previous_logo_src = stored if isinstance(stored, str) else None
+
+    image_hosts = settings.image_host_set()
+    try:
+        result = apply_logo(
+            template.safe_html,
+            logo=body.logo,
+            previous_logo_src=previous_logo_src,
+            training_placeholder=TRAINING_URL_PLACEHOLDER,
+            allowed_image_hosts=image_hosts,
+        )
+    except LogoError as error:
+        raise ValidationError_(str(error)) from None
+
+    # Fail-closed re-validation, with the operator's pasted host allowed for the
+    # image (links are unaffected — the sanitizer keeps only the placeholder).
+    training_domains = {d.strip() for d in settings.training_domains.split(",") if d.strip()}
+    validation_hosts = set(image_hosts)
+    if result.logo_src and result.logo_src.lower().startswith("https://"):
+        logo_host = (urlparse(result.logo_src).hostname or "").lower()
+        if logo_host:
+            validation_hosts.add(logo_host)
+    validator = SafetyValidator(training_domains=training_domains, allowed_image_hosts=validation_hosts)
+    validation_html = result.safe_html.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
+    validation_plain = (template.plain_text or "").replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
+    verdict = validator.validate(template.subject, validation_plain, validation_html, content_checks=False)
+    if not verdict.allowed:
+        raise SafetyRejectionError(f"branded template failed safety validation: {verdict.reasons}")
+
+    template.safe_html = result.safe_html
+    edited = dict(template.edited_content) if isinstance(template.edited_content, dict) else {}
+    if result.logo_src:
+        edited["operator_logo_src"] = result.logo_src
+    else:
+        edited.pop("operator_logo_src", None)
+    template.edited_content = edited or None
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="template.logo",
+        object_type="template",
+        object_id=str(template_version_id),
+        detail={"logo_applied": bool(result.logo_src)},
+    )
+    session.commit()
+    return {
+        "template_version_id": str(template_version_id),
+        "logo_applied": bool(result.logo_src),
     }
 
 

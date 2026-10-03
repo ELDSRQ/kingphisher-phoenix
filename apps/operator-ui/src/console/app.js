@@ -5813,6 +5813,13 @@
           "aria-label": `Preview ${draft.subject || "untitled template"}`,
           onclick: (event) => showTemplatePreview(draft, event.currentTarget)
         })] : [],
+        ...canCreateCampaign ? [el("button", {
+          class: "btn small",
+          type: "button",
+          text: "Add / change logo",
+          "aria-label": `Add or change the logo for ${draft.subject || "untitled template"}`,
+          onclick: setLogo(draft)
+        })] : [],
         ...canReviewDraft ? [
           el("button", { class: "btn small primary", type: "button", text: "Approve", onclick: decide(draft, "approved") }),
           el("button", { class: "btn small danger", type: "button", text: "Reject", onclick: decide(draft, "rejected") }),
@@ -5828,6 +5835,40 @@
         })]
       ]));
       root.appendChild(card);
+    }
+    function setLogo(draft) {
+      return async (e) => {
+        const values = await promptDialog({
+          title: "Logo for this template",
+          description: draft.subject || "",
+          fields: [
+            {
+              name: "logo",
+              label: "Logo URL or data:image (optional)",
+              type: "textarea",
+              required: false,
+              placeholder: "https://brand.example/logo.png \u2014 or leave blank to remove",
+              help: "Paste an https:// link to the brand's logo image, or a data:image value. Leave blank to remove the logo and keep the stylized branding as-is."
+            }
+          ],
+          submitLabel: "Apply"
+        });
+        if (!values) return;
+        const btn = e.target;
+        btn.disabled = true;
+        try {
+          const res = await api(`/templates/${draft.template_version_id}/logo`, {
+            method: "POST",
+            body: JSON.stringify({ logo: (values.logo || "").trim() })
+          });
+          toast(res.logo_applied ? "Logo applied" : "Logo removed", "success");
+          render();
+        } catch (err) {
+          toast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+        }
+      };
     }
     function decide(draft, decision) {
       return async (e) => {

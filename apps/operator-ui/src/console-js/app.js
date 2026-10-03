@@ -5571,6 +5571,11 @@ views.templates = async (root) => {
         "aria-label": `Preview ${draft.subject || "untitled template"}`,
         onclick: (event) => showTemplatePreview(draft, event.currentTarget),
       })] : []),
+      ...(canCreateCampaign ? [el("button", {
+        class: "btn small", type: "button", text: "Add / change logo",
+        "aria-label": `Add or change the logo for ${draft.subject || "untitled template"}`,
+        onclick: setLogo(draft),
+      })] : []),
       ...(canReviewDraft ? [
         el("button", { class: "btn small primary", type: "button", text: "Approve", onclick: decide(draft, "approved") }),
         el("button", { class: "btn small danger", type: "button", text: "Reject", onclick: decide(draft, "rejected") }),
@@ -5584,6 +5589,39 @@ views.templates = async (root) => {
       })]),
     ]));
     root.appendChild(card);
+  }
+
+  function setLogo(draft) {
+    // Attach a real brand logo to a generated/cloned lure, or leave the
+    // stylized branding as-is. The server injects the logo into the template's
+    // safe_html (covered by the approval hash) and re-runs the sanitizer and
+    // SafetyValidator; an empty value removes any previously-applied logo.
+    return async (e) => {
+      const values = await promptDialog({
+        title: "Logo for this template",
+        description: draft.subject || "",
+        fields: [
+          {
+            name: "logo", label: "Logo URL or data:image (optional)", type: "textarea", required: false,
+            placeholder: "https://brand.example/logo.png — or leave blank to remove",
+            help: "Paste an https:// link to the brand's logo image, or a data:image value. "
+              + "Leave blank to remove the logo and keep the stylized branding as-is.",
+          },
+        ],
+        submitLabel: "Apply",
+      });
+      if (!values) return;
+      const btn = e.target; btn.disabled = true;
+      try {
+        const res = await api(`/templates/${draft.template_version_id}/logo`, {
+          method: "POST",
+          body: JSON.stringify({ logo: (values.logo || "").trim() }),
+        });
+        toast(res.logo_applied ? "Logo applied" : "Logo removed", "success");
+        render();
+      } catch (err) { toast(err.message, "error"); }
+      finally { btn.disabled = false; }
+    };
   }
 
   function decide(draft, decision) {
