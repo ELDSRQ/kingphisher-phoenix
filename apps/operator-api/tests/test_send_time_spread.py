@@ -11,7 +11,7 @@ published exactly once, and the whole audience is released within the window.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -125,3 +125,61 @@ def test_spread_ignored_without_base_time(monkeypatch: pytest.MonkeyPatch) -> No
     calls = _publish(monkeypatch, count=125, batch_size=200, available_at=None, spread_over_hours=4)
     assert len(calls) == 1
     assert calls[0]["available_at"] is None
+
+
+def test_spread_clamps_to_deliver_by_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    # H9 defect fix: a spread_over_hours longer than the time left before the
+    # delivery deadline (canary-evidence TTL / schedule_end) must NOT stagger
+    # batches past that deadline — late batches would trip the worker's launch
+    # gate ("canary_evidence_expired") and strand QUEUED forever.
+    base = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    deliver_by = base + timedelta(hours=6)  # only 6h left, but 48h requested
+    calls = _publish(
+        monkeypatch,
+        count=125,
+        batch_size=200,
+        available_at=base.timestamp(),
+        spread_over_hours=48,
+        deliver_by=deliver_by,
+    )
+    times = [c["available_at"] for c in calls]
+    assert len(calls) > 1
+    # Every batch is released before the deadline — none can strand.
+    assert all(t < deliver_by for t in times)
+    # The window was actually compressed below the 48h request.
+    assert (times[-1] - base) < timedelta(hours=48)
+
+
+def test_spread_uses_full_window_when_deadline_is_ample(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    deliver_by = base + timedelta(hours=72)  # far beyond the 4h spread
+    calls = _publish(
+        monkeypatch,
+        count=125,
+        batch_size=200,
+        available_at=base.timestamp(),
+        spread_over_hours=4,
+        deliver_by=deliver_by,
+    )
+    times = [c["available_at"] for c in calls]
+    assert times[0] == base
+    assert (times[-1] - base) < timedelta(hours=4)  # unchanged: fits in 4h
+    assert all(t < deliver_by for t in times)
+
+
+def test_spread_collapses_to_burst_when_deadline_imminent(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Deadline within the processing margin → window clamps to 0 → prompt burst
+    # at base, which is still strictly before the deadline (safe, not stranded).
+    base = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    deliver_by = base + timedelta(seconds=60)
+    calls = _publish(
+        monkeypatch,
+        count=125,
+        batch_size=200,
+        available_at=base.timestamp(),
+        spread_over_hours=24,
+        deliver_by=deliver_by,
+    )
+    times = [c["available_at"] for c in calls]
+    assert all(t == base for t in times)
+    assert all(t < deliver_by for t in times)

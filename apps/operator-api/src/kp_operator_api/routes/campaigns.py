@@ -113,6 +113,10 @@ _CANARY_EVIDENCE_TTL = timedelta(hours=24)
 #: ceiling on how many time-slotted delivery batches one publish may create.
 _SPREAD_SLOTS_PER_HOUR = 4
 _SPREAD_MAX_SLOTS = 500
+#: Headroom left before the delivery deadline (canary-evidence TTL / schedule
+#: end) when clamping a spread window, so the last staggered batch is claimed
+#: and processed before the launch gate would reject it as expired.
+_SPREAD_DELIVER_BY_MARGIN_SECONDS = 600.0
 
 
 # UX-011 §2b — proof send ("show me how this lands in a real mail client").
@@ -1024,6 +1028,7 @@ def _publish_delivery_batches(
     launch_gate: CampaignLaunchGate,
     available_at: float | None = None,
     spread_over_hours: int | None = None,
+    deliver_by: datetime | None = None,
 ) -> int:
     """Publish delivery work in bounded batches.
 
@@ -1052,9 +1057,21 @@ def _publish_delivery_batches(
         slots = min(count, _SPREAD_MAX_SLOTS, max(2, spread_over_hours * _SPREAD_SLOTS_PER_HOUR))
         batch_size = min(default_batch_size, max(1, -(-count // slots)))
         batches = [assignment_ids[i : i + batch_size] for i in range(0, count, batch_size)] or [[]]
-        interval = (float(spread_over_hours) * 3600.0) / len(batches)
+        window_seconds = float(spread_over_hours) * 3600.0
+        if deliver_by is not None:
+            # Never stagger a batch past the point the launch gate will still
+            # honor it. The canary-evidence TTL (and schedule_end) cap how long
+            # delivery stays authorized; a batch released after that trips
+            # "canary_evidence_expired" in the worker and its assignments strand
+            # QUEUED forever. Compress the window to fit the remaining deadline
+            # (minus processing headroom) rather than extend the security TTL —
+            # if the deadline is already near, this collapses to a prompt burst.
+            deliverable = (deliver_by - base_at).total_seconds() - _SPREAD_DELIVER_BY_MARGIN_SECONDS
+            window_seconds = max(0.0, min(window_seconds, deliverable))
+        interval = window_seconds / len(batches)
         # Batch 0 fires at base; the last fires strictly before window end, so
-        # the whole audience is released within the configured window.
+        # the whole audience is released within the (clamped) window and before
+        # the delivery deadline.
         batch_available_at: list[datetime | None] = [
             base_at + timedelta(seconds=index * interval) for index in range(len(batches))
         ]
@@ -1496,6 +1513,11 @@ def publish_campaign(
         launch_gate=gate,
         available_at=max(campaign.schedule_start.timestamp(), now.timestamp()),
         spread_over_hours=campaign.spread_over_hours,
+        # Bound the spread so no batch is released after delivery stops being
+        # authorized: the canary-evidence TTL (already capped at schedule_end).
+        deliver_by=min(gate.canary_expires_at, campaign.schedule_end)
+        if gate.canary_expires_at is not None
+        else campaign.schedule_end,
     )
     gate.state = "full_published"
     gate.full_published_at = now
