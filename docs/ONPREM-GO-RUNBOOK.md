@@ -5,8 +5,12 @@ on-prem (.105 / standalone) deployment, and — once on-prem is signed off — t
 bring Azure up and land the same remediations there. Production/RSA use stays
 **NO-GO** until every gate below is proven and a human signs D6.
 
-Status as of 2026-09-27 (this session): all QA-report code remediations are
-landed on `main` and deployed to .105. Gate evidence collected this session:
+Status as of 2026-10-02: all QA-report code remediations plus post-review
+hardening are landed on `main` (`4215033`). **Deploy gap:** `.105` is running
+`7a7be02`; the H9 clamp fix (`#99`, main `4215033`) is **pending deploy to
+.105** — intentionally held so the stack is not restarted mid D6 run. Pull +
+`touch data/run/restart` on `.105` once D6 is done to close the gap. Gate
+evidence:
 
 | Gate | What it proves | Status |
 | --- | --- | --- |
@@ -14,7 +18,7 @@ landed on `main` and deployed to .105. Gate evidence collected this session:
 | D1 postgres/redis | integration on a disposable migrated DB | ✅ green on every PR CI (self-hosted .105 runner) |
 | D1 live lifecycle | a real campaign end-to-end | ✅ Mailpit send/track/train/report canary passed (.105, 2026-09-27) |
 | D2 release images | every release image builds + runs from a clean context | ✅ **passed** (.105, 2026-09-27) — all images qualified linux/amd64; evidence `data/qualification/release-images/20260927T235417Z-952358-21110/` |
-| D3 accessibility | axe-core WCAG 2.1 AA, no blocking violations | ✅ `5 passed` live console (2026-09-27) |
+| D3 accessibility | axe-core WCAG 2.1 AA, no blocking violations | ✅ **9/9 views, 0 skips, 0 violations** live console (`#98`, 2026-09-30) — login + all 8 operator views (More-menu views now covered) |
 | D3 manual WCAG | keyboard order + screen-reader pass (axe finds ~half) | ⏳ human |
 | D5 recovery | backup/restore drill of app data | ✅ backup→restore to disposable DB in 3 s, schema `0040`, data intact, dropped clean (.105, 2026-09-27) |
 | D6 human acceptance | a non-builder drives a full campaign unassisted | ⏳ human — `docs/D6-HUMAN-ACCEPTANCE-SCRIPT.md` |
