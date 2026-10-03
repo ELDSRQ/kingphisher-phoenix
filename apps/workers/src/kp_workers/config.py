@@ -306,6 +306,18 @@ class WorkerSettings(BaseSettings):
     tracking_base_url: str = "http://localhost:8001"
     training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
     training_domains: str = "example.com,127.0.0.1"
+    # Hosts allowed to serve branded <img> logos over https in generated lures
+    # (self-contained data:image logos are always allowed). Comma-separated;
+    # "*" permits any https host. Default is a curated set of the most-
+    # impersonated brands' asset CDNs; the operator extends it (or sets "*")
+    # per deployment. Navigable links are unaffected — the allow-list sanitizer
+    # strips every non-placeholder href before safety validation.
+    safe_html_image_hosts: str = (
+        "msauth.net,msftauth.net,office.net,microsoftonline.com,microsoft.com,"
+        "gstatic.com,googleusercontent.com,google.com,akamaihd.net,docusign.com,"
+        "docusign.net,adobe.com,apple.com,cdn-apple.com,media-amazon.com,"
+        "ssl-images-amazon.com,amazon.com,paypalobjects.com,paypal.com,dropboxstatic.com,dropbox.com"
+    )
 
     # --- send-safety policy (T-06); mirrors the operator API ---
     # PLT-002 SAFETY CHANGE: default is ENFORCE (two-person), not SINGLE_ADMIN.
@@ -833,6 +845,9 @@ class WorkerSettings(BaseSettings):
 
     def training_domain_set(self) -> set[str]:
         return {d.strip().lower() for d in self.training_domains.split(",") if d.strip()}
+
+    def image_host_set(self) -> set[str]:
+        return {d.strip().lower() for d in self.safe_html_image_hosts.split(",") if d.strip()}
 
     def require_training_token_hmac_key(self) -> bytes:
         if not self.training_token_hmac_key:

@@ -636,6 +636,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
             raise ValueError("ACS Event Grid receipt ingress configuration is incomplete")
         event_grid_token_verifier = EventGridTokenVerifier(settings) if all(event_grid_values) else None
         training_domains = {d.strip() for d in settings.training_domains.split(",") if d.strip()}
+        image_hosts = {d.strip().lower() for d in settings.safe_html_image_hosts.split(",") if d.strip()}
         audit_verifier = AuditVerificationScheduler(
             audit_store,
             interval_seconds=_audit_verify_interval_seconds(),
@@ -751,7 +752,9 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.state.trusted_operator_origin = trusted_operator_origin
     # `info` is a sessionmaker keyword: per-session `.info` carries the validator
     # (previously the kwarg name was mangled and the value never reached sessions).
-    session_factory.configure(info={"safety_validator": SafetyValidator(training_domains=training_domains)})
+    session_factory.configure(
+        info={"safety_validator": SafetyValidator(training_domains=training_domains, allowed_image_hosts=image_hosts)}
+    )
 
     app.include_router(router)
     app.include_router(analytics_router)

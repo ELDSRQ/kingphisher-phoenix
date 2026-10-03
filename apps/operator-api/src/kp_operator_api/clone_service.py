@@ -20,6 +20,7 @@ which itself only sends to a domain named in a signed Rules-of-Engagement.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -76,11 +77,19 @@ def _foreign_hrefs(html: str) -> list[str]:
     ]
 
 
-def clone_real_message(*, subject: str, raw_html: str, plain_text: str | None = None) -> ClonedTemplate:
+def clone_real_message(
+    *,
+    subject: str,
+    raw_html: str,
+    plain_text: str | None = None,
+    allowed_image_hosts: Iterable[str] = (),
+) -> ClonedTemplate:
     """Neutralize a real phishing message into a safe DRAFT-ready template.
 
-    Raises :class:`CloneError` on empty input or if any navigable link somehow
-    survives neutralization.
+    ``allowed_image_hosts`` is forwarded to the sanitizer so the clone can keep
+    branded logos (self-contained ``data:image`` logos are always kept; https
+    images are kept only from an allow-listed host). Raises :class:`CloneError`
+    on empty input or if any navigable link somehow survives neutralization.
     """
     subject = subject.strip()
     if not subject:
@@ -92,7 +101,12 @@ def clone_real_message(*, subject: str, raw_html: str, plain_text: str | None = 
     #    then allow-list sanitize (drops scripts/forms/iframes/media/trackers and
     #    every attribute except the placeholder href). The deceptive copy stays.
     rewritten_html, rewritten_links = _rewrite_anchor_hrefs(raw_html or "")
-    sanitized = sanitize_safe_html(rewritten_html, training_placeholder=TRAINING_URL_PLACEHOLDER, max_length=_MAX_BODY)
+    sanitized = sanitize_safe_html(
+        rewritten_html,
+        training_placeholder=TRAINING_URL_PLACEHOLDER,
+        max_length=_MAX_BODY,
+        allowed_image_hosts=allowed_image_hosts,
+    )
     safe_html = sanitized.html
 
     # 2. Guarantee the one legitimate link exists (append a CTA if the source had

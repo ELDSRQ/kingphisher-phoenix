@@ -152,6 +152,16 @@ _SENSITIVE_EMPLOYEE_PATTERNS = [
 QR_CODE_PATTERN = re.compile(r"\b(qr\s*code|qrcode)\b", re.I)
 JAVASCRIPT_PATTERN = re.compile(r"\bjavascript\s*:", re.I)
 SCRIPT_URI_PATTERN = re.compile(r"\b(vbscript|data|file)\s*:", re.I)
+# vbscript:/file: are always prohibited; a raster ``data:image`` URI is a
+# self-contained inline logo (allowed for branded lures) and is scrubbed out
+# before the data:-scheme check below. SVG data URIs are NOT exempt — they can
+# carry script.
+VBSCRIPT_FILE_URI_PATTERN = re.compile(r"\b(vbscript|file)\s*:", re.I)
+DATA_URI_PATTERN = re.compile(r"\bdata\s*:", re.I)
+SAFE_DATA_IMAGE_URI_PATTERN = re.compile(
+    r"data\s*:\s*image/(?:png|jpe?g|gif|webp)(?:;[a-z0-9.+=-]+)*;base64,[a-z0-9+/=\s]*",
+    re.I,
+)
 CONTACT_URI_PATTERN = re.compile(r"\b(mailto|tel|sms|callto|facetime|intent)\s*:", re.I)
 FTP_URI_PATTERN = re.compile(r"\bftp\s*:", re.I)
 MACRO_PATTERN = re.compile(r"\b(macro|vba|enable\s+content)\b", re.I)
@@ -340,6 +350,32 @@ class SafetyValidator:
 
     training_domains: set[str]
     allow_qr_codes: bool = False
+    #: Hosts allowed to serve branded ``<img>`` graphics (logos) over https.
+    #: ``"*"`` allows any https host. Navigable links (``<a href>``) are NOT
+    #: affected: the upstream allow-list sanitizer strips every non-placeholder
+    #: href before this validator runs, so permitting an image host here cannot
+    #: let a navigable external link through the delivery path.
+    allowed_image_hosts: set[str] = field(default_factory=set)
+
+    def _image_host_allowed(self, host: str) -> bool:
+        if "*" in self.allowed_image_hosts:
+            return True
+        host = _clean_host(host).rstrip(".")
+        if not host:
+            return False
+        for allowed in self.allowed_image_hosts:
+            allowed = _clean_host(allowed).rstrip(".")
+            if not allowed:
+                continue
+            # Exact, subdomain-of-allowed, or the registrable parent of an
+            # allowed host. The parent clause absorbs the bare-host regex, which
+            # extracts e.g. ``brand.com`` out of ``cdn.brand.com/logo.png``; if
+            # the operator trusts ``cdn.brand.com`` for images, treating its
+            # parent as an image host too is the intended, safe reading (links,
+            # not images, are already stripped by the sanitizer).
+            if host == allowed or host.endswith("." + allowed) or allowed.endswith("." + host):
+                return True
+        return False
 
     def _allowed_host(self, host: str) -> bool:
         host = _clean_host(host)
@@ -386,6 +422,11 @@ class SafetyValidator:
         lowered = normalized.lower()
         if lowered.startswith("cid:") or lowered == "about:blank":
             return None
+        # A self-contained raster data:image is a permitted inline logo, not a
+        # navigable target or host — don't classify it. SVG data URIs are not
+        # exempt (handled as a prohibited scheme below).
+        if SAFE_DATA_IMAGE_URI_PATTERN.match(normalized):
+            return None
         if normalized.startswith("//"):
             return urlparse("https:" + normalized).hostname or "", "protocol-relative-url"
 
@@ -417,6 +458,10 @@ class SafetyValidator:
 
         for url in _SCHEME_URL_RE.findall(haystack):
             if url.lower().startswith(("data:", "file:", "vbscript:")):
+                # A self-contained raster data:image URI is a permitted inline
+                # logo, not a navigable target — don't classify it as a host.
+                if url.lower().startswith("data:") and SAFE_DATA_IMAGE_URI_PATTERN.match(url):
+                    continue
                 _add(url.split(":", 1)[0], "prohibited-scheme")
                 continue
             _add(urlparse(url).hostname or "", "explicit-url")
@@ -482,6 +527,11 @@ class SafetyValidator:
                 reasons.append(f"URL shortener: {host} ({origin})")
             elif _looks_like_ip(host) and not self._allowed_host(host):
                 reasons.append(f"external IP link not on training allowlist: {host} ({origin})")
+            elif self._image_host_allowed(host):
+                # A vetted image/logo host. Safe to permit: the sanitizer has
+                # already stripped every navigable href except the recipient
+                # training placeholder, so this can only be an <img> source.
+                continue
             elif not self._allowed_host(host):
                 reasons.append(f"external link not on training allowlist: {host} ({origin})")
 
@@ -517,7 +567,12 @@ class SafetyValidator:
         if JAVASCRIPT_PATTERN.search(haystack):
             reasons.append("javascript: URI present")
 
-        if SCRIPT_URI_PATTERN.search(haystack):
+        # vbscript:/file: are always prohibited. ``data:`` is prohibited too,
+        # except a self-contained raster ``data:image`` logo — scrub those out
+        # before testing so a branded inline image is not flagged.
+        if VBSCRIPT_FILE_URI_PATTERN.search(haystack) or DATA_URI_PATTERN.search(
+            SAFE_DATA_IMAGE_URI_PATTERN.sub(" ", haystack)
+        ):
             reasons.append("data:/file:/vbscript: URI present")
 
         if CONTACT_URI_PATTERN.search(haystack):

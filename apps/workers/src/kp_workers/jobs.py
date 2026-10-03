@@ -554,7 +554,12 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # salvage, not the authority: SafetyValidator still runs on the cleaned
         # output below and remains the fail-closed gate. The sanitized HTML is
         # what gets persisted, reviewed, approved, and delivered.
-        sanitized = sanitize_safe_html(response.safe_html, training_placeholder=TRAINING_URL_PLACEHOLDER)
+        image_hosts = ctx.settings.image_host_set()
+        sanitized = sanitize_safe_html(
+            response.safe_html,
+            training_placeholder=TRAINING_URL_PLACEHOLDER,
+            allowed_image_hosts=image_hosts,
+        )
         clean_safe_html = sanitized.html
         if TRAINING_URL_PLACEHOLDER not in clean_safe_html:
             # The contract guarantees the placeholder in the model's safe_html;
@@ -562,7 +567,9 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
             # recipient-bound training link, so fail closed rather than persist it.
             raise SafetyRejectionError("sanitization removed the required training placeholder")
 
-        validator = SafetyValidator(training_domains=ctx.settings.training_domain_set())
+        validator = SafetyValidator(
+            training_domains=ctx.settings.training_domain_set(), allowed_image_hosts=image_hosts
+        )
         # The response contract requires a non-navigable Jinja placeholder,
         # while the safety validator intentionally rejects unknown href forms.
         # Validate all model-controlled content after substituting a trusted
@@ -2827,9 +2834,9 @@ def _send_proof_email(
         host = urlparse(configured_url).hostname
         if host:
             allowed_domains.add(host)
-    verdict = SafetyValidator(training_domains=allowed_domains).validate(
-        subject, plain_text, html, content_checks=False
-    )
+    verdict = SafetyValidator(
+        training_domains=allowed_domains, allowed_image_hosts=ctx.settings.image_host_set()
+    ).validate(subject, plain_text, html, content_checks=False)
     if not verdict.allowed:
         raise SafetyRejectionError(f"rendered proof message rejected: {verdict.reasons}")
 
@@ -2909,9 +2916,9 @@ def _send_email(
         host = urlparse(configured_url).hostname
         if host:
             allowed_domains.add(host)
-    verdict = SafetyValidator(training_domains=allowed_domains).validate(
-        subject, plain_text, html, content_checks=False
-    )
+    verdict = SafetyValidator(
+        training_domains=allowed_domains, allowed_image_hosts=ctx.settings.image_host_set()
+    ).validate(subject, plain_text, html, content_checks=False)
     if not verdict.allowed:
         raise SafetyRejectionError(f"final rendered message rejected: {verdict.reasons}")
     pixel_tag = f'<img src="{tracking.open_url}" width="1" height="1" style="display:none" alt="" />'
