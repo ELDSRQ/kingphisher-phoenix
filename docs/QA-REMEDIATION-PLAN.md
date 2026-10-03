@@ -59,6 +59,25 @@ Status (2026-09-27):
   exposes an optional "Send-time spread (hours)" field on campaign create.
   Tests: `apps/operator-api/tests/test_send_time_spread.py`.
 
+## Post-review hardening (2026-10-02)
+
+An adversarial code+security review of the H9 change and the token/RoE/audit/OIDC
+surface found the surface sound and fail-closed, with one real H9 defect:
+
+- **H9 clamp fix (PR `#99`, main `4215033`).** `spread_over_hours` could stagger
+  batches past the delivery deadline (`canary_expires_at` = min(canary+24h,
+  `schedule_end`)); the worker re-checks that per batch, so late batches were
+  blocked `canary_evidence_expired` and left QUEUED forever — a silent
+  partial-audience drop. Fixed by clamping the spread window to
+  `min(canary_expires_at, schedule_end)` minus a processing margin (compress the
+  stagger, not extend the TTL). 3 new tests. **Pending deploy to `.105`** (held
+  for the D6 run). *Known pre-existing follow-up (not H9):* ACS provider pacing
+  deferrals can independently push batches past the TTL.
+- **D3 a11y coverage (PR `#98`).** The gate silently skipped the 4 More-menu
+  views; now all 9 views scan with 0 skips / 0 blocking WCAG 2.1 AA violations.
+- **Remaining for on-prem human-ready:** D6 acceptance + D3 *manual* WCAG (human
+  only). See `docs/ONPREM-GO-RUNBOOK.md`.
+
 
 Decision-needed notifications (H8 — reuses the F1 alert wiring), post-publish
 closure banner (H11), recipient free-text search (H12), send-time spread
