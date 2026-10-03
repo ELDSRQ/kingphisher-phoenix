@@ -344,6 +344,23 @@ def preview_template(
     return _render_template_preview(body, request)
 
 
+def clone_flags(template: TemplateVersion) -> dict[str, Any]:
+    """Expose whether a template is a clone, and of what, for the console lists.
+
+    A library clone carries ``cloned_from`` in ``edited_content``; a real-message
+    clone is stamped with an ``operator-clone`` model_id. Either marks it a copy
+    so the operator can tell originals from working copies.
+    """
+    edited = template.edited_content if isinstance(template.edited_content, dict) else {}
+    cloned_from = edited.get("cloned_from")
+    cloned_from_subject = edited.get("cloned_from_subject")
+    model_clone = isinstance(template.model_id, str) and template.model_id.startswith("operator-clone")
+    return {
+        "is_clone": bool(cloned_from) or model_clone,
+        "cloned_from_subject": cloned_from_subject if isinstance(cloned_from_subject, str) else None,
+    }
+
+
 def list_templates(
     q: str | None = Query(default=None, min_length=1, max_length=100),
     approval_state: dm.TemplateApprovalState | None = Query(default=None),
@@ -382,6 +399,7 @@ def list_templates(
             "approval_state": t.approval_state.value,
             "reusable": t.approval_state == dm.TemplateApprovalState.APPROVED,
             "campaign_bound": t.campaign_id is not None,
+            **clone_flags(t),
         }
         for t in rows
     ]
@@ -594,7 +612,13 @@ def clone_template(
             "safe_html": content.safe_html,
             "requested_by": principal.principal_id,
         },
-        edited_content=None,
+        # Stamp clone provenance so the copy is distinguishable from its
+        # original in the library and review lists (a bare copy carries the same
+        # model_id and subject, so operators could not tell them apart).
+        edited_content={
+            "cloned_from": str(source.template_version_id),
+            "cloned_from_subject": source.subject,
+        },
         safe_html=content.safe_html,
         plain_text=content.plain_text,
         subject=content.subject,
