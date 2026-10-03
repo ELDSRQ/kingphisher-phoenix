@@ -263,6 +263,4 @@ def test_content_checks_false_allows_deceptive_wording(validator: SafetyValidato
 def test_content_checks_false_still_blocks_payload(validator: SafetyValidator) -> None:
     # Payload mechanics are NOT relaxed by content_checks=False.
     assert not validator.validate(None, "See https://evil.example/phish", None, content_checks=False).allowed
-    assert not validator.validate(
-        None, "click", '<a href="javascript:steal()">go</a>', content_checks=False
-    ).allowed
+    assert not validator.validate(None, "click", '<a href="javascript:steal()">go</a>', content_checks=False).allowed
