@@ -390,7 +390,12 @@ def create_campaign(
             if template.safe_html
             else template.safe_html
         )
-        verdict = validator.validate(template.subject, validation_plain_text, validation_safe_html)
+        # content_checks=False: realistic lure wording is intended; payload
+        # safety (links/scripts/URIs) still runs, the link is the training
+        # placeholder only, and the campaign only sends to RoE-covered domains.
+        verdict = validator.validate(
+            template.subject, validation_plain_text, validation_safe_html, content_checks=False
+        )
         if not verdict.allowed:
             raise SafetyRejectionError("template fails deterministic safety validation")
 

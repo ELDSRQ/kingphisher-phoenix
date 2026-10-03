@@ -249,3 +249,20 @@ def test_hidden_chars_in_allowlisted_host_still_rejected(validator: SafetyValida
     verdict = validator.validate(None, "Visit training\u200b.example.com/lesson-1", None)
     assert not verdict.allowed
     assert any("obfuscation" in r for r in verdict.reasons)
+
+
+def test_content_checks_false_allows_deceptive_wording(validator: SafetyValidator) -> None:
+    # Realistic lure wording (credentials, MFA, finance, attachments) is permitted
+    # when content_checks is off: reproducing a real campaign's language is the
+    # training goal. It is still blocked under the default (content_checks=True).
+    deceptive = "Your password expires today. Confirm your MFA code and review the attached invoice."
+    assert not validator.validate(None, deceptive, None).allowed
+    assert validator.validate(None, deceptive, None, content_checks=False).allowed
+
+
+def test_content_checks_false_still_blocks_payload(validator: SafetyValidator) -> None:
+    # Payload mechanics are NOT relaxed by content_checks=False.
+    assert not validator.validate(None, "See https://evil.example/phish", None, content_checks=False).allowed
+    assert not validator.validate(
+        None, "click", '<a href="javascript:steal()">go</a>', content_checks=False
+    ).allowed
