@@ -5613,6 +5613,54 @@
     ));
     root.appendChild(banner);
     if (canCreateCampaign) {
+      const cloneCard = el("details", { class: "card" }, [
+        el("summary", { text: "Clone a real phishing message" }),
+        el("p", { class: "field-help", text: "Paste a genuine phishing email you have observed (e.g. one your tenant received). Its wording and look are kept; every link is rewritten to the training link and scripts, forms and trackers are removed, so the clone is realistic but harmless. It lands below as a DRAFT for review." }),
+        el("label", { for: "clone-subject", text: "Subject" }),
+        el("input", { id: "clone-subject", maxlength: "998", placeholder: "e.g. Action required: verify your account" }),
+        el("label", { for: "clone-html", text: "Message HTML" }),
+        el("textarea", { id: "clone-html", rows: "10", placeholder: "Paste the raw HTML of the phishing email" }),
+        el("label", { for: "clone-text", text: "Plain-text version (optional)" }),
+        el("textarea", { id: "clone-text", rows: "4", placeholder: "Optional plain-text body" }),
+        el("div", { id: "clone-error", class: "modal-error", role: "alert", tabindex: "-1" }),
+        el("div", { class: "btn-row" }, [
+          el("button", {
+            class: "btn primary",
+            type: "button",
+            text: "Create clone draft",
+            onclick: async (e) => {
+              const btn = e.currentTarget;
+              const err = document.getElementById("clone-error");
+              err.textContent = "";
+              const subject = document.getElementById("clone-subject").value.trim();
+              const html = document.getElementById("clone-html").value;
+              const text = document.getElementById("clone-text").value;
+              if (!subject || !html.trim() && !text.trim()) {
+                err.textContent = "A subject and a message body (HTML or plain text) are required.";
+                err.focus();
+                return;
+              }
+              btn.disabled = true;
+              btn.setAttribute("aria-busy", "true");
+              try {
+                await api("/templates/clone", {
+                  method: "POST",
+                  body: JSON.stringify({ subject, html, plain_text: text || null })
+                });
+                toast("Clone draft created \u2014 review it below", "success");
+                location.reload();
+              } catch (err2) {
+                err.textContent = err2.message;
+                err.focus();
+              } finally {
+                btn.disabled = false;
+                btn.removeAttribute("aria-busy");
+              }
+            }
+          })
+        ])
+      ]);
+      root.appendChild(cloneCard);
       const library = el("div", { class: "card", "aria-live": "polite" });
       const search = el("input", { type: "search", maxlength: "100", "aria-label": "Search template library", placeholder: "Search subject, body, or model" });
       const stateFilter = el("select", { "aria-label": "Filter templates by review state" }, [
