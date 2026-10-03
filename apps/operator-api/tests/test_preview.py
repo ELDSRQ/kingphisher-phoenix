@@ -58,6 +58,28 @@ def test_preview_template_renders() -> None:
     assert body["html_execution"] is False
 
 
+def test_preview_allows_the_training_placeholder_link() -> None:
+    # Regression: the training placeholder is a non-navigable Jinja token, so
+    # validating the raw href rejected it as a disallowed_link (KP-007). The
+    # preview must substitute the trusted stand-in before the safety validator
+    # runs; the link then renders to the configured training URL.
+    settings = _make_settings()
+    app = create_app(settings)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/templates/preview",
+            headers={"Authorization": f"Bearer {_token(settings)}"},
+            json={
+                "subject": "Account notice",
+                "plain_text": "Open the portal: {{ tracking.training_url }}",
+                "safe_html": '<p>Review required. <a href="{{ tracking.training_url }}">Open the secure portal</a></p>',
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "train.local" in body["plain_text"]
+
+
 def test_preview_template_rejects_unauthorized_var() -> None:
     settings = _make_settings()
     app = create_app(settings)

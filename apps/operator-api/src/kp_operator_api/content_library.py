@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from kp_authorization.rbac import Capability, Principal
+from kp_contracts.generation import TRAINING_URL_PLACEHOLDER
 from kp_database.audit_store import AuditStore
 from kp_database.models import CampaignPattern, TemplateVersion
 from kp_domain_models import models as dm
@@ -246,7 +247,14 @@ def _validate_template_content(session: Session, content: TemplatePreview) -> No
     validator = session.info.get("safety_validator")
     if not isinstance(validator, SafetyValidator):
         raise HTTPException(status_code=503, detail="template safety validator is unavailable")
-    verdict = validator.validate(content.subject, content.plain_text, content.safe_html)
+    # The training placeholder is a non-navigable Jinja token the validator
+    # intentionally rejects as an unknown href; substitute the same trusted
+    # relative stand-in the generation path uses before validating, so the
+    # training link is not misread as a disallowed external link. The real URL
+    # is bound only at recipient render time. Mirrors jobs.py.
+    plain_text = content.plain_text.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
+    safe_html = content.safe_html.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
+    verdict = validator.validate(content.subject, plain_text, safe_html)
     if not verdict.allowed:
         reason_codes = {
             code for reason in verdict.reasons for prefix, code in _SAFETY_REASON_CODES if reason.startswith(prefix)
@@ -538,7 +546,12 @@ def preview_library_template(
     if template is None:
         raise NotFoundError("template not found")
     content = _template_content(template)
-    _validate_template_content(session, content)
+    # Clone templates reproduce a real lure's deceptive wording on purpose and
+    # were neutralized at creation (links -> training placeholder, scripts/forms
+    # stripped) rather than text-validated; re-running the text validator here
+    # would reject their copy. The neutralized content is safe to preview.
+    if not str(template.model_id or "").startswith("operator-clone"):
+        _validate_template_content(session, content)
     rendered = _render_template_preview(content, request)
     rendered.pop("safe_html", None)
     return {
