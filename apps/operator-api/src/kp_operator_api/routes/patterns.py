@@ -291,6 +291,7 @@ def clone_template(
     body: TemplateCloneRequest,
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
+    settings: OperatorApiSettings = Depends(get_settings),
     principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
 ) -> dict[str, Any]:
     """Clone a real phishing message into a neutralized DRAFT template.
@@ -306,7 +307,12 @@ def clone_template(
     because reproducing the real message's language is the training goal.
     """
     try:
-        cloned = clone_real_message(subject=body.subject, raw_html=body.html, plain_text=body.plain_text)
+        cloned = clone_real_message(
+            subject=body.subject,
+            raw_html=body.html,
+            plain_text=body.plain_text,
+            allowed_image_hosts=settings.image_host_set(),
+        )
     except CloneError as error:
         raise ValidationError_(str(error)) from None
 

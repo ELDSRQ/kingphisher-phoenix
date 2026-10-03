@@ -151,7 +151,10 @@ def test_local_and_approved_html_urls_are_accepted(validator: SafetyValidator, h
     "html_body",
     [
         '<a href="mailto:collector@evil.example">Reply</a>',
-        '<img src="data:image/png;base64,AA==">',
+        # A raster data:image (self-contained logo) is now ALLOWED; a non-image
+        # data: URI and an SVG data URI are still rejected below.
+        '<img src="data:text/html;base64,PHNjcmlwdD4=">',
+        '<img src="data:image/svg+xml;base64,PHN2Zy8+">',
         '<a href="file:///etc/passwd">Open</a>',
         "<a href=\"javascript:location='https://evil.example'\">Open</a>",
     ],
@@ -264,3 +267,50 @@ def test_content_checks_false_still_blocks_payload(validator: SafetyValidator) -
     # Payload mechanics are NOT relaxed by content_checks=False.
     assert not validator.validate(None, "See https://evil.example/phish", None, content_checks=False).allowed
     assert not validator.validate(None, "click", '<a href="javascript:steal()">go</a>', content_checks=False).allowed
+
+
+# --- branded-image allow-list ------------------------------------------------
+
+_PNG = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+)
+
+
+def test_raster_data_image_uri_is_allowed(validator: SafetyValidator) -> None:
+    # A self-contained raster logo is permitted; it loads nothing and navigates
+    # nowhere. Non-image data: URIs remain prohibited.
+    assert validator.validate(None, "logo", f'<img src="{_PNG}">', content_checks=False).allowed
+    assert not validator.validate(
+        None, "x", '<img src="data:text/html;base64,PHNjcmlwdD4=">', content_checks=False
+    ).allowed
+
+
+def test_svg_data_image_uri_is_still_rejected(validator: SafetyValidator) -> None:
+    # SVG data URIs can carry script, so they are not exempted.
+    assert not validator.validate(
+        None, "x", '<img src="data:image/svg+xml;base64,PHN2Zy8+">', content_checks=False
+    ).allowed
+
+
+def test_allowlisted_image_host_is_not_flagged_external() -> None:
+    img = '<img src="https://cdn.brand.com/logo.png">'
+    base = SafetyValidator(training_domains=TRAINING)
+    assert not base.validate(None, "logo", img, content_checks=False).allowed
+    permissive = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    assert permissive.validate(None, "logo", img, content_checks=False).allowed
+    # a subdomain of the allow-listed host is also accepted
+    assert permissive.validate(
+        None, "logo", '<img src="https://assets.cdn.brand.com/l.png">', content_checks=False
+    ).allowed
+
+
+def test_wildcard_image_host_allows_any_image_src() -> None:
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"*"})
+    assert v.validate(None, "logo", '<img src="https://anything.example/l.png">', content_checks=False).allowed
+
+
+def test_image_allowlist_does_not_permit_javascript_or_shortener() -> None:
+    # The image exemption must not open script URIs or shorteners.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"*"})
+    assert not v.validate(None, "x", '<a href="javascript:alert(1)">go</a>', content_checks=False).allowed
+    assert not v.validate(None, "x", "See https://bit.ly/x", content_checks=False).allowed

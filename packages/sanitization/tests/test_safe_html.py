@@ -139,3 +139,98 @@ def test_provenance_is_json_safe_and_counts_removals() -> None:
     assert prov["removed_tags"].get("script", 0) >= 1
     assert prov["neutralized_links"] >= 1
     assert isinstance(prov["stripped_attributes"], int)
+
+
+# --- branded / presentational layer -----------------------------------------
+
+_PNG = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+)
+
+
+def test_safe_inline_style_is_kept_and_dangerous_declarations_dropped() -> None:
+    out = _clean(
+        '<p style="color:#0a66c2; background-color:#ffffff; '
+        'background:url(javascript:alert(1)); display:none; position:fixed">Hi</p>'
+    )
+    assert "color:#0a66c2" in out and "background-color:#ffffff" in out
+    assert "javascript" not in out and "url(" not in out
+    assert "display:none" not in out and "position:fixed" not in out
+
+
+def test_styled_cta_button_anchor_is_preserved() -> None:
+    out = _clean(
+        f'<a href="{PLACEHOLDER}" style="background-color:#d83b01;color:#ffffff;'
+        'padding:12px 24px;border-radius:4px">Verify account</a>'
+    )
+    soup = BeautifulSoup(out, "html.parser")
+    anchor = soup.find("a")
+    assert anchor.get("href") == PLACEHOLDER
+    assert "background-color:#d83b01" in anchor.get("style", "")
+    assert "Verify account" in out
+
+
+def test_layout_attributes_on_tables_are_kept() -> None:
+    out = _clean(
+        '<table width="600" bgcolor="#f3f3f3" cellpadding="0"><tr>'
+        '<td align="center" style="padding:24px">Body</td></tr></table>'
+    )
+    assert 'width="600"' in out and 'bgcolor="#f3f3f3"' in out
+    assert 'align="center"' in out and "padding:24px" in out
+
+
+def test_self_contained_data_image_logo_is_kept() -> None:
+    out = _clean(f'<p><img src="{_PNG}" alt="Acme" width="120"></p>')
+    assert "<img" in out and "data:image/png;base64" in out
+    assert 'alt="Acme"' in out and 'width="120"' in out
+
+
+def test_svg_data_uri_image_is_dropped() -> None:
+    # SVG data URIs can carry script and are not an allowed image source.
+    out = _clean('<img src="data:image/svg+xml;base64,PHN2Zz48c2NyaXB0Lz48L3N2Zz4=">')
+    assert "<img" not in out and "svg" not in out
+
+
+def test_external_image_kept_only_from_allowlisted_host() -> None:
+    res = sanitize_safe_html(
+        '<p><img src="https://cdn.brand.com/logo.png" alt="brand"><img src="https://evil.cdn.example/logo.png"></p>',
+        training_placeholder=PLACEHOLDER,
+        allowed_image_hosts=["cdn.brand.com"],
+    )
+    assert "cdn.brand.com/logo.png" in res.html
+    assert "evil.cdn.example" not in res.html
+
+
+def test_external_image_over_http_is_dropped_even_if_host_allowlisted() -> None:
+    res = sanitize_safe_html(
+        '<img src="http://cdn.brand.com/logo.png">',
+        training_placeholder=PLACEHOLDER,
+        allowed_image_hosts=["cdn.brand.com"],
+    )
+    assert "<img" not in res.html
+
+
+def test_wildcard_image_host_allows_any_https_image() -> None:
+    res = sanitize_safe_html(
+        '<img src="https://whatever.example/logo.png">',
+        training_placeholder=PLACEHOLDER,
+        allowed_image_hosts=["*"],
+    )
+    assert "whatever.example/logo.png" in res.html
+
+
+def test_allowlisted_image_keeps_src_but_strips_handlers() -> None:
+    res = sanitize_safe_html(
+        '<img src="https://cdn.brand.com/l.png" width="80" onerror="evil()" onload="x()">',
+        training_placeholder=PLACEHOLDER,
+        allowed_image_hosts=["cdn.brand.com"],
+    )
+    assert "cdn.brand.com/l.png" in res.html and 'width="80"' in res.html
+    assert "onerror" not in res.html and "onload" not in res.html
+
+
+def test_default_drops_all_external_images() -> None:
+    # No image hosts configured -> only self-contained data:image survives.
+    out = _clean('<img src="https://cdn.brand.com/logo.png"><p>k</p>')
+    assert "<img" not in out and "cdn.brand.com" not in out
+    assert "k" in out

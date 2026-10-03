@@ -54,6 +54,9 @@ class _Settings:
     def training_domain_set(self) -> set[str]:
         return {"training.example.com"}
 
+    def image_host_set(self) -> set[str]:
+        return {"cdn.example"}
+
 
 class _Ctx:
     settings = _Settings()

@@ -147,6 +147,16 @@ class OperatorApiSettings(BaseSettings):
     tracking_base_url: str = "http://localhost:8001"
     training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
     training_domains: str = "example.com,127.0.0.1"
+    # Hosts allowed to serve branded <img> logos over https (self-contained
+    # data:image logos are always allowed). Comma-separated; "*" permits any
+    # https host. Mirrors the worker setting; must match it so preview/publish
+    # and generation agree. Navigable links are unaffected.
+    safe_html_image_hosts: str = (
+        "msauth.net,msftauth.net,office.net,microsoftonline.com,microsoft.com,"
+        "gstatic.com,googleusercontent.com,google.com,akamaihd.net,docusign.com,"
+        "docusign.net,adobe.com,apple.com,cdn-apple.com,media-amazon.com,"
+        "ssl-images-amazon.com,amazon.com,paypalobjects.com,paypal.com,dropboxstatic.com,dropbox.com"
+    )
     env_file: str = ".env"
     console_static_dir: str = "apps/operator-ui/src/console"
 
@@ -296,6 +306,10 @@ class OperatorApiSettings(BaseSettings):
 
     def recipient_domain_allowlist(self) -> frozenset[str]:
         return parse_domain_allowlist(self.allowed_recipient_domains)
+
+    def image_host_set(self) -> set[str]:
+        """Hosts allowed to serve branded <img> logos over https (or {"*"})."""
+        return {d.strip().lower() for d in self.safe_html_image_hosts.split(",") if d.strip()}
 
     def alert_webhook_domain_allowlist(self) -> frozenset[str]:
         """Return the shared operator/worker outbound-alert destination policy."""
