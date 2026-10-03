@@ -41,6 +41,7 @@ from sqlalchemy.orm import Session
 from kp_operator_api.auth import require_capability
 from kp_operator_api.clone_service import CloneError, clone_real_message
 from kp_operator_api.config import OperatorApiSettings
+from kp_operator_api.content_library import clone_flags
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
 from kp_operator_api.logo_service import LogoError, apply_logo
 from kp_operator_api.routes.shared import (
@@ -474,6 +475,7 @@ def list_pending_templates(
             "requested_by": (row.raw_proposal or {}).get("requested_by"),
             "context_untrusted": bool((row.raw_proposal or {}).get("context_untrusted")),
             "neutralization_reasons": (row.raw_proposal or {}).get("neutralization_reasons", []),
+            **clone_flags(row),
         }
         for row in rows
     ]
