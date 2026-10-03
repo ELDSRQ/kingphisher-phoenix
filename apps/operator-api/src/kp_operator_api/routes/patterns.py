@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -36,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_capability
+from kp_operator_api.clone_service import CloneError, clone_real_message
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
 from kp_operator_api.routes.shared import (
@@ -272,6 +274,81 @@ def decide_template(
     session.commit()
     return {
         "template_version_id": str(template_version_id),
+        "approval_state": template.approval_state.value,
+    }
+
+
+class TemplateCloneRequest(BaseModel):
+    """A real phishing message to neutralize into a DRAFT training template."""
+
+    subject: str = Field(min_length=1, max_length=998)
+    html: str = Field(default="", max_length=200_000)
+    plain_text: str | None = Field(default=None, max_length=200_000)
+
+
+@router.post("/templates/clone", status_code=status.HTTP_201_CREATED)
+def clone_template(
+    body: TemplateCloneRequest,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, Any]:
+    """Clone a real phishing message into a neutralized DRAFT template.
+
+    The operator supplies a genuine lure they have observed; its deceptive copy
+    is preserved while every link is pointed at the training placeholder and the
+    allow-list sanitizer strips scripts/forms/iframes/trackers. The *payload* is
+    neutralized, not the *wording* — so the simulation looks real but can capture
+    nothing and lead nowhere real. It lands in DRAFT and still requires human
+    approval (and, under ENFORCE, a second approver) before any campaign can use
+    it; a campaign only sends to a domain named in a signed RoE. This path runs
+    the payload-neutralization gate instead of the text-based SafetyValidator,
+    because reproducing the real message's language is the training goal.
+    """
+    try:
+        cloned = clone_real_message(subject=body.subject, raw_html=body.html, plain_text=body.plain_text)
+    except CloneError as error:
+        raise ValidationError_(str(error)) from None
+
+    proposal: dict[str, Any] = {
+        # Recorded so the reviewer sees who cloned it; under ENFORCE the
+        # requester cannot also approve it (mirrors generated drafts).
+        "requested_by": principal.principal_id,
+        "subject": cloned.subject,
+        "plain_text": cloned.plain_text,
+        "safe_html": cloned.safe_html,
+        **cloned.provenance,
+    }
+    input_hash = hashlib.sha256(f"{body.subject}\0{body.html}\0{body.plain_text or ''}".encode()).hexdigest()
+    template = TemplateVersion(
+        template_version_id=uuid.uuid4(),
+        campaign_id=None,
+        generator_version="clone-0.1.0",
+        prompt_template_version="clone-0.1.0",
+        model_id="operator-clone/1",
+        input_hash=input_hash,
+        raw_proposal=proposal,
+        subject=cloned.subject,
+        plain_text=cloned.plain_text,
+        safe_html=cloned.safe_html,
+        approval_state=dm.TemplateApprovalState.DRAFT,
+    )
+    session.add(template)
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="template.clone",
+        object_type="template",
+        object_id=str(template.template_version_id),
+        detail={
+            "source": "operator_clone",
+            "rewritten_links": cloned.provenance.get("rewritten_links"),
+            "sanitizer": cloned.provenance.get("sanitizer"),
+        },
+    )
+    session.commit()
+    return {
+        "template_version_id": str(template.template_version_id),
         "approval_state": template.approval_state.value,
     }
 
