@@ -571,10 +571,15 @@ def process_generation(ctx: WorkerContext, message: dict[str, Any]) -> None:
         # required placeholder unchanged.
         validation_plain_text = response.plain_text.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
         validation_safe_html = clean_safe_html.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
-        verdict = validator.validate(response.subject, validation_plain_text, validation_safe_html)
+        # content_checks=False: a realistic lure reproduces deceptive wording on
+        # purpose (the lesson is the post-click training page, not a disclaimer).
+        # Payload safety still runs here (links/scripts/URIs/obfuscation), the P2
+        # sanitizer above already stripped scripts/forms and kept only the
+        # training placeholder, and a human still approves whatever survives.
+        verdict = validator.validate(
+            response.subject, validation_plain_text, validation_safe_html, content_checks=False
+        )
         if not verdict.allowed:
-            # The model's output is never trusted: it is re-validated here, and
-            # a human still has to approve whatever survives.
             raise SafetyRejectionError(f"generation rejected: {verdict.reasons}")
 
         proposal: dict[str, Any] = response.model_dump()
@@ -2822,7 +2827,9 @@ def _send_proof_email(
         host = urlparse(configured_url).hostname
         if host:
             allowed_domains.add(host)
-    verdict = SafetyValidator(training_domains=allowed_domains).validate(subject, plain_text, html)
+    verdict = SafetyValidator(training_domains=allowed_domains).validate(
+        subject, plain_text, html, content_checks=False
+    )
     if not verdict.allowed:
         raise SafetyRejectionError(f"rendered proof message rejected: {verdict.reasons}")
 
@@ -2902,7 +2909,9 @@ def _send_email(
         host = urlparse(configured_url).hostname
         if host:
             allowed_domains.add(host)
-    verdict = SafetyValidator(training_domains=allowed_domains).validate(subject, plain_text, html)
+    verdict = SafetyValidator(training_domains=allowed_domains).validate(
+        subject, plain_text, html, content_checks=False
+    )
     if not verdict.allowed:
         raise SafetyRejectionError(f"final rendered message rejected: {verdict.reasons}")
     pixel_tag = f'<img src="{tracking.open_url}" width="1" height="1" style="display:none" alt="" />'

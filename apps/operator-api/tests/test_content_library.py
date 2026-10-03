@@ -340,7 +340,11 @@ def test_clone_requires_authoring_permission_and_revalidates_content(client: Tes
                 input_hash="c" * 64,
                 raw_proposal={},
                 subject="Password verification",
-                plain_text="Send us your password.",
+                # Payload-unsafe content: an external link is always rejected,
+                # even under the realistic-lure content_checks=False policy
+                # (deceptive wording like "send us your password" is now allowed;
+                # the mechanics are what revalidation must still catch).
+                plain_text="Confirm your account at https://evil.example/harvest right now.",
                 safe_html="",
                 approval_state=dm.TemplateApprovalState.APPROVED,
             )

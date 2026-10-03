@@ -254,7 +254,9 @@ def _validate_template_content(session: Session, content: TemplatePreview) -> No
     # is bound only at recipient render time. Mirrors jobs.py.
     plain_text = content.plain_text.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
     safe_html = content.safe_html.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
-    verdict = validator.validate(content.subject, plain_text, safe_html)
+    # content_checks=False: previewing a realistic lure must not reject its
+    # deceptive wording; payload safety (links/scripts/URIs) still runs.
+    verdict = validator.validate(content.subject, plain_text, safe_html, content_checks=False)
     if not verdict.allowed:
         reason_codes = {
             code for reason in verdict.reasons for prefix, code in _SAFETY_REASON_CODES if reason.startswith(prefix)
@@ -546,12 +548,7 @@ def preview_library_template(
     if template is None:
         raise NotFoundError("template not found")
     content = _template_content(template)
-    # Clone templates reproduce a real lure's deceptive wording on purpose and
-    # were neutralized at creation (links -> training placeholder, scripts/forms
-    # stripped) rather than text-validated; re-running the text validator here
-    # would reject their copy. The neutralized content is safe to preview.
-    if not str(template.model_id or "").startswith("operator-clone"):
-        _validate_template_content(session, content)
+    _validate_template_content(session, content)
     rendered = _render_template_preview(content, request)
     rendered.pop("safe_html", None)
     return {

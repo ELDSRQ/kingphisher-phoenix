@@ -447,8 +447,25 @@ class SafetyValidator:
         return found
 
     def validate(
-        self, subject: str | None, plain_text: str, html_body: str | None = None, attachments: list[str] | None = None
+        self,
+        subject: str | None,
+        plain_text: str,
+        html_body: str | None = None,
+        attachments: list[str] | None = None,
+        *,
+        content_checks: bool = True,
     ) -> SafetyVerdict:
+        """Validate a message.
+
+        ``content_checks`` toggles the *deceptive-wording* patterns (credential,
+        financial, command, software-install, attachment-mention, sensitive, macro,
+        QR). Set it False for realistic phishing-simulation content: reproducing a
+        real lure's language is the training goal, and safety is enforced by the
+        *mechanics* checks that always run — link allowlist / shorteners / external
+        + IP links, script/data/file/vbscript/ftp/contact URIs, obfuscation, and
+        real attachment files. The placeholder-only link and allow-list HTML
+        sanitizer upstream already neutralize the payload.
+        """
         reasons: list[str] = []
         raw = "\n".join(x for x in (subject, plain_text, html_body) if x)
         haystack, has_hidden_chars = _normalize(raw)
@@ -468,29 +485,34 @@ class SafetyValidator:
             elif not self._allowed_host(host):
                 reasons.append(f"external link not on training allowlist: {host} ({origin})")
 
-        for pattern in _CREDENTIAL_PATTERNS:
-            if pattern.search(haystack):
-                reasons.append(f"credential/MFA request pattern: {pattern.pattern}")
+        if content_checks:
+            # Deceptive WORDING. Reproducing a real lure's language (asking for a
+            # password, referencing an invoice, etc.) is the whole point of a
+            # realistic simulation, so these are skipped when content_checks is
+            # False. The payload-mechanics checks below always run.
+            for pattern in _CREDENTIAL_PATTERNS:
+                if pattern.search(haystack):
+                    reasons.append(f"credential/MFA request pattern: {pattern.pattern}")
 
-        for pattern in _ATTACHMENT_PATTERNS:
-            if pattern.search(haystack):
-                reasons.append(f"attachment/executable pattern: {pattern.pattern}")
+            for pattern in _ATTACHMENT_PATTERNS:
+                if pattern.search(haystack):
+                    reasons.append(f"attachment/executable pattern: {pattern.pattern}")
 
-        for pattern in _COMMAND_PATTERNS:
-            if pattern.search(haystack):
-                reasons.append(f"command-execution pattern: {pattern.pattern}")
+            for pattern in _COMMAND_PATTERNS:
+                if pattern.search(haystack):
+                    reasons.append(f"command-execution pattern: {pattern.pattern}")
 
-        for pattern in _SOFTWARE_INSTALL_PATTERNS:
-            if pattern.search(haystack):
-                reasons.append(f"software-installation request: {pattern.pattern}")
+            for pattern in _SOFTWARE_INSTALL_PATTERNS:
+                if pattern.search(haystack):
+                    reasons.append(f"software-installation request: {pattern.pattern}")
 
-        for pattern in _FINANCIAL_PATTERNS:
-            if pattern.search(haystack):
-                reasons.append(f"financial-transfer instruction: {pattern.pattern}")
+            for pattern in _FINANCIAL_PATTERNS:
+                if pattern.search(haystack):
+                    reasons.append(f"financial-transfer instruction: {pattern.pattern}")
 
-        for pattern in _SENSITIVE_EMPLOYEE_PATTERNS:
-            if pattern.search(haystack):
-                reasons.append(f"sensitive employee scenario: {pattern.pattern}")
+            for pattern in _SENSITIVE_EMPLOYEE_PATTERNS:
+                if pattern.search(haystack):
+                    reasons.append(f"sensitive employee scenario: {pattern.pattern}")
 
         if JAVASCRIPT_PATTERN.search(haystack):
             reasons.append("javascript: URI present")
@@ -504,10 +526,10 @@ class SafetyValidator:
         if FTP_URI_PATTERN.search(haystack):
             reasons.append("FTP URI present")
 
-        if MACRO_PATTERN.search(haystack):
+        if content_checks and MACRO_PATTERN.search(haystack):
             reasons.append("macro content present")
 
-        if QR_CODE_PATTERN.search(haystack) and not self.allow_qr_codes:
+        if content_checks and QR_CODE_PATTERN.search(haystack) and not self.allow_qr_codes:
             reasons.append("QR code content not permitted in initial release")
 
         if attachments:
