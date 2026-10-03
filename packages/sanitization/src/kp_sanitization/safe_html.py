@@ -319,12 +319,33 @@ def sanitize_safe_html(
             continue
 
         # An <img> is kept only with a vetted source; otherwise drop it entirely.
+        # Handle it in its own block so the kept source is a definite ``str``.
         if name == "img":
             cleaned_src = _valid_img_src(str(tag.get("src", "")), image_hosts)
             if cleaned_src is None:
                 removed["img"] = removed.get("img", 0) + 1
                 tag.decompose()
                 continue
+            for attr in list(tag.attrs):
+                low_attr = attr.lower()
+                if low_attr == "src":
+                    tag.attrs[attr] = cleaned_src
+                    continue
+                if low_attr == "alt":
+                    continue
+                if low_attr == "style":
+                    cleaned_style = _sanitize_style(str(tag.attrs.get("style", "")))
+                    if cleaned_style:
+                        tag.attrs[attr] = cleaned_style
+                    else:
+                        del tag.attrs[attr]
+                        stripped += 1
+                    continue
+                if low_attr in _PRESENTATIONAL_ATTRS and not low_attr.startswith("on"):
+                    continue
+                del tag.attrs[attr]
+                stripped += 1
+            continue
 
         for attr in list(tag.attrs):
             low_attr = attr.lower()
@@ -337,11 +358,6 @@ def sanitize_safe_html(
                     continue  # the one legitimate, recipient-bound link
                 del tag.attrs[attr]
                 neutralized += 1
-                continue
-            if name == "img" and low_attr == "src":
-                tag.attrs[attr] = cleaned_src
-                continue
-            if name == "img" and low_attr == "alt":
                 continue
             if low_attr == "style":
                 cleaned_style = _sanitize_style(str(tag.attrs.get("style", "")))
