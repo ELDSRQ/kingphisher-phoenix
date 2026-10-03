@@ -1536,3 +1536,32 @@ class RulesOfEngagement(Base):
     revoked_by = mapped_column(UUID(as_uuid=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+
+class AiGenerationProvider(Base):
+    """Operator bring-your-own generation provider + its encrypted API key.
+
+    One row per provider (``local``/``openai``/``gemini``/``anthropic``/
+    ``openrouter``/``opencode``). ``api_key`` is encrypted at rest via
+    :class:`CipherText`. At most one row is ``is_active`` (a partial unique index
+    enforces it); no active row means the local model is used. ``model_id`` and
+    ``base_url`` let the operator pick a specific model and override the
+    provider's default OpenAI-compatible endpoint.
+    """
+
+    __tablename__ = "ai_generation_providers"
+    __table_args__ = (
+        Index(
+            "uq_ai_generation_providers_single_active",
+            "is_active",
+            unique=True,
+            postgresql_where=sa_text("is_active"),
+        ),
+    )
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    api_key: Mapped[str | None] = mapped_column(CipherText, nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
