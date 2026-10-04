@@ -187,6 +187,25 @@ function auditObjectLabel(type) {
   return s ? s.replace(/_/g, " ") : "object";
 }
 
+/* Formats an ISO-8601 timestamp as a readable local date. Returns "" when the
+   value is missing or unparseable so callers can fall back gracefully instead
+   of rendering "Invalid Date". */
+function safeLocalDate(value) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleDateString();
+}
+
+/* Short human-readable provenance line for an auto-curated template, e.g.
+   "Auto-curated from forwarded-mailbox · 10/4/2026". Falls back to just the
+   source (or a generic phrase) when the date is missing or unparseable. */
+function autoCuratedProvenance(template) {
+  const source = template.curated_source || "a forwarded phish";
+  const date = safeLocalDate(template.curated_first_seen);
+  return date ? `Auto-curated from ${source} · ${date}` : `Auto-curated from ${source}`;
+}
+
 async function boundedCsvBlob(response) {
   const contentType = (response.headers.get("content-type") || "").split(";", 1)[0].trim().toLowerCase();
   if (contentType !== "text/csv") throw new Error("Export returned an unexpected content type");
@@ -5450,7 +5469,16 @@ views.templates = async (root) => {
     const rows = templates.map((template) => {
       const state = template.reusable ? "Approved reusable" : `${template.approval_state} — human review required`;
       const subjectCell = el("td", { text: template.subject || "(no subject)" });
-      if (template.is_clone) {
+      if (template.is_auto_curated) {
+        const provenance = autoCuratedProvenance(template);
+        subjectCell.appendChild(document.createTextNode(" "));
+        subjectCell.appendChild(el("span", {
+          class: "pill ok",
+          text: "AUTO-CURATED",
+          title: provenance,
+        }));
+        subjectCell.appendChild(el("div", { class: "modal-help", text: provenance }));
+      } else if (template.is_clone) {
         subjectCell.appendChild(document.createTextNode(" "));
         subjectCell.appendChild(el("span", {
           class: "pill",
@@ -5550,7 +5578,14 @@ views.templates = async (root) => {
     const selfReviewing = canReviewDraft && !!draft.requested_by
       && typeof principalId === "string" && draft.requested_by === principalId;
     const heading = el("h3", { text: draft.subject || "(no subject)" });
-    if (draft.is_clone) {
+    if (draft.is_auto_curated) {
+      heading.appendChild(document.createTextNode(" "));
+      heading.appendChild(el("span", {
+        class: "pill ok",
+        text: "AUTO-CURATED",
+        title: autoCuratedProvenance(draft),
+      }));
+    } else if (draft.is_clone) {
       heading.appendChild(document.createTextNode(" "));
       heading.appendChild(el("span", { class: "pill", text: "CLONE" }));
     }
@@ -5558,7 +5593,9 @@ views.templates = async (root) => {
       heading,
       el("p", { class: "modal-help", text: `Model: ${draft.model_id || "unknown"}` }),
     ]);
-    if (draft.is_clone && draft.cloned_from_subject) {
+    if (draft.is_auto_curated) {
+      card.appendChild(el("p", { class: "modal-help", text: autoCuratedProvenance(draft) }));
+    } else if (draft.is_clone && draft.cloned_from_subject) {
       card.appendChild(el("p", { class: "modal-help", text: `Working copy of: ${draft.cloned_from_subject}` }));
     }
 

@@ -32,6 +32,7 @@ def test_generated_template_is_not_a_clone() -> None:
         "cloned_from_subject": None,
         "is_auto_curated": False,
         "curated_source": None,
+        "curated_first_seen": None,
     }
 
 
@@ -48,7 +49,13 @@ def test_real_message_clone_is_flagged_by_model_id() -> None:
 
 
 def test_auto_curated_template_is_flagged() -> None:
-    flags = clone_flags(_tmpl(model_id="auto-curated/1", edited={"auto_curated": True, "source": "forwarded-mailbox"}))
+    flags = clone_flags(
+        _tmpl(
+            model_id="auto-curated/1",
+            edited={"auto_curated": True, "source": "forwarded-mailbox", "first_seen": "2026-10-04T15:00:00+00:00"},
+        )
+    )
     assert flags["is_clone"] is True
     assert flags["is_auto_curated"] is True
     assert flags["curated_source"] == "forwarded-mailbox"
+    assert flags["curated_first_seen"] == "2026-10-04T15:00:00+00:00"
