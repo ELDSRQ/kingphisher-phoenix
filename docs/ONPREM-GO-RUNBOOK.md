@@ -97,6 +97,57 @@ is what flips on-prem from code-complete to human-ready.
 
 ---
 
+## Generation & content — operator capabilities (on-prem)
+
+The console produces **realistic, branded** simulation emails (not training
+meta-text). The lesson is delivered on the post-click training page, so the
+lure itself carries no disclaimer. Payload safety is unchanged throughout: the
+only navigable link is the per-recipient tracking placeholder, and the
+allow-list sanitizer + fail-closed SafetyValidator + human approval gate every
+draft, whichever model wrote it.
+
+**Review & approve.** Template Library → Review shows generated/cloned drafts.
+"Preview desktop, mobile & plain" renders them; "Approve" (single-operator may
+self-approve, audited) promotes a draft so a campaign can use it.
+
+**Logos.** On a draft card:
+- **Upload logo image** — pick a PNG/JPG/GIF/WebP file (≤ ~200 KB). The console
+  embeds it directly in the email (a self-contained `data:` image); nothing is
+  hosted or hot-linked. This is the reliable path — use it.
+- **Logo by URL / remove** — paste a *direct* image URL (opens as just an image
+  in a browser; not a page that merely contains an image), or leave blank to
+  remove the logo and keep the stylized branding.
+The logo is injected into the template's HTML, so it is covered by the approval
+hash and re-validated.
+
+**Clones.** A cloned draft shows a **CLONE** pill plus "Working copy of:
+<original subject>" in the review and library lists, so copies are never
+confused with originals. (Clones created before this feature are unlabeled.)
+
+**Bring-your-own model (Settings → "Generation model & providers").** Save an
+API key for OpenAI, Gemini, Anthropic/Claude, **OpenRouter**, or **OpenCode**,
+set the model id (and optional base-URL override), and select which provider
+generates — or keep **Local** (the on-prem model, the default, no egress). Keys
+are encrypted at rest and never shown back. Selecting a hosted provider:
+- **sends the threat evidence + generated lure to that third party** — an
+  explicit opt-in (a confirmation is required), never a default; and
+- repins the worker model and restarts the stack (a few seconds).
+Caveat: frontier models (OpenAI/Claude/Gemini) **often refuse** to write
+phishing lures even for simulation. For reliable realism, point **OpenRouter or
+OpenCode** at a less-restrictive model.
+
+### Deploy notes for these features (future sessions)
+- A PR that adds a DB table (e.g. the provider store) needs `alembic upgrade
+  head` on `.105`, not just the `data/run/restart` marker.
+- A change to the gateway prompt or gateway code needs a gateway restart; the
+  unit is root-owned so restart it by killing the `builder`-owned process
+  (`Restart=always` respawns it) — see the ops notes, no sudo needed.
+- Realistic branded HTML takes ~20–30 s to generate (vs ~5 s for plain text);
+  `KP_WORKER_PROVIDER_TIMEOUT_SECONDS` defaults to 60 s so it does not
+  dead-letter. Hosted providers may be slower; the value may be raised to 180 s.
+
+---
+
 ## Azure — bring up + land the remediations (GATED)
 
 Do this only after on-prem D6 is signed. It is **billable** and needs an

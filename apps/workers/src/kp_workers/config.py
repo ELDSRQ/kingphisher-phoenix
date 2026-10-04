@@ -282,7 +282,11 @@ class WorkerSettings(BaseSettings):
     reported_mailbox_bearer_token: str | None = None
     reported_mailbox_basic_username: str | None = None
     reported_mailbox_basic_password: str | None = None
-    provider_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60.0)
+    # 10s was fine for plain-text generation but dead-letters realistic branded
+    # HTML (~20-30s locally) and hosted BYO providers (frontier model + network
+    # latency). Default 60s covers both; the cap allows up to 180s for slow
+    # hosted models. The gateway's own upstream timeout (120s) bounds the wait.
+    provider_timeout_seconds: float = Field(default=60.0, ge=0.1, le=180.0)
     mailbox_poll_limit: int = 50
     reminder_batch_size: int = 100
     reminder_sender: str = "security-awareness@example.com"
