@@ -27,7 +27,12 @@ def _tmpl(*, model_id: str = "qwen3-30b-a3b-aggregate", edited: object = None) -
 
 
 def test_generated_template_is_not_a_clone() -> None:
-    assert clone_flags(_tmpl()) == {"is_clone": False, "cloned_from_subject": None}
+    assert clone_flags(_tmpl()) == {
+        "is_clone": False,
+        "cloned_from_subject": None,
+        "is_auto_curated": False,
+        "curated_source": None,
+    }
 
 
 def test_library_clone_is_flagged_with_source_subject() -> None:
@@ -40,3 +45,10 @@ def test_real_message_clone_is_flagged_by_model_id() -> None:
     flags = clone_flags(_tmpl(model_id="operator-clone/1"))
     assert flags["is_clone"] is True
     assert flags["cloned_from_subject"] is None
+
+
+def test_auto_curated_template_is_flagged() -> None:
+    flags = clone_flags(_tmpl(model_id="auto-curated/1", edited={"auto_curated": True, "source": "forwarded-mailbox"}))
+    assert flags["is_clone"] is True
+    assert flags["is_auto_curated"] is True
+    assert flags["curated_source"] == "forwarded-mailbox"

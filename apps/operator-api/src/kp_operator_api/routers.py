@@ -65,6 +65,9 @@ from kp_operator_api.routes.campaigns import (
 from kp_operator_api.routes.campaigns import (
     router as campaigns_router,
 )
+from kp_operator_api.routes.curation import (
+    router as curation_router,
+)
 from kp_operator_api.routes.dead_letters import (
     DeadLetterReplay,
     inspect_dead_letter,
@@ -214,6 +217,7 @@ register_content_library_routes(router)
 
 for _resource_router in (
     patterns_router,
+    curation_router,
     dead_letters_router,
     audit_router,
     privacy_router,

@@ -354,10 +354,15 @@ def clone_flags(template: TemplateVersion) -> dict[str, Any]:
     edited = template.edited_content if isinstance(template.edited_content, dict) else {}
     cloned_from = edited.get("cloned_from")
     cloned_from_subject = edited.get("cloned_from_subject")
-    model_clone = isinstance(template.model_id, str) and template.model_id.startswith("operator-clone")
+    auto_curated = bool(edited.get("auto_curated"))
+    model_clone = isinstance(template.model_id, str) and template.model_id.startswith(
+        ("operator-clone", "auto-curated")
+    )
     return {
         "is_clone": bool(cloned_from) or model_clone,
         "cloned_from_subject": cloned_from_subject if isinstance(cloned_from_subject, str) else None,
+        "is_auto_curated": auto_curated,
+        "curated_source": edited.get("source") if auto_curated else None,
     }
 
 
