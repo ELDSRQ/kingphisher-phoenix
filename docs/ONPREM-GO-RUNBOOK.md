@@ -137,6 +137,12 @@ phishing lures even for simulation. For reliable realism, point **OpenRouter or
 OpenCode** at a less-restrictive model.
 
 ### Deploy notes for these features (future sessions)
+- The app supervisor runs as a systemd **user** unit on `.105`
+  (`kp-supervisor.service`; install/operate via
+  `scripts/operator/onprem-supervisor/`). It auto-starts on WSL boot (once
+  `loginctl enable-linger builder` is set) and auto-restarts the stack on a
+  child crash. Deploys are unchanged (`touch data/run/restart`); recycle the
+  supervisor process itself with `systemctl --user restart kp-supervisor.service`.
 - A PR that adds a DB table (e.g. the provider store) needs `alembic upgrade
   head` on `.105`, not just the `data/run/restart` marker.
 - A change to the gateway prompt or gateway code needs a gateway restart; the

@@ -1,0 +1,24 @@
+[Unit]
+Description=KingPhisher Phoenix app supervisor (operator-api, tracking-api, workers)
+Documentation=https://github.com/ELDSRQ/kingphisher-phoenix
+After=network-online.target
+Wants=network-online.target
+# Do not give up while Docker (postgres/redis/mailpit) is still coming up at
+# boot: without this, systemd would stop retrying after a few quick restarts
+# and leave the stack down until a manual start.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/builder/phishing-awareness-platform
+# Login shell so uv (~/.local/bin) is on PATH for the supervisor AND the
+# children it spawns (CHILDREN invoke bare "uv"). exec => uv becomes the main
+# PID, so systemd's SIGTERM reaches it and it forwards shutdown to the
+# supervisor, which stops every child cleanly (scripts/supervisor.py).
+ExecStart=/bin/bash -lc "exec uv run --frozen --no-sync python scripts/supervisor.py"
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
