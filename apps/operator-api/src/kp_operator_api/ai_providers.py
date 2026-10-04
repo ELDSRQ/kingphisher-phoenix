@@ -96,6 +96,20 @@ PROVIDERS: dict[str, ProviderPreset] = {
         sends_data_offsite=True,
         notes="One key, many models via OpenCode's gateway (set the model id). Override the base URL if needed.",
     ),
+    "custom": ProviderPreset(
+        key="custom",
+        label="Custom / self-hosted (OpenAI-compatible)",
+        default_base_url="",
+        default_model="",
+        auth_style=AUTH_BEARER,
+        needs_key=False,
+        sends_data_offsite=False,
+        notes=(
+            "Point at any OpenAI-compatible endpoint you host, e.g. a local abliterated/uncensored model "
+            "served by Ollama (http://127.0.0.1:11434/v1) or vLLM. Set the base URL and model id; an API "
+            "key is optional (used only if your server requires one). No data leaves your network."
+        ),
+    ),
 }
 
 

@@ -184,6 +184,9 @@ def select_ai_provider(
     model_id = registry.resolve_model(provider, row.model_id if row else None)
     if provider != registry.LOCAL and not model_id:
         raise ValidationError_(f"set a model id for {preset.label} before selecting it")
+    base_url = registry.resolve_base_url(provider, row.base_url if row else None)
+    if provider != registry.LOCAL and not base_url:
+        raise ValidationError_(f"set a base URL for {preset.label} before selecting it")
 
     # Snapshot the current local pin the first time we leave local, so selecting
     # 'local' again can restore the on-prem model.
@@ -214,14 +217,17 @@ def select_ai_provider(
     if provider == registry.LOCAL:
         _clear_state_file(settings)
     else:
+        api_key = (row.api_key or "") if row else ""
         _write_state_file(
             settings,
             {
                 "provider": provider,
-                "base_url": registry.resolve_base_url(provider, row.base_url if row else None),
+                "base_url": base_url,
                 "model_id": model_id,
-                "api_key": (row.api_key or "") if row else "",
-                "auth_style": preset.auth_style,
+                "api_key": api_key,
+                # Only send a bearer header when a key is actually stored (a
+                # self-hosted local model usually needs none).
+                "auth_style": preset.auth_style if api_key else registry.AUTH_NONE,
             },
         )
 
