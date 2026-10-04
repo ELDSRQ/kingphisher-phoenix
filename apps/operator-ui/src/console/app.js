@@ -3842,6 +3842,7 @@
     const list = el("table", { "aria-label": "Campaign status, readiness, and actions" }, [
       el("thead", {}, [el("tr", {}, [
         el("th", { text: "Title" }),
+        el("th", { text: "Created" }),
         el("th", { text: "Sender" }),
         el("th", { text: "Audience" }),
         el("th", { text: "Training lesson" }),
@@ -3857,6 +3858,7 @@
         const actionAuthorityValid = hasBooleanActionFlags(c, CAMPAIGN_ACTION_FLAGS);
         return el("tr", {}, [
           el("td", { text: c.title }),
+          el("td", { text: c.created_at ? formatInstant(c.created_at) : "\u2014", title: c.created_at ? "When this campaign was created" : "" }),
           el("td", { text: c.sender_display_name ? `${c.sender_display_name} <${c.sender_mailbox}>` : c.sender_mailbox }),
           el("td", {}, [el("span", { class: `pill ${c.audience_frozen ? "ok" : "down"}`, text: c.audience_frozen ? `frozen v${c.audience_version}` : "not frozen" })]),
           el("td", {}, [el("span", {
@@ -6221,6 +6223,7 @@
         }
         return el("tr", {}, [
           el("td", { text: resource.title || "Untitled lesson" }),
+          el("td", { text: resource.created_at ? formatInstant(resource.created_at) : "\u2014", title: resource.created_at ? "When this lesson was created" : "" }),
           el("td", { text: String(resource.version || 1) }),
           el("td", { text: resource.source_ref || "Not provided" }),
           el("td", {}, [el("span", { class: `pill ${resource.approval_state === "approved" ? "ok" : "down"}`, text: resource.approval_state || "unknown" })]),
@@ -6229,7 +6232,7 @@
         ]);
       });
       results.replaceChildren(el("table", {}, [
-        el("thead", {}, [el("tr", {}, ["Lesson", "Version", "Source reference", "Review state", "Completion", "Actions"].map((label) => el("th", { text: label })))]),
+        el("thead", {}, [el("tr", {}, ["Lesson", "Created", "Version", "Source reference", "Review state", "Completion", "Actions"].map((label) => el("th", { text: label })))]),
         el("tbody", {}, rows)
       ]));
     };

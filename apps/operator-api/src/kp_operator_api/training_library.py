@@ -153,6 +153,7 @@ def _summary(resource: TrainingResource, principal: Principal) -> dict[str, obje
     return {
         "training_resource_id": str(resource.training_resource_id),
         "title": resource.title,
+        "created_at": resource.created_at,
         "version": resource.version,
         "source_ref": resource.source_ref,
         "approval_state": resource.approval_state.value,
