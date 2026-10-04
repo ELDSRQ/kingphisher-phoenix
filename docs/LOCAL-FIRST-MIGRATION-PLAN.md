@@ -2,7 +2,7 @@
 
 **Goal:** move everything that can run locally to local Docker, without impacting the
 build or current functionality, and keep only the irreducible **real-send slice** in
-Azure. Build/testing already runs locally (compose on .105/.140) and the code is on
+Azure. Build/testing already runs locally (compose on .105) and the code is on
 GitHub — so idling Azure does **not** set back progress; it only pauses the ability to do
 a *real* send. Written 2026-09-05.
 
@@ -32,7 +32,7 @@ tracking-api, 8 workers) runs as local `uv`/uvicorn processes** via `scripts/sup
 supervisor (the mocks-only subset seen running on .105 is not the whole app).
 
 ```bash
-# Full local app (runs on the .105/.140 Docker host):
+# Full local app (runs on the .105 Docker host):
 make bootstrap        # uv sync + compose up postgres/redis/otel/mocks/mailpit + db-init
 make seed             # optional demo data
 bash scripts/run_console.sh    # supervisor: operator-api + tracking-api + all 8 workers
@@ -57,10 +57,10 @@ not routine build/test.
 ## Priority 1 — Qwen / ai-gateway → LOCAL (biggest cost)
 **Why it's here:** a 7B model held always-on in a Container App is the single biggest line
 item, and it is **not needed in Azure** — Qwen2.5-7B runs locally via llama.cpp (that's how
-the AI-010 bake-off measured it on .105/.140 CPU), and the compose stack already has an
+the AI-010 bake-off measured it on .105 CPU), and the compose stack already has an
 `ai-gateway` service.
 - **Now (done):** scaled to 0 in Azure.
-- **Local runtime:** run the local `ai-gateway` (llama.cpp) on .105/.140 with the staged
+- **Local runtime:** run the local `ai-gateway` (llama.cpp) on .105 with the staged
   Qwen GGUF (`infrastructure/containers/ai-llama/models/`); the local operator/worker point
   at it (compose already wires this). Content generation + authoring work locally.
 - **Permanent:** deploy with **`deploy_ai_gateway=false`** so Azure never brings Qwen back.
