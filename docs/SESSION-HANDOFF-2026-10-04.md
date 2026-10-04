@@ -58,6 +58,11 @@ ssh -f -N -L 8600:127.0.0.1:8000 -L 8001:127.0.0.1:8001 -L 8025:127.0.0.1:8025 -
   was added) → `touch data/run/restart`. Gateway prompt/code changes need a
   gateway restart; it is a root-owned systemd unit, restart by killing the
   `builder`-owned process (Restart=always respawns).
-- Adding a NEW worker role needs the supervisor PROCESS restarted (it is a plain
-  process; `touch data/run/restart` only cycles existing children). Code-only
-  worker changes just need the restart marker.
+- The supervisor now runs as a systemd **user** unit on `.105`
+  (`kp-supervisor.service`, see `scripts/operator/onprem-supervisor/`): it
+  auto-starts on WSL boot (requires `loginctl enable-linger builder`, done once)
+  and auto-restarts the stack if a child crashes. This replaces the old
+  hand-relaunched detached process that left the stack down after a reboot.
+- Adding a NEW worker role needs the supervisor PROCESS restarted
+  (`systemctl --user restart kp-supervisor.service`); `touch data/run/restart`
+  only cycles existing children. Code-only worker changes just need the marker.
