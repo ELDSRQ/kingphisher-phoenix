@@ -148,6 +148,46 @@ OpenCode** at a less-restrictive model.
 
 ---
 
+## Generation model & providers (bring-your-own-model)
+
+The local on-prem model is the default and has **no egress**. The operator can
+instead point generation at a stronger model from **Settings → "Generation
+model & providers"** (requires the `manage:roles` capability):
+
+- **Local** — the on-prem model via the gateway. No key, no egress.
+- **Custom / self-hosted** — any OpenAI-compatible endpoint you run (e.g. an
+  abliterated/uncensored model served by Ollama at `http://127.0.0.1:11434/v1`
+  or vLLM). Set the base URL + model id; an API key is optional. No egress.
+- **OpenAI / Gemini / Anthropic / OpenRouter / OpenCode** — paste an API key
+  (stored encrypted, never shown back) + a model id, then "Use this model".
+
+Caveats: selecting a hosted provider **sends the generation evidence + the
+lure to that third party** (an explicit, confirmed opt-in — never a default).
+Frontier models (OpenAI/Claude/Gemini) **often refuse** to write phishing
+content even for simulation; for reliable realism, point **OpenRouter/OpenCode
+(or Custom)** at a less-restrictive/uncensored model. Selecting a provider
+repins the worker model and triggers a stack restart (a few seconds). Payload
+safety is unchanged regardless of which model writes the lure: the allow-list
+sanitizer + fail-closed validator + human approval gate every draft.
+
+## Forward-a-phish curation (auto-cloned replica library)
+
+A scheduled worker turns real phish into a review-ready library. Users forward
+suspicious emails to a designated mailbox; each is auto-cloned (payload
+neutralized) into a **dated, deduplicated DRAFT** marked **AUTO-CURATED** in the
+library. Config (worker env, console-editable):
+`KP_WORKER_CURATION_MAILBOX_ADDRESS` (the forward address; empty disables it),
+`KP_WORKER_CURATION_INTERVAL_SECONDS` (poll cadence). Source is the reported
+mailbox provider: **mailpit** on-prem, **Microsoft Graph** for Azure.
+
+Security (ingesting attacker-controlled content, reviewed): the MIME extractor
+is bounded and non-rendering and **never reads attachments**; the clone drops
+**all external images** (no remote beacon) and neutralizes every link to the
+training placeholder; the path is **model-free** (no prompt-injection surface);
+everything lands as DRAFT for human approval — never auto-sent.
+
+---
+
 ## Azure — bring up + land the remediations (GATED)
 
 Do this only after on-prem D6 is signed. It is **billable** and needs an
