@@ -5449,8 +5449,17 @@ views.templates = async (root) => {
     }
     const rows = templates.map((template) => {
       const state = template.reusable ? "Approved reusable" : `${template.approval_state} — human review required`;
+      const subjectCell = el("td", { text: template.subject || "(no subject)" });
+      if (template.is_clone) {
+        subjectCell.appendChild(document.createTextNode(" "));
+        subjectCell.appendChild(el("span", {
+          class: "pill",
+          text: "CLONE",
+          title: template.cloned_from_subject ? `Working copy of: ${template.cloned_from_subject}` : "Working copy",
+        }));
+      }
       return el("tr", {}, [
-        el("td", { text: template.subject || "(no subject)" }),
+        subjectCell,
         el("td", { text: template.model_id || "unknown" }),
         el("td", {}, [el("span", { class: `pill ${template.reusable ? "ok" : "down"}`, text: state })]),
         el("td", { text: template.campaign_bound ? "Campaign-bound" : "Library item" }),
@@ -5540,10 +5549,18 @@ views.templates = async (root) => {
       || (typeof principalId === "string" && principalId.length > 0 && draft.requested_by !== principalId);
     const selfReviewing = canReviewDraft && !!draft.requested_by
       && typeof principalId === "string" && draft.requested_by === principalId;
+    const heading = el("h3", { text: draft.subject || "(no subject)" });
+    if (draft.is_clone) {
+      heading.appendChild(document.createTextNode(" "));
+      heading.appendChild(el("span", { class: "pill", text: "CLONE" }));
+    }
     const card = el("div", { class: "card" }, [
-      el("h3", { text: draft.subject || "(no subject)" }),
+      heading,
       el("p", { class: "modal-help", text: `Model: ${draft.model_id || "unknown"}` }),
     ]);
+    if (draft.is_clone && draft.cloned_from_subject) {
+      card.appendChild(el("p", { class: "modal-help", text: `Working copy of: ${draft.cloned_from_subject}` }));
+    }
 
     if (draft.context_untrusted) {
       // The threat text this was written from tripped the injection
@@ -5572,8 +5589,13 @@ views.templates = async (root) => {
         onclick: (event) => showTemplatePreview(draft, event.currentTarget),
       })] : []),
       ...(canCreateCampaign ? [el("button", {
-        class: "btn small", type: "button", text: "Add / change logo",
-        "aria-label": `Add or change the logo for ${draft.subject || "untitled template"}`,
+        class: "btn small", type: "button", text: "Upload logo image",
+        "aria-label": `Upload a logo image file for ${draft.subject || "untitled template"}`,
+        onclick: uploadLogo(draft),
+      })] : []),
+      ...(canCreateCampaign ? [el("button", {
+        class: "btn small", type: "button", text: "Logo by URL / remove",
+        "aria-label": `Set the logo by URL, or remove it, for ${draft.subject || "untitled template"}`,
         onclick: setLogo(draft),
       })] : []),
       ...(canReviewDraft ? [
@@ -5591,6 +5613,46 @@ views.templates = async (root) => {
     root.appendChild(card);
   }
 
+  function uploadLogo(draft) {
+    // Pick an image file; we convert it to a self-contained data: image in the
+    // browser and send it to the same logo endpoint — so the operator never has
+    // to understand data: URIs or host a logo somewhere.
+    return () => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/png,image/jpeg,image/gif,image/webp";
+      input.style.display = "none";
+      input.onchange = async () => {
+        const file = input.files && input.files[0];
+        input.remove();
+        if (!file) return;
+        const MAX = 200 * 1024; // keep the encoded data: URI within the server's size cap
+        if (file.size > MAX) { toast("Image too large (max ~200 KB). Use a smaller logo.", "error"); return; }
+        let dataUri = "";
+        try {
+          dataUri = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(new Error("could not read the image file"));
+            reader.readAsDataURL(file);
+          });
+        } catch (err) { toast(err.message, "error"); return; }
+        if (!dataUri.startsWith("data:image/")) {
+          toast("That file is not a supported image (PNG, JPG, GIF, WebP).", "error"); return;
+        }
+        try {
+          const res = await api(`/templates/${draft.template_version_id}/logo`, {
+            method: "POST", body: JSON.stringify({ logo: dataUri }),
+          });
+          toast(res.logo_applied ? "Logo uploaded" : "Logo removed", "success");
+          render();
+        } catch (err) { toast(err.message, "error"); }
+      };
+      document.body.appendChild(input);
+      input.click();
+    };
+  }
+
   function setLogo(draft) {
     // Attach a real brand logo to a generated/cloned lure, or leave the
     // stylized branding as-is. The server injects the logo into the template's
@@ -5602,10 +5664,11 @@ views.templates = async (root) => {
         description: draft.subject || "",
         fields: [
           {
-            name: "logo", label: "Logo URL or data:image (optional)", type: "textarea", required: false,
+            name: "logo", label: "Logo image URL (optional)", type: "textarea", required: false,
             placeholder: "https://brand.example/logo.png — or leave blank to remove",
-            help: "Paste an https:// link to the brand's logo image, or a data:image value. "
-              + "Leave blank to remove the logo and keep the stylized branding as-is.",
+            help: "Paste a direct https:// link to a logo image (one that ends in .png/.jpg and opens "
+              + "as an image in a browser). To use a file from your computer instead, close this and click "
+              + "“Upload logo image”. Leave blank to remove the logo and keep the stylized branding.",
           },
         ],
         submitLabel: "Apply",

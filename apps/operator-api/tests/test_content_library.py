@@ -191,6 +191,8 @@ def test_library_search_filters_are_bounded_and_do_not_leak_raw_content(client: 
             "approval_state": "approved",
             "reusable": True,
             "campaign_bound": True,
+            "is_clone": False,
+            "cloned_from_subject": None,
         }
     ]
     assert "private_prompt" not in templates.text
@@ -239,7 +241,12 @@ def test_template_clone_resets_approval_binding_and_blocks_self_approval(client:
         assert clone.campaign_id is None
         assert clone.approval_hash is None
         assert clone.idempotency_key is None
-        assert clone.edited_content is None
+        # The clone is stamped with its origin so it is distinguishable from the
+        # original in the library/review lists.
+        assert clone.edited_content == {
+            "cloned_from": str(template_id),
+            "cloned_from_subject": "Conference schedule update",
+        }
         assert clone.version == 1
         assert clone.unicode_validation == {}
         assert clone.raw_proposal["requested_by"] == str(ADMIN_ID)
