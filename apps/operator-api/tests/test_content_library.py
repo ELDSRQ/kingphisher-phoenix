@@ -193,6 +193,8 @@ def test_library_search_filters_are_bounded_and_do_not_leak_raw_content(client: 
             "campaign_bound": True,
             "is_clone": False,
             "cloned_from_subject": None,
+            "is_auto_curated": False,
+            "curated_source": None,
         }
     ]
     assert "private_prompt" not in templates.text

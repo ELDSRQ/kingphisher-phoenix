@@ -158,6 +158,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/console/aggregate/candidates",
             "POST /api/v1/console/aggregate/candidates/{candidate_id}/promote",
             "POST /api/v1/console/aggregate/candidates/{candidate_id}/dismiss",
+            "POST /api/v1/curation/forwarded",
         ),
     ),
     (
