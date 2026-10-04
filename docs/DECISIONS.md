@@ -85,9 +85,11 @@ the worker or the operator-api.
   as `AI-015`.
 - Deployment drops the ai-models blob upload and any GPU/model-storage; the
   `workloads` phase provisions only the gateway.
-- **No change to local dev:** the self-hosted Qwen path (`.105`/`.140`
+- **No change to local dev:** the self-hosted Qwen path (`.105`
   `llama.cpp` + ai-gateway) stays as-is and remains the free development and
-  qualification path. `.140`/`.105` are never a production Azure dependency.
+  qualification path. `.105` is never a production Azure dependency.
+  (`.140` is retired and is never used for anything — not dev, not qualification,
+  not rollback.)
 - The self-hosted-in-Azure sidecar/GPU direction (previously the recommended
   Path A) is deprioritized for production but **retained as a documented
   fallback** if Foundry cost, quality, or json-schema support proves
