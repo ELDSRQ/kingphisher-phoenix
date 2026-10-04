@@ -30,6 +30,7 @@ from kp_operator_api.curation_service import curate_forwarded_message
 
 from kp_workers.jobs import WorkerContext
 from kp_workers.providers.curation_mime import MAX_RAW_BYTES, extract_forwarded_phish
+from kp_workers.providers.microsoft365 import Microsoft365MailboxError, Microsoft365ReportedMailboxProvider
 
 logger = logging.getLogger(__name__)
 
@@ -77,18 +78,47 @@ def _fetch_mailpit_forwards(settings: Any, address: str) -> list[bytes]:
     return raws
 
 
+def _fetch_graph_forwards(settings: Any) -> list[bytes]:
+    """Return raw MIME of recent messages from the Microsoft Graph curation mailbox.
+
+    Reuses the hardened reported-mail Graph client (auth, retry, size and
+    content-type guards) via its body-fetching ``list_raw_messages`` read. The
+    raw MIME still goes through the same hardened curation extractor.
+    """
+    mailbox_id = (settings.reported_mailbox_id or "").strip()
+    if not mailbox_id:
+        logger.info("curation: Microsoft Graph source needs a reported mailbox id; skipping run")
+        return []
+    try:
+        provider = Microsoft365ReportedMailboxProvider(
+            settings.effective_reported_mailbox_url,
+            mailbox_id=mailbox_id,
+            folder_id=settings.reported_mailbox_folder_id,
+            bearer_token=settings.reported_mailbox_bearer_token,
+            managed_identity_client_id=settings.reported_mailbox_client_id,
+            timeout=settings.provider_timeout_seconds,
+            page_size=settings.curation_poll_limit,
+            max_messages=max(settings.curation_poll_limit, 1),
+        )
+        return provider.list_raw_messages(settings.curation_poll_limit)
+    except (ValueError, RuntimeError, Microsoft365MailboxError):
+        logger.info("curation: Microsoft Graph fetch failed; skipping run")
+        return []
+
+
 def process_curate(ctx: WorkerContext, message: dict[str, Any]) -> None:
     """One scheduled curation run over the forward-a-phish mailbox."""
     settings = ctx.settings
     address = (settings.curation_mailbox_address or "").strip().lower()
     if not address:
         return  # curation disabled: no mailbox configured
-    if settings.reported_mailbox_provider != "mailpit":
-        # Microsoft Graph body-fetch is a managed-path follow-up; fail closed.
-        logger.info("curation: only the mailpit source is implemented; skipping run")
+    if settings.reported_mailbox_provider == "mailpit":
+        raws = _fetch_mailpit_forwards(settings, address)
+    elif settings.reported_mailbox_provider == "microsoft365":
+        raws = _fetch_graph_forwards(settings)
+    else:
+        logger.info("curation: unsupported mailbox provider %s; skipping run", settings.reported_mailbox_provider)
         return
-
-    raws = _fetch_mailpit_forwards(settings, address)
     if not raws:
         return
 

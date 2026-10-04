@@ -287,6 +287,49 @@ class Microsoft365ReportedMailboxProvider:
             raise Microsoft365MailboxError("malformed_response")
         return payload
 
+    def list_raw_messages(self, limit: int = 25) -> list[bytes]:
+        """Return raw MIME bytes of the most recent folder messages, for curation.
+
+        A non-delta, body-FETCHING read used only by the forwarded-phish curation
+        poll (distinct from :meth:`poll`, which is delta-based and body-free). It
+        reuses the same auth, retry, size and content-type guards. Attachments
+        are not a concern: the raw MIME is handed to the hardened curation
+        extractor, which never reads attachment parts.
+        """
+        limit = max(1, min(limit, self._page_size))
+        list_url = self._start_url[: -len("/delta")] if self._start_url.endswith("/delta") else self._start_url
+        raws: list[bytes] = []
+        with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+            try:
+                payload = self._request_bytes(
+                    client,
+                    list_url,
+                    max_bytes=self._max_response_bytes,
+                    params={"$top": str(limit), "$select": "id", "$orderby": "receivedDateTime desc"},
+                    expected_content="json",
+                )
+            except Microsoft365MailboxError:
+                return []
+            try:
+                data = json.loads(payload)
+            except ValueError:
+                return []
+            items = data.get("value") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                return []
+            for item in items[:limit]:
+                external_id = item.get("id") if isinstance(item, dict) else None
+                if not isinstance(external_id, str) or not external_id:
+                    continue
+                mime_url = urljoin(self._message_base_url, f"{quote(external_id, safe='')}/$value")
+                try:
+                    raws.append(
+                        self._request_bytes(client, mime_url, max_bytes=self._max_mime_bytes, expected_content="mime")
+                    )
+                except Microsoft365MailboxError:
+                    continue
+        return raws
+
     def poll(self, cursor: str | None = None) -> ReportedMailboxPollResult:
         try:
             return self._poll(cursor)

@@ -195,6 +195,7 @@ def test_library_search_filters_are_bounded_and_do_not_leak_raw_content(client: 
             "cloned_from_subject": None,
             "is_auto_curated": False,
             "curated_source": None,
+            "curated_first_seen": None,
         }
     ]
     assert "private_prompt" not in templates.text
