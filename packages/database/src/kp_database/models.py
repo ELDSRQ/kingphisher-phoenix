@@ -416,6 +416,10 @@ class Campaign(Base):
     recall_of = mapped_column(UUID(as_uuid=True), nullable=True)
     created_by = mapped_column(UUID(as_uuid=True), nullable=True)
     expires_at = mapped_column(DateTime(timezone=True), nullable=False)
+    #: When this campaign row was created. Added so the console can show and
+    #: sort campaigns by recency; server_default now() backfills existing rows
+    #: (which predate the column) to the migration time.
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
 
 
 class CampaignProgram(Base):

@@ -1910,7 +1910,12 @@ def list_campaigns(
     principal: Principal = Depends(require_capability(Capability.VIEW_AGGREGATE)),
 ) -> list[dict[str, Any]]:
     rows = (
-        session.execute(select(Campaign).order_by(Campaign.campaign_id.desc()).offset(offset).limit(limit))
+        session.execute(
+            select(Campaign)
+            .order_by(Campaign.created_at.desc(), Campaign.campaign_id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
         .scalars()
         .all()
     )
@@ -1961,6 +1966,7 @@ def list_campaigns(
             "campaign_id": str(c.campaign_id),
             "title": c.title,
             "state": c.state.value,
+            "created_at": c.created_at,
             "schedule_start": c.schedule_start,
             "schedule_end": c.schedule_end,
             "sender_mailbox": c.sender_mailbox,

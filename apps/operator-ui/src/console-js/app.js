@@ -3633,7 +3633,7 @@ views.campaigns = async (root) => {
 
   const list = el("table", { "aria-label": "Campaign status, readiness, and actions" }, [
     el("thead", {}, [el("tr", {}, [
-      el("th", { text: "Title" }), el("th", { text: "Sender" }), el("th", { text: "Audience" }), el("th", { text: "Training lesson" }), el("th", { text: "RoE" }), el("th", { text: "State" }), el("th", { text: "Readiness" }), el("th", { text: "Actions" }),
+      el("th", { text: "Title" }), el("th", { text: "Created" }), el("th", { text: "Sender" }), el("th", { text: "Audience" }), el("th", { text: "Training lesson" }), el("th", { text: "RoE" }), el("th", { text: "State" }), el("th", { text: "Readiness" }), el("th", { text: "Actions" }),
     ])]),
     el("tbody", {}, campaigns.map((c) => {
       const readiness = readinessForCampaign(c, readinessContext, enforcing);
@@ -3642,6 +3642,7 @@ views.campaigns = async (root) => {
       const actionAuthorityValid = hasBooleanActionFlags(c, CAMPAIGN_ACTION_FLAGS);
       return el("tr", {}, [
       el("td", { text: c.title }),
+      el("td", { text: c.created_at ? formatInstant(c.created_at) : "—", title: c.created_at ? "When this campaign was created" : "" }),
       el("td", { text: c.sender_display_name ? `${c.sender_display_name} <${c.sender_mailbox}>` : c.sender_mailbox }),
       el("td", {}, [el("span", { class: `pill ${c.audience_frozen ? "ok" : "down"}`, text: c.audience_frozen ? `frozen v${c.audience_version}` : "not frozen" })]),
       el("td", {}, [el("span", {
@@ -5964,6 +5965,7 @@ views.training = async (root) => {
       }
       return el("tr", {}, [
         el("td", { text: resource.title || "Untitled lesson" }),
+        el("td", { text: resource.created_at ? formatInstant(resource.created_at) : "—", title: resource.created_at ? "When this lesson was created" : "" }),
         el("td", { text: String(resource.version || 1) }),
         el("td", { text: resource.source_ref || "Not provided" }),
         el("td", {}, [el("span", { class: `pill ${resource.approval_state === "approved" ? "ok" : "down"}`, text: resource.approval_state || "unknown" })]),
@@ -5972,7 +5974,7 @@ views.training = async (root) => {
       ]);
     });
     results.replaceChildren(el("table", {}, [
-      el("thead", {}, [el("tr", {}, ["Lesson", "Version", "Source reference", "Review state", "Completion", "Actions"]
+      el("thead", {}, [el("tr", {}, ["Lesson", "Created", "Version", "Source reference", "Review state", "Completion", "Actions"]
         .map((label) => el("th", { text: label })))]),
       el("tbody", {}, rows),
     ]));
