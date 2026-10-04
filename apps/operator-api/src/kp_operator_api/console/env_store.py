@@ -160,6 +160,9 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         "KP_WORKER_AI_BASE_URL",
         "KP_WORKER_AI_BEARER_TOKEN",
         "KP_WORKER_AI_API_KEY",
+        # Repinned by the BYO-model provider selector so the worker accepts the
+        # selected model's output (see console/ai_providers.py).
+        "KP_WORKER_AI_MODEL_ID",
         "KP_WORKER_GRAPH_BASE_URL",
         "KP_WORKER_GRAPH_CLIENT_ID",
         "KP_WORKER_GRAPH_GROUP_IDS",

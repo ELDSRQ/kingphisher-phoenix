@@ -32,7 +32,9 @@ import json
 import logging
 import secrets
 from html import escape as html_escape
+from pathlib import Path
 from typing import Any, Self
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -443,6 +445,63 @@ def _apply_generation_bounds(
         payload["reasoning_effort"] = reasoning_effort
 
 
+#: Upper bound on the BYO-model provider state file read. The file is a tiny
+#: JSON object (provider, base_url, model_id, api_key, auth_style); refusing to
+#: read anything larger keeps a corrupt, truncated, or hostile file from being
+#: slurped into memory and is part of the fail-safe-to-local contract.
+_PROVIDER_STATE_MAX_BYTES = 64 * 1024
+
+
+def _active_provider() -> dict[str, Any] | None:
+    """Return the operator-selected external generation provider, or ``None``.
+
+    Reads the BYO-model state file (``settings.provider_state_file``, resolved
+    relative to the gateway's working directory — the repo root). Returns the
+    parsed object ONLY when the file exists, is within the size bound, parses as
+    a JSON object, and selects a non-local provider. Returns ``None`` on ANY
+    file/JSON error, or when ``provider`` is absent or ``"local"``.
+
+    This is the fail-safe-to-local seam: a missing, partial, oversized, or
+    malformed file must never crash ``/propose`` — the gateway then uses its
+    env-configured local upstream exactly as before. The gateway only ever
+    READS this file; a sibling component writes it.
+    """
+
+    path = Path(settings.provider_state_file)
+    try:
+        if not path.is_file():
+            return None
+        if path.stat().st_size > _PROVIDER_STATE_MAX_BYTES:
+            return None
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # unreadable file or invalid JSON -> fall back to local
+        return None
+    if not isinstance(state, dict):
+        return None
+    if state.get("provider", "local") == "local":
+        return None
+    return state
+
+
+def _provider_base_url(base_url: Any) -> str | None:
+    """Return a trailing-slash-stripped http(s) base URL with a host, else ``None``.
+
+    An external provider that does not supply a syntactically valid http(s) URL
+    with a host is treated as unusable, and ``/propose`` falls back to the local
+    upstream (fail safe) rather than POSTing to a bogus endpoint.
+    """
+
+    if not isinstance(base_url, str):
+        return None
+    try:
+        parsed = urlparse(base_url.strip())
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return base_url.strip().rstrip("/")
+
+
 @app.post("/propose", response_model=None, dependencies=[Depends(require_caller)])
 async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
     placeholder = body.training_url or TRAINING_URL_PLACEHOLDER
@@ -455,11 +514,32 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
         },
     }
     _apply_generation_bounds(payload, reasoning_effort=settings.reasoning_effort)
-    endpoint = settings.llama_base_url.rstrip("/") + "/chat/completions"
+    # BYO-model selection seam: when the operator has selected an external
+    # provider (the state file), route generation there — its base URL, request
+    # model, auth header, and returned model_id. Any problem resolving the
+    # provider (absent/invalid file, provider=="local", bad base_url, missing
+    # model_id) falls back to the env-configured local upstream, exactly as
+    # before. Only the endpoint URL, auth headers, request model, and returned
+    # model_id change; everything else below is identical in both paths.
+    provider = _active_provider()
+    provider_base = _provider_base_url(provider.get("base_url")) if provider is not None else None
+    provider_model = provider.get("model_id") if provider is not None else None
+    if provider is not None and provider_base is not None and isinstance(provider_model, str) and provider_model:
+        active_model_id = provider_model
+        endpoint = provider_base + "/chat/completions"
+        payload["model"] = provider_model
+        provider_headers: dict[str, str] | None = (
+            {"Authorization": f"Bearer {provider.get('api_key', '')}"} if provider.get("auth_style") == "bearer" else {}
+        )
+    else:
+        active_model_id = settings.model_id
+        endpoint = settings.llama_base_url.rstrip("/") + "/chat/completions"
+        provider_headers = None
     try:
-        # Outbound auth for the upstream (AI-015 Path D). In the default local
-        # posture this is an empty mapping, so no header is added.
-        headers = await _upstream_headers()
+        # Outbound auth. For an external provider it is the bearer/none header
+        # built above; for the local/managed upstream it is ``_upstream_headers``
+        # (AI-015 Path D) — an empty mapping in the default local posture.
+        headers = provider_headers if provider_headers is not None else await _upstream_headers()
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             response = await client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
@@ -477,12 +557,13 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
     subject = str(parsed.get("subject", ""))[:200]
     plain_text = _ensure_placeholder(str(parsed.get("plain_text", "")), placeholder, html=False)
     safe_html = _ensure_placeholder(str(parsed.get("safe_html", "")), placeholder, html=True)
-    # The pinned identity is the gateway's, not the model's self-report.
+    # The pinned identity is the model actually used: the selected provider's
+    # model_id, else the gateway's configured id — never the model's self-report.
     return {
         "subject": subject,
         "plain_text": plain_text,
         "safe_html": safe_html,
-        "model_id": settings.model_id,
+        "model_id": active_model_id,
     }
 
 

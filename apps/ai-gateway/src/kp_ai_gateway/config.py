@@ -209,6 +209,16 @@ class GatewaySettings(BaseSettings):
     #: be targeted without a code change.
     upstream_token_scope: str = _DEFAULT_UPSTREAM_SCOPE
 
+    #: BYO-model selection seam. Path to the state file a sibling component writes
+    #: (mode 0600) when the operator selects a non-local generation provider. It
+    #: is resolved relative to the gateway's working directory (the repo root), so
+    #: the default lands at ``<repo-root>/data/run/ai-provider.json``. Only
+    #: ``/propose`` consumes it, and ONLY as read-only input: absent, unreadable,
+    #: invalid, or ``provider == "local"`` means the gateway uses its env-configured
+    #: local upstream exactly as before (fail safe to local). The file is never
+    #: written by the gateway.
+    provider_state_file: str = "data/run/ai-provider.json"
+
     @model_validator(mode="after")
     def _upstream_auth_config_is_coherent(self) -> Self:
         """Fail closed when an authenticated upstream is selected but not configured.

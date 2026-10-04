@@ -277,6 +277,9 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "PUT /api/v1/console/config",
             "POST /api/v1/console/restart",
             "POST /api/v1/console/model-control/swap",
+            "GET /api/v1/console/ai-providers",
+            "PUT /api/v1/console/ai-providers/{provider}",
+            "POST /api/v1/console/ai-providers/select",
         ),
     ),
 )

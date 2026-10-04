@@ -1218,3 +1218,136 @@ def test_settings_accept_aggregate_config(monkeypatch) -> None:
     assert s.aggregate_timeout_seconds == 7200.0
     assert s.aggregate_reasoning_effort == "none"
     assert s.aggregate_max_output_tokens == 8000
+
+
+# --- BYO-model: operator-selected external generation provider ---------------
+#
+# A sibling component writes <repo-root>/data/run/ai-provider.json when the
+# operator picks a non-local provider. /propose consumes it read-only and must
+# fail SAFE to the env-configured local upstream on any problem.
+
+
+def _local_endpoint() -> str:
+    return gateway_main.settings.llama_base_url.rstrip("/") + "/chat/completions"
+
+
+def _point_state_file(monkeypatch, tmp_path, payload) -> None:
+    """Point the gateway at a state file; ``payload`` is written as-is (str) or JSON."""
+
+    state_path = tmp_path / "ai-provider.json"
+    if payload is not None:
+        state_path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(gateway_main.settings, "provider_state_file", str(state_path))
+
+
+def test_propose_uses_local_when_no_state_file(monkeypatch, tmp_path) -> None:
+    # No state file present -> behaviour is byte-for-byte the local path.
+    monkeypatch.setattr(gateway_main.settings, "provider_state_file", str(tmp_path / "absent.json"))
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == _local_endpoint()
+    assert captured[0]["json"]["model"] == gateway_main.settings.model_id
+    assert "Authorization" not in captured[0]["headers"]
+    assert resp.json()["model_id"] == gateway_main.settings.model_id
+
+
+def test_propose_routes_to_external_provider_with_bearer(monkeypatch, tmp_path) -> None:
+    _point_state_file(
+        monkeypatch,
+        tmp_path,
+        {
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1/",  # trailing slash must be stripped
+            "model_id": "gpt-4o",
+            "api_key": "sk-secret",
+            "auth_style": "bearer",
+        },
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == "https://api.openai.com/v1/chat/completions"
+    assert captured[0]["headers"]["Authorization"] == "Bearer sk-secret"
+    assert captured[0]["json"]["model"] == "gpt-4o"
+    # The returned identity is the model actually used, not the gateway default.
+    assert resp.json()["model_id"] == "gpt-4o"
+    assert resp.json()["model_id"] != gateway_main.settings.model_id
+    # Everything else (schema-constrained decoding) is unchanged.
+    assert captured[0]["json"]["response_format"]["json_schema"]["strict"] is True
+
+
+def test_propose_external_provider_auth_style_none_sends_no_header(monkeypatch, tmp_path) -> None:
+    _point_state_file(
+        monkeypatch,
+        tmp_path,
+        {
+            "provider": "ollama",
+            "base_url": "http://10.0.0.5:11434/v1",
+            "model_id": "llama3.1",
+            "api_key": "ignored",
+            "auth_style": "none",
+        },
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == "http://10.0.0.5:11434/v1/chat/completions"
+    assert "Authorization" not in captured[0]["headers"]
+    assert resp.json()["model_id"] == "llama3.1"
+
+
+def test_propose_falls_back_to_local_when_provider_is_local(monkeypatch, tmp_path) -> None:
+    _point_state_file(monkeypatch, tmp_path, {"provider": "local", "model_id": "ignored"})
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == _local_endpoint()
+    assert resp.json()["model_id"] == gateway_main.settings.model_id
+
+
+def test_propose_falls_back_to_local_on_malformed_state_file(monkeypatch, tmp_path) -> None:
+    _point_state_file(monkeypatch, tmp_path, "{not valid json")
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == _local_endpoint()
+    assert resp.json()["model_id"] == gateway_main.settings.model_id
+
+
+def test_propose_falls_back_to_local_on_oversized_state_file(monkeypatch, tmp_path) -> None:
+    # A file larger than the read bound is refused and the gateway uses local.
+    big = {"provider": "openai", "base_url": "https://api.openai.com/v1", "model_id": "gpt-4o", "pad": "x" * 70000}
+    _point_state_file(monkeypatch, tmp_path, big)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == _local_endpoint()
+    assert resp.json()["model_id"] == gateway_main.settings.model_id
+
+
+def test_propose_falls_back_to_local_on_bad_base_url(monkeypatch, tmp_path) -> None:
+    # A non-http(s) / hostless base_url is unusable -> local (fail safe).
+    _point_state_file(
+        monkeypatch,
+        tmp_path,
+        {"provider": "openai", "base_url": "ftp://nope", "model_id": "gpt-4o", "api_key": "k", "auth_style": "bearer"},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == _local_endpoint()
+    assert resp.json()["model_id"] == gateway_main.settings.model_id
+
+
+def test_active_provider_returns_none_without_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(gateway_main.settings, "provider_state_file", str(tmp_path / "absent.json"))
+    assert gateway_main._active_provider() is None
+
+
+def test_settings_default_provider_state_file(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    monkeypatch.delenv("KP_AI_GATEWAY_PROVIDER_STATE_FILE", raising=False)
+    assert GatewaySettings().provider_state_file == "data/run/ai-provider.json"
