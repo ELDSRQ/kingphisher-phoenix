@@ -70,6 +70,9 @@ from kp_operator_api.connection_probes import (
     _test_webhook,
     _validated_acs_endpoint,
 )
+from kp_operator_api.console.ai_providers import (
+    router as _ai_providers_router,
+)
 from kp_operator_api.console.azure_deployment_routes import (
     AzureDeploymentAdvanceRequest,
     AzureDeploymentConfirmationRequest,
@@ -537,6 +540,7 @@ for _seam_router in (
     _config_router,
     _runtime_status_router,
     _model_control_router,
+    _ai_providers_router,
 ):
     for _seam_route in _seam_router.routes:
         router.routes.append(_seam_route)

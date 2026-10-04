@@ -8533,7 +8533,185 @@ views.settings = async (root) => {
       }),
     ]));
   }
+
+  // BYO-model: provider API keys + which provider/model generates content.
+  // Only operators who can manage roles see or touch this; it mounts below the
+  // core settings form as its own card so provider state loads (and fails)
+  // independently of the .env form above.
+  if (hasCapability(CAPABILITY.MANAGE_ROLES)) await renderAiProvidersPanel(root);
 };
+
+// BYO-model: "Generation model & providers" settings panel. Reads provider
+// state from GET /console/ai-providers (keys are never returned — only
+// has_key), saves per-provider credentials/model via PUT
+// /console/ai-providers/{key} (blank api_key keeps the current one, matching
+// the masked-secret convention used by the .env form above), and makes a
+// provider active via POST /console/ai-providers/select. Selecting a hosted
+// provider that sends content offsite is confirmed first.
+async function renderAiProvidersPanel(root) {
+  const card = el("div", { class: "card" });
+  card.appendChild(el("h3", { text: "Generation model & providers" }));
+  root.appendChild(card);
+
+  let data;
+  try {
+    data = await api("/console/ai-providers");
+  } catch (e) {
+    card.appendChild(collectionLoadError(
+      `Failed to load AI providers: ${e.message}`,
+      () => render(),
+    ));
+    return;
+  }
+
+  const managed = Boolean(data.managed);
+  const providers = Array.isArray(data.providers) ? data.providers : [];
+
+  card.appendChild(el("p", {
+    class: "sub",
+    text: "The local model runs on-prem with no egress. Selecting a hosted provider sends generation content to that third party.",
+  }));
+
+  if (managed) {
+    card.appendChild(el("div", { class: "notice", role: "status" }, [
+      el("strong", { text: "Provider configuration is managed" }),
+      el("p", { text: "AI providers are configured by the managed deployment and cannot be changed from this console." }),
+    ]));
+  }
+
+  if (!providers.length) {
+    card.appendChild(el("p", { class: "field-help", text: "No AI providers are available." }));
+    return;
+  }
+
+  for (const p of providers) {
+    const row = el("div", { class: "card" });
+    const head = el("div", { class: "card-head" }, [
+      el("h3", { text: p.label || p.key }),
+    ]);
+    const pills = el("div", {});
+    if (p.is_active) pills.appendChild(el("span", { class: "pill ok", text: "ACTIVE" }));
+    if (p.needs_key) {
+      pills.appendChild(el("span", {
+        class: p.has_key ? "pill" : "pill down",
+        text: p.has_key ? "Key saved" : "No key",
+      }));
+    }
+    head.appendChild(pills);
+    row.appendChild(head);
+
+    if (p.notes) row.appendChild(el("p", { class: "field-help", text: p.notes }));
+
+    const grid = el("div", { class: "form-grid" });
+    const idPrefix = `ai-provider-${p.key}`;
+
+    // API key (masked) — omitted entirely for a provider that needs no key
+    // (the local on-prem model).
+    let keyInput = null;
+    if (p.needs_key) {
+      const keyId = `${idPrefix}-key`;
+      keyInput = el("input", {
+        id: keyId,
+        type: "password",
+        placeholder: "leave blank to keep current",
+        "aria-label": `${p.label} API key`,
+        disabled: managed ? "" : null,
+      });
+      grid.appendChild(el("div", {}, [
+        el("label", { for: keyId, text: "API key" }),
+        keyInput,
+      ]));
+    }
+
+    // Model id — prefilled with the stored value; placeholder shows the
+    // provider default, or an example for aggregators with no default model.
+    const modelId = `${idPrefix}-model`;
+    const modelInput = el("input", {
+      id: modelId,
+      value: p.model_id || "",
+      placeholder: p.default_model || "model id, e.g. openai/gpt-4o",
+      "aria-label": `${p.label} model id`,
+      disabled: managed ? "" : null,
+    });
+    grid.appendChild(el("div", {}, [
+      el("label", { for: modelId, text: "Model id" }),
+      modelInput,
+    ]));
+
+    // Base URL — optional override; placeholder shows the provider default.
+    const baseId = `${idPrefix}-base`;
+    const baseInput = el("input", {
+      id: baseId,
+      value: p.base_url || "",
+      placeholder: p.default_base_url || "",
+      "aria-label": `${p.label} base URL`,
+      disabled: managed ? "" : null,
+    });
+    grid.appendChild(el("div", {}, [
+      el("label", { for: baseId, text: "Base URL" }),
+      baseInput,
+    ]));
+
+    row.appendChild(grid);
+
+    if (!managed) {
+      const controls = [];
+      controls.push(el("button", {
+        class: "btn primary", type: "button", text: "Save",
+        onclick: async (e) => {
+          const btn = e.target; btn.disabled = true;
+          const body = {};
+          if (keyInput && keyInput.value) body.api_key = keyInput.value; // blank = keep current
+          body.model_id = modelInput.value;
+          body.base_url = baseInput.value;
+          try {
+            await api(`/console/ai-providers/${encodeURIComponent(p.key)}`, {
+              method: "PUT",
+              body: JSON.stringify(body),
+            });
+            toast(`Saved ${p.label} settings.`, "success");
+            render();
+          } catch (err) { toast(err.message, "error"); }
+          finally { btn.disabled = false; }
+        },
+      }));
+      if (!p.is_active) {
+        controls.push(el("button", {
+          class: "btn", type: "button", text: "Use this model",
+          onclick: async (e) => {
+            if (p.key !== "local" && p.sends_data_offsite) {
+              const confirmed = await promptDialog({
+                title: `Use ${p.label}?`,
+                description: "Generation content will be sent to this third-party provider.",
+                fields: [{
+                  name: "ack",
+                  label: `I understand generation content will be sent to ${p.label}`,
+                  type: "checkbox",
+                  required: true,
+                }],
+                submitLabel: "Use this model",
+              });
+              if (!confirmed) return; // cancelled, or acknowledgement not ticked
+            }
+            const btn = e.target; btn.disabled = true;
+            try {
+              await api("/console/ai-providers/select", {
+                method: "POST",
+                body: JSON.stringify({ provider: p.key }),
+              });
+              toast(`${p.label} is now the active generation model.`, "success");
+              render();
+            } catch (err) { toast(err.message, "error"); }
+            finally { btn.disabled = false; }
+          },
+        }));
+      }
+      row.appendChild(el("div", { class: "btn-row" }, controls));
+    }
+
+    card.appendChild(row);
+  }
+}
 
 /* ---------- boot ---------- */
 let oidcSessionChecked = false;
