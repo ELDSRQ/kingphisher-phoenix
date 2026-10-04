@@ -432,6 +432,7 @@ def test_entrypoint_role_topics_match_their_single_owned_queues() -> None:
         "reminder": "remind",
         "alert": "alert",
         "directory": "directory",
+        "curation": "curate",
     }
 
 

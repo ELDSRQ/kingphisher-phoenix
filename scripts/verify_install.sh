@@ -97,6 +97,7 @@ local_supervisor_worker_children=(
   worker-reminder
   worker-alert
   worker-directory
+  worker-curation
   worker-audit-anchor
 )
 

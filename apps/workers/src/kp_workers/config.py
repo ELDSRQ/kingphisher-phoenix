@@ -277,6 +277,13 @@ class WorkerSettings(BaseSettings):
     reported_mailbox_url: str | None = None
     reported_mailbox_provider: Literal["mailpit", "microsoft365"] = "mailpit"
     reported_mailbox_client_id: str | None = None
+    # --- forwarded-phish curation (B2) ---
+    # The address users forward suspicious emails to; empty disables the
+    # scheduled curation poll. The mailpit API (mailpit_api_url) is the on-prem
+    # source; Microsoft Graph body-fetch is a follow-up for the managed path.
+    curation_mailbox_address: str = Field(default="", max_length=320)
+    curation_interval_seconds: int = Field(default=3600, ge=60, le=86400)
+    curation_poll_limit: int = Field(default=25, ge=1, le=200)
     reported_mailbox_id: str | None = None
     reported_mailbox_folder_id: str = "inbox"
     reported_mailbox_bearer_token: str | None = None

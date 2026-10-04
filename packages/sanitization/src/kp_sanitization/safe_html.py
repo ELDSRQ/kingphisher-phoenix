@@ -187,14 +187,40 @@ _DATA_IMAGE_RE = re.compile(
 )
 
 
+#: CSS comment and escape handling, so an obfuscated ``url(...)`` cannot hide
+#: from the blocklist below. ``ur/**/l(`` (comment), ``\75 rl(`` (hex escape),
+#: and ``url\28 ...\29`` (escaped parens) must all normalize to ``url(``.
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+_CSS_ESCAPE_RE = re.compile(r"\\(?:([0-9a-fA-F]{1,6})\s?|(.))", re.S)
+
+
+def _decode_css_escapes(value: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        hex_digits, literal = match.group(1), match.group(2)
+        if hex_digits:
+            try:
+                return chr(int(hex_digits, 16))
+            except (ValueError, OverflowError):
+                return ""
+        return literal or ""
+
+    return _CSS_ESCAPE_RE.sub(_replace, value)
+
+
 def _sanitize_style(value: str) -> str:
     """Drop any CSS declaration that could fetch a resource or run code.
 
     Keeps colour/font/spacing/border/layout declarations; removes ``url(...)``,
     ``@import``, ``expression(...)``, ``javascript:``/``vbscript:`` values,
-    ``-moz-binding``/``behavior`` and off-flow ``position: fixed|absolute``.
+    ``-moz-binding``/``behavior`` and off-flow ``position: fixed|absolute``. The
+    dangerous-token test runs against a normalized probe (comments stripped,
+    HTML entities and CSS escapes decoded) so obfuscated forms cannot slip past;
+    this makes the sanitizer self-sufficient rather than relying on the
+    delivery-time validator to catch the same thing.
     """
 
+    # Strip CSS comments up front so they cannot hide a token or break the split.
+    value = _CSS_COMMENT_RE.sub("", value)
     safe: list[str] = []
     for declaration in value.split(";"):
         decl = declaration.strip()
@@ -203,8 +229,8 @@ def _sanitize_style(value: str) -> str:
         prop, _, val = decl.partition(":")
         prop_l = prop.strip().lower()
         val_l = val.strip().lower()
-        compact = re.sub(r"\s+", "", f"{prop_l}:{val_l}")
-        if any(token in compact for token in _STYLE_BLOCKLIST):
+        probe = re.sub(r"\s+", "", _decode_css_escapes(_html_unescape(f"{prop_l}:{val_l}")))
+        if any(token in probe for token in _STYLE_BLOCKLIST):
             continue
         if prop_l == "position" and val_l in {"fixed", "absolute"}:
             continue

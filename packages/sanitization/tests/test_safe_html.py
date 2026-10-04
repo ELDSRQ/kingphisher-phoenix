@@ -234,3 +234,21 @@ def test_default_drops_all_external_images() -> None:
     out = _clean('<img src="https://cdn.brand.com/logo.png"><p>k</p>')
     assert "<img" not in out and "cdn.brand.com" not in out
     assert "k" in out
+
+
+def test_obfuscated_css_url_is_stripped_from_style() -> None:
+    # CSS-escape / comment obfuscation must not smuggle a remote url() past the
+    # sanitizer (defense-in-depth; the delivery validator also blocks these).
+    for style in (
+        r"background:\75 rl(https://evil.example/a)",  # \75 = 'u'
+        r"background:url\28 https://evil.example/b\29",  # escaped parens
+        "background:ur/**/l(https://evil.example/c)",  # CSS comment
+    ):
+        out = _clean(f'<p style="{style}">hi</p>')
+        assert "evil.example" not in out, style
+        assert "url(" not in out.lower()
+
+
+def test_safe_style_with_a_comment_keeps_the_safe_declaration() -> None:
+    out = _clean('<p style="color:#0a66c2; /* brand */ background-color:#fff">hi</p>')
+    assert "color:#0a66c2" in out and "background-color:#fff" in out
