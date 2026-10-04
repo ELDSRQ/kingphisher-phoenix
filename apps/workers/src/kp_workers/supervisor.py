@@ -282,6 +282,11 @@ class WorkerSupervisor:
 
                 maybe_publish_mailbox(spec.context, self._utcnow())
                 state.last_self_publish = now
+            if spec.topic == "curate" and now - state.last_self_publish >= settings.curation_interval_seconds:
+                from kp_workers.curation_jobs import maybe_publish_curate
+
+                maybe_publish_curate(spec.context, self._utcnow())
+                state.last_self_publish = now
             if spec.topic == "audit-anchor" and (
                 state.last_self_publish == 0.0
                 or now - state.last_self_publish >= settings.audit_anchor_interval_seconds

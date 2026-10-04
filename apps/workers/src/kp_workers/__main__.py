@@ -17,6 +17,7 @@ from kp_telemetry.logging import configure_logging
 from kp_workers import jobs
 from kp_workers.audit_anchor_jobs import process_audit_anchor
 from kp_workers.config import WorkerSettings
+from kp_workers.curation_jobs import process_curate
 from kp_workers.supervisor import RoleSpec, WorkerSupervisor
 
 WORKERS = {
@@ -29,6 +30,7 @@ WORKERS = {
     "reminder": ("remind", jobs.process_reminder),
     "alert": ("alert", jobs.process_alert),
     "directory": ("directory", jobs.process_directory_sync),
+    "curation": ("curate", process_curate),
 }
 
 

@@ -39,6 +39,7 @@ CHILDREN: dict[str, list[str]] = {
     "worker-reminder": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "reminder"],
     "worker-alert": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "alert"],
     "worker-directory": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "directory"],
+    "worker-curation": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "curation"],
     # AUD-003: the audit-anchor worker witnesses verified audit heads. Locally
     # it uses the create-only LocalWorm provider (KP_WORKER_AUDIT_ANCHOR_PROVIDER
     # =local_worm) writing under KP_WORKER_AUDIT_ANCHOR_LOCAL_DIR.

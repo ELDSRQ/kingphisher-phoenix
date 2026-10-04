@@ -163,6 +163,10 @@ _ALLOWED_KEYS: frozenset[str] = frozenset(
         # Repinned by the BYO-model provider selector so the worker accepts the
         # selected model's output (see console/ai_providers.py).
         "KP_WORKER_AI_MODEL_ID",
+        # Forward-a-phish curation (B2): the mailbox users forward to, and the
+        # scheduled poll interval. Empty address disables curation.
+        "KP_WORKER_CURATION_MAILBOX_ADDRESS",
+        "KP_WORKER_CURATION_INTERVAL_SECONDS",
         "KP_WORKER_GRAPH_BASE_URL",
         "KP_WORKER_GRAPH_CLIENT_ID",
         "KP_WORKER_GRAPH_GROUP_IDS",
