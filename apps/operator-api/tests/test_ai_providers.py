@@ -86,7 +86,7 @@ def env_file(tmp_path: Path) -> Path:
 
 
 def test_registry_has_all_expected_providers() -> None:
-    assert set(registry.PROVIDERS) == {"local", "openai", "gemini", "anthropic", "openrouter", "opencode"}
+    assert set(registry.PROVIDERS) == {"local", "openai", "gemini", "anthropic", "openrouter", "opencode", "custom"}
     assert registry.preset("openai").needs_key is True
     assert registry.preset("local").needs_key is False
     assert registry.resolve_base_url("openai", None) == "https://api.openai.com/v1"
@@ -205,3 +205,32 @@ def test_select_aggregator_requires_a_model_id(env_file: Path) -> None:
     session.add(AiGenerationProvider(provider="openrouter", api_key="sk-or", model_id=None, is_active=False))
     with pytest.raises(ValidationError_):
         _select(session, env_file, "openrouter")
+
+
+def test_select_custom_requires_a_base_url(env_file: Path) -> None:
+    session = _Session()
+    # custom needs no key, but a self-hosted endpoint has no default base URL.
+    session.add(AiGenerationProvider(provider="custom", api_key=None, model_id="dolphin-llama3", is_active=False))
+    with pytest.raises(ValidationError_):
+        _select(session, env_file, "custom")
+
+
+def test_select_custom_local_no_key_uses_auth_none(env_file: Path) -> None:
+    session = _Session()
+    session.add(
+        AiGenerationProvider(
+            provider="custom",
+            api_key=None,
+            model_id="huihui/llama3.3-abliterated",
+            base_url="http://127.0.0.1:11434/v1",
+            is_active=False,
+        )
+    )
+    out = _select(session, env_file, "custom")
+    assert out["active"] is True
+    state = json.loads((env_file.parent / "data" / "run" / "ai-provider.json").read_text())
+    assert state["provider"] == "custom"
+    assert state["base_url"] == "http://127.0.0.1:11434/v1"
+    assert state["model_id"] == "huihui/llama3.3-abliterated"
+    assert state["api_key"] == ""
+    assert state["auth_style"] == "none"
