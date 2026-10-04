@@ -203,9 +203,13 @@ def select_ai_provider(
     else:
         new_pin = (local_row.model_id if local_row and local_row.model_id else current_pin) or ""
 
-    # Flip the active flag to exactly this provider.
+    # Flip the active flag to exactly this provider. Deactivate everything and
+    # flush FIRST so the single-active partial unique index is never transiently
+    # violated when switching between two hosted providers (deactivate must hit
+    # the DB before the new activation).
     for existing in rows.values():
         existing.is_active = False
+    session.flush()
     if provider != registry.LOCAL:
         if row is None:
             row = AiGenerationProvider(provider=provider, is_active=True)
@@ -213,11 +217,25 @@ def select_ai_provider(
         else:
             row.is_active = True
 
-    # Write (or clear) the gateway state file.
+    # Capture the plaintext key before commit (CipherText decrypts on load).
+    api_key = (row.api_key or "") if (provider != registry.LOCAL and row) else ""
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="ai-provider.select",
+        object_type="ai_generation_provider",
+        object_id=provider,
+        detail={"model_id": model_id, "sends_data_offsite": preset.sends_data_offsite},
+    )
+    # Commit the durable selection BEFORE any filesystem/env side effects, so a
+    # constraint failure cannot leave an orphaned state file pointing the gateway
+    # at a provider the database rolled back.
+    session.commit()
+
+    # Side effects the gateway + worker read, applied only after the DB is durable.
     if provider == registry.LOCAL:
         _clear_state_file(settings)
     else:
-        api_key = (row.api_key or "") if row else ""
         _write_state_file(
             settings,
             {
@@ -230,18 +248,7 @@ def select_ai_provider(
                 "auth_style": preset.auth_style if api_key else registry.AUTH_NONE,
             },
         )
-
-    # Repin the worker's expected model and signal a restart so it takes effect.
     if new_pin and new_pin != current_pin:
         _atomic_update_env(env_path, {_WORKER_MODEL_PIN_KEY: new_pin})
-    audit.record(
-        session=session,
-        actor=principal.principal_id,
-        action="ai-provider.select",
-        object_type="ai_generation_provider",
-        object_id=provider,
-        detail={"model_id": model_id, "sends_data_offsite": preset.sends_data_offsite},
-    )
-    session.commit()
     _signal_restart(settings)
     return {"provider": provider, "active": True, "model_id": model_id, "restart_requested": True}

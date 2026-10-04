@@ -50,6 +50,9 @@ class _Session:
     def scalars(self, _stmt: object) -> _Scalars:
         return _Scalars(list(self.store.values()))
 
+    def flush(self) -> None:
+        pass
+
     def commit(self) -> None:
         self.commits += 1
 
@@ -234,3 +237,15 @@ def test_select_custom_local_no_key_uses_auth_none(env_file: Path) -> None:
     assert state["model_id"] == "huihui/llama3.3-abliterated"
     assert state["api_key"] == ""
     assert state["auth_style"] == "none"
+
+
+def test_switch_between_two_hosted_providers_leaves_one_active(env_file: Path) -> None:
+    session = _Session()
+    session.add(AiGenerationProvider(provider="openrouter", api_key="k1", model_id="m/one", is_active=False))
+    session.add(AiGenerationProvider(provider="opencode", api_key="k2", model_id="m/two", is_active=False))
+    _select(session, env_file, "openrouter")
+    _select(session, env_file, "opencode")
+    actives = [p for p, r in session.store.items() if r.is_active]
+    assert actives == ["opencode"]
+    state = json.loads((env_file.parent / "data" / "run" / "ai-provider.json").read_text())
+    assert state["provider"] == "opencode" and state["model_id"] == "m/two"
