@@ -6,8 +6,8 @@ import uuid
 from typing import Any
 
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER
+from kp_curation.curation_service import CURATED_MODEL_ID, curate_forwarded_message
 from kp_domain_models import models as dm
-from kp_operator_api.curation_service import CURATED_MODEL_ID, curate_forwarded_message
 
 _HTML = '<p>Dear user, your Microsoft 365 password expires. <a href="https://evil.example/x">Verify now</a>.</p>'
 

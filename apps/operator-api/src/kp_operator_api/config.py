@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from enum import StrEnum
 from typing import Literal
 
 from kp_database.awareness_ledger import (
@@ -16,6 +15,7 @@ from kp_database.awareness_ledger import (
     LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
 )
 from kp_domain_models.policy import ApprovalPolicy, parse_domain_allowlist
+from kp_domain_models.profile import KPProfile
 from kp_telemetry.settings import local_dotenv_file
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,19 +27,6 @@ _ACS_TOPIC = re.compile(
 )
 _CIPHERTEXT_KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
 _MAX_CIPHERTEXT_PRIOR_KEYS = 4
-
-
-class KPProfile(StrEnum):
-    """Deployment profile that expands into concrete settings.
-
-    - local-dev: disposable local stack (dev-auth, relaxed approvals, .env config)
-    - local-hardened: production-like local stack (OIDC, strict approvals, env_file)
-    - azure: managed Azure Container Apps deployment (managed config, OIDC, Key Vault)
-    """
-
-    LOCAL_DEV = "local-dev"
-    LOCAL_HARDENED = "local-hardened"
-    AZURE = "azure"
 
 
 class OperatorApiSettings(BaseSettings):
