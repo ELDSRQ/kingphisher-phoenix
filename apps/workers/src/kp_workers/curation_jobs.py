@@ -64,6 +64,7 @@ def _fetch_mailpit_forwards(settings: Any, address: str) -> list[bytes]:
         with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
             summary = client.get(f"{base}/api/v1/search", params={"query": f"to:{address}", "limit": limit})
             if summary.status_code != 200:
+                logger.warning("curation: mailpit search returned HTTP %d; skipping run", summary.status_code)
                 return []
             messages = summary.json().get("messages") or []
             for item in messages[:limit]:
@@ -73,7 +74,8 @@ def _fetch_mailpit_forwards(settings: Any, address: str) -> list[bytes]:
                 raw = client.get(f"{base}/api/v1/message/{message_id}/raw")
                 if raw.status_code == 200 and 0 < len(raw.content) <= MAX_RAW_BYTES:
                     raws.append(raw.content)
-    except (httpx.HTTPError, ValueError, KeyError):
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("curation: mailpit fetch failed (%s); skipping run", type(exc).__name__)
         return []
     return raws
 
@@ -101,8 +103,8 @@ def _fetch_graph_forwards(settings: Any) -> list[bytes]:
             max_messages=max(settings.curation_poll_limit, 1),
         )
         return provider.list_raw_messages(settings.curation_poll_limit)
-    except (ValueError, RuntimeError, Microsoft365MailboxError):
-        logger.info("curation: Microsoft Graph fetch failed; skipping run")
+    except (ValueError, RuntimeError, Microsoft365MailboxError) as exc:
+        logger.warning("curation: Microsoft Graph fetch failed (%s); skipping run", type(exc).__name__)
         return []
 
 
