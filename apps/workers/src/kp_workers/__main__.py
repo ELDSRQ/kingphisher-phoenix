@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import signal
 import threading
@@ -81,11 +82,38 @@ def _enabled_roles(name: str) -> tuple[str, ...]:
     return roles
 
 
+logger = logging.getLogger(__name__)
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _supervise_shared_db() -> bool:
+    """Whether supervised roles may share the single ``KP_WORKER_DATABASE_URL``.
+
+    Off by default so a multi-tenant deployment keeps its per-role least-privilege
+    URLs; a single-tenant deployment sets ``KP_WORKER_SUPERVISE_SHARED_DB=1`` to
+    avoid declaring an identical ``KP_WORKER_DATABASE_URL_<ROLE>`` for every role.
+    """
+
+    return os.environ.get("KP_WORKER_SUPERVISE_SHARED_DB", "").strip().lower() in _TRUTHY
+
+
 def _role_settings(base: WorkerSettings, role: str) -> WorkerSettings:
     database_variable = f"KP_WORKER_DATABASE_URL_{role.upper().replace('-', '_')}"
     database_url = os.environ.get(database_variable)
     if base.worker_name == "supervise" and not database_url:
-        raise RuntimeError(f"{database_variable} is required for supervised role {role}")
+        if _supervise_shared_db():
+            database_url = base.database_url
+            logger.info(
+                "supervised role %r uses the shared KP_WORKER_DATABASE_URL (KP_WORKER_SUPERVISE_SHARED_DB is set)",
+                role,
+            )
+        else:
+            raise RuntimeError(
+                f"{database_variable} is required for supervised role {role!r}. "
+                "Set a per-role database URL, or set KP_WORKER_SUPERVISE_SHARED_DB=1 to share the single "
+                "KP_WORKER_DATABASE_URL across all roles (single-tenant deployments)."
+            )
     values = base.model_dump(exclude={"worker_name", "database_url"})
     return WorkerSettings(
         **values,
