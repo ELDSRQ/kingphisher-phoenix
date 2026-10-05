@@ -98,6 +98,21 @@ def test_registry_has_all_expected_providers() -> None:
     assert registry.resolve_model("openai", "gpt-4.1") == "gpt-4.1"
 
 
+def test_classify_egress_from_base_url_host() -> None:
+    # R-02: egress is derived from the actual base URL host, not a preset guess.
+    assert registry.classify_egress("http://127.0.0.1:11434/v1") == registry.EGRESS_ON_NETWORK
+    assert registry.classify_egress("http://192.168.1.24:11434/v1") == registry.EGRESS_ON_NETWORK
+    assert registry.classify_egress("http://ollama.local/v1") == registry.EGRESS_ON_NETWORK
+    assert registry.classify_egress("https://api.openai.com/v1") == registry.EGRESS_OFFSITE
+    assert registry.classify_egress("https://8.8.8.8/v1") == registry.EGRESS_OFFSITE
+    assert registry.classify_egress("") == registry.EGRESS_UNKNOWN
+    assert registry.classify_egress("http://") == registry.EGRESS_UNKNOWN
+    # local is on-network by construction; a public custom URL is honestly offsite.
+    assert registry.provider_egress("local", None) == registry.EGRESS_ON_NETWORK
+    assert registry.provider_egress("custom", "http://127.0.0.1:11434/v1") == registry.EGRESS_ON_NETWORK
+    assert registry.provider_egress("custom", "https://api.example.com/v1") == registry.EGRESS_OFFSITE
+
+
 # --- list / save -------------------------------------------------------------
 
 
@@ -188,6 +203,30 @@ def test_select_provider_writes_state_file_and_repins(env_file: Path) -> None:
     assert session.store["local"].model_id == "qwen-local"
     assert session.store["openai"].is_active is True
     assert (env_file.parent / "data" / "run" / "restart").exists()
+
+
+def test_select_records_truthful_egress(env_file: Path) -> None:
+    # R-02: the immutable ai-provider.select audit detail reflects the ACTUAL
+    # base URL, not the static preset flag — a custom provider pointed at the
+    # public internet must record offsite, and a loopback one on-network.
+    for base_url, expect_egress, expect_offsite in (
+        ("https://api.example.com/v1", registry.EGRESS_OFFSITE, True),
+        ("http://127.0.0.1:11434/v1", registry.EGRESS_ON_NETWORK, False),
+    ):
+        session = _Session()
+        session.add(AiGenerationProvider(provider="custom", base_url=base_url, model_id="m", is_active=False))
+        audit = _Audit()
+        select_ai_provider(
+            ProviderSelectRequest(provider="custom"),
+            request=_request(env_file),  # type: ignore[arg-type]
+            session=session,  # type: ignore[arg-type]
+            audit=audit,  # type: ignore[arg-type]
+            settings=_settings(env_file),
+            principal=_principal(),
+        )
+        detail = audit.events[0]["detail"]
+        assert detail["egress"] == expect_egress
+        assert detail["sends_data_offsite"] is expect_offsite
 
 
 def test_select_local_clears_state_and_restores_pin(env_file: Path) -> None:

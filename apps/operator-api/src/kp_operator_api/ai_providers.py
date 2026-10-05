@@ -13,11 +13,54 @@ egress decision — never a default.
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 #: Outbound auth styles the gateway understands for a provider's upstream call.
 AUTH_NONE = "none"
 AUTH_BEARER = "bearer"  # Authorization: Bearer <key>  (OpenAI/Gemini/OpenRouter/OpenCode/Anthropic-compat)
+
+#: Egress classification of a selected provider's effective base URL (R-02). The
+#: audit record and UI must reflect whether generation content actually leaves
+#: the local network, not a static per-preset guess — a ``custom`` base URL can
+#: point anywhere.
+EGRESS_ON_NETWORK = "on_network"
+EGRESS_OFFSITE = "offsite"
+EGRESS_UNKNOWN = "unknown"
+
+#: Host name suffixes treated as on-network without DNS resolution.
+_ON_NETWORK_HOST_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home.arpa")
+
+
+def classify_egress(base_url: str | None) -> str:
+    """Classify whether content sent to ``base_url`` leaves the local network.
+
+    Decided from the URL host alone (no DNS, to stay deterministic): loopback /
+    RFC1918 / link-local IPs and loopback-style names are ``on_network``; a
+    malformed/empty URL is ``unknown``; any other (public, or a hostname we
+    cannot prove is internal) is ``offsite``. Defaulting an unprovable host to
+    ``offsite`` is the honest, fail-safe choice: the system never falsely claims
+    "no data leaves your network".
+    """
+
+    if not base_url:
+        return EGRESS_UNKNOWN
+    try:
+        host = (urlparse(base_url).hostname or "").strip().lower()
+    except ValueError:
+        return EGRESS_UNKNOWN
+    if not host:
+        return EGRESS_UNKNOWN
+    if host == "localhost" or host.endswith(_ON_NETWORK_HOST_SUFFIXES):
+        return EGRESS_ON_NETWORK
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return EGRESS_OFFSITE  # a non-loopback hostname we cannot prove is internal
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return EGRESS_ON_NETWORK
+    return EGRESS_OFFSITE
 
 
 @dataclass(frozen=True)
@@ -107,10 +150,24 @@ PROVIDERS: dict[str, ProviderPreset] = {
         notes=(
             "Point at any OpenAI-compatible endpoint you host, e.g. a local abliterated/uncensored model "
             "served by Ollama (http://127.0.0.1:11434/v1) or vLLM. Set the base URL and model id; an API "
-            "key is optional (used only if your server requires one). No data leaves your network."
+            "key is optional (used only if your server requires one). Whether data stays on your network "
+            "depends on the base URL — the console classifies it and records the actual egress."
         ),
     ),
 }
+
+
+def provider_egress(provider: str, base_url: str | None) -> str:
+    """Egress class for a selected provider; ``local`` is always on-network.
+
+    ``local`` runs through the gateway's own configured backend and has no
+    operator-set base URL, so it is on-network by construction. Every other
+    provider is classified from its effective base URL (see ``classify_egress``).
+    """
+
+    if provider == LOCAL:
+        return EGRESS_ON_NETWORK
+    return classify_egress(base_url)
 
 
 def is_known_provider(provider: str) -> bool:

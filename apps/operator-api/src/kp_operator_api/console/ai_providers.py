@@ -104,6 +104,11 @@ def list_ai_providers(
     providers = []
     for key, preset in registry.PROVIDERS.items():
         row = rows.get(key)
+        # R-02: classify egress from the EFFECTIVE base URL the operator would
+        # use, not the static per-preset guess — a custom/self-hosted base URL
+        # can point anywhere. sends_data_offsite stays truthful for the UI's
+        # offsite-confirmation gate; egress carries the three-way detail.
+        egress = registry.provider_egress(key, registry.resolve_base_url(key, row.base_url if row else None))
         providers.append(
             {
                 "key": key,
@@ -111,7 +116,8 @@ def list_ai_providers(
                 "default_base_url": preset.default_base_url,
                 "default_model": preset.default_model,
                 "needs_key": preset.needs_key,
-                "sends_data_offsite": preset.sends_data_offsite,
+                "sends_data_offsite": egress != registry.EGRESS_ON_NETWORK,
+                "egress": egress,
                 "notes": preset.notes,
                 "has_key": bool(row and row.api_key),
                 "model_id": (row.model_id if row else None),
@@ -219,13 +225,21 @@ def select_ai_provider(
 
     # Capture the plaintext key before commit (CipherText decrypts on load).
     api_key = (row.api_key or "") if (provider != registry.LOCAL and row) else ""
+    # R-02: record the egress derived from the ACTUAL base URL, not the static
+    # per-preset flag — otherwise the immutable audit chain can state "no data
+    # leaves the network" for a custom provider pointing at the public internet.
+    egress = registry.provider_egress(provider, base_url)
     audit.record(
         session=session,
         actor=principal.principal_id,
         action="ai-provider.select",
         object_type="ai_generation_provider",
         object_id=provider,
-        detail={"model_id": model_id, "sends_data_offsite": preset.sends_data_offsite},
+        detail={
+            "model_id": model_id,
+            "egress": egress,
+            "sends_data_offsite": egress != registry.EGRESS_ON_NETWORK,
+        },
     )
     # Commit the durable selection BEFORE any filesystem/env side effects, so a
     # constraint failure cannot leave an orphaned state file pointing the gateway
