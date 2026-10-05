@@ -636,12 +636,30 @@ def test_postgres_is_never_destroyed_or_deleted() -> None:
 # --------------------------------------------------------------------------
 
 
+def _diag(msg: str, result: object, calls: list[str]) -> str:
+    """Self-diagnosing failure text for subprocess contract assertions (R-01).
+
+    An empty ``calls`` used to raise a bare ``IndexError``/``StopIteration`` with
+    no script output, so a flake (e.g. the script exiting early under host load)
+    could not diagnose itself. Including the shim's return code, stdout, and
+    stderr turns such a failure into evidence of why the script produced no
+    terraform calls.
+    """
+
+    rc = getattr(result, "returncode", "?")
+    stdout = getattr(result, "stdout", "")
+    stderr = getattr(result, "stderr", "")
+    return f"{msg}: rc={rc} stdout={stdout!r} stderr={stderr!r} calls={calls!r}"
+
+
 def test_start_initialises_the_backend_too(tmp_path: Path) -> None:
-    _, calls = _run_script(tmp_path, "start", stdin="no\n")
+    result, calls = _run_script(tmp_path, "start", stdin="no\n")
     terraform_calls = [call for call in calls if call.startswith("terraform ")]
-    assert terraform_calls[0].startswith("terraform init")
-    plan = next(call for call in calls if call.startswith("terraform plan"))
-    assert "-var=deploy_data_plane=true" in plan
+    assert terraform_calls, _diag("start produced no terraform calls", result, calls)
+    assert terraform_calls[0].startswith("terraform init"), _diag("first terraform call is not init", result, calls)
+    plans = [call for call in calls if call.startswith("terraform plan")]
+    assert plans, _diag("start produced no terraform plan call", result, calls)
+    assert "-var=deploy_data_plane=true" in plans[0], _diag("plan missing deploy_data_plane=true", result, calls)
 
 
 def test_the_default_resume_does_not_deploy_workloads_against_deleted_images(tmp_path: Path) -> None:
