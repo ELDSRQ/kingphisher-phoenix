@@ -12,13 +12,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, status
 from kp_authorization.rbac import Capability, Principal
+from kp_curation.curation_service import curate_forwarded_message
 from kp_database.audit_store import AuditStore
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_capability
 from kp_operator_api.config import OperatorApiSettings
-from kp_operator_api.curation_service import curate_forwarded_message
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
 
 router = APIRouter(prefix="/api/v1")

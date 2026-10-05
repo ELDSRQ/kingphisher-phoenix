@@ -20,7 +20,7 @@ dependencies = [
     "kp-campaign-patterns",
     "kp-safety-validation",
     "kp-templating",
-    "kp-operator-api",
+    "kp-curation",
 ]
 
 [project.scripts]

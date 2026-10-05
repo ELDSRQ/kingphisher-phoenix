@@ -26,7 +26,7 @@ from kp_domain_models import models as dm
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from kp_operator_api.clone_service import CloneError, clone_real_message
+from kp_curation.clone_service import CloneError, clone_real_message
 
 #: model_id stamped on auto-curated clones, distinct from operator clones.
 CURATED_MODEL_ID = "auto-curated/1"

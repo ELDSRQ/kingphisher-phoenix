@@ -128,7 +128,12 @@ confused with originals. (Clones created before this feature are unlabeled.)
 API key for OpenAI, Gemini, Anthropic/Claude, **OpenRouter**, or **OpenCode**,
 set the model id (and optional base-URL override), and select which provider
 generates — or keep **Local** (the on-prem model, the default, no egress). Keys
-are encrypted at rest and never shown back. Selecting a hosted provider:
+are stored encrypted in the database and never shown back. Note (R-04): when a
+hosted provider is the **active** one, its key is also written to a local
+`0600` runtime file (`data/run/ai-provider.json`) that the gateway reads per
+request, in plaintext — so treat `data/run/` as secret in any backup/DR copy
+(encrypting that file at rest is a tracked follow-up, QA T-04). Selecting a
+hosted provider:
 - **sends the threat evidence + generated lure to that third party** — an
   explicit opt-in (a confirmation is required), never a default; and
 - repins the worker model and restarts the stack (a few seconds).

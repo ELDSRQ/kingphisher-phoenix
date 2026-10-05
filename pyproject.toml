@@ -25,6 +25,7 @@ exclude = [
 
 [tool.uv.sources]
 kp-domain-models = { workspace = true }
+kp-curation = { workspace = true }
 kp-contracts = { workspace = true }
 kp-auditing = { workspace = true }
 kp-authorization = { workspace = true }

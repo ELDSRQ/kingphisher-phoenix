@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER
-from kp_operator_api.clone_service import CloneError, clone_real_message
+from kp_curation.clone_service import CloneError, clone_real_message
 
 
 def test_preserves_deceptive_copy_and_neutralizes_the_link() -> None:
