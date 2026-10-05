@@ -27,6 +27,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #:   identity is the only managed posture, so no key can be leaked or rotated.
 UpstreamAuthMode = Literal["none", "entra"]
 
+#: How the gateway asks the backend for structured output.
+#: * ``json_schema`` — OpenAI strict structured outputs (the default), correct
+#:   for Azure/managed backends and any backend that compiles a JSON-schema
+#:   grammar.
+#: * ``json_object`` — ask only for valid JSON. A self-hosted llama.cpp/Ollama
+#:   backend cannot compile a JSON-schema grammar carrying string length/pattern
+#:   bounds (it fails ``400 failed to parse grammar``); the generation prompt
+#:   already dictates the exact fields, so valid-JSON mode is sufficient.
+#: * ``text`` — send no structured-output directive (rely on the prompt alone).
+ResponseFormatMode = Literal["json_schema", "json_object", "text"]
+
 #: Default Entra audience for Azure AI Foundry / Azure AI Services endpoints.
 #: Foundry Serverless accepts a Cognitive Services audience token.
 _DEFAULT_UPSTREAM_SCOPE = "https://cognitiveservices.azure.com/.default"
@@ -62,6 +73,11 @@ class GatewaySettings(BaseSettings):
 
     #: Per-request timeout to the llama.cpp server, in seconds.
     request_timeout_seconds: float = 120.0
+
+    #: Structured-output mode for the backend (see ``ResponseFormatMode``). The
+    #: default preserves OpenAI strict ``json_schema`` for Azure/managed; a
+    #: self-hosted llama.cpp/Ollama backend sets ``json_object``.
+    response_format_mode: ResponseFormatMode = "json_schema"
 
     #: Sampling temperature. Zero for reproducible, review-stable drafts on
     #: backends that accept it (local llama.cpp, gpt-oss-120b). Some current GA

@@ -103,6 +103,23 @@ def test_propose_sends_schema_constrained_decoding(monkeypatch) -> None:
     }
 
 
+def test_propose_response_format_json_object_mode(monkeypatch) -> None:
+    # A self-hosted llama.cpp/Ollama backend cannot compile a JSON-schema grammar
+    # with length bounds; json_object asks only for valid JSON (the prompt fixes
+    # the fields) so the gateway must send exactly {"type": "json_object"}.
+    monkeypatch.setattr(gateway_main.settings, "response_format_mode", "json_object")
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    assert captured[0]["json"]["response_format"] == {"type": "json_object"}
+
+
+def test_propose_response_format_text_mode_sends_no_directive(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "response_format_mode", "text")
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    assert "response_format" not in captured[0]["json"]
+
+
 # --- P0: optional reliability bounds (reasoning_effort + completion tokens) --
 
 

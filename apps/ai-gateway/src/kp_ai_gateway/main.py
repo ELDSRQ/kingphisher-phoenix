@@ -445,6 +445,31 @@ def _apply_generation_bounds(
         payload["reasoning_effort"] = reasoning_effort
 
 
+def _set_response_format(payload: dict[str, Any], schema_name: str, schema: dict[str, Any]) -> None:
+    """Attach the structured-output directive for the configured mode.
+
+    ``json_schema`` (the default) uses OpenAI strict structured outputs — correct
+    for Azure/managed backends. A self-hosted llama.cpp/Ollama backend cannot
+    compile a JSON-schema grammar that carries string length/pattern bounds (it
+    fails with ``400 failed to parse grammar``), so such deployments set
+    ``KP_AI_GATEWAY_RESPONSE_FORMAT_MODE=json_object`` — valid-JSON only, which is
+    sufficient because the prompt already dictates the exact output fields — or
+    ``text`` to send no directive at all. Length/shape limits are re-enforced by
+    the platform after generation, so dropping the grammar loses no safety.
+    """
+
+    mode = settings.response_format_mode
+    if mode == "text":
+        return
+    if mode == "json_object":
+        payload["response_format"] = {"type": "json_object"}
+        return
+    payload["response_format"] = {
+        "type": "json_schema",
+        "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+    }
+
+
 #: Upper bound on the BYO-model provider state file read. The file is a tiny
 #: JSON object (provider, base_url, model_id, api_key, auth_style); refusing to
 #: read anything larger keeps a corrupt, truncated, or hostile file from being
@@ -508,11 +533,8 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
     payload: dict[str, Any] = {
         "model": settings.model_id,
         "messages": _build_messages(body),
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "generation_response", "schema": _RESPONSE_SCHEMA, "strict": True},
-        },
     }
+    _set_response_format(payload, "generation_response", _RESPONSE_SCHEMA)
     _apply_generation_bounds(payload, reasoning_effort=settings.reasoning_effort)
     # BYO-model selection seam: when the operator has selected an external
     # provider (the state file), route generation there — its base URL, request
@@ -609,11 +631,8 @@ async def extract(body: ExtractRequest) -> dict[str, Any] | JSONResponse:
     payload: dict[str, Any] = {
         "model": settings.extract_model_id,
         "messages": _build_extract_messages(body),
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "campaign_record", "schema": _EXTRACT_RESPONSE_SCHEMA, "strict": True},
-        },
     }
+    _set_response_format(payload, "campaign_record", _EXTRACT_RESPONSE_SCHEMA)
     _apply_generation_bounds(payload, reasoning_effort=settings.extract_reasoning_effort)
     endpoint = settings.llama_base_url.rstrip("/") + "/chat/completions"
     try:
@@ -693,11 +712,8 @@ async def aggregate(body: AggregateRequest) -> dict[str, Any] | JSONResponse:
     payload: dict[str, Any] = {
         "model": settings.aggregate_model_id,
         "messages": _build_aggregate_messages(body),
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"name": "aggregate_response", "schema": _AGGREGATE_RESPONSE_SCHEMA, "strict": True},
-        },
     }
+    _set_response_format(payload, "aggregate_response", _AGGREGATE_RESPONSE_SCHEMA)
     # The background tier applies its OWN reasoning effort and output cap; passing
     # the cap explicitly keeps the chat ``max_completion_tokens`` out of it.
     _apply_generation_bounds(
