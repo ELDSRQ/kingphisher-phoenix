@@ -1,0 +1,19 @@
+[Unit]
+Description=KingPhisher: SSH forward tunnel to HALO Ollama (127.0.0.1:11434 -> 192.168.1.24:11434)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Forward .105 localhost:11434 to HALO's Ollama (bound to 192.168.1.24:11434).
+# HALO's nftables firewall (CROW-managed) exposes only SSH, so we ride the open
+# :22 instead of opening 11434. The key on .24 (edierks ~/.ssh/authorized_keys)
+# is scoped: restrict,port-forwarding,permitopen="192.168.1.24:11434" — it can
+# ONLY forward to Ollama, no shell, no other forwards.
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -L 127.0.0.1:11434:192.168.1.24:11434 edierks@192.168.1.24
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
