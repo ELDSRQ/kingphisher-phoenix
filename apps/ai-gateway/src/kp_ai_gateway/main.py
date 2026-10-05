@@ -445,20 +445,36 @@ def _apply_generation_bounds(
         payload["reasoning_effort"] = reasoning_effort
 
 
-def _set_response_format(payload: dict[str, Any], schema_name: str, schema: dict[str, Any]) -> None:
-    """Attach the structured-output directive for the configured mode.
+def _resolve_response_format_mode() -> str:
+    """Resolve ``auto`` to a concrete mode from the upstream backend.
 
-    ``json_schema`` (the default) uses OpenAI strict structured outputs — correct
-    for Azure/managed backends. A self-hosted llama.cpp/Ollama backend cannot
-    compile a JSON-schema grammar that carries string length/pattern bounds (it
-    fails with ``400 failed to parse grammar``), so such deployments set
-    ``KP_AI_GATEWAY_RESPONSE_FORMAT_MODE=json_object`` — valid-JSON only, which is
-    sufficient because the prompt already dictates the exact output fields — or
-    ``text`` to send no directive at all. Length/shape limits are re-enforced by
-    the platform after generation, so dropping the grammar loses no safety.
+    A managed ``entra`` backend (Azure AI Foundry) supports OpenAI strict
+    ``json_schema``; a self-hosted ``none`` backend (llama.cpp/Ollama) cannot
+    compile a json_schema grammar with string length/pattern bounds (it fails
+    ``400 failed to parse grammar``), so it defaults to ``json_object``. This
+    makes a fresh self-hosted install generate without hand-tuning. An explicit
+    mode overrides this.
     """
 
     mode = settings.response_format_mode
+    if mode != "auto":
+        return mode
+    return "json_schema" if settings.upstream_auth_mode == "entra" else "json_object"
+
+
+def _set_response_format(payload: dict[str, Any], schema_name: str, schema: dict[str, Any]) -> None:
+    """Attach the structured-output directive for the configured mode.
+
+    ``auto`` (the default) picks per backend (see ``_resolve_response_format_mode``).
+    ``json_object`` asks for valid JSON only — sufficient because the prompt
+    already dictates the exact output fields, and the only mode a self-hosted
+    llama.cpp/Ollama backend can satisfy (its json_schema grammar rejects the
+    contract's string length bounds). ``text`` sends no directive. Length/shape
+    limits are re-enforced by the platform after generation, so dropping the
+    grammar loses no safety.
+    """
+
+    mode = _resolve_response_format_mode()
     if mode == "text":
         return
     if mode == "json_object":
@@ -477,35 +493,60 @@ def _set_response_format(payload: dict[str, Any], schema_name: str, schema: dict
 _PROVIDER_STATE_MAX_BYTES = 64 * 1024
 
 
+class ProviderStateUnusable(Exception):
+    """The provider state file exists but is unreadable/malformed/incomplete.
+
+    The sibling component writes this file ONLY when a non-local provider is
+    selected and unlinks it on ``local`` selection, so its mere presence means
+    an external provider IS selected. If it cannot be used, the gateway must NOT
+    silently substitute the local upstream (R-05) — that would route nothing to
+    the selected provider, carry the local model id, and make the worker
+    dead-letter with a model-pin reason that names the wrong cause (and in the
+    symmetric stale-file case could route content to an unintended third party).
+    The caller turns this into a stable 503 so the failure matches reality.
+    """
+
+
 def _active_provider() -> dict[str, Any] | None:
     """Return the operator-selected external generation provider, or ``None``.
 
     Reads the BYO-model state file (``settings.provider_state_file``, resolved
-    relative to the gateway's working directory — the repo root). Returns the
-    parsed object ONLY when the file exists, is within the size bound, parses as
-    a JSON object, and selects a non-local provider. Returns ``None`` on ANY
-    file/JSON error, or when ``provider`` is absent or ``"local"``.
+    relative to the gateway's working directory — the repo root).
 
-    This is the fail-safe-to-local seam: a missing, partial, oversized, or
-    malformed file must never crash ``/propose`` — the gateway then uses its
-    env-configured local upstream exactly as before. The gateway only ever
-    READS this file; a sibling component writes it.
+    - File ABSENT, or present and selecting ``local`` → ``None``: no external
+      provider is selected, so the gateway uses its env-configured local upstream
+      (the intended, safe default). The gateway only READS this file.
+    - File PRESENT but oversized/unreadable/non-JSON/not-an-object → raises
+      ``ProviderStateUnusable``: a provider IS selected but its state is broken,
+      so the caller fails closed with a 503 rather than silently using local.
     """
 
     path = Path(settings.provider_state_file)
+    if not path.is_file():
+        return None
     try:
-        if not path.is_file():
-            return None
         if path.stat().st_size > _PROVIDER_STATE_MAX_BYTES:
-            return None
+            raise ProviderStateUnusable
         state = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):  # unreadable file or invalid JSON -> fall back to local
-        return None
+    except (OSError, ValueError) as exc:
+        raise ProviderStateUnusable from exc
     if not isinstance(state, dict):
-        return None
+        raise ProviderStateUnusable
     if state.get("provider", "local") == "local":
         return None
     return state
+
+
+def _provider_state_unavailable() -> JSONResponse:
+    """Stable 503 when a selected external provider cannot be resolved (R-05).
+
+    The code is deliberately distinct from ``generation backend unavailable`` so
+    the worker can map it to an actionable dead-letter reason ("generation
+    provider unavailable — reselect the provider in Settings") rather than a
+    model-pin mismatch that names the wrong cause.
+    """
+
+    return JSONResponse(status_code=503, content={"detail": "provider_state_unavailable"})
 
 
 def _provider_base_url(base_url: Any) -> str | None:
@@ -537,16 +578,22 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
     _set_response_format(payload, "generation_response", _RESPONSE_SCHEMA)
     _apply_generation_bounds(payload, reasoning_effort=settings.reasoning_effort)
     # BYO-model selection seam: when the operator has selected an external
-    # provider (the state file), route generation there — its base URL, request
-    # model, auth header, and returned model_id. Any problem resolving the
-    # provider (absent/invalid file, provider=="local", bad base_url, missing
-    # model_id) falls back to the env-configured local upstream, exactly as
-    # before. Only the endpoint URL, auth headers, request model, and returned
-    # model_id change; everything else below is identical in both paths.
-    provider = _active_provider()
-    provider_base = _provider_base_url(provider.get("base_url")) if provider is not None else None
-    provider_model = provider.get("model_id") if provider is not None else None
-    if provider is not None and provider_base is not None and isinstance(provider_model, str) and provider_model:
+    # provider (the state file exists), route generation there — its base URL,
+    # request model, auth header, and returned model_id. A selected provider
+    # whose state is unusable (unreadable file, or an invalid base URL / missing
+    # model) fails closed with a 503 instead of silently using the local upstream
+    # (R-05), so the dead-letter reason matches reality. Only when NO external
+    # provider is selected (file absent / provider=="local") is the local
+    # upstream used.
+    try:
+        provider = _active_provider()
+    except ProviderStateUnusable:
+        return _provider_state_unavailable()
+    if provider is not None:
+        provider_base = _provider_base_url(provider.get("base_url"))
+        provider_model = provider.get("model_id")
+        if provider_base is None or not isinstance(provider_model, str) or not provider_model:
+            return _provider_state_unavailable()
         active_model_id = provider_model
         endpoint = provider_base + "/chat/completions"
         payload["model"] = provider_model

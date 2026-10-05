@@ -78,6 +78,7 @@ def test_propose_returns_the_pinned_model_id_not_the_models_self_report(monkeypa
 
 
 def test_propose_sends_schema_constrained_decoding(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "response_format_mode", "json_schema")
     captured = _stub_llama(
         monkeypatch,
         content=json.dumps(
@@ -118,6 +119,32 @@ def test_propose_response_format_text_mode_sends_no_directive(monkeypatch) -> No
     captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
     assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
     assert "response_format" not in captured[0]["json"]
+
+
+def test_propose_auto_mode_uses_json_object_for_self_hosted(monkeypatch) -> None:
+    # The default (auto) + a self-hosted "none" upstream resolves to json_object,
+    # so a fresh self-hosted install generates without the json_schema grammar 400.
+    monkeypatch.setattr(gateway_main.settings, "response_format_mode", "auto")
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "none")
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    assert captured[0]["json"]["response_format"] == {"type": "json_object"}
+
+
+def test_auto_response_format_resolves_per_backend(monkeypatch) -> None:
+    # auto keeps OpenAI strict json_schema for a managed "entra" backend and uses
+    # json_object for a self-hosted "none" backend. Tested at the resolver so the
+    # managed branch does not require stubbing the Entra token path.
+    monkeypatch.setattr(gateway_main.settings, "response_format_mode", "auto")
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "entra")
+    managed: dict = {}
+    gateway_main._set_response_format(managed, "generation_response", {"type": "object"})
+    assert managed["response_format"]["type"] == "json_schema"
+    assert managed["response_format"]["json_schema"]["strict"] is True
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "none")
+    self_hosted: dict = {}
+    gateway_main._set_response_format(self_hosted, "generation_response", {"type": "object"})
+    assert self_hosted["response_format"] == {"type": "json_object"}
 
 
 # --- P0: optional reliability bounds (reasoning_effort + completion tokens) --
@@ -810,6 +837,7 @@ def test_extract_returns_pinned_record(monkeypatch) -> None:
 
 
 def test_extract_sends_strict_campaign_record_schema_and_model(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "response_format_mode", "json_schema")
     monkeypatch.setattr(gateway_main.settings, "extract_model_id", "gpt-5.6-luna")
     monkeypatch.setattr(gateway_main.settings, "extract_reasoning_effort", "none")
     captured = _stub_llama(monkeypatch, content=_OK_RECORD)
@@ -1106,6 +1134,7 @@ def test_aggregate_returns_candidates_with_pinned_model_id(monkeypatch) -> None:
 
 
 def test_aggregate_sends_strict_schema_pinned_model_and_untrusted_items(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "response_format_mode", "json_schema")
     monkeypatch.setattr(gateway_main.settings, "aggregate_model_id", "rtx/analyst")
     monkeypatch.setattr(gateway_main.settings, "aggregate_reasoning_effort", "none")
     captured = _stub_aggregate_backend(monkeypatch, content=_OK_AGGREGATE)
@@ -1290,8 +1319,10 @@ def test_propose_routes_to_external_provider_with_bearer(monkeypatch, tmp_path) 
     # The returned identity is the model actually used, not the gateway default.
     assert resp.json()["model_id"] == "gpt-4o"
     assert resp.json()["model_id"] != gateway_main.settings.model_id
-    # Everything else (schema-constrained decoding) is unchanged.
-    assert captured[0]["json"]["response_format"]["json_schema"]["strict"] is True
+    # Structured output under the default (auto) mode is json_object — the safe
+    # format for a heterogeneous BYO backend (some cannot compile a json_schema
+    # grammar); the prompt still dictates the exact output fields.
+    assert captured[0]["json"]["response_format"] == {"type": "json_object"}
 
 
 def test_propose_external_provider_auth_style_none_sends_no_header(monkeypatch, tmp_path) -> None:
@@ -1323,28 +1354,30 @@ def test_propose_falls_back_to_local_when_provider_is_local(monkeypatch, tmp_pat
     assert resp.json()["model_id"] == gateway_main.settings.model_id
 
 
-def test_propose_falls_back_to_local_on_malformed_state_file(monkeypatch, tmp_path) -> None:
+def test_propose_503_not_local_on_malformed_state_file(monkeypatch, tmp_path) -> None:
+    # R-05: the file exists (a non-local provider IS selected) but is unreadable.
+    # The gateway must fail closed with a named 503, never silently use local.
     _point_state_file(monkeypatch, tmp_path, "{not valid json")
     captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
     resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
-    assert resp.status_code == 200, resp.text
-    assert captured[0]["url"] == _local_endpoint()
-    assert resp.json()["model_id"] == gateway_main.settings.model_id
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "provider_state_unavailable"
+    assert captured == []  # no local substitution
 
 
-def test_propose_falls_back_to_local_on_oversized_state_file(monkeypatch, tmp_path) -> None:
-    # A file larger than the read bound is refused and the gateway uses local.
+def test_propose_503_not_local_on_oversized_state_file(monkeypatch, tmp_path) -> None:
+    # R-05: a file larger than the read bound is a selected-but-broken provider.
     big = {"provider": "openai", "base_url": "https://api.openai.com/v1", "model_id": "gpt-4o", "pad": "x" * 70000}
     _point_state_file(monkeypatch, tmp_path, big)
     captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
     resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
-    assert resp.status_code == 200, resp.text
-    assert captured[0]["url"] == _local_endpoint()
-    assert resp.json()["model_id"] == gateway_main.settings.model_id
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "provider_state_unavailable"
+    assert captured == []
 
 
-def test_propose_falls_back_to_local_on_bad_base_url(monkeypatch, tmp_path) -> None:
-    # A non-http(s) / hostless base_url is unusable -> local (fail safe).
+def test_propose_503_not_local_on_bad_base_url(monkeypatch, tmp_path) -> None:
+    # R-05: a selected provider with an unusable base_url fails closed, not local.
     _point_state_file(
         monkeypatch,
         tmp_path,
@@ -1352,9 +1385,9 @@ def test_propose_falls_back_to_local_on_bad_base_url(monkeypatch, tmp_path) -> N
     )
     captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
     resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
-    assert resp.status_code == 200, resp.text
-    assert captured[0]["url"] == _local_endpoint()
-    assert resp.json()["model_id"] == gateway_main.settings.model_id
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "provider_state_unavailable"
+    assert captured == []
 
 
 def test_active_provider_returns_none_without_file(monkeypatch, tmp_path) -> None:
