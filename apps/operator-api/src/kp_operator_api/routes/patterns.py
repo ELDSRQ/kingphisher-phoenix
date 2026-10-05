@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Query, Request, status
 from kp_authorization.rbac import Capability, Principal
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER
+from kp_curation.clone_service import CloneError, clone_real_message
 from kp_database.audit_store import AuditStore
 from kp_database.campaign_service import (
     template_content_approval_hash,
@@ -39,7 +40,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_capability
-from kp_operator_api.clone_service import CloneError, clone_real_message
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.content_library import clone_flags
 from kp_operator_api.deps import get_audit_store, get_session, get_settings

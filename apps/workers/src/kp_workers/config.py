@@ -9,7 +9,7 @@ from kp_database.awareness_ledger import (
     LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
 )
 from kp_domain_models.policy import ApprovalPolicy, parse_domain_allowlist
-from kp_operator_api.config import KPProfile
+from kp_domain_models.profile import KPProfile
 from kp_telemetry.settings import local_dotenv_file
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict

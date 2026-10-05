@@ -25,8 +25,8 @@ from html import escape
 from typing import Any
 
 import httpx
+from kp_curation.curation_service import curate_forwarded_message
 from kp_database.outbox import dispatch_after_commit, enqueue_queue
-from kp_operator_api.curation_service import curate_forwarded_message
 
 from kp_workers.jobs import WorkerContext
 from kp_workers.providers.curation_mime import MAX_RAW_BYTES, extract_forwarded_phish
