@@ -450,6 +450,28 @@ def test_each_supervised_role_requires_and_uses_its_own_database_secret(monkeypa
     assert settings.database_url == role_url
 
 
+def test_missing_role_database_url_names_the_shared_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    # R-08: the error must name the variable, the role, AND the supported fallback.
+    base = WorkerSettings(worker_name="supervise", runtime_mode="development")
+    monkeypatch.delenv("KP_WORKER_DATABASE_URL_INGESTION", raising=False)
+    monkeypatch.delenv("KP_WORKER_SUPERVISE_SHARED_DB", raising=False)
+    with pytest.raises(RuntimeError, match="KP_WORKER_SUPERVISE_SHARED_DB=1"):
+        _role_settings(base, "ingestion")
+
+
+def test_supervise_shared_db_flag_uses_the_shared_url_for_every_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    # R-08: a single-tenant deployment opts into one shared KP_WORKER_DATABASE_URL.
+    shared = "postgresql+psycopg://kp_worker:secret@db.example/kingphisher"
+    base = WorkerSettings(worker_name="supervise", runtime_mode="development", database_url=shared)
+    monkeypatch.delenv("KP_WORKER_DATABASE_URL_INGESTION", raising=False)
+    monkeypatch.setenv("KP_WORKER_SUPERVISE_SHARED_DB", "1")
+
+    settings = _role_settings(base, "ingestion")
+
+    assert settings.worker_name == "ingestion"
+    assert settings.database_url == shared
+
+
 def test_hyphenated_supervised_role_uses_shell_safe_database_variable(monkeypatch: pytest.MonkeyPatch) -> None:
     base = WorkerSettings(worker_name="supervise", runtime_mode="development")
     role_url = "postgresql+psycopg://kp_worker_audit_anchor:secret@db.example/kingphisher"
