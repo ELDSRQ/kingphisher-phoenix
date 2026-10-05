@@ -28,15 +28,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 UpstreamAuthMode = Literal["none", "entra"]
 
 #: How the gateway asks the backend for structured output.
-#: * ``json_schema`` — OpenAI strict structured outputs (the default), correct
-#:   for Azure/managed backends and any backend that compiles a JSON-schema
-#:   grammar.
+#: * ``auto`` — the default: pick per backend from ``upstream_auth_mode`` so a
+#:   fresh install generates correctly without hand-tuning. A managed ``entra``
+#:   backend (Azure AI Foundry) gets ``json_schema``; a self-hosted ``none``
+#:   backend gets ``json_object`` (see below).
+#: * ``json_schema`` — OpenAI strict structured outputs, correct for Azure/managed
+#:   backends and any backend that compiles a JSON-schema grammar.
 #: * ``json_object`` — ask only for valid JSON. A self-hosted llama.cpp/Ollama
 #:   backend cannot compile a JSON-schema grammar carrying string length/pattern
 #:   bounds (it fails ``400 failed to parse grammar``); the generation prompt
 #:   already dictates the exact fields, so valid-JSON mode is sufficient.
 #: * ``text`` — send no structured-output directive (rely on the prompt alone).
-ResponseFormatMode = Literal["json_schema", "json_object", "text"]
+ResponseFormatMode = Literal["auto", "json_schema", "json_object", "text"]
 
 #: Default Entra audience for Azure AI Foundry / Azure AI Services endpoints.
 #: Foundry Serverless accepts a Cognitive Services audience token.
@@ -74,10 +77,12 @@ class GatewaySettings(BaseSettings):
     #: Per-request timeout to the llama.cpp server, in seconds.
     request_timeout_seconds: float = 120.0
 
-    #: Structured-output mode for the backend (see ``ResponseFormatMode``). The
-    #: default preserves OpenAI strict ``json_schema`` for Azure/managed; a
-    #: self-hosted llama.cpp/Ollama backend sets ``json_object``.
-    response_format_mode: ResponseFormatMode = "json_schema"
+    #: Structured-output mode for the backend (see ``ResponseFormatMode``).
+    #: ``auto`` (the default) resolves per backend: ``json_schema`` for managed
+    #: ``entra``, ``json_object`` for a self-hosted ``none`` upstream — so a fresh
+    #: self-hosted install generates without hand-tuning. An explicit value forces
+    #: one mode regardless of backend.
+    response_format_mode: ResponseFormatMode = "auto"
 
     #: Sampling temperature. Zero for reproducible, review-stable drafts on
     #: backends that accept it (local llama.cpp, gpt-oss-120b). Some current GA
