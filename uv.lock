@@ -14,6 +14,7 @@ members = [
     "kp-authorization",
     "kp-campaign-patterns",
     "kp-contracts",
+    "kp-curation",
     "kp-database",
     "kp-domain-models",
     "kp-domain-verification",
@@ -816,6 +817,29 @@ requires-dist = [
 ]
 
 [[package]]
+name = "kp-curation"
+version = "0.1.0"
+source = { editable = "packages/curation" }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "kp-contracts" },
+    { name = "kp-database" },
+    { name = "kp-domain-models" },
+    { name = "kp-sanitization" },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "kp-contracts", editable = "packages/contracts" },
+    { name = "kp-database", editable = "packages/database" },
+    { name = "kp-domain-models", editable = "packages/domain-models" },
+    { name = "kp-sanitization", editable = "packages/sanitization" },
+    { name = "sqlalchemy", specifier = ">=2.0" },
+]
+
+[[package]]
 name = "kp-database"
 version = "0.1.0"
 source = { editable = "packages/database" }
@@ -876,6 +900,7 @@ dependencies = [
     { name = "kp-authorization" },
     { name = "kp-campaign-patterns" },
     { name = "kp-contracts" },
+    { name = "kp-curation" },
     { name = "kp-database" },
     { name = "kp-domain-models" },
     { name = "kp-domain-verification" },
@@ -897,6 +922,7 @@ requires-dist = [
     { name = "kp-authorization", editable = "packages/authorization" },
     { name = "kp-campaign-patterns", editable = "packages/campaign-patterns" },
     { name = "kp-contracts", editable = "packages/contracts" },
+    { name = "kp-curation", editable = "packages/curation" },
     { name = "kp-database", editable = "packages/database" },
     { name = "kp-domain-models", editable = "packages/domain-models" },
     { name = "kp-domain-verification", editable = "packages/domain-verification" },
@@ -1038,9 +1064,9 @@ dependencies = [
     { name = "kp-auditing" },
     { name = "kp-campaign-patterns" },
     { name = "kp-contracts" },
+    { name = "kp-curation" },
     { name = "kp-database" },
     { name = "kp-domain-models" },
-    { name = "kp-operator-api" },
     { name = "kp-safety-validation" },
     { name = "kp-sanitization" },
     { name = "kp-source-adapters" },
@@ -1059,9 +1085,9 @@ requires-dist = [
     { name = "kp-auditing", editable = "packages/auditing" },
     { name = "kp-campaign-patterns", editable = "packages/campaign-patterns" },
     { name = "kp-contracts", editable = "packages/contracts" },
+    { name = "kp-curation", editable = "packages/curation" },
     { name = "kp-database", editable = "packages/database" },
     { name = "kp-domain-models", editable = "packages/domain-models" },
-    { name = "kp-operator-api", editable = "apps/operator-api" },
     { name = "kp-safety-validation", editable = "packages/safety-validation" },
     { name = "kp-sanitization", editable = "packages/sanitization" },
     { name = "kp-source-adapters", editable = "packages/source-adapters" },

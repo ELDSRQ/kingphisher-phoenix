@@ -21,6 +21,7 @@ dependencies = [
     "kp-templating",
     "kp-safety-validation",
     "kp-domain-verification",
+    "kp-curation",
 ]
 
 [project.scripts]
