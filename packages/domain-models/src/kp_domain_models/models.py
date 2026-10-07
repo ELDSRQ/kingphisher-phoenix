@@ -39,6 +39,12 @@ class VerificationState(StrEnum):
 
 
 class SourceType(StrEnum):
+    """Persisted source vocabulary; the create API supports RSS, STIX and bulk download.
+
+    Advisory and curated values remain valid for existing/internal source rows.
+    They are not accepted by the public source-creation endpoint.
+    """
+
     ADVISORY = "advisory"
     RSS = "rss"
     STIX = "stix"

@@ -1,3 +1,5 @@
+> **Current operational reference:** [October 6 handoff](docs/SESSION-HANDOFF-2026-10-06.md) and [October 7 remediation status](docs/QA-REMEDIATION-PLAN-2026-10-07.md). Dated source counts, deployments and qualification results below are historical; preserve their dates and scope.
+
 # RESUME HERE — 2026-09-05 (Azure IDLED; full app + Qwen now run LOCAL on .105; head `a57345d`)
 
 > **LATEST (2026-09-20): read [`AI_HANDOFF_2026-09-19.md`](AI_HANDOFF_2026-09-19.md) first — it is

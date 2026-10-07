@@ -1,3 +1,5 @@
+> **Current operational reference:** [October 6 handoff](SESSION-HANDOFF-2026-10-06.md) and [October 7 remediation status](QA-REMEDIATION-PLAN-2026-10-07.md). Dated source counts, deployments and qualification results below are historical; preserve their dates and scope.
+
 # Phishing Awareness Platform — Integrated Build Plan
 
 **Audit date:** 2026-08-29<br>
