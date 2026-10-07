@@ -11,6 +11,7 @@ const baseURL = process.env.OPERATOR_CONSOLE_URL || "http://127.0.0.1:8000";
 export default defineConfig({
   testDir: ".",
   testMatch: /.*\.(smoke|a11y)\.spec\.mjs/,
+  testIgnore: "console-ci.smoke.spec.mjs", // Dedicated scratch fixture; never run against the live console.
   // No webServer block on purpose: the operator owns stack lifecycle.
   fullyParallel: false,
   forbidOnly: true,
