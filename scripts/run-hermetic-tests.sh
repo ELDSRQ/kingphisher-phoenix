@@ -16,22 +16,50 @@ case "${1:-}" in
     ;;
 esac
 
+printf 'Hermetic test profile: %s\n' "$1"
+printf '%s\n' 'Excluded postgres, redis, e2e, azure_live: live-service integration gates run in dedicated profiles.'
+if [ "$1" = "unit" ]; then
+  printf '%s\n' 'Excluded contract: the unit profile selects unit tests only.'
+else
+  printf '%s\n' 'Included contract: the all profile selects hermetic contract tests.'
+fi
+
 # The controller-side recovery-checkpoint contract tests exercise macOS-only
 # tooling (Keychain via `security`, `/private/tmp`, and a `uname = Darwin`
-# guard). They run on the macOS controller and on the .140 worker, but a
+# guard). They run on macOS; the former .140 worker is retired. A
 # Linux CI runner has no `/private/tmp`, so they cannot pass there. Deselect
 # them off Darwin. This is a deselection, not a skip, so the no-skips gate is
 # unaffected.
-if [ "$(uname -s)" != "Darwin" ]; then
+host_os="$(uname -s)"
+if [ "$host_os" != "Darwin" ]; then
   markers="$markers and not macos_only"
+  printf 'Excluded macos_only: host OS is %s; controller tooling requires macOS (Darwin).\n' "$host_os"
+else
+  printf 'Included macos_only: host OS is %s.\n' "$host_os"
 fi
 
 # Optional interpreters some contract tests exercise. They run where the tool is
 # present (the controller, and CI when provisioned) and are deselected - not
 # skipped - where it is absent, so the no-skips gate stays satisfied.
-command -v zsh  >/dev/null 2>&1 || markers="$markers and not requires_zsh"
-command -v node >/dev/null 2>&1 || markers="$markers and not requires_node"
-[ -x apps/operator-ui/node_modules/.bin/esbuild ] || markers="$markers and not requires_esbuild"
+if command -v zsh >/dev/null 2>&1; then
+  printf '%s\n' 'Included requires_zsh: zsh is available on PATH.'
+else
+  markers="$markers and not requires_zsh"
+  printf '%s\n' 'Excluded requires_zsh: zsh is missing from PATH.'
+fi
+if command -v node >/dev/null 2>&1; then
+  printf '%s\n' 'Included requires_node: node is available on PATH.'
+else
+  markers="$markers and not requires_node"
+  printf '%s\n' 'Excluded requires_node: node is missing from PATH.'
+fi
+if [ -x apps/operator-ui/node_modules/.bin/esbuild ]; then
+  printf '%s\n' 'Included requires_esbuild: apps/operator-ui/node_modules/.bin/esbuild is executable.'
+else
+  markers="$markers and not requires_esbuild"
+  printf '%s\n' 'Excluded requires_esbuild: apps/operator-ui/node_modules/.bin/esbuild is missing or not executable.'
+fi
+printf 'Pytest marker selection: %s\n' "$markers"
 
 # Pydantic settings normally read .env for the local GUI launcher. Tests must
 # neither inherit process configuration nor reload that file. Explicit inert
