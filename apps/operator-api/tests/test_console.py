@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import socket
 import uuid
@@ -1884,6 +1885,38 @@ def test_console_status_requires_auth(env_file: str) -> None:
         assert resp.status_code == 401
 
 
+@pytest.mark.parametrize(
+    ("source_path", "mapping_name", "prefix"),
+    [
+        ("scripts/supervisor.py", "CHILDREN", "worker-"),
+        ("apps/workers/src/kp_workers/__main__.py", "WORKERS", ""),
+    ],
+)
+def test_local_status_worker_roster_matches_launchers(source_path: str, mapping_name: str, prefix: str) -> None:
+    # Parse source only: importing either launcher could load operational
+    # configuration or couple the operator API to the worker application.
+    project_root = Path(__file__).resolve().parents[3]
+    tree = ast.parse((project_root / source_path).read_text(encoding="utf-8"))
+    mappings = []
+    for node in tree.body:
+        if (
+            isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == mapping_name
+        ) or (
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == mapping_name for target in node.targets)
+        ):
+            mappings.append(node.value)
+    assert len(mappings) == 1, f"expected one {mapping_name} declaration in {source_path}"
+    mapping = mappings[0]
+    assert isinstance(mapping, ast.Dict), f"{mapping_name} must remain a statically inspectable dict"
+    keys = [ast.literal_eval(key) for key in mapping.keys]
+    roles = {key.removeprefix(prefix) for key in keys if key.startswith(prefix)}
+
+    roster = console_runtime_status_module.LOCAL_WORKER_ROLES
+    assert len(roster) == len(set(roster)), "local status must probe each role once"
+    assert set(roster) == roles
+
+
 def test_local_status_uses_local_probes_and_advertises_local_controls(
     env_file: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1937,11 +1970,48 @@ def test_local_status_uses_local_probes_and_advertises_local_controls(
     # The probe must have followed the configured URLs, not a hardcoded pair.
     assert tcp_calls == [("127.0.0.1", 5432), ("127.0.0.1", 6379)]
     assert body["console_password_set"] is True
+    assert set(body["workers"]) == set(console_runtime_status_module.LOCAL_WORKER_ROLES)
     assert body["workers"]["delivery"] is True
     assert sum(body["workers"].values()) == 1
     assert tcp_calls == [("127.0.0.1", 5432), ("127.0.0.1", 6379)]
-    assert len(process_calls) == 8
+    assert process_calls == [f"worker-{role}.pid" for role in console_runtime_status_module.LOCAL_WORKER_ROLES]
     assert http_calls == [app.state.settings.tracking_base_url.rstrip("/") + "/healthz"]
+
+
+@pytest.mark.parametrize("role", ["curation", "audit-anchor"])
+@pytest.mark.parametrize("pid_state", ["missing", "invalid", "exited", "alive"])
+def test_local_status_reports_new_worker_pid_presence(
+    env_file: str, monkeypatch: pytest.MonkeyPatch, role: str, pid_state: str
+) -> None:
+    settings = _settings(env_file)
+    run_dir = Path(env_file).parent / "data" / "run"
+    run_dir.mkdir(parents=True)
+    if pid_state != "missing":
+        pid_text = "invalid" if pid_state == "invalid" else "424242\n"
+        (run_dir / f"worker-{role}.pid").write_text(pid_text, encoding="utf-8")
+    liveness_calls: list[tuple[int, int]] = []
+
+    def check_pid(pid: int, signal: int) -> None:
+        liveness_calls.append((pid, signal))
+        if pid_state == "exited":
+            raise ProcessLookupError(pid)
+
+    # Stub the signal-zero check: this tests process presence, never a heartbeat
+    # or successful worker work, and does not signal any actual process.
+    monkeypatch.setattr(console_runtime_status_module.os, "kill", check_pid)
+    monkeypatch.setattr(console_runtime_status_module, "_tcp_ok", lambda *_args: False)
+    monkeypatch.setattr(console_runtime_status_module, "_http_ok", lambda *_args: False)
+    app = create_app(settings)
+    app.state.audit_store = FakeAuditStore()
+    with TestClient(app) as client:
+        response = client.get("/api/v1/console/status", headers=_auth(_admin_token(settings)))
+
+    assert response.status_code == 200, response.text
+    workers = response.json()["workers"]
+    assert set(workers) == set(console_runtime_status_module.LOCAL_WORKER_ROLES)
+    assert workers[role] is (pid_state == "alive")
+    assert all(value is False for name, value in workers.items() if name != role)
+    assert liveness_calls == ([] if pid_state in {"missing", "invalid"} else [(424242, 0)])
 
 
 def test_managed_status_is_explicitly_external_and_never_uses_local_probes(

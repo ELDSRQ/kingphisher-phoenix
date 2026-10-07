@@ -33,8 +33,9 @@ from kp_database.grants import (
     all_matrix_tables,
 )
 from kp_database.session import create_db_engine
+from psycopg import sql
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 
 ROOT = Path(__file__).resolve().parents[1]
 if os.environ.get("KP_DISABLE_DOTENV") != "1":
@@ -68,15 +69,20 @@ def _create_or_alter_role(connection: Any, role_name: str, password: str) -> Non
             {"role_name": role_name},
         ).scalar()
     )
-    if exists:
-        connection.execute(text(f"ALTER ROLE {role_name} LOGIN PASSWORD '{password}'"))
-    else:
-        connection.execute(
-            text(
-                f"CREATE ROLE {role_name} LOGIN PASSWORD '{password}' "
-                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS"
-            )
-        )
+    statement = sql.SQL("{} ROLE {} LOGIN PASSWORD {}").format(
+        sql.SQL("ALTER" if exists else "CREATE"),
+        sql.Identifier(role_name),
+        sql.Literal(password),
+    )
+    if not exists:
+        statement += sql.SQL(" NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS")
+    # PostgreSQL role DDL cannot bind the password as a query parameter. Let
+    # psycopg compose the literal on the existing driver connection, while the
+    # surrounding SQLAlchemy engine.begin() retains commit/rollback ownership.
+    raw = connection.connection.driver_connection
+    if raw is None:
+        raise RuntimeError("database driver connection is unavailable")
+    raw.execute(statement)
 
 
 def _reset_privileges(connection: Any, role_name: str) -> None:
@@ -228,8 +234,8 @@ def _probe_runtime_privileges(database_url: str, password: str) -> None:
     all_tables = all_matrix_tables() | SENSITIVE_TABLES
 
     for workload, role_name in RUNTIME_ROLES.items():
-        probe_url = database_url.replace("//kingphisher:", f"//{role_name}:{password}@")
-        engine = create_db_engine(probe_url)
+        probe_url = make_url(database_url).set(username=role_name, password=password)
+        engine = create_db_engine(probe_url.render_as_string(hide_password=False))
         try:
             with engine.connect() as probe:
                 for table in sorted(all_tables):

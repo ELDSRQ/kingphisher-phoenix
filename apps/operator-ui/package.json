@@ -7,6 +7,7 @@
     "build": "node scripts/build-console.mjs",
     "check": "node --check src/console/app.js",
     "test:e2e": "playwright test -c tests/e2e/playwright.config.mjs --grep-invert @a11y",
+    "test:console-smoke": "playwright test -c tests/e2e/playwright.ci.config.mjs",
     "test:e2e:install": "playwright install chromium",
     "test:a11y": "playwright test -c tests/e2e/playwright.config.mjs --grep @a11y"
   },

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import platform
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -66,8 +67,6 @@ def test_hermetic_gate_drops_host_configuration_and_uses_inert_endpoints(tmp_pat
     # macos_only off Darwin (controller recovery tooling), and requires_zsh /
     # requires_node where those interpreters are absent. Building the expected
     # string with the same conditions keeps this test correct on every host.
-    import shutil
-
     suffix = ""
     if platform.system() != "Darwin":
         suffix += " and not macos_only"
@@ -75,13 +74,111 @@ def test_hermetic_gate_drops_host_configuration_and_uses_inert_endpoints(tmp_pat
         suffix += " and not requires_zsh"
     if shutil.which("node") is None:
         suffix += " and not requires_node"
-    if not (Path.cwd() / "apps/operator-ui/node_modules/.bin/esbuild").is_file():
+    if not os.access(ROOT / "apps/operator-ui/node_modules/.bin/esbuild", os.X_OK):
         suffix += " and not requires_esbuild"
     assert values[16] == (
         "run --frozen --no-sync python -m pytest -m "
         f"not postgres and not redis and not e2e and not azure_live{suffix} -p tests.no_skips_plugin"
     )
     assert all("live.invalid" not in value for value in values)
+
+
+@pytest.mark.parametrize("profile", ["all", "unit"])
+@pytest.mark.parametrize("host_os", ["Linux", "Darwin"])
+@pytest.mark.parametrize(
+    "available_tools",
+    [
+        pytest.param((), id="no-optional-tools"),
+        pytest.param(("zsh",), id="zsh-only"),
+        pytest.param(("node",), id="node-only"),
+        pytest.param(("esbuild",), id="esbuild-only"),
+        pytest.param(("nonexecutable_esbuild",), id="nonexecutable-esbuild"),
+        pytest.param(("zsh", "node", "esbuild"), id="all-tools"),
+    ],
+)
+def test_hermetic_gate_explains_selection_before_exec(
+    tmp_path: Path, profile: str, host_os: str, available_tools: tuple[str, ...]
+) -> None:
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    # Only the gate's required infrastructure is on PATH. Optional interpreter
+    # availability comes from these shims, never from the developer's machine.
+    (binaries / "env").symlink_to("/usr/bin/env")
+    fake_uname = binaries / "uname"
+    fake_uname.write_text(f"#!/bin/sh\nprintf '%s\\n' '{host_os}'\n", encoding="utf-8")
+    fake_uname.chmod(0o755)
+    fake_uv = binaries / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\nset -eu\n"
+        'printf \'%s\\n\' "$@" > "$TMPDIR/kp-hermetic-arguments.txt"\n'
+        "printf '%s\\n' 'fake uv executed'\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    for tool in ("zsh", "node"):
+        if tool in available_tools:
+            fake_tool = binaries / tool
+            fake_tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_tool.chmod(0o755)
+    if "esbuild" in available_tools or "nonexecutable_esbuild" in available_tools:
+        fake_esbuild = tmp_path / "apps/operator-ui/node_modules/.bin/esbuild"
+        fake_esbuild.parent.mkdir(parents=True)
+        fake_esbuild.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_esbuild.chmod(0o755 if "esbuild" in available_tools else 0o644)
+
+    result = subprocess.run(  # noqa: S603 - repository gate with controlled tools
+        ["/bin/bash", str(GATE), profile],
+        cwd=tmp_path,
+        env={"PATH": str(binaries), "TMPDIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    lines = result.stdout.splitlines()
+    assert lines[0] == f"Hermetic test profile: {profile}"
+    assert lines[1] == (
+        "Excluded postgres, redis, e2e, azure_live: live-service integration gates run in dedicated profiles."
+    )
+    markers = "not postgres and not redis and not e2e and not azure_live"
+    if profile == "unit":
+        assert lines[2] == "Excluded contract: the unit profile selects unit tests only."
+        markers = f"not contract and {markers}"
+    else:
+        assert lines[2] == "Included contract: the all profile selects hermetic contract tests."
+    if host_os == "Linux":
+        assert lines[3] == ("Excluded macos_only: host OS is Linux; controller tooling requires macOS (Darwin).")
+        markers += " and not macos_only"
+    else:
+        assert lines[3] == "Included macos_only: host OS is Darwin."
+    for index, tool in enumerate(("zsh", "node"), start=4):
+        if tool in available_tools:
+            assert lines[index] == f"Included requires_{tool}: {tool} is available on PATH."
+        else:
+            assert lines[index] == f"Excluded requires_{tool}: {tool} is missing from PATH."
+            markers += f" and not requires_{tool}"
+    if "esbuild" in available_tools:
+        assert lines[6] == ("Included requires_esbuild: apps/operator-ui/node_modules/.bin/esbuild is executable.")
+    else:
+        assert lines[6] == (
+            "Excluded requires_esbuild: apps/operator-ui/node_modules/.bin/esbuild is missing or not executable."
+        )
+        markers += " and not requires_esbuild"
+    assert lines[7:] == [f"Pytest marker selection: {markers}", "fake uv executed"]
+    assert (tmp_path / "kp-hermetic-arguments.txt").read_text(encoding="utf-8").splitlines() == [
+        "run",
+        "--frozen",
+        "--no-sync",
+        "python",
+        "-m",
+        "pytest",
+        "-m",
+        markers,
+        "-p",
+        "tests.no_skips_plugin",
+    ]
 
 
 def test_test_modules_never_load_the_runtime_dotenv() -> None:

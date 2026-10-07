@@ -4,6 +4,21 @@ Plain-language guide for the people who run Kingphisher-Phoenix day to day. This
 is the task-oriented companion to the engineering `RUNBOOK.md` — start here, and
 only reach for the runbook when you need to troubleshoot or recover.
 
+## Console credentials
+
+Retrieve the on-prem console password privately from the protected deployment
+`.env` (`KP_CONSOLE_PASSWORD`), or from your operator's established private
+credential channel. Keep actual passwords out of handoffs, screenshots, issue
+bodies and repository files. Published historical credentials require rotation;
+redacting the current documents does not remove them from older commits.
+
+Coordinate rotation outside an active acceptance run. The deployment operator
+can use the existing validated, atomic `set_console_password` helper in
+`kp_operator_api.console.env_store` against the deployment's `.env`, then check
+that a new sign-in succeeds and the previous password fails. Share the new value
+privately with the driver. Password rotation does not invalidate already-issued
+sessions; session-signing-key rotation is a separate coordinated operation.
+
 ## What this tool does
 
 Kingphisher-Phoenix sends **simulated** phishing email so your organization can

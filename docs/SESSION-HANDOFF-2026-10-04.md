@@ -22,7 +22,7 @@ CI (hermetic lint/type/tests + Postgres/Redis integration) was green on every PR
 ```
 ssh -f -N -L 8600:127.0.0.1:8000 -L 8001:127.0.0.1:8001 -L 8025:127.0.0.1:8025 -p 2222 builder@192.168.1.105
 ```
-- Console: http://127.0.0.1:8600/console/  (password `phishingtest2026`, password-only)
+- Console: http://127.0.0.1:8600/console/  (password retrieved privately from the deployed `.env`, password-only)
 - Mailpit: http://127.0.0.1:8025/
 
 ## Pending (next session)

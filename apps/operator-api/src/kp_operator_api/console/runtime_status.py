@@ -30,6 +30,22 @@ from kp_operator_api.console.env_store import (
 
 router = APIRouter(prefix="/api/v1/console", tags=["console"])
 
+# Keep this local roster aligned with scripts/supervisor.py's worker children.
+# The source contract in test_console.py checks alignment without importing a
+# supervisor or introducing a dependency on the worker application.
+LOCAL_WORKER_ROLES: tuple[str, ...] = (
+    "ingestion",
+    "generation",
+    "delivery",
+    "retention",
+    "mailbox",
+    "reminder",
+    "alert",
+    "directory",
+    "curation",
+    "audit-anchor",
+)
+
 
 class RuntimeCapabilities(BaseModel):
     config_mutation: bool
@@ -83,7 +99,7 @@ def get_status(
 
     run_dir = _run_dir(settings)
     workers: dict[str, bool] = {}
-    for name in ("ingestion", "generation", "delivery", "retention", "mailbox", "reminder", "alert", "directory"):
+    for name in LOCAL_WORKER_ROLES:
         workers[name] = _process_alive(run_dir / f"worker-{name}.pid")
     tracking_health = settings.tracking_base_url.rstrip("/") + "/healthz"
     return StatusResponse(

@@ -62,9 +62,12 @@ cycle):** migration head is `0042`; there are **ten** worker roles (the nine
 below plus `curation`); the hermetic suite is ~3,500 tests. The dated figures in
 the paragraphs that follow (head `0029`/`0032`/`0033`, the 2,329/2,469/2,501/2,620
 hermetic runs, and the 2026-08-29 PostgreSQL/Redis profile runs) are point-in-time
-Wave-30s records kept as history; they **predate** this cycle, and profile re-runs
-at head `0042` are pending (QA T-16). Treat the running tree as the source of
-truth over the numbers below.
+Wave-30s records kept as history; they **predate** this cycle. The [October 7
+evidence review](docs/QA-REMEDIATION-PLAN-2026-10-07.md#evidence-scope-corrections)
+records successful PostgreSQL, Redis and fresh-chain CI at source `ad997f9`;
+deployed-topology E2E, current release images and human acceptance remain separate
+gates. Later implementation changes require their own validation. Treat the
+running tree as the source of truth over the dated numbers below.
 
 The pre-remediation local and external QA snapshot passed: operational readiness
 reached migration head `0029`; 2,329 hermetic tests passed with 97 deselected;
@@ -156,7 +159,7 @@ Implemented locally includes:
 - Managed operator/tracking/worker configuration hides secret inputs and parser exception chains. Worker roles require only their own provider settings and reject local or credential-bearing provider URLs outside disposable development.
 - Operator and tracking disable their public OpenAPI, Swagger, ReDoc, and HTTP metrics routes. Their former write-only internal metric registries were removed; dependency/security state remains available through bounded health and logs, while workers retain bounded operational snapshots.
 - Audit verification publishes only aggregate status and a bounded problem count to readiness/health state; the scheduler does not retain or expose raw verification problems.
-- The browser capability vocabulary exactly matches the backend, visible non-Azure actions are capability-gated, Help is available to aggregate-read roles, and template reviewers can safely preview without receiving authoring/cloning authority. A reviewed manifest covers all 113 operator routes: 103 capability-protected and 10 dedicated/public routes. Browser execution remains unqualified.
+- The browser capability vocabulary exactly matches the backend, visible non-Azure actions are capability-gated, Help is available to aggregate-read roles, and template reviewers can safely preview without receiving authoring/cloning authority. The [enforced operator-route manifest](apps/operator-api/tests/test_route_authorization_inventory.py) reviews every method/path and its capability or dedicated/public authority; it fails when the API and manifest differ. Current qualification and its limits are recorded in the [October 7 remediation plan](docs/QA-REMEDIATION-PLAN-2026-10-07.md); dated results below remain historical evidence.
 - Campaign/source/pattern/privacy/rationale request fields and results are normalized and bounded at the API, not trusted to browser validation. Campaign/pattern action flags are server-derived and fail closed. Operator and tracking validation responses expose capped structural locations/counts rather than rejected values, credentials, provider bodies, or unbounded validation detail.
 - OIDC discovery/token/JWKS, setup-assistant, generation-provider, and GitHub deployment metadata/status/activity responses are streamed and byte-bounded before UTF-8/JSON/schema handling. Duplicate or malformed `Content-Length` fails closed, and dispatch classifies status without buffering hostile response bodies.
 - OIDC endpoints are bound to the configured issuer origin, DNS-resolved once and pinned for the request while preserving TLS Host/SNI, and used with environment proxies, HTTP/2, and redirects disabled. Cross-origin authorization redirects fail before browser navigation, while cross-origin token/JWKS endpoints fail before code or credential transmission. Privacy exports are authenticated `POST` operations; privacy list/export data is `private, no-store`, and cookie-authenticated mutations require trusted same-origin CSRF metadata.

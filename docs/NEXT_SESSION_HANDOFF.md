@@ -1,3 +1,5 @@
+> **Current operational reference:** [October 6 handoff](SESSION-HANDOFF-2026-10-06.md) and [October 7 remediation status](QA-REMEDIATION-PLAN-2026-10-07.md). Dated source counts, deployments and qualification results below are historical; preserve their dates and scope.
+
 > **STATE AS OF 2026-09-17 (superseded):** the platform now runs on-prem on Alice's RTX 3090 and the M3 aggregation feature is merged & live on `main`. The canonical current handoff is **`AI_HANDOFF_2026-09-17.md`** (repo root). The Docker-worker guidance below remains as historical, CI-pinned reference.
 
 # Next-session handoff

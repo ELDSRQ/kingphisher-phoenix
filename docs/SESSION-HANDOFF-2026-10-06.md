@@ -103,7 +103,7 @@ base_url at it when ready (no code change). See `ai-generation-host-options` mem
 
 1. **Operator D6 human validation** (the gating item for on-prem sign-off). A full
    self-contained runbook was given; essentials: console `http://127.0.0.1:8600/console/`
-   (password `phishingtest2026`), Mailpit `http://127.0.0.1:8025/`. Ready material:
+   (password retrieved privately from the deployed `.env`), Mailpit `http://127.0.0.1:8025/`. Ready material:
    approved templates `e8a4ce71` (M365), `fafa4682` (IRS), `7c6bc9cd` (Invoice);
    approved lessons `00000000`, `ee756363`; campaign `639ff281` awaiting approval;
    12 DRAFT library templates. Flow: approve/choose a template → campaign → freeze

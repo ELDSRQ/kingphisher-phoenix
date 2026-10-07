@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PY := uv run --frozen
 COMPOSE := docker compose
 
-.PHONY: bootstrap install verify-install operational-readiness dev mock-stack lock-mock-services test test-unit test-postgres test-redis test-contract test-fresh-migration test-live-azure test-e2e test-e2e-console test-a11y-console lint typecheck security-scan security-scan-bandit security-scan-semgrep security-scan-trivy security-scan-dependencies security-scan-images verify-images db-migrate db-rollback db-init seed build sbom sign verify-audit
+.PHONY: bootstrap install verify-install operational-readiness dev mock-stack lock-mock-services test test-unit test-postgres test-redis test-contract test-fresh-migration test-live-azure test-e2e test-e2e-console test-console-smoke test-a11y-console lint typecheck security-scan security-scan-bandit security-scan-semgrep security-scan-trivy security-scan-dependencies security-scan-images verify-images db-migrate db-rollback db-init seed build sbom sign verify-audit
 
 ## One-shot installer: installs all dependencies and starts the full system.
 ## See scripts/install.sh for supported platforms (macOS, Debian/Ubuntu).
@@ -72,6 +72,7 @@ test-fresh-migration:
 ## Real-DOM operator console smoke (Playwright/chromium) against a LIVE console.
 ## Proves rendered navigation effect, not app.js source text. Deliberately NOT in
 ## `make test` or CI: it needs a browser and a reachable, authenticated console.
+## The separate test-console-smoke CI target below owns an isolated fixture.
 ## The canonical local console runs on .105 — reach it over an SSH tunnel first:
 ##   ssh -N -o ControlMaster=no -o ControlPath=none \
 ##       -L 18000:127.0.0.1:8000 -L 18001:127.0.0.1:8001 erikd@192.168.1.105
@@ -84,8 +85,15 @@ test-e2e-console:
 	@curl -sfo /dev/null --max-time 8 "$$OPERATOR_CONSOLE_URL/console/" || { echo "console not reachable at $$OPERATOR_CONSOLE_URL/console/ — is the SSH tunnel up?" >&2; exit 2; }
 	@npm --prefix apps/operator-ui run --silent test:e2e
 
+## Hermetic browser/API smoke: real console routes, synthetic credentials and
+## scratch config only. Playwright owns its loopback server; no Compose needed.
+test-console-smoke:
+	@[ -x .venv/bin/python ] || { echo "the frozen Python workspace must be installed first" >&2; exit 2; }
+	@[ -d apps/operator-ui/node_modules/@playwright/test ] || { echo "run npm ci in apps/operator-ui first" >&2; exit 2; }
+	@npm --prefix apps/operator-ui run --silent test:console-smoke
+
 ## Accessibility gate (readiness D3): axe-core over each console view against a
-## LIVE authenticated console. Operator-run only — CI has no browser. axe finds
+## LIVE authenticated console. Operator-run only — CI uses a scratch fixture. axe finds
 ## roughly half of real WCAG issues, so a green run is necessary, never
 ## sufficient: keyboard order and screen-reader flow still need a human pass.
 test-a11y-console:
