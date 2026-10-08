@@ -264,8 +264,7 @@ eight views with no blocking axe findings and four navigation checks; no skips.
 Evidence: `data/qualification/human-readiness/c1eecd73697e4863b2360ca03778df1e/`.
 Local hermetic suite: **3,588 passed, 113 deliberately deselected**, 241.78 s.
 Lint and strict types passed; the repaired isolated browser workflow passed
-all three tests. Final source CI and post-deploy live checks are recorded below
-when complete.
+all three tests. Source CI and post-deploy live checks are recorded below.
 
 Scenario preparation: the `example.com` signed RoE is valid through December 20,
 2026, while the mixed-domain October 2 RoE is expired. The current D6 script
@@ -274,3 +273,63 @@ CSV import alone never authorizes a canary. Two active test accounts existed
 at inspection; no saved roster existed before any rehearsal. Human acceptance
 and manual assistive-technology testing remain human gates. No model-reasoning
 blocker requiring Astra has been encountered.
+
+### Deployment and backend rehearsal
+
+[PR #132](https://github.com/ELDSRQ/kingphisher-phoenix/pull/132) carries
+the follow-up. All three required jobs passed at implementation commit
+`680429cf8296c1d36ee85c662af53d9f39eb1c82`
+([CI](https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/37815634645)).
+The preserved `.105` checkout was switched to that feature branch and its
+normal supervisor restart marker was used. `main` was not merged or rewritten.
+Both APIs and the gateway subsequently returned ready; served-source JavaScript
+SHA-256 is `1bac81b2200a3631db3389d6c11ab8901063d86293fe5e78ea1b74b097618ddb`.
+There are no migrations or dependency changes in this repair.
+
+The governed API/Mailpit rehearsal created exactly two new synthetic
+`example.com` recipients and one named roster; only its new canary was designated
+as a test account. It froze that roster, completed the normal single-operator
+launch review, queued one locked canary, waited for server-derived SMTP
+evidence, and separately published one non-canary. Both were captured in
+loopback Mailpit. The recipient link led to the bound training page; a normal
+knowledge-check submission completed training. The report showed two provider
+acceptances, one click and one training completion. SMTP acceptance is not
+external delivered-receipt or inbox evidence.
+
+Both exports were downloaded; the ZIP passed its integrity check and each JSON
+member parsed. Recall affected only rehearsal campaign
+`5dfe5813-9c49-4bac-b7ca-8bcebda8ea52` and revoked its two tracking tokens.
+Its two recipients, roster, recalled campaign, captured mail and audit evidence
+were retained. Evidence:
+`data/qualification/human-readiness/rehearsal-b4861d169fd84402b9d8fabd072bbdde/`.
+The log retains an initial helper failure at a nonexistent lesson-detail URL;
+continuation used the supported preview endpoint and completed the same
+rehearsal. Creation/delivery ran at `a87aabf`; training/export/recall ran after
+the UI-only deployment to `680429c`. Backend application files were unchanged
+between those commits. This was an automated diagnostic, not a D6 attempt.
+
+The expanded live browser sweep hit the unchanged 120 requests/minute user
+limiter when it rapidly opened fresh sessions/views. Earlier failed artifacts
+remain preserved. The live harness now uses one worker with an eight-second
+pause before each check; authenticated setup-response matching excludes the
+normal pre-login rejection. No server limits were changed or bypassed.
+
+The paced post-deploy sweep passed **17 checks, zero skips**, in 2.5 minutes:
+11 accessibility checks (login and ten views) with no blocking axe findings,
+and six navigation/form checks. Evidence and successful form screenshots:
+`data/qualification/human-readiness/a38250eef69f46ceaf379d70fe39565a/`.
+Visual inspection at 1280px and 768px found readable cards and accessible
+campaign actions. The same inventory reported both APIs, PostgreSQL, Redis
+and all ten workers ready. The final changes after `680429c` affect test pacing
+and these evidence records only; runtime assets remain identical.
+
+**Build ready for a controlled human trial on `.105`.** Credential handoff is
+still blocked on coordinated rotation of the previously exposed console
+password (V-02); a fresh coordination question was sent October 8. No new
+credential is recorded here, and no rotation is claimed. D6 unassisted
+acceptance and manual keyboard/screen-reader checks remain open. Use the current D6 script,
+refresh the console, and create a distinct synthetic roster/campaign. PR #132
+still requires integration into `main`; this trial runs its feature branch.
+No unresolved implementation or model-reasoning blocker was found. Release
+image, recovery, cloud/provider and production approval gates are not renewed
+by this synthetic diagnostic; production/RSA remains NO-GO.

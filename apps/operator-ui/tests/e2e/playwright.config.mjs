@@ -22,6 +22,7 @@ export default defineConfig({
   testIgnore: "console-ci.smoke.spec.mjs", // Dedicated scratch fixture; never run against the live console.
   // No webServer block on purpose: the operator owns stack lifecycle.
   fullyParallel: false,
+  workers: 1,
   forbidOnly: true,
   retries: 0,
   reporter: [["list"]],

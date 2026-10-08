@@ -1,7 +1,12 @@
 # On-prem GO runbook (readiness gates D1–D6)
 
-> **Current preparation (October 8):** PR #131 is deployed at `a87aabf`;
-> the older deploy gap below is historical. Follow the current
+> **Current preparation (October 8):** PR #131 is deployed, followed by the
+> PR #132 training-host repair at `680429c` on its feature branch. It has not
+> been merged into `main`; later follow-up commits change tests/docs only.
+> All 17 post-deploy browser checks and the synthetic lifecycle rehearsal
+> passed. The build is ready for a controlled human trial; credential handoff
+> still requires coordinated rotation of the exposed password. The older
+> deploy gap below is historical. Follow the current
 > [D6 scenario](D6-HUMAN-ACCEPTANCE-SCRIPT.md) and
 > [human-readiness follow-up](QA-REMEDIATION-PLAN-2026-10-07.md#human-readiness-follow-up--2026-10-08)
 > for training setup, valid synthetic-domain authorization and final verification.

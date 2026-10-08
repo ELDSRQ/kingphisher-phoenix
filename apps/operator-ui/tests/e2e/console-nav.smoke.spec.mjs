@@ -12,6 +12,12 @@
 
 import { expect, test } from "@playwright/test";
 
+// Each fresh login loads several real API collections. Pace the live sweep
+// below the ordinary 120 requests/minute user limit; never relax the server.
+test.beforeEach(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 8_000));
+});
+
 // The full navigation, from app.js `const NAV`: six "run" items always
 // visible, fourteen "more" items behind a collapsed <details>. Capability-gated
 // items may be absent for a lower-privilege session, so membership is asserted
@@ -150,7 +156,8 @@ test.describe("operator console navigation (real DOM effect)", () => {
     test(`an approved library email is usable with the configured training host at ${width}px`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
       const onboardingResponse = page.waitForResponse((response) =>
-        response.url().endsWith("/api/v1/console/onboarding") && response.request().method() === "GET",
+        response.url().endsWith("/api/v1/console/onboarding")
+          && response.request().method() === "GET" && response.status() === 200,
       );
       await ensureAuthenticated(page);
       const setup = await (await onboardingResponse).json();
