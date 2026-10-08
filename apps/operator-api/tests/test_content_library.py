@@ -140,6 +140,7 @@ def _seed_library() -> tuple[UUID, UUID, UUID]:
                         "plain_text": "Review the warning cues, {{ recipient.first_name }}.",
                         "safe_html": "<p>Review the warning cues.</p>",
                         "requested_by": str(ADMIN_ID),
+                        "generation_evidence": {"pattern_id": str(approved_pattern_id)},
                         "private_prompt": "must-not-leak",
                     },
                     subject="Conference schedule update",
@@ -191,6 +192,7 @@ def test_library_search_filters_are_bounded_and_do_not_leak_raw_content(client: 
             "approval_state": "approved",
             "reusable": True,
             "campaign_bound": True,
+            "pattern_id": str(approved_pattern_id),
             "is_clone": False,
             "cloned_from_subject": None,
             "is_auto_curated": False,
@@ -370,7 +372,7 @@ def test_clone_requires_authoring_permission_and_revalidates_content(client: Tes
 
 @requires_db
 def test_wording_edit_creates_safe_unapproved_copy_and_preserves_original(client: TestClient) -> None:
-    _, _, template_id = _seed_library()
+    pattern_id, _, template_id = _seed_library()
     response = client.post(
         f"/api/v1/templates/{template_id}/clone",
         headers=AUTHOR_HEADERS,
@@ -394,6 +396,7 @@ def test_wording_edit_creates_safe_unapproved_copy_and_preserves_original(client
         assert "{{ tracking.training_url }}" in clone.safe_html
         assert clone.approval_state == dm.TemplateApprovalState.DRAFT
         assert clone.approval_hash is None
+        assert clone.raw_proposal["generation_evidence"]["pattern_id"] == str(pattern_id)
     unsafe = client.post(
         f"/api/v1/templates/{template_id}/clone",
         headers=AUTHOR_HEADERS,
