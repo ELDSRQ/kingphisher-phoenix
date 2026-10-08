@@ -191,3 +191,86 @@ Final browser evidence is retained at
 `data/qualification/console-smoke/bc0a74f0-9687-4c7f-8a0e-acb245a8a952/`.
 The original adversarial assessment remains unchanged at the SHA-256 recorded
 above. No remote integration result is implied by these local results.
+
+## Resume verification — 2026-10-08
+
+PR [#131](https://github.com/ELDSRQ/kingphisher-phoenix/pull/131) merged as
+`a87aabf1bbb5efe44f8f3d32864b7b11f440217e`. The
+[CI run on that merge commit](https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/37724925659)
+passed the hermetic lint/type/no-skip job, PostgreSQL/Redis integration job and
+isolated console browser job. This verifies source and synthetic-fixture
+behavior; it does not qualify live delivery, images or human acceptance.
+
+Read-only probes during session resumption found the `.105` checkout already
+at that exact commit. The supervisor is active; PID entries for both APIs and
+all ten worker roles refer to live processes started October 8 at 00:00:35 EDT.
+PID presence is the existing supervisor probe and does not prove worker job
+completion. Operator, tracking and AI-gateway `/readyz` returned ready, and the
+HALO tunnel unit is active. No generation request was made.
+
+The controller's existing console (`8600`), tracking (`8001`) and Mailpit
+(`8025`) tunnels respond. Served console JavaScript and CSS are byte-identical
+to the merged checkout:
+
+- `app.js` SHA-256: `9984a0d99e6ac36f756f016aa869c2c6b289ec4833674745301e9f5caf14a7bb`.
+- `styles.css` SHA-256: `2d083c9e3a2679fc1eed58eeeb062d97b984ceb85780b6f19ea85325d9c78903`.
+
+Mailpit reported zero captured messages at the probe time. This is inventory,
+not delivery evidence. The unauthenticated `/openapi.json` probe returned 404;
+no authenticated API workflow or live browser walkthrough was performed.
+
+No redeployment or restart was needed or performed. The controller's
+untracked original QA assessment and the worker's untracked
+`docker-compose.override.yml` were preserved. No credentials, campaign state,
+databases, storage, other sessions or Azure resources were changed.
+
+The next step is a fresh unassisted human attempt using the
+[current D6 script](D6-HUMAN-ACCEPTANCE-SCRIPT.md#current-run-october-7-usability-finding).
+Use synthetic Mailpit recipients and valid new dates; the old October 6
+campaign is expired. D6 and manual D3 remain open; production/RSA remains
+NO-GO and Azure work remains gated.
+
+## Human-readiness follow-up — 2026-10-08
+
+Live authenticated inspection found training configured for workers but absent
+from the operator wizard. The existing worker URL
+`http://127.0.0.1:8001/v1/training/awareness` returned 200. An audited
+`PUT /api/v1/console/onboarding` saved that same URL and the existing
+`example.com,127.0.0.1` allowlist as operator values; the worker values stayed
+identical and the training step now reports ready. Evidence is retained at
+`data/qualification/human-readiness/e71dde9583b441888d6db7c6c5e18f94/`.
+
+The campaign form also hid a required blank training host when multiple sending
+domains were registered. The repair derives that host from training setup
+independently of the mail domain count and stops guessing a training hostname
+from a sending domain. Sender prefill now uses the already loaded domain
+collection; the old duplicate read expected an array instead of the API's
+`domains` envelope and silently discarded it. Isolated browser coverage tests
+two-domain setup, missing training setup, exact create payloads and retained
+roster binding at 1280/768px.
+
+Live browser coverage now includes Get started and Domains & RoE, plus choosing
+an approved library email and reaching a campaign form with its supplied
+training host at both widths. Live runs retain separate UUID evidence
+directories and disable traces that could record deployment credentials.
+The browser connector could not initialize in this session (a rejected runtime
+import), so the repository's standalone Playwright checks provide this evidence.
+The pinned test browser was added under `data/tooling/playwright`; existing
+caches and failed-run evidence were preserved. Missing controller Python
+workspace dependencies were added from the frozen lockfile with `--inexact`.
+
+Initial live result at deployed `a87aabf`: **13 passed**, including login plus
+eight views with no blocking axe findings and four navigation checks; no skips.
+Evidence: `data/qualification/human-readiness/c1eecd73697e4863b2360ca03778df1e/`.
+Local hermetic suite: **3,588 passed, 113 deliberately deselected**, 241.78 s.
+Lint and strict types passed; the repaired isolated browser workflow passed
+all three tests. Final source CI and post-deploy live checks are recorded below
+when complete.
+
+Scenario preparation: the `example.com` signed RoE is valid through December 20,
+2026, while the mixed-domain October 2 RoE is expired. The current D6 script
+uses synthetic recipients and explicitly includes test-account designation;
+CSV import alone never authorizes a canary. Two active test accounts existed
+at inspection; no saved roster existed before any rehearsal. Human acceptance
+and manual assistive-technology testing remain human gates. No model-reasoning
+blocker requiring Astra has been encountered.

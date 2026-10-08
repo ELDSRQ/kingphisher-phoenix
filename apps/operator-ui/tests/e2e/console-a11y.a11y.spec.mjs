@@ -33,6 +33,8 @@ const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 // Views reachable from the operator nav for a fully-capable session. Each is
 // audited independently: a violation on one view must not mask another.
 const VIEWS = [
+  { label: "Get started", id: "getstarted" },
+  { label: "Domains & RoE", id: "sending" },
   { label: "Dashboard", id: "dashboard" },
   { label: "Campaigns", id: "campaigns" },
   { label: "Recipients", id: "recipients" },

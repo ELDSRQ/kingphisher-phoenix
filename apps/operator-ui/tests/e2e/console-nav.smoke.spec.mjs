@@ -145,4 +145,36 @@ test.describe("operator console navigation (real DOM effect)", () => {
       await expect(page.locator("#c-end")).not.toHaveValue("");
     }
   });
+
+  for (const width of [1280, 768]) {
+    test(`an approved library email is usable with the configured training host at ${width}px`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      const onboardingResponse = page.waitForResponse((response) =>
+        response.url().endsWith("/api/v1/console/onboarding") && response.request().method() === "GET",
+      );
+      await ensureAuthenticated(page);
+      const setup = await (await onboardingResponse).json();
+      const training = setup.steps.find((step) => step.id === "training");
+      expect(training?.ready, "Complete Training experience in Setup wizard before a human campaign run.").toBe(true);
+      const trainingURL = training.fields.find((field) => field.key === "OPERATOR_API_TRAINING_BASE_URL").value;
+      const trainingHost = new URL(trainingURL).hostname;
+      const nav = page.locator('nav[aria-label="Operator sections"]');
+      await nav.locator('button[data-nav="templates"]').click();
+      const library = page.locator(".template-library-table");
+      await expect(page.getByLabel("Filter templates by review state", { exact: true })).toHaveValue("approved");
+      const chooseEmail = library.getByRole("button", { name: /^Use .+ in a campaign$/ }).first();
+      await expect(chooseEmail, "The human run needs at least one approved library email.").toBeVisible();
+      await chooseEmail.click();
+      await expect(page).toHaveURL(/#campaigns$/);
+      await expect(page.locator("#c-template")).not.toHaveValue("");
+      await expect(page.locator("#c-pattern")).not.toHaveValue("");
+      await expect(page.locator("#c-training-resource")).not.toHaveValue("");
+      await expect(page.locator("#c-tdomain")).toHaveValue(trainingHost);
+      await expect(page.locator("#c-start")).not.toHaveValue("");
+      await expect(page.locator("#c-end")).not.toHaveValue("");
+      await expect(page.getByRole("button", { name: "Create campaign", exact: true })).toBeEnabled();
+      await page.screenshot({ path: testInfo.outputPath("human-campaign-form.png"), fullPage: true });
+      // No Create, approval, scheduling or delivery action is performed here.
+    });
+  }
 });

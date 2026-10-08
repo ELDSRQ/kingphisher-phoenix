@@ -1,5 +1,13 @@
 # On-prem GO runbook (readiness gates D1–D6)
 
+> **Current preparation (October 8):** PR #131 is deployed at `a87aabf`;
+> the older deploy gap below is historical. Follow the current
+> [D6 scenario](D6-HUMAN-ACCEPTANCE-SCRIPT.md) and
+> [human-readiness follow-up](QA-REMEDIATION-PLAN-2026-10-07.md#human-readiness-follow-up--2026-10-08)
+> for training setup, valid synthetic-domain authorization and final verification.
+> Dated image/recovery results below remain historical evidence; D6 and manual
+> D3 are still open. Current controller tunnels use ports 8600/8001/8025.
+
 Purpose: the exact steps to clear the remaining `AGENTS.md` NO-GO gates for the
 on-prem (.105 / standalone) deployment, and — once on-prem is signed off — to
 bring Azure up and land the same remediations there. Production/RSA use stays

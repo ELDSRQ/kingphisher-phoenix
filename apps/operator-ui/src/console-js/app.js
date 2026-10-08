@@ -3166,6 +3166,13 @@ views.campaigns = async (root) => {
     value("c-start", localInput(start));
     value("c-end", localInput(end));
 
+    // The recipient page belongs to training setup, independently of how many
+    // sending domains are registered. Do not invent a host from a mail domain.
+    const configuredTraining = readinessContext.training?.fields?.find((field) => field.key === "OPERATOR_API_TRAINING_BASE_URL")?.value;
+    try {
+      if (configuredTraining) value("c-tdomain", new URL(configuredTraining).hostname);
+    } catch { /* leave invalid setup visible at creation */ }
+
     const pattern = approvedPatterns[0];
     if (pattern) {
       const month = start.toLocaleString(undefined, { month: "long", year: "numeric" });
@@ -3176,17 +3183,13 @@ views.campaigns = async (root) => {
     // Best-effort: a prefill that cannot be computed is simply left blank, and
     // the operator fills it in as before. It must never block the form.
     try {
-      const [domains, recipients] = await Promise.all([
-        boundedCollection("/sending-domains").catch(() => []),
-        boundedCollection("/recipients", "items").catch(() => []),
-      ]);
+      const domains = readinessContext.domains || [];
+      const recipients = await boundedCollection("/recipients", "items").catch(() => []);
       const verified = domains.filter((d) => d.active !== false).map((d) => d.domain).filter(Boolean);
       if (verified.length === 1) {
         // Only when there is exactly one: guessing between several would put a
         // wrong From address on real mail, which is worse than an empty field.
         value("c-sender", `security-awareness@${verified[0]}`);
-        const configuredTraining = readinessContext.training?.fields?.find((field) => field.key === "OPERATOR_API_TRAINING_BASE_URL")?.value;
-        try { value("c-tdomain", configuredTraining ? new URL(configuredTraining).hostname : `training.${verified[0]}`); } catch { /* leave invalid setup visible at creation */ }
       }
       const max = document.getElementById("c-max");
       if (max && recipients.length && max.value === "1000") max.value = String(recipients.length);

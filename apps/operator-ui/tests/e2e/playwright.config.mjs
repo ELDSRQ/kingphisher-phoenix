@@ -1,12 +1,20 @@
 // @ts-check
-// TST-002 SCAFFOLD -- operator-run only. This config is intentionally minimal
-// and starts NO web server: the operator brings up the operator-api + console
-// (the platform runs on the .140 host, not localhost -- see MEMORY) and points
-// this suite at it via OPERATOR_CONSOLE_URL. Nothing here installs browsers or
-// runs the suite automatically.
+// Operator-run live checks. The current worker is .105; use its existing
+// controller tunnel through OPERATOR_CONSOLE_URL. This starts no web server.
 import { defineConfig, devices } from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 
 const baseURL = process.env.OPERATOR_CONSOLE_URL || "http://127.0.0.1:8000";
+const projectRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+// Preserve earlier results: Playwright clears its output directory at startup.
+// Only the runner chooses a new directory; workers inherit the same identity.
+const runId = process.env.TEST_WORKER_INDEX === undefined
+  ? randomUUID() : process.env.KP_LIVE_CONSOLE_RUN_ID;
+if (!/^[a-f0-9-]{36}$/.test(runId || "")) throw new Error("missing live-console run identity");
+process.env.KP_LIVE_CONSOLE_RUN_ID = runId;
+const evidenceDir = resolve(projectRoot, "data/qualification/live-console", runId);
 
 export default defineConfig({
   testDir: ".",
@@ -17,9 +25,13 @@ export default defineConfig({
   forbidOnly: true,
   retries: 0,
   reporter: [["list"]],
+  outputDir: resolve(evidenceDir, "test-results"),
+  metadata: { liveConsoleRunId: runId, evidenceDir },
   use: {
     baseURL,
-    trace: "on-first-retry",
+    // Live traces can contain deployment credentials and bearer tokens.
+    trace: "off",
+    screenshot: "only-on-failure",
     // A pre-authenticated session may be supplied by the operator; when unset
     // the spec performs the local-stack password login itself.
     storageState: process.env.OPERATOR_CONSOLE_STORAGE_STATE || undefined,
