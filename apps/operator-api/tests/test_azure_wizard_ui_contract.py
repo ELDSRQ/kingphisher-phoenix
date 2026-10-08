@@ -119,7 +119,10 @@ def test_managed_ai_is_required_and_pattern_approval_uses_durable_request_truth(
         0
     ]
     assert "ai_endpoint: collected.ai_endpoint" in azure_export
-    assert "Managed deployment validation requires that gateway." in APP
+    # Required Azure fields come from server guidance; template-library copy
+    # should not carry deployment instructions for ordinary email operators.
+    azure = APP.split("/* ---------- Azure deployment wizard ---------- */", maxsplit=1)[1]
+    assert 'required: field.required ? "" : null' in azure
     assert "generation_request_recorded !== true" in APP
     assert 'Object.hasOwn(approval, "generation_queued")' in APP
     assert "Pattern approved; template generation requested" in APP

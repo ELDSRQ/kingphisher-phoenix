@@ -15,6 +15,8 @@ from kp_database.campaign_service import (
     _masked_mailbox,
 )
 from kp_database.models import (
+    AudienceGroup,
+    AudienceGroupMember,
     Campaign,
     CampaignAudience,
     CampaignAudienceManifest,
@@ -32,6 +34,7 @@ from kp_domain_models import models as dm
 from kp_telemetry.errors import (
     ConflictError,
     NotFoundError,
+    PermissionDeniedError,
     ValidationError_,
 )
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
@@ -592,6 +595,8 @@ def apply_recipients_csv(
     settings: OperatorApiSettings = Depends(get_settings),
     principal: Principal = Depends(require_capability(Capability.MANAGE_RECIPIENTS)),
 ) -> dict[str, Any]:
+    if body.roster_name is not None and not principal.can(Capability.CREATE_CAMPAIGN):
+        raise PermissionDeniedError("saving a campaign roster requires campaign-author capability")
     if body.deactivate_missing and not body.deactivate_missing_confirm:
         raise ValidationError_("deactivate-missing requires a second explicit confirmation")
     try:
@@ -605,7 +610,62 @@ def apply_recipients_csv(
                 raise ConflictError(
                     "deactivate-missing requires a clean preview with no blocked, invalid, or duplicate rows"
                 )
+            if (
+                body.roster_name is not None
+                and session.scalar(select(AudienceGroup).where(AudienceGroup.name == body.roster_name)) is not None
+            ):
+                raise ConflictError("a roster with that name already exists; choose a new name and preview again")
             _apply_recipient_import_plan(plan, session)
+            roster = None
+            if body.roster_name is not None:
+                # Bind ONLY valid addresses from this exact upload, including
+                # existing recipients. Never select the wider department/domain.
+                session.flush()
+                hashes = [item.mailbox_hash for item in plan.parsed.recipients]
+                member_ids = (
+                    list(
+                        session.scalars(
+                            select(Recipient.recipient_id).where(
+                                Recipient.mailbox_sha256.in_(hashes),
+                                Recipient.deleted_at.is_(None),
+                            )
+                        )
+                    )
+                    if hashes
+                    else []
+                )
+                if not member_ids:
+                    raise ConflictError("a saved roster requires at least one valid recipient")
+                group = AudienceGroup(
+                    audience_group_id=uuid.uuid4(),
+                    name=body.roster_name,
+                    created_by=uuid.UUID(principal.principal_id),
+                )
+                session.add(group)
+                session.flush()
+                session.add_all(
+                    [
+                        AudienceGroupMember(
+                            audience_group_member_id=uuid.uuid4(),
+                            audience_group_id=group.audience_group_id,
+                            recipient_id=recipient_id,
+                        )
+                        for recipient_id in member_ids
+                    ]
+                )
+                roster = {
+                    "audience_group_id": str(group.audience_group_id),
+                    "name": group.name,
+                    "member_count": len(member_ids),
+                }
+                audit.record(
+                    session=session,
+                    actor=principal.principal_id,
+                    action="audience_group.create",
+                    object_type="audience_group",
+                    object_id=str(group.audience_group_id),
+                    detail={"source": "csv_upload", "member_count": len(member_ids), "preview_digest": plan.digest},
+                )
             audit.record(
                 session=session,
                 actor=principal.principal_id,
@@ -625,6 +685,7 @@ def apply_recipients_csv(
         "counts": plan.counts,
         "errors": _recipient_import_issues(plan),
         "applied": True,
+        **({"roster": roster} if roster is not None else {}),
     }
 
 

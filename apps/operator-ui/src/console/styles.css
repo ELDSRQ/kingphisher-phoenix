@@ -176,7 +176,7 @@ body {
 }
 .sidebar .footer button:hover { color: var(--danger); border-color: var(--danger); }
 
-.content { flex: 1; padding: 24px 32px; max-width: 1100px; }
+.content { flex: 1; min-width: 0; padding: 24px 32px; max-width: 1400px; }
 .content h2 { margin: 0 0 4px; font-size: 18px; }
 .content .sub { color: var(--muted); margin: 0 0 20px; }
 .notice {
@@ -191,6 +191,12 @@ body {
 /* Status pills */
 .status-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
 .pill {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
   padding: 6px 12px;
   border-radius: 999px;
   border: 1px solid var(--border);
@@ -205,6 +211,37 @@ body {
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
 th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+td { vertical-align: top; line-height: 1.5; }
+.table-scroll { width: 100%; overflow-x: auto; padding-bottom: 8px; }
+.template-library-table { min-width: 700px; table-layout: fixed; }
+.template-library-table th:first-child { width: 48%; }
+.template-library-table th:nth-child(2) { width: 22%; }
+.template-library-table th:last-child { width: 30%; }
+.template-library-table td { overflow-wrap: anywhere; }
+.template-origin { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.template-heading { display: flex; flex-direction: column; gap: 8px; line-height: 1.5; overflow-wrap: anywhere; }
+.template-heading .pill { align-self: flex-start; }
+@media (max-width: 1050px) {
+  #console-view[aria-label="Campaigns view"] .form-grid { grid-template-columns: 1fr; }
+  .template-library-table, .campaign-table { display: block; min-width: 0; }
+  .template-library-table thead, .campaign-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .template-library-table tbody, .campaign-table tbody { display: block; }
+  .template-library-table tbody tr, .campaign-table tbody tr { display: block; padding: 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; }
+  .template-library-table td, .campaign-table td { display: block; width: 100%; min-width: 0 !important; padding: 6px 0; border: 0; }
+  .template-library-table td::before, .campaign-table td::before { content: attr(data-label); display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+}
+.campaign-table { table-layout: fixed; }
+.campaign-table th:first-child { width: 22%; }
+.campaign-table th:nth-child(2) { width: 12%; }
+.campaign-table th:nth-child(3) { width: 10%; }
+.campaign-table th:nth-child(4) { width: 28%; }
+.campaign-table th:last-child { width: 28%; }
+.campaign-table td { overflow-wrap: anywhere; }
+.campaign-table .btn, .template-library-table .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.campaign-table .pill { border-radius: 8px; padding: 5px 8px; }
+.campaign-path { display: flex; gap: 12px; flex-wrap: wrap; padding: 0; list-style: none; }
+.campaign-path li { flex: 1 1 180px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.campaign-path .link-button { text-align: left; }
 td.mono { font-family: var(--mono); font-size: 12px; }
 
 /* Buttons */

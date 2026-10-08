@@ -1,5 +1,60 @@
 # D6 — Human acceptance run (on-prem)
 
+## Current run: October 7 usability finding
+
+**D6 remains open.** The operator reported overlapping template badges,
+clipped review states and campaign columns, missing or undiscoverable example
+content, and unnecessary pattern/lesson choices. Record this as a failed
+usability attempt; do not treat implementation checks as human acceptance.
+
+The console usability repair must be deployed before repeating this run.
+Its workflow is documented in [OPERATOR-GUIDE.md](OPERATOR-GUIDE.md#run-your-first-campaign).
+Do not use the September environment instructions below as a current runbook.
+
+Current local access, with the console tunnel running:
+
+- Console: **http://127.0.0.1:8600/console/**. Sign in with the existing console
+  password; this on-prem instance uses a single operator identity.
+- Test inbox: **http://127.0.0.1:8025/**. Mailpit is the configured capture
+  destination. This verifies captured test mail, not real-domain inbox delivery.
+- Recipient links use the tracking tunnel on **http://127.0.0.1:8001/**;
+  open the exact link in the captured email.
+
+For the repeat attempt, ask the driver to complete this task using the console's
+own labels and guidance:
+
+1. **Domains & RoE**: select or verify an authorized sending domain and record
+   its Rules of Engagement, including recipient-domain scope and valid dates.
+2. **Recipients → Upload a roster**: name the roster, upload a CSV with an
+   `email` column, inspect the preview, then apply it. Leave deactivation off.
+3. **Template review → Choose an email**: preview an approved library email
+   and select **Use this email**. If adapting it, use **Edit wording & graphics**,
+   then preview and approve the new copy in **Draft review**.
+4. **Campaigns → New campaign**: select the domain, saved roster, email and
+   future send window. The internal category and approved after-click page
+   have defaults. No lesson or question authoring is required.
+5. **Configure audience**: verify the exact saved roster and any exclusions,
+   save/preview it and freeze it. Review the launch, send the designated test
+   cohort first, and verify captured messages before publishing the reviewed
+   roster when the server permits it.
+6. Open the captured email's link, inspect results and the audit trail, and
+   demonstrate how to stop the campaign.
+
+Use newly valid campaign dates. The old example campaign `639ff281` expired
+on October 6 and is not a current runnable example. Do not send to a real
+roster as part of a synthetic Mailpit acceptance attempt.
+
+Record completion, wrong turns, hesitation and any assistance required. Human
+acceptance requires a fresh unassisted attempt after the repair; it does not
+follow automatically from a passing test suite.
+
+## Historical September evidence — superseded setup instructions
+
+The material below records earlier findings. Its ports, AI-host instructions,
+approval assumptions and environment status are historical, not current setup
+instructions. In particular, a second identity is not required by the current
+on-prem single-operator policy.
+
 The last on-prem readiness gate. **A non-technical operator drives a full
 campaign lifecycle unassisted.** Everything else that has been closed —
 D1 full suite, D2 release images, D3 automated accessibility, D5 recovery — is

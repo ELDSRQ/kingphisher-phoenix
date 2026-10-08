@@ -144,3 +144,50 @@ Remote CI, deployment-specific E2E and final-image qualification must bind to
 the eventual implementation commit. Earlier `ad997f9` CI evidence does not
 qualify these later changes. Credential rotation is a separate coordinated
 live step, and manual D3/non-builder D6 remain human tasks.
+
+## D6 usability repair — observed October 7
+
+The operator's attempted validation exposed overlapping template badges,
+clipped review states and campaign columns, hard-to-find content and unnecessary
+pattern/lesson choices. This activates the previously deferred V-08 UX work.
+The attempted D6 run is a finding, not a pass.
+
+Prepared on `fix/d6-console-usability-20261007`, based on merged QA commit
+`50b8c44`. This section does not claim deployment or human acceptance.
+
+| Task | Ownership / dependencies | Acceptance and result |
+|---|---|---|
+| U-01: layout and campaign flow | Root owns shared UI source, generated bundle and CSS | Separate badges from subjects; wrap states; three library columns and five campaign columns; stack narrow rows with visible actions. Pattern supplied automatically; approved after-click default optional. |
+| U-02: exact uploaded roster | Root owns CSV planning/routes and tests; consumes existing audience-group interface | Name included in preview digest; upload plus exact-address group saved in one transaction; creation binds only the selected group. Existing recipients included, wider department/domain excluded. |
+| U-03: wording and graphics | Root owns content API/source; consumes existing preview/clone/logo/review routes | Edit an immutable copy; both message alternatives updated; recipient link preserved; bounds and safety validation before persistence. UI checks renderer syntax before saving; logo upload remains in Draft review. |
+| U-04: instructions | Root owns operator guide, current D6 script and this record | Exact section/control paths; September setup marked historical; expired example campaign explicitly excluded. |
+| S-01/S-02: safety review | Independent subagent, read-only API/test review; no shared writes | Found an HTML size expansion defect; root fixed it with revalidation and no-write tests. Follow-up found no remaining blocker in reviewed scope. |
+| U-05: workflow review | Independent subagent, read-only UI/docs/screenshots | Found hidden narrow actions and a missing plaintext recipient link after replace-all editing. Root corrected both; fresh screenshots confirmed visible actions. |
+| U-06: browser editor verification | Workflow subagent owns only `console-ci.smoke.spec.mjs`; stable root preview/clone interfaces | Isolated fixtures exercise actual UI edits, carried selections, action bounds, and exact roster-binding payloads. Integration and final validation remain root-owned. |
+
+Reviews ran concurrently without shared write ownership. Root integrated API,
+UI and documentation changes serially; the browser test extension is the only
+delegated write. The normal validation commands are `make test`, `make lint`,
+`make typecheck` and `make test-console-smoke`. PostgreSQL cases belong to the
+isolated CI integration profile, never the normal application database. Final
+exact-commit results belong to the associated PR and CI checks.
+
+Browser fixtures prove UI behavior with synthetic data; they do not prove live
+provider delivery or human usability. Existing authorization, exact launch
+review, test cohort, canary evidence and full-publication gates remain in force.
+The default after-click page still exists for recipients; an operator is not
+required to author a lesson or knowledge-check questions. Graphics adjustment
+currently means the existing logo upload, not a general email design editor.
+The deployed `.105` stack, credentials, USB mount and other sessions were not
+changed by this repair. Repeating D6 requires deployment followed by a fresh
+human attempt.
+
+Local repair validation: `make test` passed **3,588 tests, 113 deliberately
+deselected**; `make lint` passed (569 formatted files and console syntax);
+`make typecheck` passed (190 source files); `make test-console-smoke` passed
+**3 Chromium tests**, including edit validation before cloning, approved-only
+library defaults, retained roster selection and visible actions at 1280/768px.
+Final browser evidence is retained at
+`data/qualification/console-smoke/bc0a74f0-9687-4c7f-8a0e-acb245a8a952/`.
+The original adversarial assessment remains unchanged at the SHA-256 recorded
+above. No remote integration result is implied by these local results.

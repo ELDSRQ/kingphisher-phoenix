@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from html import escape
 from html.parser import HTMLParser
 from typing import Any
 
@@ -196,6 +197,18 @@ class TemplatePreview(BaseModel):
 
 class ContentClone(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
+    subject: str | None = Field(default=None, min_length=1, max_length=998)
+    plain_text: str | None = Field(default=None, min_length=1, max_length=200_000)
+
+
+def _template_pattern_id(template: TemplateVersion) -> str | None:
+    proposal = template.raw_proposal if isinstance(template.raw_proposal, dict) else {}
+    evidence = proposal.get("generation_evidence")
+    value = evidence.get("pattern_id") if isinstance(evidence, dict) else None
+    try:
+        return str(uuid.UUID(value)) if isinstance(value, str) else None
+    except ValueError:
+        return None
 
 
 def _template_content(template: TemplateVersion) -> TemplatePreview:
@@ -406,6 +419,7 @@ def list_templates(
             "approval_state": t.approval_state.value,
             "reusable": t.approval_state == dm.TemplateApprovalState.APPROVED,
             "campaign_bound": t.campaign_id is not None,
+            "pattern_id": _template_pattern_id(t),
             **clone_flags(t),
         }
         for t in rows
@@ -579,6 +593,8 @@ def preview_library_template(
     return {
         "template_version_id": str(template.template_version_id),
         "approval_state": template.approval_state.value,
+        "editable_subject": content.subject,
+        "editable_plain_text": content.plain_text,
         **rendered,
     }
 
@@ -597,6 +613,23 @@ def clone_template(
     if not reason:
         raise ValidationError_("clone reason is required")
     content = _template_content(source)
+    _validate_template_content(session, content)
+    if body.subject is not None:
+        content.subject = body.subject
+    if body.plain_text is not None and body.plain_text != content.plain_text:
+        content.plain_text = body.plain_text
+        if TRAINING_URL_PLACEHOLDER not in content.plain_text:
+            content.plain_text += f"\n\nContinue: {TRAINING_URL_PLACEHOLDER}"
+        # A wording edit rebuilds both alternatives, so the approved email
+        # cannot silently retain different words in its HTML alternative.
+        paragraphs = "".join(f"<p>{escape(part)}</p>" for part in body.plain_text.split("\n\n"))
+        content.safe_html = (
+            f'<html><body>{paragraphs}<p><a href="{TRAINING_URL_PLACEHOLDER}">Continue</a></p></body></html>'
+        )
+    try:
+        content = TemplatePreview.model_validate(content.model_dump())
+    except ValueError as exc:
+        raise ValidationError_("edited template exceeds the supported preview boundary; shorten the wording") from exc
     _validate_template_content(session, content)
     sender_display = source.synthetic_sender_display
     if sender_display and (len(sender_display) > 255 or "\r" in sender_display or "\n" in sender_display):
@@ -618,6 +651,11 @@ def clone_template(
             "plain_text": content.plain_text,
             "safe_html": content.safe_html,
             "requested_by": principal.principal_id,
+            **(
+                {"generation_evidence": {"pattern_id": _template_pattern_id(source)}}
+                if _template_pattern_id(source)
+                else {}
+            ),
         },
         # Stamp clone provenance so the copy is distinguishable from its
         # original in the library and review lists (a bare copy carries the same
