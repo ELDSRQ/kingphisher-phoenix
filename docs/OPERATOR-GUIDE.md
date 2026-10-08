@@ -51,7 +51,37 @@ locked in.
 
 ## Run your first campaign
 
-1. **Create** — pick an approved lure pattern and one approved training lesson.
+Use these sections in order; the Campaigns page links to each one:
+
+1. **Domains & RoE**: verify the sending domain and record the domain owner's
+   authorization, target domains and permitted dates. RoE means Rules of
+   Engagement: the signed permission for this exercise.
+2. **Recipients → Upload a roster**: give the upload a roster name, choose a
+   CSV with an `email` column, preview it, and apply that exact preview. Leave
+   deactivation unchecked for an ordinary addition. The named roster contains
+   only valid addresses in this file, including people previously imported.
+3. **Template review → Choose an email**: the library initially shows approved
+   emails. Search, use **Safe preview**, then **Use this email**. To adapt a
+   message, choose **Edit wording & graphics**. It creates an unapproved copy;
+   changed wording rebuilds the email layout, and its draft review offers
+   **Upload logo image**. Preview and approve the copy before using it.
+4. **Campaigns → New campaign**: select the verified domain, saved roster,
+   email, title and send window. The internal content category is supplied
+   automatically. Approved after-click content has a default; its optional
+   control lets you change it, and the exact binding stays in the launch review.
+   Recipient-page host, recipient limit and spreading are under **Advanced
+   delivery settings**.
+5. **Configure audience** on the new campaign: the selected roster is already
+   bound. Save and preview, check the exact recipients and exclusions, then
+   freeze that audience. Lock/review the launch, send the canary first, and
+   send to the reviewed roster once provider evidence permits it.
+
+These steps prepare a draft and exact review. Choosing a roster or clicking
+**Use this email** never sends mail or carries over an approval.
+
+1. **Create** — choose the approved email and your saved roster. The form supplies
+   the internal category and approved after-click content; check the latter in
+   the final review.
 2. **Freeze the audience** — lock the exact list of recipients so what was
    reviewed is exactly what gets sent.
 3. **Approve** — this depends on your deployment's approval mode:

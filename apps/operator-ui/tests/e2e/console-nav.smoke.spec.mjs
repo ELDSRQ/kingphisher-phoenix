@@ -12,8 +12,8 @@
 
 import { expect, test } from "@playwright/test";
 
-// The full navigation, from app.js `const NAV`: seven "run" items always
-// visible, thirteen "more" items behind a collapsed <details>. Capability-gated
+// The full navigation, from app.js `const NAV`: six "run" items always
+// visible, fourteen "more" items behind a collapsed <details>. Capability-gated
 // items may be absent for a lower-privilege session, so membership is asserted
 // as a subset, never exact equality.
 const PRIMARY_NAV_LABELS = [
@@ -21,11 +21,11 @@ const PRIMARY_NAV_LABELS = [
   "Domains & RoE",
   "Recipients",
   "Template review",
-  "Training lessons",
   "Campaigns",
   "Dashboard",
 ];
 const MORE_NAV_LABELS = [
+  "Training lessons",
   "Setup wizard",
   "Repeat on a schedule",
   "Executive trends",
@@ -70,7 +70,7 @@ async function ensureAuthenticated(page) {
 }
 
 test.describe("operator console navigation (real DOM effect)", () => {
-  test("the seven campaign-path items render, and the rest live behind More", async ({ page }) => {
+  test("the six campaign-path items render, and the rest live behind More", async ({ page }) => {
     await ensureAuthenticated(page);
     const nav = page.locator('nav[aria-label="Operator sections"]');
 

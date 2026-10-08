@@ -332,6 +332,8 @@ let lastRenderedView = null;
 let deployConnectorEnabled = true;
 let deployConnectorChecked = false;
 const views = {};
+let selectedLibraryTemplateId = null;
+let selectedRosterGroupId = null;
 
 async function ensureDeployConnectorState() {
   if (deployConnectorChecked) return;
@@ -1191,7 +1193,7 @@ const NAV = [
   ["sending", "Domains & RoE", "run"],
   ["recipients", "Recipients", "run"],
   ["templates", "Template review", "run"],
-  ["training", "Training lessons", "run"],
+  ["training", "Training lessons", "more"],
   ["campaigns", "Campaigns", "run"],
   ["dashboard", "Dashboard", "run"],
   ["onboarding", "Setup wizard", "more"],
@@ -2563,9 +2565,9 @@ views.dashboard = async (root) => {
       count("/sending-domains"), count("/roe"), count("/templates"), count("/campaigns"),
     ]);
     const steps = [
-      { done: domainCount > 0, label: "Verify a sending domain", view: "domains",
+      { done: domainCount > 0, label: "Verify a sending domain", view: "sending",
         why: "Proves you control the domain you will send from. Nothing can be sent until this exists." },
-      { done: roeCount > 0, label: "Record authorization for that domain", view: "domains",
+      { done: roeCount > 0, label: "Record authorization for that domain", view: "sending",
         why: "Confirms the domain owner has authorized this exercise, and for what period." },
       { done: null, label: "Import your recipients", view: "recipients",
         why: "A CSV of who is in scope. A single column of email addresses is enough." },
@@ -2573,8 +2575,10 @@ views.dashboard = async (root) => {
         why: "The message that will be sent. Generate one or pick an approved template." },
       { done: campaignCount > 0, label: "Create a campaign", view: "campaigns",
         why: "Ties the domain, recipients and template together." },
-      { done: null, label: "Submit it, get a second person to approve, then send the canary first", view: "campaigns",
-        why: "You cannot approve your own campaign. The canary is a small test cohort before anything wider." },
+      { done: null, label: "Review the campaign and send a test first", view: "campaigns",
+        why: (sessionInfo()?.approvalPolicy === "single-operator")
+          ? "You can approve your own work here. The test must succeed before sending the reviewed roster."
+          : "An independent reviewer approves the campaign. The test must succeed before sending the reviewed roster." },
     ];
     const next = steps.find((s) => s.done === false);
     gettingStarted.replaceChildren(
@@ -2747,7 +2751,7 @@ function readinessForCampaign(campaign, context, enforcing) {
       destination: "campaigns",
     },
     {
-      key: "lesson", label: "Exact training lesson", required: true,
+      key: "lesson", label: "After-click page", required: true,
       ready: campaign.training_lesson?.ready === true,
       detail: campaign.training_lesson?.ready
         ? `${campaign.training_lesson.title}, version ${campaign.training_lesson.bound_version}. The server rechecks approval, version and content before scheduling and assignment.`
@@ -2981,7 +2985,7 @@ views.campaigns = async (root) => {
   const patterns = patternsLoaded ? patternPayload : [];
   const templates = templatesLoaded ? templatePayload : [];
   const alertSubscriptions = alertsLoaded ? alertPayload : [];
-  const approvedTrainingResources = trainingResourcesLoaded ? trainingResourcePayload : [];
+  const approvedTrainingResources = trainingResourcesLoaded ? trainingResourcePayload.filter((resource) => resource.requires_completion !== false) : [];
   const dependencyLabels = [
     "patterns", "templates", "audience groups", "named recipients", "readiness", "alert subscriptions",
     "approved training lessons",
@@ -3107,6 +3111,18 @@ views.campaigns = async (root) => {
     openDialog(dlg);
   }
 
+  if (canCreateCampaign) root.appendChild(el("section", { class: "card", "aria-label": "Campaign setup steps" }, [
+    el("h3", { text: "Set up your email exercise" }),
+    el("ol", { class: "campaign-path" }, [
+      ["1. Domain & authorization", "sending", "Domains: select your sending domain and record the owner's Rules of Engagement."],
+      ["2. Upload your roster", "recipients", "Recipients: upload your CSV and save that upload as a named roster."],
+      ["3. Choose your email", "templates", "Template library: preview an approved email, edit a copy if needed, then choose Use this email."],
+    ].map(([label, view, help]) => el("li", {}, [
+      el("button", { class: "link-button", type: "button", text: label, onclick: () => navigateTo(view) }),
+      el("p", { class: "field-help", text: help }),
+    ]))),
+    el("p", { text: "4. Create the campaign below, choose your saved roster, review the exact recipients and send a test. After the test succeeds, send to the reviewed roster." }),
+  ]));
   const creationPrerequisites = [
     !approvedPatterns.length ? ["Approved pattern", "patterns", "Open patterns"] : null,
     !approvedTemplates.length ? ["Approved template", "templates", "Open template review"] : null,
@@ -3169,7 +3185,8 @@ views.campaigns = async (root) => {
         // Only when there is exactly one: guessing between several would put a
         // wrong From address on real mail, which is worse than an empty field.
         value("c-sender", `security-awareness@${verified[0]}`);
-        value("c-tdomain", `training.${verified[0]}`);
+        const configuredTraining = readinessContext.training?.fields?.find((field) => field.key === "OPERATOR_API_TRAINING_BASE_URL")?.value;
+        try { value("c-tdomain", configuredTraining ? new URL(configuredTraining).hostname : `training.${verified[0]}`); } catch { /* leave invalid setup visible at creation */ }
       }
       const max = document.getElementById("c-max");
       if (max && recipients.length && max.value === "1000") max.value = String(recipients.length);
@@ -3178,11 +3195,38 @@ views.campaigns = async (root) => {
     }
   }
 
+  function syncTemplateCategory() {
+    const template = approvedTemplates.find((item) => item.template_version_id === document.getElementById("c-template")?.value);
+    const related = approvedPatterns.find((item) => item.campaign_pattern_id === template?.pattern_id);
+    document.getElementById("c-pattern").value = (related || approvedPatterns[0])?.campaign_pattern_id || "";
+  }
+  const domainChoices = (readinessContext.domains || []).filter((domain) => domain.active);
+  const domainSelect = el("select", { id: "c-domain" }, [
+    el("option", { value: "", text: "Choose a verified domain…" }),
+    ...domainChoices.map((domain) => el("option", { value: domain.domain, text: domain.domain })),
+  ]);
+  domainSelect.addEventListener("change", () => {
+    if (domainSelect.value) document.getElementById("c-sender").value = `security-awareness@${domainSelect.value}`;
+  });
+  const rosterSelect = el("select", { id: "c-roster", disabled: groupsLoaded ? null : "disabled" }, [
+    el("option", { value: "", text: "Choose a saved roster, or configure the audience after creation" }),
+    ...groups.map((group) => el("option", { value: group.audience_group_id, text: `${group.name} (${group.member_count} people)` })),
+  ]);
+  if (selectedRosterGroupId && groups.some((group) => group.audience_group_id === selectedRosterGroupId)) {
+    rosterSelect.value = selectedRosterGroupId;
+  }
+  rosterSelect.addEventListener("change", () => {
+    selectedRosterGroupId = rosterSelect.value || null;
+    const roster = groups.find((group) => group.audience_group_id === rosterSelect.value);
+    if (roster) document.getElementById("c-max").value = String(Math.max(1, roster.member_count));
+  });
   const form = el("fieldset", { disabled: canCreateCampaign ? null : "disabled" }, [
     el("legend", { text: "New campaign" }),
     el("div", { class: "form-grid" }, [
       el("div", {}, [
         el("label", { for: "c-title", text: "Title" }), el("input", { id: "c-title", required: "required", maxlength: "255" }),
+        el("label", { for: "c-domain", text: "Sending domain" }), domainSelect,
+        el("label", { for: "c-roster", text: "Uploaded roster" }), rosterSelect,
         el("label", { for: "c-sender", text: "Sender mailbox" }), el("input", {
           id: "c-sender", type: "email", required: "required", maxlength: "255",
           placeholder: "security-awareness@your-verified-domain.example",
@@ -3196,21 +3240,25 @@ views.campaigns = async (root) => {
         el("label", { for: "c-max", text: "Max recipients" }), el("input", { id: "c-max", type: "number", min: "1", max: "10000", value: "1000" }),
       ]),
       el("div", {}, [
-        el("label", { for: "c-pattern", text: "Pattern" }),
-        el("select", { id: "c-pattern", disabled: approvedPatterns.length ? null : "disabled" }, approvedPatterns.map((p) => el("option", { value: p.campaign_pattern_id, text: p.lure_category }))),
-        el("label", { for: "c-template", text: "Template version" }),
+        el("input", { id: "c-pattern", type: "hidden", value: approvedPatterns[0]?.campaign_pattern_id || "" }),
+        el("label", { for: "c-template", text: "Email template" }),
         el("select", { id: "c-template", disabled: approvedTemplates.length ? null : "disabled" }, approvedTemplates.map((t) => el("option", { value: t.template_version_id, text: `${t.version} ${t.subject}` }))),
-        el("label", { for: "c-training-resource", text: "Training lesson" }),
+        el("details", { class: "after-click-options" }, [
+          el("summary", { text: "After-click content (default selected; change if needed)" }),
+          el("p", { class: "field-help", text: "This is what recipients see after clicking. The approved content is included in the final review; you do not need to write questions to send an exercise." }),
+          el("label", { for: "c-training-resource", text: "After-click content" }),
         el("select", {
           id: "c-training-resource",
           required: "required",
           disabled: approvedTrainingResources.length ? null : "disabled",
         }, [
-          el("option", { value: "", text: "Choose an approved lesson…", selected: "selected" }),
+          el("option", { value: "", text: "No approved after-click content available", selected: approvedTrainingResources.length ? null : "selected", disabled: approvedTrainingResources.length ? "disabled" : null }),
           ...approvedTrainingResources.map((resource) => el("option", {
             value: resource.training_resource_id,
             text: `${resource.title} · version ${resource.version}`,
+            selected: resource === approvedTrainingResources[0] ? "selected" : null,
           })),
+        ]),
         ]),
         (!approvedPatterns.length || !approvedTemplates.length || !approvedTrainingResources.length) ? el("p", {
           class: "modal-warn", role: "status",
@@ -3247,6 +3295,7 @@ views.campaigns = async (root) => {
         const createError = document.getElementById("campaign-create-error");
         createError.textContent = "";
         const invalidField = form.querySelector(":invalid");
+        if (invalidField?.closest("details")) invalidField.closest("details").open = true;
         if (invalidField) {
           invalidField.reportValidity();
           invalidField.focus();
@@ -3276,7 +3325,7 @@ views.campaigns = async (root) => {
               throw new Error("Send-time spread must be a whole number of hours between 1 and 168, or left blank");
             }
           }
-          await api("/campaigns", { method: "POST", body: JSON.stringify({
+          const created = await api("/campaigns", { method: "POST", body: JSON.stringify({
             pattern_id: document.getElementById("c-pattern").value,
             title,
             sender_mailbox: senderMailbox,
@@ -3290,8 +3339,20 @@ views.campaigns = async (root) => {
             template_version_id: document.getElementById("c-template").value,
             training_resource_id: trainingResourceId,
           }) });
+          if (rosterSelect.value) {
+            try {
+              await api(`/campaigns/${created.campaign_id}/audience`, { method: "PUT", body: JSON.stringify({
+                group_ids: [rosterSelect.value], departments: [], statuses: ["active"],
+                include_recipient_ids: [], exclude_recipient_ids: [], sample_size: null, sample_seed: null,
+              }) });
+            } catch (err) {
+              markFormSaved(form);
+              toast(`Campaign created, but roster binding failed: ${err.message}. Open Configure audience; nothing has been sent.`, "error");
+              await render(); return;
+            }
+          }
           markFormSaved(form);
-          toast("Campaign created", "success");
+          toast("Campaign created. Review and freeze the roster before sending a test.", "success");
           location.reload();
         } catch (e) {
           createError.textContent = e.message;
@@ -3561,18 +3622,18 @@ views.campaigns = async (root) => {
     const currentId = campaign.training_lesson?.ready
       ? campaign.training_lesson.training_resource_id : "";
     const { dlg, form: trainingForm } = dialogShell(
-      `Training lesson: ${campaign.title}`,
-      "Choose one approved lesson explicitly. Changing a reviewed campaign resets it to draft and removes its prior approvals.",
+      `After-click page: ${campaign.title}`,
+      "Choose the approved page recipients see after clicking. Changing a reviewed campaign resets it to draft and removes its prior approvals.",
     );
     const select = el("select", { id: "campaign-training-resource", required: "required" }, [
-      el("option", { value: "", text: "Choose an approved lesson…", selected: currentId ? null : "selected" }),
+      el("option", { value: "", text: "Choose approved after-click content…", selected: currentId ? null : "selected" }),
       ...approvedTrainingResources.map((resource) => el("option", {
         value: resource.training_resource_id,
         text: `${resource.title} · version ${resource.version}`,
         selected: resource.training_resource_id === currentId ? "selected" : null,
       })),
     ]);
-    trainingForm.appendChild(el("label", { for: "campaign-training-resource", text: "Approved training lesson" }));
+    trainingForm.appendChild(el("label", { for: "campaign-training-resource", text: "Approved after-click page" }));
     trainingForm.appendChild(select);
     if (!trainingResourcesLoaded || !approvedTrainingResources.length) trainingForm.appendChild(el("div", {
       class: "modal-warn", role: "alert",
@@ -3591,16 +3652,16 @@ views.campaigns = async (root) => {
     trainingForm.appendChild(el("div", { class: "modal-actions" }, [
       el("button", { class: "btn", type: "button", text: "Cancel", onclick: () => dlg.close() }),
       el("button", {
-        class: "btn primary", type: "button", text: "Bind exact lesson",
+        class: "btn primary", type: "button", text: "Save after-click page",
         disabled: approvedTrainingResources.length ? null : "disabled",
         onclick: async (event) => {
-          if (!select.value) { error.textContent = "Choose an approved lesson."; return; }
+          if (!select.value) { error.textContent = "Choose an approved after-click page."; return; }
           event.currentTarget.disabled = true;
           try {
             const result = await api(`/campaigns/${campaign.campaign_id}/training-resource`, {
               method: "PUT", body: JSON.stringify({ training_resource_id: select.value }),
             });
-            toast(result.changed ? "Training lesson bound; campaign review reset" : "Training lesson unchanged", "success");
+            toast(result.changed ? "After-click page changed; campaign review reset" : "After-click page unchanged", "success");
             dlg.close(); location.reload();
           } catch (err) {
             if (!await refreshAfterStaleActionFailure(err, render)) error.textContent = err.message;
@@ -3631,9 +3692,9 @@ views.campaigns = async (root) => {
     ]))),
   ].filter(Boolean));
 
-  const list = el("table", { "aria-label": "Campaign status, readiness, and actions" }, [
+  const list = el("table", { class: "campaign-table", "aria-label": "Campaign status, readiness, and actions" }, [
     el("thead", {}, [el("tr", {}, [
-      el("th", { text: "Title" }), el("th", { text: "Created" }), el("th", { text: "Sender" }), el("th", { text: "Audience" }), el("th", { text: "Training lesson" }), el("th", { text: "RoE" }), el("th", { text: "State" }), el("th", { text: "Readiness" }), el("th", { text: "Actions" }),
+      el("th", { text: "Campaign" }), el("th", { text: "Audience" }), el("th", { text: "State" }), el("th", { text: "Next steps" }), el("th", { text: "Actions" }),
     ])]),
     el("tbody", {}, campaigns.map((c) => {
       const readiness = readinessForCampaign(c, readinessContext, enforcing);
@@ -3641,29 +3702,15 @@ views.campaigns = async (root) => {
       const blockedReason = blockers.map((check) => `${check.label}: ${check.detail}`).join(" ");
       const actionAuthorityValid = hasBooleanActionFlags(c, CAMPAIGN_ACTION_FLAGS);
       return el("tr", {}, [
-      el("td", { text: c.title }),
-      el("td", { text: c.created_at ? formatInstant(c.created_at) : "—", title: c.created_at ? "When this campaign was created" : "" }),
-      el("td", { text: c.sender_display_name ? `${c.sender_display_name} <${c.sender_mailbox}>` : c.sender_mailbox }),
-      el("td", {}, [el("span", { class: `pill ${c.audience_frozen ? "ok" : "down"}`, text: c.audience_frozen ? `frozen v${c.audience_version}` : "not frozen" })]),
-      el("td", {}, [el("span", {
-        class: `pill ${c.training_lesson?.ready ? "ok" : "down"}`,
-        text: c.training_lesson?.ready
-          ? `${c.training_lesson.title} · v${c.training_lesson.bound_version}`
-          : "reconfiguration required",
-        title: c.training_lesson?.ready
-          ? `${c.training_lesson.title} · v${c.training_lesson.bound_version} — content verified against the review manifest`
-          : (c.training_lesson?.error || "No exact training lesson is bound."),
-      })]),
-      el("td", {}, [el("span", {
-        class: `pill ${c.roe_bound ? "ok" : "down"}`,
-        text: c.roe_bound ? "bound" : "missing",
-        title: c.roe_bound
-          ? "A signed Rules-of-Engagement covers this campaign's delivery."
-          : "No Rules-of-Engagement is bound — delivery fails closed (no_roe). Re-schedule the campaign to bind one.",
-      })]),
-      el("td", { text: c.state }),
-      el("td", {}, [campaignReadinessView(readiness, c.title)]),
-      el("td", {}, (() => {
+      el("td", { "data-label": "Campaign" }, [el("strong", { text: c.title }),
+        el("div", { class: "modal-help", text: c.sender_display_name ? `${c.sender_display_name} <${c.sender_mailbox}>` : c.sender_mailbox }),
+        el("div", { class: "modal-help", text: c.created_at ? `Created ${formatInstant(c.created_at)}` : "" }),
+      ]),
+
+      el("td", { "data-label": "Audience" }, [el("span", { class: `pill ${c.audience_frozen ? "ok" : "down"}`, text: c.audience_frozen ? `frozen v${c.audience_version}` : "not frozen" })]),
+      el("td", { "data-label": "State", text: c.state }),
+      el("td", { "data-label": "Next steps" }, [campaignReadinessView(readiness, c.title)]),
+      el("td", { "data-label": "Actions" }, (() => {
         const actions = [];
         if (!actionAuthorityValid) {
           actions.push(actionAuthorityUnavailable("Campaign", async (event) => {
@@ -3681,8 +3728,8 @@ views.campaigns = async (root) => {
           }
           if (c.can_configure_training === true) {
             actions.push(el("button", {
-              class: "btn small", type: "button", text: "Choose lesson",
-              "aria-label": `Choose training lesson for ${c.title}`,
+              class: "btn small", type: "button", text: "Change after-click page",
+              "aria-label": `Change after-click page for ${c.title}`,
               disabled: trainingResourcesLoaded && approvedTrainingResources.length ? null : "disabled",
               title: trainingResourcesLoaded
                 ? (approvedTrainingResources.length ? null : "Approve a training lesson first.")
@@ -3792,11 +3839,43 @@ views.campaigns = async (root) => {
     })),
   ]);
 
+  const advancedDelivery = el("details", { class: "card" }, [
+    el("summary", { text: "Advanced delivery settings" }),
+    el("p", { class: "field-help", text: "The recipient page host and recipient limit are supplied from setup and your selected roster. Change these only if this exercise needs different delivery settings." }),
+  ]);
+  for (const id of ["c-tdomain", "c-max", "c-spread"]) {
+    const input = form.querySelector(`#${id}`);
+    const label = form.querySelector(`label[for="${id}"]`);
+    advancedDelivery.append(label, input);
+    if (id === "c-spread") advancedDelivery.appendChild(form.querySelector("#c-spread-help"));
+  }
+  form.insertBefore(advancedDelivery, form.lastElementChild);
   root.appendChild(form);
   // After the fields exist in the DOM, and deliberately not awaited: the two
   // lookups it makes must never hold up rendering the page.
-  if (canCreateCampaign) prefillNewCampaign();
-  root.appendChild(groupCard);
+  if (canCreateCampaign) {
+    prefillNewCampaign();
+    document.getElementById("c-template").addEventListener("change", (event) => {
+      selectedLibraryTemplateId = event.target.value || null;
+      syncTemplateCategory();
+    });
+    if (rosterSelect.value) rosterSelect.dispatchEvent(new Event("change"));
+    if (selectedLibraryTemplateId) {
+      const choice = document.getElementById("c-template");
+      if ([...choice.options].some((option) => option.value === selectedLibraryTemplateId)) {
+        choice.value = selectedLibraryTemplateId;
+        document.getElementById("c-title").value = choice.selectedOptions[0].text.replace(/^\d+\s+/, "");
+      } else {
+        selectedLibraryTemplateId = null;
+        toast("That email is no longer approved. Choose another approved template.", "error");
+      }
+    }
+    syncTemplateCategory();
+    const trainingUrl = readinessContext.training?.fields?.find((field) => field.key === "OPERATOR_API_TRAINING_BASE_URL")?.value;
+    try { if (trainingUrl) document.getElementById("c-tdomain").value = new URL(trainingUrl).hostname; } catch { /* let the operator enter the host */ }
+  }
+  const advancedGroups = el("details", { class: "card" }, [el("summary", { text: "Advanced: reusable audience groups" }), groupCard]);
+  root.appendChild(advancedGroups);
 
   // H11: after a campaign is sent, nothing prompted the close-out steps, even
   // though the pieces (results, evidence bundle, repeat scheduling) all exist.
@@ -3831,7 +3910,8 @@ views.campaigns = async (root) => {
     ]));
   }
 
-  root.appendChild(el("div", { class: "card" }, [el("h3", { text: "All campaigns" }), list]));
+  root.appendChild(el("div", { class: "card" }, [el("h3", { text: "All campaigns" }),
+    el("div", { class: "table-scroll", tabindex: "0", "aria-label": "Campaign table" }, [list])]));
 
   function act(path, successMsg) {
     return async (e) => {
@@ -5230,7 +5310,7 @@ function cloneCampaignIntoForm(campaign) {
     anchor.focus();
   }
   toast(
-    "Prefilled a new draft from this campaign. Choose the pattern, template and lesson, set the window, then configure and freeze the audience. Approvals and Rules of Engagement do not carry over.",
+    "Prefilled a new draft. Choose your email, set the window, then select and review your roster. Approvals and Rules of Engagement do not carry over.",
     "success",
   );
 }
@@ -5377,12 +5457,12 @@ views.templates = async (root) => {
   const canApproveTemplate = hasCapability(CAPABILITY.APPROVE_TEMPLATE);
   const canPreviewTemplate = canCreateCampaign || canApproveTemplate;
   root.appendChild(el("h2", { text: "Template library & review" }));
-  root.appendChild(el("p", { class: "sub", text: "Find approved reusable content, clone it into a new draft, and review generated drafts." }));
+  root.appendChild(el("p", { class: "sub", text: "Search the email library, preview a message, then choose Use this email. To change wording or graphics, edit a copy and approve the draft below." }));
 
   const banner = el("div", { class: "policy-banner" });
   banner.appendChild(el("strong", { text: "Nothing here has been sent. " }));
   banner.appendChild(document.createTextNode(
-    "Drafts are produced from approved threat patterns by the configured AI gateway, re-checked by the safety validator, and can only be used in a campaign once approved below. Managed deployment validation requires that gateway."
+    "Preview a message before choosing it. Edited copies and AI-generated drafts must be approved in Draft review below before a campaign can use them."
     + ((sessionInfo() || {}).approvalPolicy === "single-operator"
       // Under single-operator you review your own generation, so the old
       // sentence here described a rule that no longer applies and would have
@@ -5449,6 +5529,7 @@ views.templates = async (root) => {
     el("option", { value: "", text: "All review states" }),
     ...["approved", "draft", "pending", "rejected", "superseded"].map((value) => el("option", { value, text: value })),
   ]);
+  stateFilter.value = "approved";
   const libraryResults = el("div");
   const loadLibrary = async () => {
     libraryResults.replaceChildren(el("p", { class: "empty", text: "Loading template library…" }));
@@ -5469,34 +5550,64 @@ views.templates = async (root) => {
     }
     const rows = templates.map((template) => {
       const state = template.reusable ? "Approved reusable" : `${template.approval_state} — human review required`;
-      const subjectCell = el("td", { text: template.subject || "(no subject)" });
+      const subjectCell = el("td", { "data-label": "Subject" }, [el("div", { text: template.subject || "(no subject)" })]);
+      const origin = el("div", { class: "template-origin" });
+      subjectCell.appendChild(origin);
+      subjectCell.appendChild(el("details", { class: "modal-help" }, [
+        el("summary", { text: "Origin & usage" }),
+        el("p", { text: `Model: ${template.model_id || "unknown"}. ${template.campaign_bound ? "Previously used in a campaign." : "Reusable library item."}` }),
+      ]));
       if (template.is_auto_curated) {
         const provenance = autoCuratedProvenance(template);
-        subjectCell.appendChild(document.createTextNode(" "));
-        subjectCell.appendChild(el("span", {
+        origin.appendChild(el("span", {
           class: "pill ok",
           text: "AUTO-CURATED",
           title: provenance,
         }));
         subjectCell.appendChild(el("div", { class: "modal-help", text: provenance }));
       } else if (template.is_clone) {
-        subjectCell.appendChild(document.createTextNode(" "));
-        subjectCell.appendChild(el("span", {
+        origin.appendChild(el("span", {
           class: "pill",
-          text: "CLONE",
+          text: "Working copy",
           title: template.cloned_from_subject ? `Working copy of: ${template.cloned_from_subject}` : "Working copy",
         }));
       }
       return el("tr", {}, [
         subjectCell,
-        el("td", { text: template.model_id || "unknown" }),
-        el("td", {}, [el("span", { class: `pill ${template.reusable ? "ok" : "down"}`, text: state })]),
-        el("td", { text: template.campaign_bound ? "Campaign-bound" : "Library item" }),
-        el("td", {}, [el("div", { class: "btn-row" }, [
+        el("td", { "data-label": "Review state" }, [el("span", { class: `pill ${template.reusable ? "ok" : "down"}`, text: state })]),
+        el("td", { "data-label": "Actions" }, [el("div", { class: "btn-row" }, [
           el("button", {
             class: "btn small", type: "button", text: "Safe preview",
             "aria-label": `Safely preview ${template.subject || "untitled template"}`,
             onclick: (event) => showLibraryTemplatePreview(template, event.currentTarget),
+          }),
+          ...(template.reusable ? [el("button", {
+            class: "btn small primary", type: "button", text: "Use this email",
+            "aria-label": `Use ${template.subject || "untitled template"} in a campaign`,
+            onclick: async () => { selectedLibraryTemplateId = template.template_version_id; await navigateTo("campaigns"); },
+          })] : []),
+          el("button", {
+            class: "btn small", type: "button", text: "Edit wording & graphics",
+            onclick: async (event) => {
+              const button = event.currentTarget; button.disabled = true;
+              try {
+                const source = await api(`/templates/${template.template_version_id}/preview`);
+                const values = await promptDialog({
+                  title: "Edit a copy of this email",
+                  description: "The approved original stays unchanged. Wording changes rebuild the email layout; upload a logo in the draft review below. Approve the edited copy before using it.",
+                  fields: [
+                    { name: "subject", label: "Email subject", required: true, maxLength: 998, value: source.editable_subject },
+                    { name: "plain_text", label: "Email wording", type: "textarea", required: true, maxLength: 200000, value: source.editable_plain_text },
+                  ], submitLabel: "Save draft for review",
+                });
+                if (!values) return;
+                await api("/templates/preview", { method: "POST", body: JSON.stringify({ ...values, safe_html: "" }) });
+                await api(`/templates/${template.template_version_id}/clone`, { method: "POST", body: JSON.stringify({ ...values, reason: "Operator adapted wording or graphics for an exercise" }) });
+                toast("Draft saved. Preview it, upload a logo if needed, and approve it in Draft review below.", "success");
+                await render();
+              } catch (err) { toast(err.message, "error"); }
+              finally { if (button.isConnected) button.disabled = false; }
+            },
           }),
           el("button", {
             class: "btn small", type: "button", text: "Clone as draft",
@@ -5527,14 +5638,14 @@ views.templates = async (root) => {
         ])]),
       ]);
     });
-    libraryResults.replaceChildren(el("table", {}, [
-      el("thead", {}, [el("tr", {}, ["Subject", "Model", "Review state", "Binding", "Actions"].map((label) => el("th", { text: label })))]),
+    libraryResults.replaceChildren(el("div", { class: "table-scroll", tabindex: "0", "aria-label": "Template library table" }, [el("table", { class: "template-library-table" }, [
+      el("thead", {}, [el("tr", {}, ["Subject", "Review state", "Actions"].map((label) => el("th", { text: label })))]),
       el("tbody", {}, rows),
-    ]));
+    ])]));
   };
   const searchButton = el("button", { class: "btn", type: "button", text: "Search library", onclick: loadLibrary });
   search.addEventListener("keydown", (event) => { if (event.key === "Enter") loadLibrary(); });
-  library.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Reusable template library" })]));
+  library.appendChild(el("div", { class: "card-head" }, [el("h3", { text: "Choose an email" })]));
   library.appendChild(el("p", { class: "field-help", text: "Only items marked Approved reusable can be selected for campaigns. Cloning always creates an unapproved DRAFT and never copies a campaign binding." }));
   library.appendChild(el("div", { class: "btn-row", role: "search" }, [search, stateFilter, searchButton]));
   library.appendChild(libraryResults);
@@ -5555,6 +5666,8 @@ views.templates = async (root) => {
     return;
   }
 
+  root.appendChild(el("h3", { text: "Draft review" }));
+  root.appendChild(el("p", { class: "field-help", text: "Preview edited or AI-generated emails here. Approve the copy you want to use, then find it in Choose an email above. Nothing is sent from this screen." }));
   let pending;
   try { pending = await boundedCollection("/templates/pending"); } catch (e) {
     root.appendChild(collectionLoadError(`Failed to load pending templates: ${e.message}`, () => render())); return;
@@ -5578,7 +5691,7 @@ views.templates = async (root) => {
       || (typeof principalId === "string" && principalId.length > 0 && draft.requested_by !== principalId);
     const selfReviewing = canReviewDraft && !!draft.requested_by
       && typeof principalId === "string" && draft.requested_by === principalId;
-    const heading = el("h3", { text: draft.subject || "(no subject)" });
+    const heading = el("h3", { class: "template-heading" }, [el("span", { text: draft.subject || "(no subject)" })]);
     if (draft.is_auto_curated) {
       heading.appendChild(document.createTextNode(" "));
       heading.appendChild(el("span", {
@@ -5588,7 +5701,7 @@ views.templates = async (root) => {
       }));
     } else if (draft.is_clone) {
       heading.appendChild(document.createTextNode(" "));
-      heading.appendChild(el("span", { class: "pill", text: "CLONE" }));
+      heading.appendChild(el("span", { class: "pill", text: "Working copy" }));
     }
     const card = el("div", { class: "card" }, [
       heading,
@@ -6543,6 +6656,8 @@ views.recipients = async (root) => {
       el("option", { value: "update", text: "Update existing non-directory recipients" }),
     ]);
     const deactivateMissing = el("input", { id: "r-deactivate", type: "checkbox" });
+    const canSaveRoster = hasCapability(CAPABILITY.CREATE_CAMPAIGN);
+    const rosterName = el("input", { id: "r-roster-name", maxlength: "120", value: `Roster ${new Date().toISOString().replace(/\.\d+Z$/, "Z")}` });
     const mappingControls = {
       mailbox: el("select", { id: "r-map-mailbox" }),
       display_name: el("select", { id: "r-map-name" }),
@@ -6583,6 +6698,7 @@ views.recipients = async (root) => {
         mapping,
         merge_existing: mergeExisting.value,
         deactivate_missing: deactivateMissing.checked,
+        ...(canSaveRoster && rosterName.value.trim() ? { roster_name: rosterName.value.trim() } : {}),
       };
     }
 
@@ -6674,6 +6790,11 @@ views.recipients = async (root) => {
           });
           currentPreview = null;
           showImportResult(result);
+          if (result.roster) {
+            selectedRosterGroupId = result.roster.audience_group_id;
+            previewStatus.appendChild(el("p", { text: `Saved roster: ${result.roster.name} (${result.roster.member_count} people).` }));
+            previewStatus.appendChild(el("button", { class: "btn primary", type: "button", text: "Choose an email for this roster", onclick: () => navigateTo("templates") }));
+          }
         } catch (err) {
           toast(err.message, "error");
           invalidateImportPreview();
@@ -6736,6 +6857,7 @@ views.recipients = async (root) => {
         toast(`Loaded ${file.name}`, "success");
       } catch (err) { toast(`Could not read ${file.name}: ${err.message}`, "error"); }
     });
+    rosterName.addEventListener("input", invalidateImportPreview);
     csvArea.addEventListener("input", () => { explicitHeaderColumnsReviewed = false; invalidateImportPreview(); });
     headerMode.addEventListener("change", () => { explicitHeaderColumnsReviewed = false; invalidateImportPreview(); });
     for (const control of [defaultDepartment, mergeExisting, deactivateMissing, ...Object.values(mappingControls)]) {
@@ -6744,7 +6866,11 @@ views.recipients = async (root) => {
     }
 
     root.appendChild(el("div", { class: "card" }, [
-      el("h3", { text: "Import CSV" }),
+      el("h3", { text: "Upload a roster" }),
+      ...(canSaveRoster ? [
+        el("label", { for: "r-roster-name", text: "Save this upload as a named roster" }), rosterName,
+        el("p", { class: "field-help", text: "The saved roster contains only valid people in this file, including people already imported. Choose this roster in Campaigns to avoid selecting the wider recipient pool. Leave blank to import without saving a roster." }),
+      ] : []),
       el("p", { text: "Preview is non-mutating and shows only counts plus bounded row-number error codes. Apply is bound to the exact CSV, mapping, options, domain policy, and current recipient state." }),
       // D6 acceptance finding: an operator could reach this form with no idea
       // what the spreadsheet should contain. The header aliases and limits below

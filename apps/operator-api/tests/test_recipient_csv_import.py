@@ -745,3 +745,155 @@ def test_preview_payload_is_count_only_and_never_contains_recipient_values() -> 
     assert "Alice Example" not in serialized
     assert response["counts"]["created"] == 1
     assert response["errors"] == []
+
+
+class _RosterSession(_Session):
+    def __init__(self, recipients=None):
+        super().__init__(recipients)
+        self.groups = []
+        self.members = []
+
+    def scalar(self, statement):
+        from kp_database.models import AudienceGroup
+
+        name = statement.compile().params.get("name_1")
+        return next((g for g in self.groups if isinstance(g, AudienceGroup) and g.name == name), None)
+
+    def scalars(self, statement):
+        rows = super().scalars(statement)
+        if len(statement.selected_columns) == 1 and str(statement).startswith("SELECT recipients.recipient_id"):
+            return _Rows([r.recipient_id for r in rows])
+        return rows
+
+    def add(self, value):
+        from kp_database.models import AudienceGroup
+
+        if isinstance(value, AudienceGroup):
+            self.groups.append(value)
+        else:
+            super().add(value)
+
+    def add_all(self, values):
+        self.members.extend(values)
+
+    def flush(self):
+        pass
+
+
+def test_saved_upload_roster_contains_only_csv_people_including_existing() -> None:
+    existing = _recipient("existing@example.com", name="Existing", department="Shared")
+    other = _recipient("not-uploaded@example.com", name="Other", department="Shared")
+    session = _RosterSession([existing, other])
+    audit = _Audit()
+    body = {
+        "csv_text": "email,name\nexisting@example.com,Existing\nnew@example.com,New\n",
+        "roster_name": "October roster",
+    }
+    preview = preview_recipients_csv(RecipientImportPreviewRequest(**body), session, audit, _settings(), _principal())
+    result = apply_recipients_csv(
+        RecipientImportApplyRequest(**body, preview_digest=preview["preview_digest"]),
+        session,
+        audit,
+        _settings(),
+        _principal(),
+    )
+    assert result["roster"]["name"] == "October roster"
+    assert result["roster"]["member_count"] == 2
+    assert existing.recipient_id in {m.recipient_id for m in session.members}
+    assert other.recipient_id not in {m.recipient_id for m in session.members}
+    assert {r.mailbox for r in session.recipients if r.recipient_id in {m.recipient_id for m in session.members}} == {
+        "existing@example.com",
+        "new@example.com",
+    }
+    assert "mailbox" not in str(result)
+
+
+def test_roster_name_is_bound_to_preview_before_writes() -> None:
+    session = _RosterSession()
+    audit = _Audit()
+    body = {"csv_text": "email\nnew@example.com\n", "roster_name": "Reviewed roster"}
+    preview = preview_recipients_csv(RecipientImportPreviewRequest(**body), session, audit, _settings(), _principal())
+    with pytest.raises(ConflictError):
+        apply_recipients_csv(
+            RecipientImportApplyRequest(
+                **{**body, "roster_name": "Different roster"}, preview_digest=preview["preview_digest"]
+            ),
+            session,
+            audit,
+            _settings(),
+            _principal(),
+        )
+    assert not session.added and not session.groups and not session.members
+
+
+def test_duplicate_roster_name_does_not_import_people() -> None:
+    from kp_database.models import AudienceGroup
+
+    session = _RosterSession()
+    session.groups.append(AudienceGroup(audience_group_id=uuid4(), name="Existing roster"))
+    audit = _Audit()
+    body = {"csv_text": "email\nnew@example.com\n", "roster_name": "Existing roster"}
+    preview = preview_recipients_csv(RecipientImportPreviewRequest(**body), session, audit, _settings(), _principal())
+    with pytest.raises(ConflictError, match="already exists"):
+        apply_recipients_csv(
+            RecipientImportApplyRequest(**body, preview_digest=preview["preview_digest"]),
+            session,
+            audit,
+            _settings(),
+            _principal(),
+        )
+    assert not session.added and not session.members
+
+
+def test_saving_roster_requires_campaign_author_and_never_writes_when_denied() -> None:
+    from kp_telemetry.errors import PermissionDeniedError
+
+    session = _RosterSession()
+    body = RecipientImportApplyRequest(
+        csv_text="email\nnew@example.com\n", roster_name="Denied", preview_digest="a" * 64
+    )
+    with pytest.raises(PermissionDeniedError):
+        apply_recipients_csv(body, session, _Audit(), _settings(), Principal(str(uuid4()), {Role.SOURCE_CURATOR}))
+    assert not session.added and not session.groups and session.commits == 0
+
+
+@pytest.mark.postgres
+@requires_postgres
+def test_postgres_saved_upload_roster_is_exact_and_atomic() -> None:
+    from kp_database.models import AudienceGroup, AudienceGroupMember
+
+    engine, sessions = _postgres_test_sessions()
+    try:
+        with sessions() as session:
+            existing = _recipient("existing@example.com", name="Existing", department="QA")
+            other = _recipient("other@example.com", name="Other", department="QA")
+            session.add_all([existing, other])
+            session.commit()
+            body = {"csv_text": "email\nexisting@example.com\nnew@example.com\n", "roster_name": "DB roster"}
+            audit = _Audit()
+            principal = _principal()
+            preview = preview_recipients_csv(
+                RecipientImportPreviewRequest(**body), session, audit, _settings(), principal
+            )
+            result = apply_recipients_csv(
+                RecipientImportApplyRequest(**body, preview_digest=preview["preview_digest"]),
+                session,
+                audit,
+                _settings(),
+                principal,
+            )
+            group_id = result["roster"]["audience_group_id"]
+            from uuid import UUID
+
+            members = set(
+                session.scalars(
+                    select(AudienceGroupMember.recipient_id).where(
+                        AudienceGroupMember.audience_group_id == UUID(group_id)
+                    )
+                )
+            )
+            assert existing.recipient_id in members and other.recipient_id not in members and len(members) == 2
+            assert session.scalar(select(func.count()).select_from(AudienceGroup)) == 1
+            assert session.scalar(select(func.count()).select_from(Recipient)) == 3
+    finally:
+        engine.dispose()

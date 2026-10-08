@@ -70,6 +70,17 @@ class RecipientImportPreviewRequest(BaseModel):
     mapping: RecipientImportColumnMapping = Field(default_factory=RecipientImportColumnMapping)
     merge_existing: Literal["skip", "update"] = "skip"
     deactivate_missing: StrictBool = False
+    roster_name: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @field_validator("roster_name")
+    @classmethod
+    def normalize_roster_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("roster name must not be blank")
+        return value
 
     @field_validator("csv_text")
     @classmethod
@@ -356,6 +367,8 @@ def _recipient_import_plan(
         ],
         "deactivation_safe": deactivation_safe,
     }
+    if body.roster_name is not None:
+        digest_payload["roster_name"] = body.roster_name
     return _RecipientImportPlan(
         parsed=parsed,
         create_rows=tuple(create_rows),
