@@ -24,10 +24,11 @@ distinct from the unassisted human run described here.
 
 The post-deploy browser sweep passed 17 checks with no skips and no blocking
 axe findings. Campaign forms were visually checked at desktop and tablet
-widths. The build is ready for this controlled human trial; credential handoff
-still requires coordinated rotation of the previously exposed console password
-(V-02 in the QA plan). D6 and manual keyboard/screen-reader acceptance remain
-open. Refresh the console
+widths. The build is ready for this controlled human trial. On October 8, the
+user explicitly deferred console-password rotation until signing off on the
+build as fully completed and human ready. Rotation is not a prerequisite or
+blocker to that trial; use the existing protected credential retrieval. D6 and
+manual keyboard/screen-reader acceptance remain open. Refresh the console
 before starting. Final follow-up commits change test pacing and evidence
 records only, so the deployed runtime assets remain those of `680429c`.
 

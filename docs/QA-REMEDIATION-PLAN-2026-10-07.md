@@ -3,6 +3,11 @@
 The review below assesses source `ad997f9`. Subsequent implementation and
 validation are recorded in [Implementation — 2026-10-07](#implementation--2026-10-07).
 
+**Current operator direction (October 8):** console-password rotation waits
+until the user signs off on this build as fully completed and human ready.
+Earlier pre-D6 rotation sequencing below is superseded. Do not rotate before
+that sign-off or treat rotation as a blocker to the human trial.
+
 Reviewed source: `ad997f9f64368d3c7ccb9bb7ae8e127b08e52b83`. The source review is the user-provided `docs/QA-REVIEW-2026-10-07.md`, retained unchanged. Scope: bounded static inspection of relevant code, tests, CI and dated operational evidence, plus inert Python/SQLAlchemy demonstrations. No full suite, SSH probes, campaign actions, storage access, process signals, deployments or source changes were performed.
 
 The assessment identifies useful work, but its executable plan should not be adopted verbatim. Select the worker-status fix, bounded credential hygiene, bootstrap correctness repair, current-document cleanup and evidence reporting. Keep the previously accepted key-file and flake investigations as bounded follow-ups. Do not turn all of UX Wave 2 into a prerequisite for the pending D6 human run. Several blanket evidence statements and the review's replacement route count are demonstrably wrong.
@@ -323,10 +328,12 @@ campaign actions. The same inventory reported both APIs, PostgreSQL, Redis
 and all ten workers ready. The final changes after `680429c` affect test pacing
 and these evidence records only; runtime assets remain identical.
 
-**Build ready for a controlled human trial on `.105`.** Credential handoff is
-still blocked on coordinated rotation of the previously exposed console
-password (V-02); a fresh coordination question was sent October 8. No new
-credential is recorded here, and no rotation is claimed. D6 unassisted
+**Build ready for a controlled human trial on `.105`.** On October 8, the user
+explicitly deferred console-password rotation until signing off on this build
+as fully completed and human ready. This supersedes the earlier pre-D6
+rotation sequencing and resolves the coordination question: rotation is not
+a human-trial blocker and must not run before that sign-off. No new credential
+is recorded here, and no rotation is claimed. D6 unassisted
 acceptance and manual keyboard/screen-reader checks remain open. Use the current D6 script,
 refresh the console, and create a distinct synthetic roster/campaign. PR #132
 still requires integration into `main`; this trial runs its feature branch.

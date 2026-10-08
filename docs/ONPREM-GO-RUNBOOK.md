@@ -4,8 +4,9 @@
 > PR #132 training-host repair at `680429c` on its feature branch. It has not
 > been merged into `main`; later follow-up commits change tests/docs only.
 > All 17 post-deploy browser checks and the synthetic lifecycle rehearsal
-> passed. The build is ready for a controlled human trial; credential handoff
-> still requires coordinated rotation of the exposed password. The older
+> passed. The build is ready for a controlled human trial. Per the user's
+> October 8 instruction, password rotation waits until build sign-off and
+> does not block the human trial. The older
 > deploy gap below is historical. Follow the current
 > [D6 scenario](D6-HUMAN-ACCEPTANCE-SCRIPT.md) and
 > [human-readiness follow-up](QA-REMEDIATION-PLAN-2026-10-07.md#human-readiness-follow-up--2026-10-08)
