@@ -7,9 +7,30 @@ clipped review states and campaign columns, missing or undiscoverable example
 content, and unnecessary pattern/lesson choices. Record this as a failed
 usability attempt; do not treat implementation checks as human acceptance.
 
-The console usability repair must be deployed before repeating this run.
+The console usability repair is deployed on `.105` at merge commit `a87aabf`.
+Read-only verification on October 8 confirmed healthy operator/tracking APIs,
+live PID entries for all ten workers, and served JavaScript/CSS matching that
+commit. Exact-commit CI passed. These checks prepare the repeat attempt; they
+do not close D6. See the [resume verification record](QA-REMEDIATION-PLAN-2026-10-07.md#resume-verification--2026-10-08).
 Its workflow is documented in [OPERATOR-GUIDE.md](OPERATOR-GUIDE.md#run-your-first-campaign).
 Do not use the September environment instructions below as a current runbook.
+
+The training-host follow-up is deployed at `680429c` on
+`fix/human-readiness-training-20261008` ([PR #132](https://github.com/ELDSRQ/kingphisher-phoenix/pull/132));
+that branch has not been merged into `main`. Its required CI jobs passed.
+An automated synthetic backend rehearsal completed canary, separate publication,
+recipient training, reporting, exports and recall. That rehearsal remains
+distinct from the unassisted human run described here.
+
+The post-deploy browser sweep passed 17 checks with no skips and no blocking
+axe findings. Campaign forms were visually checked at desktop and tablet
+widths. The build is ready for this controlled human trial. On October 8, the
+user explicitly deferred console-password rotation until signing off on the
+build as fully completed and human ready. Rotation is not a prerequisite or
+blocker to that trial; use the existing protected credential retrieval. D6 and
+manual keyboard/screen-reader acceptance remain open. Refresh the console
+before starting. Final follow-up commits change test pacing and evidence
+records only, so the deployed runtime assets remain those of `680429c`.
 
 Current local access, with the console tunnel running:
 
@@ -27,6 +48,10 @@ own labels and guidance:
    its Rules of Engagement, including recipient-domain scope and valid dates.
 2. **Recipients → Upload a roster**: name the roster, upload a CSV with an
    `email` column, inspect the preview, then apply it. Leave deactivation off.
+   Include one authorized synthetic canary account in that exact roster. In
+   its recipient row, use **Designate test account**, provide an audit reason
+   and complete the displayed confirmation before launch review. Importing a
+   CSV does not grant test-send eligibility automatically.
 3. **Template review → Choose an email**: preview an approved library email
    and select **Use this email**. If adapting it, use **Edit wording & graphics**,
    then preview and approve the new copy in **Draft review**.
@@ -43,6 +68,24 @@ own labels and guidance:
 Use newly valid campaign dates. The old example campaign `639ff281` expired
 on October 6 and is not a current runnable example. Do not send to a real
 roster as part of a synthetic Mailpit acceptance attempt.
+
+Operator preparation verified October 8: use `example.com` for the synthetic
+scenario. Its current signed RoE covers September 20–December 20, 2026; the
+mixed-domain September 29–October 2 RoE is expired. Recheck coverage at run time.
+Training setup now points to the existing tracking tunnel and mirrors the
+worker allowlist. The campaign's recipient-page host comes from that setup.
+
+For a new acceptance roster, use only clearly synthetic addresses, for example:
+
+```csv
+email,name,department
+d6-canary@example.com,D6 canary,D6 synthetic exercise
+d6-participant@example.com,D6 participant,D6 synthetic exercise
+```
+
+Designate only the canary row. Name each repeat upload distinctly. Keep the
+scenario's roster and campaign separate from automated rehearsal records;
+retain captured mail, campaign state and audit evidence after the attempt.
 
 Record completion, wrong turns, hesitation and any assistance required. Human
 acceptance requires a fresh unassisted attempt after the repair; it does not

@@ -20,6 +20,12 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+// Several real API reads accompany each view. Respect the deployed user
+// limiter during this automated sweep; normal limits stay in force.
+test.beforeEach(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 8_000));
+});
+
 // Fail only on the impacts that block use. 'minor' and 'moderate' are reported
 // to stdout so they stay visible and can be tightened later, but they do not
 // fail the gate: starting strict on a console that has never been audited would
@@ -33,6 +39,8 @@ const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 // Views reachable from the operator nav for a fully-capable session. Each is
 // audited independently: a violation on one view must not mask another.
 const VIEWS = [
+  { label: "Get started", id: "getstarted" },
+  { label: "Domains & RoE", id: "sending" },
   { label: "Dashboard", id: "dashboard" },
   { label: "Campaigns", id: "campaigns" },
   { label: "Recipients", id: "recipients" },

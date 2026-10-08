@@ -99,7 +99,11 @@ for (const width of [1280, 768]) {
       "/audience-groups": { groups: [{ audience_group_id: rosterId, name: "Uploaded October roster", member_count: 3, recipient_ids: [] }] },
       "/recipients": { items: [], total: 0, limit: 500, offset: 0, truncated: false },
       "/training-resources": [{ training_resource_id: lessonId, title: "After-click explanation", version: 1, requires_completion: true }],
-      "/sending-domains": { domains: [{ domain: "example.com", active: true }] },
+      "/sending-domains": { domains: [{ domain: "example.com", active: true }, { domain: "second.example.com", active: true }] },
+      "/console/onboarding": { complete: true, completed: true, steps: [
+        { id: "smtp", ready: true },
+        { id: "training", ready: true, fields: [{ key: "OPERATOR_API_TRAINING_BASE_URL", value: "http://127.0.0.1:8001/v1/training/awareness" }] },
+      ] },
       "/roe": { roes: [] },
       "/integrations/microsoft365/status": { reported_mailbox: { configured: false } },
       "/alerts/subscriptions": [],
@@ -188,6 +192,10 @@ for (const width of [1280, 768]) {
     await expect(page.locator("#c-pattern")).toBeHidden();
     await expect(page.locator("#c-training-resource")).toBeHidden();
     await expect(page.locator("#c-training-resource")).toHaveValue(lessonId);
+    // Training setup is independent of either registered sending domain.
+    // A missing hidden required field otherwise blocks the ordinary Create path.
+    await expect(page.locator("#c-tdomain")).toHaveValue("127.0.0.1");
+    await expect(page.locator("#c-sender")).toHaveValue("");
     if (width === 768) {
       const titleField = await page.locator("#c-title").boundingBox();
       const templateField = await page.locator("#c-template").boundingBox();
@@ -215,16 +223,23 @@ for (const width of [1280, 768]) {
     await expect(page.locator("#c-roster")).toHaveValue(rosterId);
     await expect(page.locator("#c-template")).toHaveValue(templateId);
     await page.locator("#c-domain").selectOption("example.com");
-    await page.getByText("Advanced delivery settings", { exact: true }).click();
-    await page.locator("#c-tdomain").fill("127.0.0.1");
+    await expect(page.locator("#c-tdomain")).toHaveValue("127.0.0.1");
     await page.locator("#c-title").fill("Synthetic roster exercise");
     await page.getByRole("button", { name: "Create campaign", exact: true }).click();
     await expect.poll(() => audiencePayload).toBeTruthy();
     expect(createdPayload.pattern_id).toBe(patternId);
     expect(createdPayload.template_version_id).toBe(templateId);
     expect(createdPayload.training_resource_id).toBe(lessonId);
+    expect(createdPayload.training_domain).toBe("127.0.0.1");
     expect(audiencePayload.group_ids).toEqual([rosterId]);
     expect(audiencePayload.departments).toEqual([]);
     expect(audiencePayload.include_recipient_ids).toEqual([]);
+
+    // Missing setup must stay visible rather than inventing training.<mail-domain>.
+    data["/console/onboarding"] = { complete: true, completed: true, steps: [] };
+    data["/sending-domains"] = { domains: [{ domain: "example.com", active: true }] };
+    await page.reload();
+    await expect(page.locator("#c-sender")).toHaveValue("security-awareness@example.com");
+    await expect(page.locator("#c-tdomain")).toHaveValue("");
   });
 }
