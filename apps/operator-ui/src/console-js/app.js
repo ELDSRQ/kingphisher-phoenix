@@ -4115,11 +4115,11 @@ views.campaigns = async (root) => {
     return async (e) => {
       const btn = e.currentTarget;
       const ok = await confirmDialog({
-        title: `Run the locked canary for "${campaign.title}"?`,
-        message: "The server will queue only the test accounts locked into the reviewed manifest. The full audience remains blocked until successful provider evidence is recorded.",
+        title: `Send a test email for "${campaign.title}"?`,
+        message: "This sends only to the designated test accounts in your confirmed roster. The campaign row will show the result; Send campaign becomes available after successful delivery confirmation.",
         detail: {
-          "Frozen audience": `version ${campaign.audience_version}`,
-          "Approval policy": enforcing ? "security + privacy" : "single-admin development",
+          "Recipients": "Confirmed roster; designated test accounts only",
+          "Approval policy": enforcing ? "security + privacy" : "single operator",
           "Training lesson": campaign.training_lesson?.ready
             ? `${campaign.training_lesson.title} · version ${campaign.training_lesson.bound_version}`
             : "Invalid binding — scheduling will fail closed",
@@ -4127,15 +4127,15 @@ views.campaigns = async (root) => {
           End: formatInstant(campaign.schedule_end),
           "Time zone": browserTimeZone(),
           "Reported mail": readiness.find((check) => check.key === "reporting")?.ready === true ? "ready" : "not confirmed (non-blocking)",
-          Canary: "Only the reviewed, server-marked test cohort is queued in this phase",
+          "Full campaign": "No other recipients are sent during this test",
         },
-        confirmLabel: "Queue locked canary",
+        confirmLabel: "Send test email",
       });
       if (!ok) return;
       btn.disabled = true;
       try {
         const res = await api(`/campaigns/${campaign.campaign_id}/schedule`, { method: "POST" });
-        toast(`Canary queued: ${res.queued} locked test account${res.queued === 1 ? "" : "s"}`, "success");
+        toast(`Test email queued: ${res.queued} designated test account${res.queued === 1 ? "" : "s"}`, "success");
         location.reload();
       }
       catch (err) {
@@ -4149,16 +4149,16 @@ views.campaigns = async (root) => {
     return async (e) => {
       const btn = e.currentTarget;
       const ok = await confirmDialog({
-        title: `Publish "${campaign.title}" to the full audience?`,
-        message: "The server will recheck the reviewed manifest, approvals, RoE, emergency stop, provider configuration and unexpired canary evidence before queueing non-canary recipients.",
+        title: `Send "${campaign.title}" to the confirmed recipients?`,
+        message: "This queues the remaining recipients in your confirmed roster. Test accounts are not sent a second time. Domain authorization and current delivery checks are rechecked before sending.",
         detail: {
           "Campaign start": formatInstant(campaign.schedule_start),
           Provider: campaign.launch_gate?.provider || "Evidence unavailable",
-          "Canary evidence": campaign.launch_gate?.canary_evidence_hash
+          "Test email result": campaign.launch_gate?.canary_evidence_hash
             ? "Provider-accepted and bound to this review"
             : "Missing",
         },
-        confirmLabel: "Publish exact audience",
+        confirmLabel: "Send campaign",
       });
       if (!ok) return;
       btn.disabled = true;

@@ -151,7 +151,7 @@ test("human flow: downloadable CSV, exact saved roster, email selection in previ
   expect(preparation[0].body).toEqual({ preview_hash: "exact-server-preview-hash" });
   expect(state.writes.find((w) => w.path.endsWith("/audience")).body.group_ids).toEqual([rosterId]);
   await page.getByRole("button", { name: "Send the test (canary) for Human workflow fixture", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Queue locked canary", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Send test email", exact: true }).click();
   await expect(page.getByText(/Test email queued — waiting for delivery confirmation/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Send the test (canary) for Human workflow fixture", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send to everyone (publish full audience) for Human workflow fixture", exact: true })).toHaveCount(0);
@@ -159,7 +159,7 @@ test("human flow: downloadable CSV, exact saved roster, email selection in previ
   await page.reload();
   await expect(page.getByText("Test email passed. Next: Send campaign to the confirmed recipient list.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Send to everyone (publish full audience) for Human workflow fixture", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Publish exact audience", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Send campaign", exact: true }).click();
   await expect(page.getByText("Campaign send started. Open Report to follow delivery and training results.", { exact: true })).toBeVisible();
   expect(state.writes.filter((w) => w.path.endsWith("/schedule"))).toHaveLength(1);
   expect(state.writes.filter((w) => w.path.endsWith("/publish"))).toHaveLength(1);
