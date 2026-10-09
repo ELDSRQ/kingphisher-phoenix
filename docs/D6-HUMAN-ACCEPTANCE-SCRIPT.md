@@ -1,6 +1,94 @@
 # D6 — Human acceptance run (on-prem)
 
-## Current run: October 7 usability finding
+## Current run: October 9 operator findings
+
+**D6 remains open.** The October 9 walkthrough found unclear authorization
+inspection, no downloadable CSV template, ambiguous roster history and mailbox
+polling, undiscoverable email selection, unnecessary separate audience/review
+controls, and a test button that did not advance. Record this as a failed human
+attempt. Passing implementation tests does not turn that attempt into a pass.
+
+Use the updated [Operator Guide](OPERATOR-GUIDE.md#run-your-first-campaign)
+for the revised controls. The repair is on `fix/human-operator-flow-20261009`;
+source/deployment validation is recorded in the QA remediation plan. Runtime
+`2ad4936` is deployed on `.105` and passed source CI and 17 live browser checks
+with zero skips. The automated UI rehearsal completed test/full delivery,
+training, report downloads and recall of its own synthetic campaign. Earlier
+instructions below refer to superseded controls. These checks prepare a new
+human attempt; they do not close D6 or the optional-canary policy request.
+
+Before the trial, open the console at http://127.0.0.1:8600/console/ and Mailpit
+at http://127.0.0.1:8025/. Recipient links use http://127.0.0.1:8001/. Refresh the
+console to load the repaired UI. Use the existing password privately; per the
+user's instruction, rotation waits until their completed-build sign-off.
+
+The observer should check these concrete tasks without coaching a formal
+unassisted driver:
+
+1. In **Domains & RoE**, find `example.com` in **Verified domains** and use
+   **View authorization** on that row. Identify who authorized it, the approved
+   recipient domains, dates and active status. Confirm dates cover the intended
+   campaign; do not infer authorization from DNS verification alone.
+2. In **Recipients**, open **Upload a roster**. If a saved roster is already
+   selected, expand **Upload another roster** below the recipient table instead.
+   Download the CSV template. Fill it with
+   two clearly synthetic `example.com` recipients, save as CSV, and upload it
+   with a distinct roster name. Validate and confirm the roster. Names and
+   departments are optional. Inspect **Review saved recipients**; verify this
+   saved roster is selected and past imports are absent. Identify which account
+   should receive the first test email.
+3. Use **Choose an email for this roster**. Preview an approved message and
+   select **Select for current campaign** inside the preview. Confirm that the
+   campaign form retains both the chosen email and uploaded roster.
+4. Create a campaign with a unique title and newly valid dates, within the RoE.
+   Find its row under **All campaigns**, then **Confirm recipients**. Identify
+   included/excluded counts and allowed domains. If needed, designate only the
+   synthetic canary using its row's test-account button, then reopen confirmation.
+   Confirm the validated list. No individual reselection, separate freeze or
+   launch-lock task is required in this path.
+5. Use **Send test email** and its confirmation. Observe queued status, the
+   captured canary message and eventual server-confirmed success. Use **Send
+   campaign** when available and verify the other synthetic recipient's message.
+6. Follow the participant's captured link and complete training. Open **Report**
+   on this campaign's row, observe results, download the report CSV and evidence
+   bundle, and find its audit actions under **More → Audit**.
+7. **Recall** only this trial campaign. Retain records, captured mail, exports
+   and observations. Record completion unaided / hesitation / needed help /
+   blocked at every task. Record exact wording and screenshots before fixes.
+
+For a guided functional evaluation, use these observable checks. Keep the
+unassisted D6 driver separate from a coached run.
+
+| Task | Exact place to look and expected result |
+| --- | --- |
+| Authorization captured | **Domains & RoE → Verified domains → example.com → View authorization** opens the saved record. Look for **Status: Active**, the authorizing party, signer, dates, terms and `example.com` in approved recipient domains. Close the dialog. |
+| CSV saved correctly | In **Recipients**, download the template and fill two distinct synthetic addresses under `email`; optional greeting names go under `name`. After validation and confirmation, **Review saved recipients** opens your named roster. Its table contains those two records, with **Active · domain authorized; mailbox existence unverified**. Earlier rosters appear only if you choose them in **Viewing recipient roster**. |
+| Test recipient eligible | On your synthetic canary's row select **Designate test account**. Enter a non-personal audit reason, type the exact `DESIGNATE …` phrase printed by the dialog, select **Review designation**, then confirm **Designate test account**. The row must show **Server-designated test account**. Do this before confirming campaign recipients. |
+| Email actually selected | **Choose an email for this roster → Template review → Safe preview → Select for current campaign**. In **Campaigns → New campaign**, **Email template** must show that subject and **Uploaded roster** must show your roster's name and count. Working copy and Clone as Draft are not selection controls. |
+| Campaign set up | Select `example.com` under **Sending domain** and check **Sender mailbox**. Use a unique title and a start/end window inside the saved authorization. **After-click content** supplies the approved lesson; **Advanced delivery settings → Training domain** must read `127.0.0.1` in this loopback trial. Create the campaign; find its highlighted row under **All campaigns**. |
+| Exact roster confirmed | **Confirm recipients** on that row shows `example.com`, **2 recipients included; 0 excluded**, the chosen email and both masked recipients. Press **Confirm recipients** once. The row must say **Recipients confirmed. Next: Send test email …**. If counts differ, cancel and investigate before sending. |
+| Test queued and accepted | On this campaign's row select **Send test email** and the same button in the dialog. Expect **Test email queued — waiting for delivery confirmation** or, if the worker finishes quickly, **Test email passed**. At **Mailpit**, find the message addressed to your synthetic canary. After server confirmation the row offers **Send campaign**. A button's blue color alone is not proof of a send. |
+| Roster send completed | Select **Send campaign** and confirm **Send campaign** in its dialog. The row says **Campaign send started**. In **Mailpit**, find one message addressed to your participant; the canary should not receive a second campaign message. Delivery starts at the campaign's configured start time. |
+| Training works | Open the participant's captured Mailpit message and follow its training link. Read the lesson, answer the knowledge check and select **Submit answer**. The page must show **Training complete**. |
+| Results and downloads work | Return to **Campaigns → All campaigns → this row → Report**. Under **Transport states**, **Provider-accepted handoffs** should be 2. Inspect **Failure reasons** for no failures and **Training** for one completed learner. Scroll inside the report dialog to its bottom for **Download report CSV** and **Download evidence bundle**; download and verify both files open. Mailpit SMTP acceptance does not produce an external delivered receipt. |
+| Audit and stop work | **More → Audit → Recent events** lists `campaign.submit`, `campaign.canary.queue`, `campaign.canary.succeeded` and `campaign.publish.full`; hover the abbreviated Object reference to see the full ID from your evidence bundle. **Verify chain** should show **Chain OK**. Return to your campaign row and select **Recall**. Its state becomes **recalled**; Audit records `campaign.recall`. Do not use the sidebar's global stop for this trial. |
+
+If a request-limit message appears, follow its wait instruction and retry the
+same action once the cooldown has elapsed. Do not repeatedly click Send or
+start another campaign. If the test is failed/expired, record the displayed
+reason and stop this trial rather than asserting success.
+
+The reported-mail collector reads employee-reported phishing; it does not verify
+target mailboxes and is outside this CSV trial. Address/domain validation is not
+mailbox-existence or inbox-delivery verification. The current server still
+requires campaign-bound canary evidence; making the canary optional is a
+separate launch-policy decision, not a claim of successful testing.
+
+D6 requires a fresh unaided attempt. Manual keyboard and screen-reader checks
+remain separate human evidence; mark unavailable checks pending.
+
+
+## Previous October 7/8 preparation — superseded controls
 
 **D6 remains open.** The operator reported overlapping template badges,
 clipped review states and campaign columns, missing or undiscoverable example

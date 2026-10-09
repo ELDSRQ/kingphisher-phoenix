@@ -18,12 +18,12 @@ def test_console_exposes_gui_only_audience_workflow() -> None:
 
 
 def test_console_uses_server_authority_after_the_audience_is_frozen() -> None:
-    assert "if (c.can_submit === true)" in APP
+    assert "if (c.can_submit === true && c.can_configure_audience !== true)" in APP
     assert "if (c.can_schedule === true)" in APP
     assert "if (c.can_publish === true)" in APP
     assert 'typeof resource[flag] === "boolean"' in APP
     assert "if (!actionAuthorityValid)" in APP
-    assert 'text: c.audience_frozen ? `frozen v${c.audience_version}` : "not frozen"' in APP
+    assert 'text: c.audience_frozen ? "Recipients confirmed" : "Confirmation needed"' in APP
 
 
 def test_operator_api_exposes_bounded_gui_audience_contract() -> None:

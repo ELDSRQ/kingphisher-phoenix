@@ -340,3 +340,125 @@ still requires integration into `main`; this trial runs its feature branch.
 No unresolved implementation or model-reasoning blocker was found. Release
 image, recovery, cloud/provider and production approval gates are not renewed
 by this synthetic diagnostic; production/RSA remains NO-GO.
+
+## Operator-flow remediation — 2026-10-09
+
+The October 9 human attempt failed on authorization inspection, CSV preparation,
+roster ambiguity, email selection, separate audience/launch controls and silent
+send buttons. D6 remains open. Preserve the user's approved, unsent campaign
+`8a0a7e2a-ebb5-464f-9d0f-9a555be5e838` ("Test 10-09-2026").
+
+`fix/human-operator-flow-20261009` builds on PR #132. Domain rows now open the
+signed authorization record and show approved target domains. Recipients offers
+a header-only CSV template, optional greeting names, a saved-roster selector
+and server-scoped pagination; earlier imports appear only when explicitly
+selected. The current roster is displayed first; subsequent uploads and
+employee-reported mail collection are expandable. That collector reads reported
+phishing and does not validate target mailboxes. Recipient checks distinguish
+address/domain eligibility from unverified mailbox existence.
+
+Approved email cards and their safe previews offer Select for current campaign,
+retaining the roster. One Confirm recipients dialog shows the server-derived
+included/excluded list and campaign-bound RoE domains; it performs the existing
+exact-manifest freeze and launch review internally. Editing roster options is
+optional. A missing designated test account is detected before confirmation can
+commit. Server authorization, immutable review, exclusions and worker delivery
+checks remain in force.
+
+The silent send failure was an event-handler bug: `currentTarget` was read after
+awaiting a confirmation dialog. The handlers now capture the clicked button
+before awaiting. Queued, successful, failed and expired test states have explicit
+next-action wording; full send remains a separate confirmed action.
+
+Local validation: **3,591 passed, 113 deliberately deselected** in 211.41 seconds;
+lint/format and strict types passed. The final wording and freshly generated
+bundle passed 30 focused contracts and **four isolated browser checks** in
+8.4 seconds, including CSV download, scoped roster/history, preview selection,
+cancel-without-mutation, missing-test-account handling, exact confirmation and
+observable test/full sends. The final source CI and live deployment are pending
+at this record's initial commit. No migrations or dependency changes are needed.
+
+The user also requested an optional canary. The pending scope question is
+whether this applies only to on-prem single-operator mode or to production/cloud
+too. This repair does not claim an exemption or canary success: both the API and
+worker currently require fresh campaign/provider/config-bound evidence. A launch
+policy change must cover both enforcement paths and its audit/evidence semantics;
+changing only button availability would leave the operator blocked at delivery.
+This is the remaining design decision suitable for a separate model review.
+Password rotation remains deferred until the user's completed-build sign-off.
+
+### Live verification findings
+
+Implementation `3527c7c` and plain-language confirmation follow-up `fc7ba16`
+passed all three required CI jobs. `.105` was switched to the preserved feature
+branch at `fc7ba16` and normally restarted. Its served bundle matched SHA-256
+`2c84708300c2787a00d5d88d52cdb3659e1de04262cf5c0362cec57f175281b7`.
+
+The live UI saved two new synthetic recipients, inspected authorization,
+selected an approved email from preview, created campaign
+`b534f3e4-2800-424b-a9c0-9d32536c24bc`, and confirmed its exact roster through
+the single confirmation control. A rapid automated test-send attempt received
+HTTP 429; it never queued mail. Its retained evidence is
+`data/qualification/human-readiness/ui-rehearsal-1a1de79fc45941cabd84a51f84d16921/`.
+An earlier navigation-only helper attempt remains retained separately; initial
+login correctly redirected the incomplete setup session to Get started, so the
+helper needed to click Domains & RoE explicitly.
+
+The request-limit follow-up gives HTTP 429 a bounded Retry-After instruction,
+does not automatically retry mutations, retains the selected email when the
+template collection is unavailable, and prevents detached campaign renders
+from changing current selections. The isolated browser test now proves that a
+throttled test request does not change campaign state or queue a send, and that
+a failed template read does not falsely announce lost approval. All four browser
+checks passed in 10 seconds, plus 26 focused contracts and lint/strict types.
+Live continuation will reuse only the above rehearsal campaign at a slower pace.
+
+The paced continuation queued exactly one test email and Mailpit captured it;
+the server derived successful canary evidence. A fresh page load then returned
+the incomplete-setup session to Get started. The test-send action now refreshes
+the campaign view in place, just like full send. Initial programmatic roster
+selection also incorrectly marked the new-campaign form as dirty, pausing the
+30-second status refresh; initial defaults are now marked saved while genuine
+operator edits retain their refresh guard. The browser scenario explicitly
+covers incomplete setup and an unedited prefilled form.
+
+### Final source and governed UI continuation
+
+Final runtime source `2ad4936ec00e6c54e7c4925808a1a99656eea745` passed all
+required jobs ([CI](https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/37936578098))
+and is deployed on `.105` under
+[PR #133](https://github.com/ELDSRQ/kingphisher-phoenix/pull/133), stacked on
+unmerged PR #132. It was advanced through clean tracked-tree, fast-forward
+updates and normal supervisor markers. The worker's untracked Compose override,
+controller QA artifact, password, state and evidence were preserved. Served
+JavaScript matches SHA-256
+`2b7d42dd4d10e00092173645f8d86cac0c61f70d559859327fbf76a2bc1aacd3`.
+
+The recorded UI rehearsal was resumed without repeating its successful canary.
+The actual Send campaign button queued one remaining synthetic recipient;
+Mailpit captured it. The participant followed the captured tracking link and
+completed the approved quiz through the training page. The actual Report dialog
+downloaded both report CSV and evidence ZIP; the ZIP integrity check and all
+three JSON members passed. Its report showed two provider acceptances, one
+click, one completed learner and zero transport failures. The UI Recall action
+affected only campaign `b534f3e4-2800-424b-a9c0-9d32536c24bc`. The user's
+"Test 10-09-2026" campaign remains approved, reviewed and unsent.
+
+The retained log includes failed diagnostics and the eventual pass rather than
+overwriting the failed attempts. Import/confirmation ran at `fc7ba16`, test
+delivery at `3e19f94`, and full send/training/exports/recall at `2ad4936`.
+The API/worker runtime is identical across those UI follow-ups. This is an
+automated engineering rehearsal, not an unassisted D6 pass. No deployment,
+source check or rehearsal constitutes completed-build human sign-off; the
+optional-canary scope decision and manual human acceptance remain open.
+
+The final paced live browser sweep passed **17 checks, zero skips**, in 2.5
+minutes, including login plus ten views with no blocking axe findings and six
+navigation/form checks at desktop/tablet widths. Its inventory confirmed both
+APIs, PostgreSQL, Redis and all ten workers ready. Evidence:
+`data/qualification/human-readiness/71452076711c4825b31ae37000a9c523/`.
+The current D6 script contains exact screen/button locations and observable
+results for each trial step, including report-dialog scrolling for downloads.
+Later commits that only record these results or refine instructions do not
+change the tested runtime assets. D6 still requires a fresh human attempt;
+manual keyboard and screen-reader evidence must be recorded separately.

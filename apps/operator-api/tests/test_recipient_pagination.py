@@ -11,7 +11,7 @@ from fastapi.routing import APIRoute
 from kp_authorization import Principal, Role
 from kp_domain_models import models as dm
 from kp_operator_api.routers import campaign_recipient_results, list_recipients, router
-from kp_telemetry.errors import PermissionDeniedError
+from kp_telemetry.errors import NotFoundError, PermissionDeniedError
 
 APP = (Path(__file__).resolve().parents[2] / "operator-ui" / "src" / "console-js" / "app.js").read_text(
     encoding="utf-8"
@@ -133,6 +133,53 @@ def test_global_recipient_query_and_envelope_are_bounded_beyond_one_page() -> No
     )
     assert len(final_page["items"]) == 1
     assert final_page["truncated"] is False
+
+
+def test_saved_roster_scopes_count_and_every_page_without_exposing_names() -> None:
+    roster_id = uuid4()
+
+    class RosterSession(_GlobalSession):
+        def get(self, _model: Any, identifier: Any) -> Any:
+            assert identifier == roster_id
+            return SimpleNamespace(audience_group_id=roster_id)
+
+    session = RosterSession([_recipient(index) for index in range(101)])
+    page = list_recipients(
+        limit=100,
+        offset=100,
+        mailbox=None,
+        roster_id=roster_id,
+        session=session,
+        settings=object(),
+        principal=_ANON_PRINCIPAL,  # type: ignore[arg-type]
+    )
+    assert page["total"] == 101
+    assert len(page["items"]) == 1
+    assert not page["truncated"]
+    assert set(page["items"][0]) == {"recipient_id", "department", "status", "is_test_account"}
+    for statement in (session.count_statement, session.page_statement):
+        assert "audience_group_members.audience_group_id" in str(statement)
+        assert roster_id in statement.compile().params.values()
+
+
+def test_unknown_saved_roster_never_falls_back_to_all_imported_recipients() -> None:
+    class MissingRosterSession(_GlobalSession):
+        def get(self, _model: Any, _identifier: Any) -> None:
+            return None
+
+    session = MissingRosterSession([_recipient(1)])
+    with pytest.raises(NotFoundError, match="saved roster not found"):
+        list_recipients(
+            limit=100,
+            offset=0,
+            mailbox=None,
+            roster_id=uuid4(),
+            session=session,
+            settings=object(),
+            principal=_ANON_PRINCIPAL,  # type: ignore[arg-type]
+        )
+    assert session.count_statement is None
+    assert session.page_statement is None
 
 
 def test_campaign_recipient_query_bounds_rows_and_related_evidence() -> None:
@@ -259,7 +306,7 @@ def test_every_browser_recipient_consumer_uses_and_validates_a_bounded_page() ->
     assert "namedResults.slice" not in ANALYTICS
     assert "namedResults.total" in ANALYTICS
     assert "namedResults.truncated" in ANALYTICS
-    assert "`/recipients?limit=${RECIPIENT_PAGE_LIMIT}&offset=${recipientPageOffset}`" in RECIPIENT_VIEW
+    assert "`/recipients?limit=${RECIPIENT_PAGE_LIMIT}&offset=${recipientPageOffset}${rosterScope}`" in RECIPIENT_VIEW
     assert "const recipients = recipientPage.items;" in RECIPIENT_VIEW
     assert 'text: "Previous recipients"' in RECIPIENT_VIEW
     assert 'text: "Next recipients"' in RECIPIENT_VIEW
