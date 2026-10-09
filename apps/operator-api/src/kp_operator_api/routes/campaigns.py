@@ -294,7 +294,7 @@ def _audience_preview_for_request(
         roe_options=[
             (roe.roe_id, frozenset(roe.target_domains or []))
             for roe in covering
-            if campaign.roe_id is None or roe.roe_id == campaign.roe_id
+            if campaign.delivery_mode != "reviewed_direct" or campaign.roe_id is None or roe.roe_id == campaign.roe_id
         ],
     )
 
