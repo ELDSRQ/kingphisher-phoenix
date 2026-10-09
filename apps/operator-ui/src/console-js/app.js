@@ -371,6 +371,7 @@ function toast(message, type = "") {
 }
 
 import { el, svg, SVG_NS } from "./dom.js";
+import { installSimpleCampaigns } from "./simple-campaigns.js";
 import { ledgerTrendChart } from "./chart.js";
 import { discoverAzure, listEntraApplications } from "./azure-discovery.js";
 
@@ -4867,7 +4868,9 @@ views.sending = async (root) => {
     el("div", { class: "card-head" }, [
       el("h3", { text: "Verified domains" }),
       el("div", { class: "btn-row" }, [
-        el("button", { class: "btn", text: "Lookalike generator", onclick: lookalike }),
+        el("details", {}, [el("summary", { text: "Optional: domain suggestions" }),
+          el("p", { text: "Suggest domains resembling another domain. Suggestions do not select, verify or authorize a domain for this campaign." }),
+          el("button", { class: "btn", text: "Lookalike generator", onclick: lookalike })]),
         el("button", { class: "btn primary", text: "Onboard a sending domain", onclick: onboard }),
       ]),
     ]),
@@ -5603,6 +5606,7 @@ function showRenderedTemplatePreview(rendered, selectableTemplate = null) {
       class: "btn primary", type: "button", text: "Select for current campaign",
       onclick: async () => {
         selectedLibraryTemplateId = selectableTemplate.template_version_id;
+        window.dispatchEvent(new CustomEvent("kp-select-library-template", { detail: { templateId: selectedLibraryTemplateId } }));
         dlg.close();
         await navigateTo("campaigns");
       },
@@ -5757,7 +5761,7 @@ views.templates = async (root) => {
           ...(template.reusable ? [el("button", {
             class: "btn small primary", type: "button", text: "Select for current campaign",
             "aria-label": `Select for current campaign: ${template.subject || "untitled template"}`,
-            onclick: async () => { selectedLibraryTemplateId = template.template_version_id; await navigateTo("campaigns"); },
+            onclick: async () => { selectedLibraryTemplateId = template.template_version_id; window.dispatchEvent(new CustomEvent("kp-select-library-template", { detail: { templateId: selectedLibraryTemplateId } })); await navigateTo("campaigns"); },
           })] : []),
           el("button", {
             class: "btn small", type: "button", text: "Edit wording & graphics",
@@ -9162,7 +9166,8 @@ async function render() {
     if (hasCapability(CAPABILITY.MANAGE_ROLES)) {
       try {
         const onboarding = await api("/console/onboarding");
-        if (!onboarding.complete) location.hash = "getstarted";
+        // Optional integrations must not redirect an operator away from a campaign.
+        if (!location.hash) location.hash = "campaigns";
       } catch (e) { toast(`Unable to check setup status: ${e.message}`, "error"); }
     }
     if (!token() && !sessionInfo()) return;
@@ -9205,6 +9210,10 @@ function scheduleRefresh() {
     render();
   }, REFRESH_MS);
 }
+
+installSimpleCampaigns({ views, api, el, boundedCollection, hasCapability, CAPABILITY, sessionInfo,
+  toast, navigateTo, dialogShell, openDialog, confirmDialog, promptDialog,
+  guardUnsavedForm, markFormSaved, downloadApiCsv, showCampaignReport: openCampaignAnalytics });
 
 window.addEventListener("hashchange", render);
 window.addEventListener("beforeunload", (event) => {

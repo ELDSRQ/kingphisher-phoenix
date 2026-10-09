@@ -59,6 +59,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "PUT /api/v1/campaigns/{campaign_id}/training-resource",
             "POST /api/v1/campaigns/{campaign_id}/audience/freeze",
             "POST /api/v1/campaigns/{campaign_id}/submit",
+            "POST /api/v1/campaigns/{campaign_id}/confirm",
             "POST /api/v1/patterns/{pattern_id}/clone",
             "POST /api/v1/templates/{template_version_id}/clone",
             "POST /api/v1/templates/{template_version_id}/logo",
@@ -98,6 +99,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
         _routes(
             "POST /api/v1/campaigns/{campaign_id}/publish",
             "POST /api/v1/campaigns/{campaign_id}/schedule",
+            "POST /api/v1/campaigns/{campaign_id}/send",
             "POST /api/v1/campaigns/{campaign_id}/training/reminders",
             "POST /api/v1/programs/{program_id}/pause",
             "POST /api/v1/programs/{program_id}/resume",

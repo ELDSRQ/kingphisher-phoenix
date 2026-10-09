@@ -85,7 +85,7 @@ body {
   color: var(--text);
   font-size: 14px;
 }
-.login-error { color: var(--danger); margin-bottom: 12px; min-height: 18px; }
+.login-error { color: var(--danger-text); margin-bottom: 12px; min-height: 18px; }
 
 /* Layout */
 .shell { display: flex; min-height: 100vh; }
@@ -257,7 +257,7 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: var(--accent-fill); border-color: var(--accent-fill); color: #fff; }
-.btn.danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+.btn.danger { color: var(--danger-text); border-color: var(--danger); background: transparent; }
 .btn.small { padding: 4px 10px; font-size: 12px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
@@ -307,7 +307,7 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 .wizard-feedback, .wizard-actions, .wizard-restart { grid-column: 1 / -1; }
 .wizard-feedback { min-height: 20px; margin-top: 10px; color: var(--muted); }
 .wizard-feedback.success, .configured-label { color: var(--accent-2); }
-.wizard-feedback.error { color: var(--danger); }
+.wizard-feedback.error { color: var(--danger-text); }
 .wizard-feedback.testing { color: #b9d2ff; }
 .wizard-restart { margin: 18px 0 0; }
 .wizard-summary { display: grid; grid-template-columns: minmax(140px, 1fr) 2fr; gap: 10px 16px; }
@@ -372,7 +372,7 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   max-width: min(520px, calc(100vw - 32px));
   line-height: 1.45;
 }
-.toast.error { border-color: var(--danger); color: var(--danger); }
+.toast.error { border-color: var(--danger); color: var(--danger-text); }
 .toast.success { border-color: var(--accent-2); color: var(--accent-2); }
 .toast-dismiss {
   border: 0;
@@ -426,8 +426,8 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
 .modal-desc { margin: 0 0 6px; color: var(--muted); font-size: 13px; line-height: 1.5; }
 .modal-section { margin: 14px 0 2px; font-size: 13px; }
 .modal-help { margin: 2px 0 6px; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.modal-warn { margin: 8px 0; color: var(--danger); font-size: 12px; line-height: 1.5; }
-.modal-error { color: var(--danger); font-size: 12px; min-height: 16px; }
+.modal-warn { margin: 8px 0; color: var(--danger-text); font-size: 12px; line-height: 1.5; }
+.modal-error { color: var(--danger-text); font-size: 12px; min-height: 16px; }
 .modal-form label { color: var(--muted); font-size: 12px; margin-top: 6px; }
 .modal-form input,
 .modal-form select,

@@ -358,6 +358,7 @@ class TemplateVersion(Base):
 class Campaign(Base):
     __tablename__ = "campaigns"
     __table_args__ = (
+        CheckConstraint("delivery_mode IN ('canary', 'reviewed_direct')", name="ck_campaign_delivery_mode"),
         CheckConstraint(
             "training_resource_version IS NULL OR training_resource_version > 0",
             name="training_resource_version_positive",
@@ -373,6 +374,7 @@ class Campaign(Base):
     )
 
     campaign_id = _pk()
+    delivery_mode: Mapped[str] = mapped_column(String(32), default="canary", server_default="canary")
     pattern_id = mapped_column(UUID(as_uuid=True), ForeignKey("campaign_patterns.campaign_pattern_id"), nullable=False)
     current_template_id = mapped_column(UUID(as_uuid=True), nullable=True)
     title: Mapped[str] = mapped_column(String(255))
@@ -526,12 +528,13 @@ class CampaignApproval(Base):
 
 
 class CampaignLaunchGate(Base):
-    """Durable, fail-closed canary prerequisite for full publication."""
+    """Exact reviewed launch, with distinct direct and legacy canary publication."""
 
     __tablename__ = "campaign_launch_gates"
     __table_args__ = (
         CheckConstraint(
-            "state IN ('reviewed', 'canary_queued', 'canary_succeeded', 'canary_failed', 'expired', 'full_published')",
+            "state IN ('reviewed', 'canary_queued', 'canary_succeeded', 'canary_failed', 'expired', "
+            "'full_published', 'direct_published')",
             name="ck_campaign_launch_gate_state",
         ),
         CheckConstraint("length(review_manifest_hash) = 64", name="ck_campaign_launch_review_hash"),
@@ -559,8 +562,13 @@ class CampaignLaunchGate(Base):
             name="ck_campaign_launch_success_evidence",
         ),
         CheckConstraint(
-            "state <> 'full_published' OR full_published_at IS NOT NULL",
+            "state NOT IN ('full_published', 'direct_published') OR full_published_at IS NOT NULL",
             name="ck_campaign_launch_full_publication_time",
+        ),
+        CheckConstraint(
+            "state <> 'direct_published' OR (canary_queued_at IS NULL AND canary_expires_at IS NULL "
+            "AND canary_succeeded_at IS NULL AND canary_evidence_hash IS NULL)",
+            name="ck_campaign_launch_direct_no_canary",
         ),
     )
 

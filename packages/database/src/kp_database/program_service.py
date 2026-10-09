@@ -298,6 +298,7 @@ def materialize_campaign_program(
             campaign = Campaign(
                 campaign_id=campaign_id,
                 pattern_id=source.pattern_id,
+                delivery_mode=getattr(source, "delivery_mode", None) or "canary",
                 current_template_id=source.current_template_id,
                 title=_occurrence_title(source.title, occurrence_number, occurrence_count),
                 state=dm.CampaignState.DRAFT,

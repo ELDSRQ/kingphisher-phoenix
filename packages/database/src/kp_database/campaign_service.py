@@ -275,27 +275,29 @@ def campaign_launch_review_manifest_hash(
 ) -> str:
     """Bind every mutable launch choice reviewed by a human."""
 
-    return _canonical_hash(
-        {
-            "version": 1,
-            "campaign_id": str(campaign.campaign_id),
-            "title": campaign.title,
-            "sender_mailbox": campaign.sender_mailbox,
-            "sender_display_name": campaign.sender_display_name,
-            "training_domain": campaign.training_domain,
-            "schedule_start": campaign.schedule_start.isoformat() if campaign.schedule_start else None,
-            "schedule_end": campaign.schedule_end.isoformat() if campaign.schedule_end else None,
-            "timezone": campaign.timezone,
-            "max_recipients": campaign.max_recipients,
-            "roe_id": str(campaign.roe_id) if campaign.roe_id else None,
-            "content_manifest_hash": campaign.manifest_hash,
-            "template_approval_hash": template_approval_hash,
-            "audience_version": audience.version,
-            "audience_configuration_hash": audience.configuration_hash,
-            "audience_manifest_hash": audience.manifest_hash,
-            "canary_manifest_hash": canary_manifest_hash,
-        }
-    )
+    manifest = {
+        "version": 1,
+        "campaign_id": str(campaign.campaign_id),
+        "title": campaign.title,
+        "sender_mailbox": campaign.sender_mailbox,
+        "sender_display_name": campaign.sender_display_name,
+        "training_domain": campaign.training_domain,
+        "schedule_start": campaign.schedule_start.isoformat() if campaign.schedule_start else None,
+        "schedule_end": campaign.schedule_end.isoformat() if campaign.schedule_end else None,
+        "timezone": campaign.timezone,
+        "max_recipients": campaign.max_recipients,
+        "roe_id": str(campaign.roe_id) if campaign.roe_id else None,
+        "content_manifest_hash": campaign.manifest_hash,
+        "template_approval_hash": template_approval_hash,
+        "audience_version": audience.version,
+        "audience_configuration_hash": audience.configuration_hash,
+        "audience_manifest_hash": audience.manifest_hash,
+        "canary_manifest_hash": canary_manifest_hash,
+    }
+    if getattr(campaign, "delivery_mode", None) == "reviewed_direct":
+        manifest["version"] = 2
+        manifest["delivery_mode"] = "reviewed_direct"
+    return _canonical_hash(manifest)
 
 
 def bind_campaign_launch_review(
@@ -326,31 +328,36 @@ def bind_campaign_launch_review(
         raise ConflictError("campaign requires an exactly approved template before review")
     template_hash = template_content_approval_hash(template)
 
-    canary_rows = list(
-        session.execute(
-            select(
-                CampaignAudienceManifest.recipient_id,
-                CampaignAudienceManifest.recipient_hash,
+    direct = getattr(campaign, "delivery_mode", None) == "reviewed_direct"
+    canary_rows = (
+        []
+        if direct
+        else list(
+            session.execute(
+                select(
+                    CampaignAudienceManifest.recipient_id,
+                    CampaignAudienceManifest.recipient_hash,
+                )
+                .join(Recipient, Recipient.recipient_id == CampaignAudienceManifest.recipient_id)
+                .where(
+                    CampaignAudienceManifest.campaign_id == campaign.campaign_id,
+                    CampaignAudienceManifest.audience_version == audience.version,
+                    Recipient.is_test_account.is_(True),
+                    Recipient.status == dm.RecipientStatus.ACTIVE,
+                    Recipient.deleted_at.is_(None),
+                )
+                .order_by(CampaignAudienceManifest.ordinal)
+                .limit(MAX_AUDIENCE_RECIPIENTS + 1)
             )
-            .join(Recipient, Recipient.recipient_id == CampaignAudienceManifest.recipient_id)
-            .where(
-                CampaignAudienceManifest.campaign_id == campaign.campaign_id,
-                CampaignAudienceManifest.audience_version == audience.version,
-                Recipient.is_test_account.is_(True),
-                Recipient.status == dm.RecipientStatus.ACTIVE,
-                Recipient.deleted_at.is_(None),
-            )
-            .order_by(CampaignAudienceManifest.ordinal)
-            .limit(MAX_AUDIENCE_RECIPIENTS + 1)
         )
     )
-    if not canary_rows:
+    if not direct and not canary_rows:
         raise ConflictError(
             "campaign requires at least one server-marked test account in its frozen audience before review"
         )
     if len(canary_rows) > MAX_AUDIENCE_RECIPIENTS:
         raise ConflictError("campaign canary cohort exceeds the supported 10,000-recipient boundary")
-    canary = [(recipient_id, recipient_hash) for recipient_id, recipient_hash in canary_rows]
+    canary = [] if direct else [(recipient_id, recipient_hash) for recipient_id, recipient_hash in canary_rows]
     canary_hash = campaign_canary_manifest_hash(canary)
     review_hash = campaign_launch_review_manifest_hash(
         campaign,

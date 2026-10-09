@@ -15,8 +15,9 @@ import { expect, test } from "@playwright/test";
 // Each fresh login loads several real API collections. Pace the live sweep
 // below the ordinary 120 requests/minute user limit; never relax the server.
 test.beforeEach(async () => {
-  await new Promise((resolve) => setTimeout(resolve, 8_000));
+  await new Promise((resolve) => setTimeout(resolve, 20_000));
 });
+test.setTimeout(60_000);
 
 // The full navigation, from app.js `const NAV`: six "run" items always
 // visible, fourteen "more" items behind a collapsed <details>. Capability-gated
@@ -141,15 +142,9 @@ test.describe("operator console navigation (real DOM effect)", () => {
     await expect(page).toHaveURL(/#campaigns$/);
     await expect(page.locator("#console-view")).toHaveAttribute("aria-label", /Campaigns view/i);
 
-    // Prefill (PR #72): title, start and end arrive filled so the operator
-    // reviews a draft rather than facing eleven blank fields. Present only when
-    // approved content exists; assert non-empty when the fields are present.
-    const title = page.locator("#c-title");
-    if ((await title.count()) > 0) {
-      await expect(title).not.toHaveValue("");
-      await expect(page.locator("#c-start")).not.toHaveValue("");
-      await expect(page.locator("#c-end")).not.toHaveValue("");
-    }
+    await expect(page.getByLabel("Company domain", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Select domain", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /freeze|lock|canary/i })).toHaveCount(0);
   });
 
   for (const width of [1280, 768]) {
@@ -173,15 +168,17 @@ test.describe("operator console navigation (real DOM effect)", () => {
       await expect(chooseEmail, "The human run needs at least one approved library email.").toBeVisible();
       await chooseEmail.click();
       await expect(page).toHaveURL(/#campaigns$/);
-      await expect(page.locator("#c-template")).not.toHaveValue("");
-      await expect(page.locator("#c-pattern")).not.toHaveValue("");
-      await expect(page.locator("#c-training-resource")).not.toHaveValue("");
-      await expect(page.locator("#c-tdomain")).toHaveValue(trainingHost);
-      await expect(page.locator("#c-start")).not.toHaveValue("");
-      await expect(page.locator("#c-end")).not.toHaveValue("");
-      await expect(page.getByRole("button", { name: "Create campaign", exact: true })).toBeEnabled();
-      await page.screenshot({ path: testInfo.outputPath("human-campaign-form.png"), fullPage: true });
-      // No Create, approval, scheduling or delivery action is performed here.
+      await expect(page.getByLabel("Company domain", { exact: true })).toBeVisible();
+      await page.getByLabel("Company domain", { exact: true }).selectOption("example.com");
+      await page.getByRole("button", { name: "Select domain", exact: true }).click();
+      const authorization = page.getByLabel("Saved signed authorization", { exact: true });
+      await expect(authorization.locator("option")).not.toHaveCount(1);
+      await authorization.selectOption({ index: 1 });
+      await page.getByRole("button", { name: "Use signed RoE", exact: true }).click();
+      await expect(page.getByRole("button", { name: "Download CSV template", exact: true })).toBeVisible();
+      await expect(page.getByText(/browser saves it to Downloads/)).toBeVisible();
+      await expect(page.getByRole("button", { name: /freeze|lock|canary/i })).toHaveCount(0);
+      await page.screenshot({ path: testInfo.outputPath(`simple-campaign-${width}.png`), fullPage: true });
     });
   }
 });

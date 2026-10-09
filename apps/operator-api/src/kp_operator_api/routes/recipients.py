@@ -594,7 +594,17 @@ def preview_recipients_csv(
         detail=_recipient_import_audit_detail(body, plan),
     )
     session.commit()
-    return _recipient_import_preview_payload(body, plan)
+    result = _recipient_import_preview_payload(body, plan)
+    if body.roe_id is not None and principal.can(Capability.VIEW_NAMED_RESULTS):
+        result["recipients"] = [
+            {
+                "display_name": row.display_name,
+                "masked_mailbox": _masked_mailbox(row.mailbox),
+                "department": row.department,
+            }
+            for row in plan.parsed.recipients
+        ]
+    return result
 
 
 @router.post("/recipients/import/apply", status_code=status.HTTP_200_OK)

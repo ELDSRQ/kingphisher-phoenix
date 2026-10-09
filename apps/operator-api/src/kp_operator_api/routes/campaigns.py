@@ -15,7 +15,7 @@ import threading
 import uuid
 import zipfile
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -160,6 +160,7 @@ _AUDIENCE_VALIDATION_MESSAGES = frozenset(
 
 
 class CampaignCreate(BaseModel):
+    delivery_mode: Literal["canary", "reviewed_direct"] = "canary"
     pattern_id: uuid.UUID
     title: str = Field(min_length=1, max_length=255)
     sender_mailbox: str = Field(min_length=3, max_length=255)
@@ -226,6 +227,7 @@ class CampaignCreate(BaseModel):
 
 
 class CampaignAudienceUpdate(BaseModel):
+    roe_id: uuid.UUID | None = None
     group_ids: list[uuid.UUID] = Field(default_factory=list, max_length=10_000)
     departments: list[str] = Field(default_factory=list, max_length=256)
     statuses: list[dm.RecipientStatus] = Field(default_factory=lambda: [dm.RecipientStatus.ACTIVE], max_length=3)
@@ -242,6 +244,7 @@ class CampaignTrainingBindingUpdate(BaseModel):
 
 
 class CampaignAudienceFreeze(BaseModel):
+    use_simple_flow: StrictBool = False
     preview_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -288,7 +291,11 @@ def _audience_preview_for_request(
         session,
         campaign,
         allowed_domains=None if unrestricted else allowlist,
-        roe_options=[(roe.roe_id, frozenset(roe.target_domains or [])) for roe in covering],
+        roe_options=[
+            (roe.roe_id, frozenset(roe.target_domains or []))
+            for roe in covering
+            if campaign.delivery_mode != "reviewed_direct" or campaign.roe_id is None or roe.roe_id == campaign.roe_id
+        ],
     )
 
 
@@ -350,7 +357,7 @@ def _require_current_frozen_audience(
             detail={"reason": "recipient_or_policy_change", "preview_hash": preview.preview_hash},
         )
         session.commit()
-    raise ConflictError("campaign audience changed and must be previewed, frozen, and reviewed again")
+    raise ConflictError("the recipient list changed; review and approve the current list before sending")
 
 
 @router.post("/campaigns", status_code=status.HTTP_201_CREATED)
@@ -409,6 +416,7 @@ def create_campaign(
     campaign = Campaign(
         campaign_id=uuid.uuid4(),
         pattern_id=body.pattern_id,
+        delivery_mode=body.delivery_mode,
         current_template_id=body.template_version_id,
         title=body.title,
         state=dm.CampaignState.DRAFT,
@@ -631,6 +639,8 @@ def update_campaign_audience(
     principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
 ) -> dict[str, Any]:
     campaign = _get_campaign(session, campaign_id)
+    if body.roe_id is not None and body.roe_id != campaign.roe_id and campaign.state != dm.CampaignState.DRAFT:
+        raise ConflictError("change authorization only while editing a draft campaign")
     try:
         audience, changed = configure_campaign_audience(session, campaign, _audience_definition_body(body))
     except ValueError as exc:
@@ -641,6 +651,8 @@ def update_campaign_audience(
                 fallback="campaign audience configuration is invalid",
             )
         ) from None
+    if body.roe_id is not None:
+        campaign.roe_id = body.roe_id
     audit.record(
         session=session,
         actor=principal.principal_id,
@@ -745,8 +757,16 @@ def submit_campaign(
     campaign = _get_campaign(session, campaign_id)
     if campaign.state != dm.CampaignState.DRAFT:
         raise ConflictError("only drafts can be submitted for approval")
-    training_resource = require_bound_training_resource(session, campaign)
     _require_current_frozen_audience(request, session, campaign, audit, principal)
+    result = _record_campaign_review(campaign, request, session, audit, principal)
+    session.commit()
+    return result
+
+
+def _record_campaign_review(
+    campaign: Campaign, request: Request, session: Session, audit: AuditStore, principal: Principal
+) -> dict[str, Any]:
+    training_resource = require_bound_training_resource(session, campaign)
     template = session.get(TemplateVersion, campaign.current_template_id, with_for_update=True)
     if template is None:
         raise ConflictError("campaign requires an approved template before review")
@@ -771,12 +791,57 @@ def submit_campaign(
             "canary_manifest_hash": launch_gate.canary_manifest_hash,
         },
     )
-    session.commit()
     return {
         "campaign_id": str(campaign.campaign_id),
         "state": campaign.state.value,
         "launch_manifest_hash": launch_gate.review_manifest_hash,
     }
+
+
+@router.post("/campaigns/{campaign_id}/confirm")
+def confirm_campaign(
+    campaign_id: uuid.UUID,
+    body: CampaignAudienceFreeze,
+    request: Request,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, Any]:
+    """Approve the exact email and validated roster in one transaction."""
+    campaign = session.scalar(select(Campaign).where(Campaign.campaign_id == campaign_id).with_for_update())
+    if campaign is None:
+        raise NotFoundError("campaign not found")
+    if campaign.delivery_mode != "reviewed_direct" and body.use_simple_flow:
+        gate = session.get(CampaignLaunchGate, campaign_id, with_for_update=True)
+        assignment = session.scalar(
+            select(RecipientAssignment.recipient_assignment_id)
+            .where(RecipientAssignment.campaign_id == campaign_id)
+            .limit(1)
+        )
+        if (
+            campaign.state not in {dm.CampaignState.DRAFT, dm.CampaignState.APPROVED}
+            or assignment is not None
+            or (gate is not None and gate.state != "reviewed")
+        ):
+            raise ConflictError("only an unsent campaign can move to the simplified flow")
+        previous_hash = gate.review_manifest_hash if gate else None
+        campaign.delivery_mode = "reviewed_direct"
+        campaign.state = dm.CampaignState.DRAFT
+        audit.record(
+            session=session,
+            actor=principal.principal_id,
+            action="campaign.review.simple_flow",
+            object_type="campaign",
+            object_id=str(campaign_id),
+            detail={"previous_launch_manifest_hash": previous_hash, "delivery_mode": "reviewed_direct"},
+        )
+    if campaign.delivery_mode != "reviewed_direct" or campaign.state != dm.CampaignState.DRAFT:
+        raise ConflictError("only a draft reviewed-direct campaign can be confirmed")
+    preview = _audience_preview_for_request(request, session, campaign)
+    freeze_campaign_audience(session, campaign, preview, expected_preview_hash=body.preview_hash)
+    result = _record_campaign_review(campaign, request, session, audit, principal)
+    session.commit()
+    return result
 
 
 REQUIRED_APPROVALS: frozenset[dm.ApprovalType] = frozenset({dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY})
@@ -910,7 +975,19 @@ def _campaign_action_flags(
         and launch_gate.provider_config_hash
         and launch_gate.canary_expires_at > datetime.now(UTC)
     )
+    direct = getattr(campaign, "delivery_mode", None) == "reviewed_direct"
     return {
+        "can_send": bool(
+            direct
+            and principal.can(Capability.SCHEDULE_CAMPAIGN)
+            and schedule_state
+            and audience_ready
+            and approval_ready
+            and training_ready
+            and launch_ready
+            and launch_gate is not None
+            and launch_gate.state == "reviewed"
+        ),
         "can_configure_audience": bool(
             principal.can(Capability.CREATE_CAMPAIGN) and campaign.state not in audience_locked_states
         ),
@@ -928,6 +1005,7 @@ def _campaign_action_flags(
         "can_approve_privacy": can_review(dm.ApprovalType.PRIVACY, Capability.APPROVE_PRIVACY),
         "can_schedule": bool(
             principal.can(Capability.SCHEDULE_CAMPAIGN)
+            and not direct
             and schedule_state
             and audience_ready
             and approval_ready
@@ -938,6 +1016,7 @@ def _campaign_action_flags(
         ),
         "can_publish": bool(
             principal.can(Capability.SCHEDULE_CAMPAIGN)
+            and not direct
             and campaign.state == dm.CampaignState.SCHEDULED
             and canary_current
             and approval_ready
@@ -1268,6 +1347,8 @@ def schedule_campaign(
     campaign = session.scalar(select(Campaign).where(Campaign.campaign_id == campaign_id).with_for_update())
     if campaign is None:
         raise NotFoundError("campaign not found")
+    if campaign.delivery_mode == "reviewed_direct":
+        raise ConflictError("use Send for this reviewed campaign")
     try:
         require_program_active_for_schedule(session, campaign_id)
     except ConflictError:
@@ -1453,6 +1534,8 @@ def publish_campaign(
     campaign = session.scalar(select(Campaign).where(Campaign.campaign_id == campaign_id).with_for_update())
     if campaign is None:
         raise NotFoundError("campaign not found")
+    if campaign.delivery_mode == "reviewed_direct":
+        raise ConflictError("use Send for this reviewed campaign")
     require_program_active_for_schedule(session, campaign_id)
     safety_state = _system_safety_state(session, shared_lock=True)
     if safety_state.emergency_stop_engaged:
@@ -1567,6 +1650,107 @@ def publish_campaign(
         "state": campaign.state.value,
         "phase": "full",
         "queued": len(assignment_ids),
+    }
+
+
+@router.post("/campaigns/{campaign_id}/send")
+def send_reviewed_campaign(
+    campaign_id: uuid.UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.SCHEDULE_CAMPAIGN)),
+) -> dict[str, Any]:
+    """Queue the whole reviewed roster once, without a separate test campaign."""
+    campaign = session.scalar(select(Campaign).where(Campaign.campaign_id == campaign_id).with_for_update())
+    if campaign is None:
+        raise NotFoundError("campaign not found")
+    if campaign.delivery_mode != "reviewed_direct" or campaign.state != dm.CampaignState.APPROVED:
+        raise ConflictError("send requires an approved reviewed-direct campaign")
+    require_program_active_for_schedule(session, campaign_id)
+    if _system_safety_state(session, shared_lock=True).emergency_stop_engaged:
+        raise ConflictError("the global emergency stop is engaged; sending is disabled")
+    require_bound_training_resource(session, campaign)
+    _require_current_frozen_audience(request, session, campaign, audit, principal)
+    if request.app.state.settings.approval_policy is ApprovalPolicy.ENFORCE and _missing_campaign_approvals(
+        session, campaign
+    ):
+        raise ConflictError("campaign approvals do not match the current review")
+    audience = session.get(CampaignAudience, campaign_id)
+    template = session.get(TemplateVersion, campaign.current_template_id, with_for_update=True)
+    gate = session.get(CampaignLaunchGate, campaign_id, with_for_update=True)
+    error = campaign_launch_gate_error(campaign, audience, template, gate)
+    if error is not None:
+        raise ConflictError(error)
+    if gate is None or gate.state != "reviewed":
+        raise ConflictError("this reviewed campaign has already been sent or needs a fresh review")
+    now = datetime.now(UTC)
+    if campaign.schedule_start is None or campaign.schedule_end is None or campaign.schedule_end <= now:
+        raise ConflictError("campaign requires a current delivery window")
+    covering = _covering_roes(
+        session,
+        schedule_start=campaign.schedule_start,
+        schedule_end=campaign.schedule_end,
+        signing_key=_roe_signing_key(request.app.state.settings),
+    )
+    if not any(roe.roe_id == gate.roe_id for roe in covering):
+        raise ConflictError("the signed Rules of Engagement no longer authorize this campaign")
+    prepared = prepare_campaign(
+        session,
+        campaign,
+        tracking_base_url=request.app.state.settings.tracking_base_url,
+        token_hmac_key=request.app.state.settings.require_tracking_token_hmac_key(),
+    )
+    if not prepared:
+        raise ConflictError("the reviewed campaign has no recipients to send")
+    assignment_ids = [item.assignment_id for item in prepared]
+    tracking_bearers = {
+        item.assignment_id: {
+            "bearer": item.bearer_token,
+            "verifier": item.token_verifier,
+            "checksum": item.bearer_checksum,
+        }
+        for item in prepared
+    }
+    batches = _publish_delivery_batches(
+        request,
+        session,
+        campaign=campaign,
+        campaign_id=str(campaign_id),
+        assignment_ids=assignment_ids,
+        tracking_bearers=tracking_bearers,
+        idempotency_prefix=f"deliver:direct:{campaign_id}:{gate.review_manifest_hash}",
+        test_send=False,
+        delivery_phase="reviewed_direct",
+        launch_gate=gate,
+        available_at=max(campaign.schedule_start.timestamp(), now.timestamp()),
+        spread_over_hours=campaign.spread_over_hours,
+        deliver_by=campaign.schedule_end,
+    )
+    gate.state = "direct_published"
+    gate.full_published_at = now
+    gate.updated_at = now
+    campaign.state = dm.CampaignState.SCHEDULED
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="campaign.send.reviewed",
+        object_type="campaign",
+        object_id=str(campaign_id),
+        detail={
+            "queued": len(prepared),
+            "batches": batches,
+            "delivery_mode": campaign.delivery_mode,
+            "launch_manifest_hash": gate.review_manifest_hash,
+        },
+    )
+    _queue_campaign_alert(session, request, campaign, "campaign.scheduled")
+    session.commit()
+    return {
+        "campaign_id": str(campaign_id),
+        "state": campaign.state.value,
+        "phase": "reviewed_direct",
+        "queued": len(prepared),
     }
 
 
@@ -1982,6 +2166,7 @@ def list_campaigns(
         {
             "campaign_id": str(c.campaign_id),
             "title": c.title,
+            "delivery_mode": c.delivery_mode,
             "state": c.state.value,
             "created_at": c.created_at,
             "schedule_start": c.schedule_start,

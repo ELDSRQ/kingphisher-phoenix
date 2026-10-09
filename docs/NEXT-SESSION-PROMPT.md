@@ -1,10 +1,56 @@
 # Next-session resume prompt (copy/paste)
 
-> **⚠️ SUPERSEDED — read `AI_HANDOFF_2026-09-19.md` (repo root) instead.** The
-> fenced copy/paste prompt below dates from 2026-09-05/06 and is far out of date.
-> Kept as history only.
+## Current resume prompt — October 9
 
-> Copy everything in the fenced block below into a fresh session to resume seamlessly.
+Read [the current handoff](SESSION-HANDOFF-2026-10-09-SIMPLE-FLOW.md) before
+resuming. Use this block; the September prompt below is historical.
+
+```text
+Resume the authorized Kingphisher-Phoenix build in:
+/Users/edierks/projects/codex-test/phishing-awareness-platform
+
+Read AGENTS.md, docs/SESSION-HANDOFF-2026-10-09-SIMPLE-FLOW.md and the current
+section of docs/D6-HUMAN-ACCEPTANCE-SCRIPT.md. Follow the latest user direction.
+
+The working branch is fix/simple-campaign-flow-20261009. Changes are committed,
+pushed and deployed to .105, but are not merged into main. PR #132 targets
+main, #133 is stacked on #132, and draft #134 is stacked on #133. Verify their
+current status and dependency order before integration.
+The last verified checkpoint before documentation followups is bb7e76a, CI green.
+Qualified runtime code is c7f20cf/54d61b3, database head 0043_reviewed_direct_campaigns.
+Use git rev-parse HEAD for the exact checkout; later followups change docs only.
+
+Current worker: SSH builder@192.168.1.105 port 2222, repository
+/home/builder/phishing-awareness-platform. Console http://127.0.0.1:8600/console/,
+Mailpit http://127.0.0.1:8025/, tracking/training http://127.0.0.1:8001/.
+
+Primary flow: select domain, sign/select current RoE, upload/review/confirm the
+whole roster, choose a library example, edit and preview, approve, send, monitor.
+No mandatory canary, test-account designation, manual freeze or launch lock.
+Server authorization, exact-review and recipient/provider checks remain required.
+Preserve historical campaigns and evidence; do not fabricate canary success.
+
+Reply ingestion remains unimplemented. Ask which receiving mailbox and mail
+service to use if still unanswered. Employee phishing reports are not replies.
+The full build, D6 human acceptance and manual accessibility acceptance remain
+open. Production/cloud/image/recovery gates are separate. Report actual blockers;
+there is no unresolved model-reasoning blocker recorded.
+
+Preserve all project assets, .env, data, audit state and qualification evidence.
+Do not clean up Docker/storage or touch retired .140. Preserve the untracked
+docs/QA-REVIEW-2026-10-07.md and worker docker-compose.override.yml.
+Password rotation waits for the user's completed-build sign-off.
+Use fresh synthetic campaigns for engineering trials; do not mutate the saved
+operator campaign 8a0a7e2a-ebb5-464f-9d0f-9a555be5e838 for qualification.
+Begin with bounded read-only source/runtime checks, then continue remaining work.
+```
+
+## Historical September prompt — superseded
+
+The fenced prompt below dates from September 5/6 and is retained as history.
+Its deployment, branch and mandatory-canary directions are superseded.
+
+> Historical copy/paste block; use the current October 9 block above instead.
 > Written 2026-09-05, updated 2026-09-06. Repo head at handoff: `e47570f` (fully pushed to origin/main).
 
 ```
