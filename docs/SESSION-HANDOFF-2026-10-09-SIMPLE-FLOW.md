@@ -12,6 +12,11 @@ evidence. `AGENTS.md` records this superseding instruction.
 
 - Branch: `fix/simple-campaign-flow-20261009`, stacked on PR #133;
   [PR #134](https://github.com/ELDSRQ/kingphisher-phoenix/pull/134).
+- Last verified controller/worker checkpoint before this documentation followup:
+  `bb7e76a3a601b906afbc00dd4db12d8a47c1822c`.
+  [Its CI passed all required jobs](https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/37962825425).
+  Later followups change documentation only; use `git rev-parse HEAD` for the
+  exact checkout. No uncommitted implementation change remains.
 - Worker: `.105`, SSH `builder@192.168.1.105:2222`, repository
   `/home/builder/phishing-awareness-platform`. The retired `.140` is untouched.
 - Backend and JavaScript source qualified at `c7f20cf`; the later `54d61b3`
@@ -24,6 +29,22 @@ evidence. `AGENTS.md` records this superseding instruction.
   `example.com` signed RoE expires December 20, 2026.
 - Operator/tracking dependency probes and all ten supervisor worker PID probes
   passed. These probes do not prove worker heartbeat or real-provider delivery.
+
+## Integration status — verified October 9
+
+All implementation changes are committed, pushed and present on the development
+worker. **They are not merged into `main`.** The prerequisite chain remains:
+
+| Pull request | Base | Status |
+|---|---|---|
+| [#132](https://github.com/ELDSRQ/kingphisher-phoenix/pull/132) | `main` | Open, not draft |
+| [#133](https://github.com/ELDSRQ/kingphisher-phoenix/pull/133) | `fix/human-readiness-training-20261008` | Open, not draft |
+| [#134](https://github.com/ELDSRQ/kingphisher-phoenix/pull/134) | `fix/human-operator-flow-20261009` | Open, draft |
+
+This documentation update performs no merge. Keep branch commits, development
+deployment and integration into `main` distinct when reporting readiness. The
+current copy/paste resume instructions are in
+[NEXT-SESSION-PROMPT.md](NEXT-SESSION-PROMPT.md#current-resume-prompt--october-9).
 
 ## Verified engineering evidence
 
