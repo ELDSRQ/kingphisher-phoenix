@@ -379,7 +379,9 @@ def test_wording_edit_creates_safe_unapproved_copy_and_preserves_original(client
         json={
             "reason": "Adapt wording",
             "subject": "Updated subject",
-            "plain_text": "Please review the schedule.\n\nThen continue.",
+            "plain_text": (
+                'Dear {{ recipient.first_name or "colleague" }},\n\nPlease review the schedule.\n\nThen continue.'
+            ),
         },
     )
     assert response.status_code == 201, response.text
@@ -397,6 +399,11 @@ def test_wording_edit_creates_safe_unapproved_copy_and_preserves_original(client
         assert clone.approval_state == dm.TemplateApprovalState.DRAFT
         assert clone.approval_hash is None
         assert clone.raw_proposal["generation_evidence"]["pattern_id"] == str(pattern_id)
+    preview = client.get(f"/api/v1/templates/{clone_id}/preview", headers=AUTHOR_HEADERS)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["approval_state"] == "draft"
+    assert preview.json()["plain_text"].startswith("Dear Sample,")
+    assert preview.json()["safe_html_present"] is True
     unsafe = client.post(
         f"/api/v1/templates/{template_id}/clone",
         headers=AUTHOR_HEADERS,

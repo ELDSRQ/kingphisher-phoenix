@@ -209,7 +209,10 @@ export function installSimpleCampaigns(ui) {
                 } catch (e) { fail(error, e); }
               }, false, true)]));
             if (flow.sourceTemplateId) {
-              if (!emailContent) emailContent = await api(`/templates/${flow.templateId || flow.sourceTemplateId}/preview`);
+              if (!emailContent || emailContent.template_version_id !== (flow.templateId || flow.sourceTemplateId)) {
+                try { emailContent = await api(`/templates/${flow.templateId || flow.sourceTemplateId}/preview`); }
+                catch (e) { fail(error, e); delete flow.templateId; emailContent = null; save(); return; }
+              }
               const edit = el("form", { "aria-label": "Create campaign email" }); edit.addEventListener("submit", (e) => e.preventDefault());
               guardUnsavedForm(edit, "Campaign email");
               const subject = field(edit, "Email subject", "setup-subject", { required: "", maxlength: "998", value: emailContent.editable_subject || emailContent.subject });
@@ -227,8 +230,9 @@ export function installSimpleCampaigns(ui) {
                   const draft = await api(`/templates/${flow.sourceTemplateId}/clone`, { method: "POST", body: JSON.stringify({
                     reason: "Campaign email prepared for operator review", subject: subject.value,
                     plain_text: wording.value.replaceAll("[recipient name]", '{{ recipient.first_name or "colleague" }}').replaceAll("[training link]", "{{ tracking.training_url }}") }) });
-                  flow.templateId = draft.template_version_id; delete flow.emailApproved; save(); markFormSaved(edit);
-                  emailContent = await api(`/templates/${flow.templateId}/preview`); await redraw();
+                  const prepared = await api(`/templates/${draft.template_version_id}/preview`);
+                  flow.templateId = draft.template_version_id; delete flow.emailApproved;
+                  emailContent = prepared; save(); markFormSaved(edit); await redraw();
                 } catch (e) { fail(error, e); } finally { if (btn.isConnected) btn.disabled = false; }
               }, false, true);
               subject.addEventListener("input", () => { delete flow.templateId; delete flow.emailApproved; save(); });
@@ -281,7 +285,12 @@ export function installSimpleCampaigns(ui) {
                     await redraw(); toast("Campaign reviewed. Use Send when ready.", "success");
                   } catch (e) { fail(error, e); } finally { if (btn.isConnected) btn.disabled = false; }
                 }, !hasCapability(CAPABILITY.APPROVE_TEMPLATE) || !lessons.length, true);
-                setup.append(approve); markFormSaved(setup); root.appendChild(card("6. Approve", [setup]));
+                const reviewNotice = el("p", { role: "status" });
+                edit.addEventListener("input", () => {
+                  approve.disabled = true;
+                  reviewNotice.textContent = "Email edited. Click Create fake email for review to update the preview before approval.";
+                });
+                setup.append(approve, reviewNotice); markFormSaved(setup); root.appendChild(card("6. Approve", [setup]));
               }
             }
           }

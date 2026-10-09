@@ -60,6 +60,7 @@ async function installHumanFlowFixture(page) {
       state.writes.push({ path, body: request.postDataJSON() }); state.rosterSaved = true;
       return route.fulfill({ json: { created: 3, roster: { audience_group_id: rosterId, name: "Human trial roster", member_count: 2 } } });
     }
+    if (path === `/templates/${draftId}/preview` && state.failPreview) return route.fulfill({ status: 422, json: { detail: "template contains unsupported or malformed rendering syntax" } });
     if ([`/templates/${templateId}/preview`, `/templates/${draftId}/preview`].includes(path)) return route.fulfill({ json: {
       template_version_id: path.includes(draftId) ? draftId : templateId, approval_state: path.includes(draftId) ? "draft" : "approved",
       subject: "Human trial email", plain_text: "Dear sample recipient, review your request.",
@@ -134,7 +135,18 @@ for (const width of [1280, 768]) {
     await page.getByLabel("Library email", { exact: true }).selectOption("30000000-0000-4000-8000-000000000002");
     await page.getByRole("button", { name: "Use this email as a starting point", exact: true }).click();
     await page.getByLabel("Email subject", { exact: true }).fill("Reviewed human trial email");
+    state.failPreview = true;
     await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: /unsupported or malformed rendering syntax/ }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: "Approve campaign", exact: true })).toHaveCount(0);
+    state.failPreview = false;
+    await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
+    await expect(page.getByLabel("Campaign name", { exact: true })).toBeVisible();
+    await page.getByLabel("Email subject", { exact: true }).fill("Revised reviewed human trial email");
+    await expect(page.getByRole("button", { name: "Approve campaign", exact: true })).toBeDisabled();
+    await expect(page.getByText(/Email edited\. Click Create fake email for review/)).toBeVisible();
+    await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Approve campaign", exact: true })).toBeEnabled();
     await page.getByLabel("Campaign name", { exact: true }).fill("Streamlined human trial");
     await expect(page.getByLabel("Training hostname", { exact: true })).toHaveValue("127.0.0.1");
     await page.getByRole("button", { name: "Approve campaign", exact: true }).click();

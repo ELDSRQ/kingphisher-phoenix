@@ -376,7 +376,17 @@
                 }, false, true)
               ]));
               if (flow.sourceTemplateId) {
-                if (!emailContent) emailContent = await api2(`/templates/${flow.templateId || flow.sourceTemplateId}/preview`);
+                if (!emailContent || emailContent.template_version_id !== (flow.templateId || flow.sourceTemplateId)) {
+                  try {
+                    emailContent = await api2(`/templates/${flow.templateId || flow.sourceTemplateId}/preview`);
+                  } catch (e) {
+                    fail(error, e);
+                    delete flow.templateId;
+                    emailContent = null;
+                    save();
+                    return;
+                  }
+                }
                 const edit = el2("form", { "aria-label": "Create campaign email" });
                 edit.addEventListener("submit", (e) => e.preventDefault());
                 guardUnsavedForm2(edit, "Campaign email");
@@ -397,11 +407,12 @@ ${wording.value}`;
                       subject: subject.value,
                       plain_text: wording.value.replaceAll("[recipient name]", '{{ recipient.first_name or "colleague" }}').replaceAll("[training link]", "{{ tracking.training_url }}")
                     }) });
+                    const prepared = await api2(`/templates/${draft.template_version_id}/preview`);
                     flow.templateId = draft.template_version_id;
                     delete flow.emailApproved;
+                    emailContent = prepared;
                     save();
                     markFormSaved2(edit);
-                    emailContent = await api2(`/templates/${flow.templateId}/preview`);
                     await redraw();
                   } catch (e) {
                     fail(error, e);
@@ -500,7 +511,12 @@ ${wording.value}`;
                       if (btn.isConnected) btn.disabled = false;
                     }
                   }, !hasCapability2(CAPABILITY2.APPROVE_TEMPLATE) || !lessons.length, true);
-                  setup.append(approve);
+                  const reviewNotice = el2("p", { role: "status" });
+                  edit.addEventListener("input", () => {
+                    approve.disabled = true;
+                    reviewNotice.textContent = "Email edited. Click Create fake email for review to update the preview before approval.";
+                  });
+                  setup.append(approve, reviewNotice);
                   markFormSaved2(setup);
                   root.appendChild(card("6. Approve", [setup]));
                 }

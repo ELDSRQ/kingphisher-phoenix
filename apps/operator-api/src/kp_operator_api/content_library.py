@@ -622,7 +622,10 @@ def clone_template(
             content.plain_text += f"\n\nContinue: {TRAINING_URL_PLACEHOLDER}"
         # A wording edit rebuilds both alternatives, so the approved email
         # cannot silently retain different words in its HTML alternative.
-        paragraphs = "".join(f"<p>{escape(part)}</p>" for part in body.plain_text.split("\n\n"))
+        # These are text nodes, so quotes need no escaping. Preserving them
+        # keeps renderer expressions such as the neutral-name fallback valid;
+        # angle brackets and ampersands still cannot introduce markup.
+        paragraphs = "".join(f"<p>{escape(part, quote=False)}</p>" for part in body.plain_text.split("\n\n"))
         content.safe_html = (
             f'<html><body>{paragraphs}<p><a href="{TRAINING_URL_PLACEHOLDER}">Continue</a></p></body></html>'
         )
