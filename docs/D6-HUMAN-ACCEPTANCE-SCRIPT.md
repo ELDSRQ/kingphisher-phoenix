@@ -1,6 +1,68 @@
 # D6 — Human acceptance run (on-prem)
 
-## Current run: October 7 usability finding
+## Current run: October 9 operator findings
+
+**D6 remains open.** The October 9 walkthrough found unclear authorization
+inspection, no downloadable CSV template, ambiguous roster history and mailbox
+polling, undiscoverable email selection, unnecessary separate audience/review
+controls, and a test button that did not advance. Record this as a failed human
+attempt. Passing implementation tests does not turn that attempt into a pass.
+
+Use the updated [Operator Guide](OPERATOR-GUIDE.md#run-your-first-campaign)
+for the revised controls. The repair is on `fix/human-operator-flow-20261009`;
+source/deployment validation is recorded in the QA remediation plan. Earlier
+instructions below refer to superseded controls.
+
+Before the trial, open the console at http://127.0.0.1:8600/console/ and Mailpit
+at http://127.0.0.1:8025/. Recipient links use http://127.0.0.1:8001/. Refresh the
+console to load the repaired UI. Use the existing password privately; per the
+user's instruction, rotation waits until their completed-build sign-off.
+
+The observer should check these concrete tasks without coaching a formal
+unassisted driver:
+
+1. In **Domains & RoE**, find `example.com` in **Verified domains** and use
+   **View authorization** on that row. Identify who authorized it, the approved
+   recipient domains, dates and active status. Confirm dates cover the intended
+   campaign; do not infer authorization from DNS verification alone.
+2. In **Recipients**, open **Upload a roster**. If a saved roster is already
+   selected, expand **Upload another roster** below the recipient table instead.
+   Download the CSV template. Fill it with
+   two clearly synthetic `example.com` recipients, save as CSV, and upload it
+   with a distinct roster name. Validate and confirm the roster. Names and
+   departments are optional. Inspect **Review saved recipients**; verify this
+   saved roster is selected and past imports are absent. Identify which account
+   should receive the first test email.
+3. Use **Choose an email for this roster**. Preview an approved message and
+   select **Select for current campaign** inside the preview. Confirm that the
+   campaign form retains both the chosen email and uploaded roster.
+4. Create a campaign with a unique title and newly valid dates, within the RoE.
+   Find its row under **All campaigns**, then **Confirm recipients**. Identify
+   included/excluded counts and allowed domains. If needed, designate only the
+   synthetic canary using its row's test-account button, then reopen confirmation.
+   Confirm the validated list. No individual reselection, separate freeze or
+   launch-lock task is required in this path.
+5. Use **Send test email** and its confirmation. Observe queued status, the
+   captured canary message and eventual server-confirmed success. Use **Send
+   campaign** when available and verify the other synthetic recipient's message.
+6. Follow the participant's captured link and complete training. Open **Report**
+   on this campaign's row, observe results, download the report CSV and evidence
+   bundle, and find its audit actions under **More → Audit**.
+7. **Recall** only this trial campaign. Retain records, captured mail, exports
+   and observations. Record completion unaided / hesitation / needed help /
+   blocked at every task. Record exact wording and screenshots before fixes.
+
+The reported-mail collector reads employee-reported phishing; it does not verify
+target mailboxes and is outside this CSV trial. Address/domain validation is not
+mailbox-existence or inbox-delivery verification. The current server still
+requires campaign-bound canary evidence; making the canary optional is a
+separate launch-policy decision, not a claim of successful testing.
+
+D6 requires a fresh unaided attempt. Manual keyboard and screen-reader checks
+remain separate human evidence; mark unavailable checks pending.
+
+
+## Previous October 7/8 preparation — superseded controls
 
 **D6 remains open.** The operator reported overlapping template badges,
 clipped review states and campaign columns, missing or undiscoverable example

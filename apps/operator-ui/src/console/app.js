@@ -573,6 +573,8 @@
   var views = {};
   var selectedLibraryTemplateId = null;
   var selectedRosterGroupId = null;
+  var recipientRosterGroupId = null;
+  var focusedCampaignId = null;
   async function ensureDeployConnectorState() {
     if (deployConnectorChecked) return;
     deployConnectorChecked = true;
@@ -1142,10 +1144,21 @@
       form.appendChild(el("p", { class: "modal-help", text: "Only the first 20 problem rows are listed." }));
     }
     form.appendChild(el("div", { class: "modal-actions" }, [
-      el("button", { class: "btn primary", type: "button", text: "Close", onclick: () => {
+      ...res.roster ? [
+        el("button", { class: "btn primary", type: "button", text: "Choose an email for this roster", onclick: async () => {
+          selectedRosterGroupId = res.roster.audience_group_id;
+          recipientRosterGroupId = res.roster.audience_group_id;
+          dlg.close();
+          await navigateTo("templates");
+        } }),
+        el("button", { class: "btn", type: "button", text: "Review saved recipients", onclick: async () => {
+          dlg.close();
+          await render();
+        } })
+      ] : [el("button", { class: "btn primary", type: "button", text: "Close", onclick: async () => {
         dlg.close();
-        location.reload();
-      } })
+        await render();
+      } })]
     ]));
     openDialog(dlg);
   }
@@ -2928,7 +2941,7 @@
         label: "Exact audience",
         required: true,
         ready: frozen,
-        detail: frozen ? `Frozen manifest v${campaign.audience_version}; the server rechecks it before queueing.` : campaign.audience_legacy ? "Legacy campaign has no usable exact manifest. Configure, preview, and freeze it again." : "Configure, preview, and freeze at least one exact recipient before approval.",
+        detail: frozen ? `Frozen manifest v${campaign.audience_version}; the server rechecks it before queueing.` : campaign.audience_legacy ? "Open Confirm recipients to review and confirm this campaign's roster again." : "Open Confirm recipients to review the validated roster before sending.",
         destination: "campaigns"
       },
       {
@@ -2997,12 +3010,28 @@
       }
     ];
   }
-  function campaignReadinessView(checks, campaignTitle) {
+  function campaignNextStep(campaign, checks) {
+    const gate = campaign.launch_gate?.state;
+    if (["recalled", "completed", "expired", "cancelled"].includes(campaign.state)) return "Campaign stopped or finished. Open Report to inspect results and exports.";
+    if (gate === "full_published") return "Campaign send started. Open Report to follow delivery and training results.";
+    if (gate === "canary_failed") return "Test email failed. Open Report for the failure and fix delivery setup before starting a new reviewed attempt.";
+    if (gate === "expired") return "Test evidence expired. Create a new reviewed attempt before sending the campaign.";
+    if (gate === "canary_queued") return "Test email queued \u2014 waiting for delivery confirmation. This page updates every 30 seconds; do not send the test again.";
+    if (gate === "canary_succeeded" && campaign.can_publish === true) return "Test email passed. Next: Send campaign to the confirmed recipient list.";
+    if (gate === "canary_succeeded") return "The test passed, but campaign sending is unavailable. Check the evidence expiry and remaining requirements under Check details.";
+    if (campaign.state === "pending_approval") return "Waiting for the required security and privacy approvals.";
+    if (campaign.state === "draft") return "Next: Confirm recipients. Your saved roster is already selected; no individual selection is required.";
+    const blockers = checks.filter((check) => check.required && check.ready === false);
+    if (blockers.length) return `Action needed: ${blockers[0].label}. ${blockers[0].detail}`;
+    if (campaign.can_schedule === true) return "Recipients confirmed. Next: Send test email to the designated test account.";
+    return "Launch status could not be confirmed. Refresh status or inspect Check details for the required action.";
+  }
+  function campaignReadinessView(checks, campaignTitle, campaign = null) {
     const blockers = checks.filter((check) => check.required && check.ready === false);
     const serverChecks = checks.filter((check) => check.required && check.ready === null);
     const details = el("details", { class: "readiness", "data-readiness-blockers": String(blockers.length) });
     details.appendChild(el("summary", {
-      text: blockers.length ? `${blockers.length} blocker${blockers.length === 1 ? "" : "s"}` : `${serverChecks.length ? `${serverChecks.length} server verification${serverChecks.length === 1 ? "" : "s"} \xB7 ` : ""}Ready for server check`,
+      text: blockers.length ? `${blockers.length} blocker${blockers.length === 1 ? "" : "s"}` : `Check details${serverChecks.length ? ` (${serverChecks.length} checks run by the server)` : ""}`,
       "aria-label": blockers.length ? `${campaignTitle}: ${blockers.length} readiness blocker${blockers.length === 1 ? "" : "s"}` : `${campaignTitle}: ready for authoritative server check`,
       title: blockers.length ? blockers.map((check) => check.label).join(", ") : "Known client-side checks passed"
     }));
@@ -3027,7 +3056,10 @@
       list.appendChild(item);
     }
     details.appendChild(list);
-    return details;
+    return campaign ? el("div", {}, [
+      el("p", { role: "status", "aria-live": "polite", class: "campaign-next-step", text: campaignNextStep(campaign, checks) }),
+      details
+    ]) : details;
   }
   views.campaigns = async (root) => {
     if (!requireAnyCapability(root, CAPABILITY.VIEW_AGGREGATE)) return;
@@ -3040,16 +3072,15 @@
     root.appendChild(el("p", { class: "sub", text: "Create, review and run awareness campaigns." }));
     const campaignGuide = el("details", { class: "context-help" }, [
       el("summary", { text: "New here? How to set up a campaign, start to finish" }),
-      el("p", { text: "A campaign moves through these stages. Each one must finish before the next becomes available, so if a button looks disabled, the answer is usually an earlier stage." }),
+      el("p", { text: "Use these controls in order. Each campaign row shows your next action and any issue that needs attention." }),
       el("ol", { class: "prerequisite-list" }, [
         el("li", { text: "Verify a sending domain and sign the Rules of Engagement. Under Domains & RoE you prove you control the domain via DNS, then sign the RoE that authorizes delivery to it. Nothing can be sent to a domain without this." }),
-        el("li", { text: 'Import your recipients. Under Recipients, upload a CSV of who is in scope. Open "How should my spreadsheet be laid out?" there for the exact format.' }),
-        el("li", { text: "Choose or generate a template. Under Template review, pick an approved template or generate one, then have it reviewed." }),
-        el("li", { text: "Create the campaign here, selecting the domain, recipients and template." }),
-        el("li", { text: "Submit it for review. This freezes the campaign so what was approved is exactly what sends." }),
-        el("li", { text: enforcing ? "Get it approved. Approval needs a SECOND person: you cannot approve your own campaign, by design." : "Get it approved. In this deployment submitting for review approves it, so no second person is needed; the decision is recorded against you." }),
-        el("li", { text: "Send the canary first. A small test cohort goes out and you confirm delivery looks right before anything wider." }),
-        el("li", { text: "Publish in full, then watch results and the audit trail. You can stop a campaign at any point." })
+        el("li", { text: "Recipients: open Upload a roster (or Upload another roster), download the CSV template, upload the completed file, then Validate roster and Confirm roster. Email is required; name and department are optional." }),
+        el("li", { text: "Choose an email for this roster opens Template review. Open Safe preview on an approved message, then Select for current campaign. Creating a working copy or cloning a draft does not select an email." }),
+        el("li", { text: "Create campaign: the selected email and complete uploaded roster are already filled in. Set the title and dates; create the campaign, then find its highlighted row." }),
+        el("li", { text: enforcing ? "Confirm recipients on that row: review the allowed domains, included list and exclusions. Confirm once to request the required independent approvals." : "Confirm recipients on that row: review the allowed domains, included list and exclusions. Confirm once; the complete roster is included automatically and no separate launch-lock task is required." }),
+        el("li", { text: "Send test email: the row shows whether delivery is queued, successful or failed. A designated test account is required under the current launch policy. After server-confirmed success, Send campaign becomes available." }),
+        el("li", { text: "Send campaign, then use Report on that campaign's row for results and exports. Recall stops that campaign." })
       ]),
       el("p", { class: "field-help", text: enforcing ? "The two stages that most often surprise people: the domain and RoE must exist BEFORE you create a campaign, and approval requires a second person. If you are working alone you will reach approval and be unable to continue - that is the safety rule working, not a fault." : "The stage that most often surprises people: the domain and RoE must exist BEFORE you create a campaign. In this single-operator deployment you approve your own work, so you will not be blocked at approval - each decision is simply recorded against you." }),
       el("button", { class: "link-button", type: "button", text: "Open the searchable help center", onclick: () => navigateTo("help") })
@@ -3260,7 +3291,7 @@
       el("ol", { class: "campaign-path" }, [
         ["1. Domain & authorization", "sending", "Domains: select your sending domain and record the owner's Rules of Engagement."],
         ["2. Upload your roster", "recipients", "Recipients: upload your CSV and save that upload as a named roster."],
-        ["3. Choose your email", "templates", "Template library: preview an approved email, edit a copy if needed, then choose Use this email."]
+        ["3. Choose your email", "templates", "Preview an approved email, then choose Select for current campaign in the preview or library row."]
       ].map(([label, view, help]) => el("li", {}, [
         el("button", { class: "link-button", type: "button", text: label, onclick: () => navigateTo(view) }),
         el("p", { class: "field-help", text: help })
@@ -3337,7 +3368,7 @@
       if (domainSelect.value) document.getElementById("c-sender").value = `security-awareness@${domainSelect.value}`;
     });
     const rosterSelect = el("select", { id: "c-roster", disabled: groupsLoaded ? null : "disabled" }, [
-      el("option", { value: "", text: "Choose a saved roster, or configure the audience after creation" }),
+      el("option", { value: "", text: "Choose your uploaded roster\u2026" }),
       ...groups.map((group) => el("option", { value: group.audience_group_id, text: `${group.name} (${group.member_count} people)` }))
     ]);
     if (selectedRosterGroupId && groups.some((group) => group.audience_group_id === selectedRosterGroupId)) {
@@ -3508,8 +3539,9 @@
                 }
               }
               markFormSaved(form);
-              toast("Campaign created. Review and freeze the roster before sending a test.", "success");
-              location.reload();
+              focusedCampaignId = created.campaign_id;
+              toast("Campaign created. Confirm recipients on its row to prepare the saved roster for sending.", "success");
+              await render();
             } catch (e2) {
               createError.textContent = e2.message;
               createError.focus();
@@ -3757,6 +3789,100 @@
       ]));
       openDialog(dlg);
     }
+    async function confirmCampaignRecipients(campaign) {
+      let preview;
+      try {
+        preview = await api(`/campaigns/${campaign.campaign_id}/audience/preview`);
+      } catch (err) {
+        toast(`Recipient validation failed: ${err.message}. Use Edit roster options if no saved roster is bound.`, "error");
+        return;
+      }
+      const validPreview = preview && typeof preview.preview_hash === "string" && Array.isArray(preview.recipients) && Number.isInteger(preview.included_count) && preview.recipients.length === preview.included_count && Number.isInteger(preview.test_account_count);
+      if (!validPreview) {
+        toast("The server returned an incomplete recipient validation. Nothing was confirmed.", "error");
+        return;
+      }
+      const roe = (readinessContext.roes || []).find((item) => item.roe_id === preview.roe_id);
+      const { dlg, form: confirmationForm } = dialogShell(
+        `Confirm recipients: ${campaign.title}`,
+        "Your uploaded roster is selected automatically. Review the validated list and confirm it; no individual selection, separate freeze, or lock step is needed. This confirmation records the exact reviewed roster and email before sending."
+      );
+      confirmationForm.appendChild(el("div", { class: "policy-banner" }, [
+        el("strong", { text: "Approved recipient domains: " }),
+        document.createTextNode(roe ? (roe.target_domains || []).join(", ") : preview.roe_id ? "Covered by the server-selected authorization" : "No authorization covers this campaign"),
+        el("p", { text: "Recipients outside this authorization are rejected. Address and domain checks do not prove mailbox existence." })
+      ]));
+      confirmationForm.appendChild(el("p", { text: `${preview.included_count} recipients included; ${preview.excluded_count || 0} excluded from ${preview.selected_count} selected records.` }));
+      confirmationForm.appendChild(el("p", { class: preview.test_account_count ? "field-help" : "modal-warn", text: preview.test_account_count ? `${preview.test_account_count} designated test recipient(s) will receive the first test email.` : "Choose an authorized test recipient below before confirming. This deployment requires a successful test email before sending the remaining campaign." }));
+      if (preview.excluded_count) confirmationForm.appendChild(el("p", { class: "modal-warn", text: `Excluded recipients will not receive this campaign: ${Object.entries(preview.excluded_counts || {}).filter(([, count]) => count).map(([reason, count]) => `${reason.replace(/_/g, " ")}: ${count}`).join("; ")}.` }));
+      confirmationForm.appendChild(el("p", { text: `Email: ${templates.find((item) => item.template_version_id === campaign.current_template_id)?.subject || "The approved email selected for this campaign"}. After-click page: ${campaign.training_lesson?.title || "Not ready"}.` }));
+      const rosterTable = el("table", { "aria-label": "Validated campaign recipients" });
+      let pageOffset = 0;
+      const rosterPageStatus = el("p", { role: "status" });
+      const drawRoster = () => {
+        rosterTable.replaceChildren(
+          el("thead", {}, [el("tr", {}, ["Recipient", "Department", "Included", "First test email"].map((label) => el("th", { text: label })))]),
+          el("tbody", {}, preview.recipients.slice(pageOffset, pageOffset + 50).map((person) => el("tr", {}, [
+            el("td", { text: person.mailbox }),
+            el("td", { text: person.department || "\u2014" }),
+            el("td", { text: "Yes" }),
+            el("td", {}, person.is_test_account ? [document.createTextNode("Designated test recipient")] : hasCapability(CAPABILITY.MANAGE_RECIPIENTS) && !campaign.audience_frozen ? [el("button", {
+              class: "btn small",
+              type: "button",
+              text: "Designate test account",
+              "aria-label": `Designate ${person.mailbox} as the test recipient`,
+              onclick: async () => {
+                dlg.close();
+                await changeTestAccountDesignation({ ...person, masked_mailbox: person.mailbox, is_test_account: false });
+              }
+            })] : [document.createTextNode("Ordinary recipient")])
+          ])))
+        );
+        rosterPageStatus.textContent = `${preview.included_count ? pageOffset + 1 : 0}\u2013${Math.min(pageOffset + 50, preview.included_count)} of ${preview.included_count} validated recipients`;
+        previous.disabled = pageOffset === 0;
+        next.disabled = pageOffset + 50 >= preview.included_count;
+      };
+      const previous = el("button", { class: "btn small", type: "button", text: "Previous validated recipients", onclick: () => {
+        pageOffset -= 50;
+        drawRoster();
+      } });
+      const next = el("button", { class: "btn small", type: "button", text: "Next validated recipients", onclick: () => {
+        pageOffset += 50;
+        drawRoster();
+      } });
+      drawRoster();
+      confirmationForm.appendChild(rosterTable);
+      confirmationForm.appendChild(el("div", { class: "btn-row" }, [previous, rosterPageStatus, next]));
+      const blocked = preview.included_count < 1 || !preview.roe_id || preview.over_limit || campaign.training_lesson?.ready !== true || preview.test_account_count < 1;
+      const error = el("p", { class: "modal-error", role: "alert", text: blocked ? "A covered recipient list within the campaign limit and an approved after-click page are required. Correct the highlighted setup before confirming." : "" });
+      confirmationForm.appendChild(error);
+      confirmationForm.appendChild(el("div", { class: "modal-actions" }, [
+        el("button", { class: "btn", type: "button", text: "Cancel", onclick: () => dlg.close() }),
+        el("button", { class: "btn primary", type: "button", text: enforcing ? "Confirm recipients and request approval" : "Confirm recipients", disabled: blocked ? "disabled" : null, onclick: async (event) => {
+          const button = event.currentTarget;
+          button.disabled = true;
+          try {
+            if (!campaign.audience_frozen) await api(`/campaigns/${campaign.campaign_id}/audience/freeze`, {
+              method: "POST",
+              body: JSON.stringify({ preview_hash: preview.preview_hash })
+            });
+            await api(`/campaigns/${campaign.campaign_id}/submit`, { method: "POST" });
+            dlg.close();
+            focusedCampaignId = campaign.campaign_id;
+            toast(enforcing ? "Recipients confirmed. Required approvals are now pending." : "Recipients confirmed. Send the test email from this campaign's row.", "success");
+            await render();
+          } catch (err) {
+            error.textContent = `Confirmation stopped: ${err.message}. Nothing was sent. Refresh the campaign before retrying.`;
+            button.disabled = true;
+            confirmationForm.appendChild(el("button", { class: "btn", type: "button", text: "Refresh campaign", onclick: async () => {
+              dlg.close();
+              await render();
+            } }));
+          }
+        } })
+      ]));
+      openDialog(dlg);
+    }
     async function openCampaignReview(campaign) {
       let review;
       try {
@@ -3926,9 +4052,9 @@
             el("div", { class: "modal-help", text: c.sender_display_name ? `${c.sender_display_name} <${c.sender_mailbox}>` : c.sender_mailbox }),
             el("div", { class: "modal-help", text: c.created_at ? `Created ${formatInstant(c.created_at)}` : "" })
           ]),
-          el("td", { "data-label": "Audience" }, [el("span", { class: `pill ${c.audience_frozen ? "ok" : "down"}`, text: c.audience_frozen ? `frozen v${c.audience_version}` : "not frozen" })]),
+          el("td", { "data-label": "Audience" }, [el("span", { class: `pill ${c.audience_frozen ? "ok" : "down"}`, text: c.audience_frozen ? "Recipients confirmed" : "Confirmation needed" })]),
           el("td", { "data-label": "State", text: c.state }),
-          el("td", { "data-label": "Next steps" }, [campaignReadinessView(readiness, c.title)]),
+          el("td", { "data-label": "Next steps" }, [campaignReadinessView(readiness, c.title, c)]),
           el("td", { "data-label": "Actions" }, (() => {
             const actions = [];
             if (!actionAuthorityValid) {
@@ -3938,10 +4064,17 @@
               }));
             } else {
               if (c.can_configure_audience === true) {
+                if (c.state === "draft") actions.push(el("button", {
+                  class: "btn small primary",
+                  type: "button",
+                  text: "Confirm recipients",
+                  "aria-label": `Confirm recipients for ${c.title}`,
+                  onclick: () => confirmCampaignRecipients(c)
+                }));
                 actions.push(el("button", {
                   class: "btn small",
                   type: "button",
-                  text: c.audience_frozen ? "Review audience" : "Configure audience",
+                  text: "Edit roster options (optional)",
                   "aria-label": `${c.audience_frozen ? "Review audience" : "Configure audience"} for ${c.title}`,
                   onclick: () => audienceEditor(c)
                 }));
@@ -3957,11 +4090,11 @@
                   onclick: () => trainingEditor(c)
                 }));
               }
-              if (c.can_submit === true) {
+              if (c.can_submit === true && c.can_configure_audience !== true) {
                 actions.push(el("button", {
                   class: "btn small primary",
                   type: "button",
-                  text: enforcing ? "Submit for approval" : "Lock launch review",
+                  text: enforcing ? "Submit for approval" : "Confirm recipients",
                   "aria-label": `${enforcing ? "Submit for approval" : "Lock launch review"}: ${c.title}`,
                   onclick: act(`/campaigns/${c.campaign_id}/submit`, enforcing ? "Submitted for approval" : "Launch review locked")
                 }));
@@ -3988,7 +4121,7 @@
                 const scheduleButton = el("button", {
                   class: "btn small primary",
                   type: "button",
-                  text: "Send test to canary",
+                  text: "Send test email",
                   "aria-label": `Send the test (canary) for ${c.title}`,
                   disabled: blockers.length ? "disabled" : null,
                   title: blockers.length ? blockedReason : "Sends the reviewed, locked canary cohort \u2014 a small test send whose success gates sending to everyone.",
@@ -4000,7 +4133,7 @@
                 actions.push(el("button", {
                   class: "btn small primary",
                   type: "button",
-                  text: "Send to everyone",
+                  text: "Send campaign",
                   "aria-label": `Send to everyone (publish full audience) for ${c.title}`,
                   disabled: blockers.length ? "disabled" : null,
                   title: blockers.length ? blockedReason : "Publishes to the full reviewed audience \u2014 the exact reviewed manifest, gated by successful canary evidence.",
@@ -4132,6 +4265,15 @@
       el("h3", { text: "All campaigns" }),
       el("div", { class: "table-scroll", tabindex: "0", "aria-label": "Campaign table" }, [list])
     ]));
+    if (focusedCampaignId) {
+      const index = campaigns.findIndex((campaign) => campaign.campaign_id === focusedCampaignId);
+      const row = list.querySelectorAll("tbody tr")[index];
+      if (row) {
+        row.scrollIntoView({ block: "center" });
+        row.querySelector("button")?.focus();
+        focusedCampaignId = null;
+      }
+    }
     function act(path, successMsg) {
       return async (e) => {
         const btn = e.currentTarget;
@@ -4149,6 +4291,7 @@
     }
     function approvalAct(campaign, approvalType, decision) {
       return async (e) => {
+        const btn = e.currentTarget;
         const approving = decision === "approved";
         let review;
         try {
@@ -4180,7 +4323,6 @@
         });
         if (!values) return;
         const rationale = values.rationale;
-        const btn = e.currentTarget;
         btn.disabled = true;
         try {
           await api(`/campaigns/${campaign.campaign_id}/approvals/${approvalType}`, {
@@ -4198,6 +4340,7 @@
     }
     function proofSendAct(campaign) {
       return async (e) => {
+        const btn = e.currentTarget;
         const values = await promptDialog({
           title: `Send a proof of "${campaign.title}"?`,
           description: "This sends one real message containing this campaign's rendered content. The destination is the server-designated test account \u2014 it is chosen by the server, cannot be set from this console, and is never a campaign recipient. No recipient row, tracking token, approval, schedule or delivery state is created or changed. The server rechecks the emergency stop and the recipient-domain allowlist and fails closed.",
@@ -4214,7 +4357,6 @@
           submitLabel: "Send proof"
         });
         if (!values) return;
-        const btn = e.currentTarget;
         btn.disabled = true;
         try {
           const res = await api(`/campaigns/${campaign.campaign_id}/proof-send`, {
@@ -4231,6 +4373,7 @@
     }
     function scheduleAct(campaign, readiness) {
       return async (e) => {
+        const btn = e.currentTarget;
         const ok = await confirmDialog({
           title: `Run the locked canary for "${campaign.title}"?`,
           message: "The server will queue only the test accounts locked into the reviewed manifest. The full audience remains blocked until successful provider evidence is recorded.",
@@ -4247,7 +4390,6 @@
           confirmLabel: "Queue locked canary"
         });
         if (!ok) return;
-        const btn = e.currentTarget;
         btn.disabled = true;
         try {
           const res = await api(`/campaigns/${campaign.campaign_id}/schedule`, { method: "POST" });
@@ -4262,6 +4404,7 @@
     }
     function publishAct(campaign) {
       return async (e) => {
+        const btn = e.currentTarget;
         const ok = await confirmDialog({
           title: `Publish "${campaign.title}" to the full audience?`,
           message: "The server will recheck the reviewed manifest, approvals, RoE, emergency stop, provider configuration and unexpired canary evidence before queueing non-canary recipients.",
@@ -4273,11 +4416,12 @@
           confirmLabel: "Publish exact audience"
         });
         if (!ok) return;
-        const btn = e.currentTarget;
         btn.disabled = true;
         try {
           const result = await api(`/campaigns/${campaign.campaign_id}/publish`, { method: "POST" });
           toast(`Full audience queued: ${result.queued} recipient${result.queued === 1 ? "" : "s"}`, "success");
+          focusedCampaignId = campaign.campaign_id;
+          await render();
         } catch (err) {
           if (!await refreshAfterStaleActionFailure(err, render)) toast(err.message, "error");
         } finally {
@@ -4914,11 +5058,33 @@
         toast(err.message, "error");
       }
     }
+    function showDomainAuthorization(domain) {
+      const matching = roes.filter((roe) => (roe.target_domains || []).includes(domain));
+      const { dlg, form } = dialogShell(`Authorization for ${domain}`, "Inspect the saved domain authorization and its approved recipient domains.");
+      for (const roe of matching) {
+        const active = !roe.revoked_at && Date.parse(roe.window_start) <= Date.now() && Date.parse(roe.window_end) >= Date.now();
+        form.appendChild(el("section", { class: "card" }, [
+          el("h3", { text: roe.authorizing_party || "Recorded authorization" }),
+          el("p", { text: `Status: ${roe.revoked_at ? "Revoked" : active ? "Active" : "Outside its authorized dates"}` }),
+          el("p", { text: `Approved recipient domains: ${(roe.target_domains || []).join(", ")}` }),
+          el("p", { text: `Authorized dates: ${formatInstant(roe.window_start)} \u2192 ${formatInstant(roe.window_end)}` }),
+          el("p", { text: `Recorded by: ${roe.signer || "Not available"}` }),
+          el("p", { text: roe.terms || "Terms are unavailable in this record." })
+        ]));
+      }
+      if (!matching.length) form.appendChild(el("p", { role: "status", text: "No saved Rules of Engagement names this domain. Confirm authorization before sending a campaign." }));
+      form.appendChild(el("p", { class: "modal-help", text: "Domain verification and permission to send are separate. The campaign dates and every recipient domain must be covered by one current signed authorization." }));
+      form.appendChild(el("button", { class: "btn", type: "button", text: "Close", onclick: () => dlg.close() }));
+      openDialog(dlg);
+    }
     const domainRows = domains.length ? domains.map((d) => el("tr", {}, [
       el("td", { text: d.domain }),
       el("td", { class: "mono", text: formatInstant(d.verified_at) }),
       el("td", {}, [el("span", { class: `pill ${d.active ? "ok" : "down"}`, text: d.active ? "verified" : "revoked" })]),
-      el("td", {}, d.active ? [el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeDomain(d) })] : [])
+      el("td", {}, [
+        el("button", { class: "btn small", type: "button", text: "View authorization", "aria-label": `View authorization for ${d.domain}`, disabled: canSignRoe ? null : "disabled", title: canSignRoe ? null : "Authorization access is required to inspect this record.", onclick: () => showDomainAuthorization(d.domain) }),
+        ...d.active ? [el("button", { class: "btn small danger", text: "Revoke", onclick: () => revokeDomain(d) })] : []
+      ])
     ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 4, text: "No verified domains yet. Onboard one below." })])];
     if (canVerifyDomains) root.appendChild(el("div", { class: "card" }, [
       el("div", { class: "card-head" }, [
@@ -4933,6 +5099,13 @@
     ]));
     const nowMs = Date.now();
     const roeActive = (roe) => !roe.revoked_at && Date.parse(roe.window_start) <= nowMs && nowMs <= Date.parse(roe.window_end);
+    const authorizedDomains = [...new Set(roes.filter(roeActive).flatMap((roe) => roe.target_domains || []))].sort();
+    root.appendChild(el("div", { class: "policy-banner", role: "status" }, [
+      el("strong", { text: "Approved recipient domains: " }),
+      document.createTextNode(!canSignRoe ? "Authorization access is required to inspect this list" : authorizedDomains.length ? authorizedDomains.join(", ") : "None currently authorized"),
+      el("p", { text: "Recipients outside the domains covered by the campaign's Rules of Engagement will be rejected at launch. A sending domain in the table alone does not grant permission to target it." }),
+      el("button", { class: "btn primary", type: "button", text: "Continue to recipient roster", onclick: () => navigateTo("recipients") })
+    ]));
     const roeRows = roes.length ? roes.map((roe) => el("tr", {}, [
       el("td", { text: roe.authorizing_party }),
       el("td", { text: roe.signer }),
@@ -5618,7 +5791,7 @@
     }
     return section;
   }
-  function showRenderedTemplatePreview(rendered) {
+  function showRenderedTemplatePreview(rendered, selectableTemplate = null) {
     const { dlg, form } = dialogShell(
       `Preview: ${rendered.subject || "(no subject)"}`,
       "Rendered with the server's non-delivery sample recipient. Previewing does not approve, schedule, or send this message."
@@ -5690,6 +5863,16 @@
     }
     form.appendChild(stage);
     form.appendChild(el("div", { class: "modal-actions" }, [
+      ...selectableTemplate?.reusable && hasCapability(CAPABILITY.CREATE_CAMPAIGN) ? [el("button", {
+        class: "btn primary",
+        type: "button",
+        text: "Select for current campaign",
+        onclick: async () => {
+          selectedLibraryTemplateId = selectableTemplate.template_version_id;
+          dlg.close();
+          await navigateTo("campaigns");
+        }
+      })] : [],
       el("button", { class: "btn primary", type: "button", text: "Close preview", onclick: () => dlg.close() })
     ]));
     draw("desktop");
@@ -5699,7 +5882,7 @@
     trigger.disabled = true;
     try {
       const rendered = await api(`/templates/${template.template_version_id}/preview`);
-      showRenderedTemplatePreview(rendered);
+      showRenderedTemplatePreview(rendered, template);
     } catch (err) {
       toast(err.message, "error");
     } finally {
@@ -5712,7 +5895,7 @@
     const canApproveTemplate = hasCapability(CAPABILITY.APPROVE_TEMPLATE);
     const canPreviewTemplate = canCreateCampaign || canApproveTemplate;
     root.appendChild(el("h2", { text: "Template library & review" }));
-    root.appendChild(el("p", { class: "sub", text: "Search the email library, preview a message, then choose Use this email. To change wording or graphics, edit a copy and approve the draft below." }));
+    root.appendChild(el("p", { class: "sub", text: "Preview an approved email and choose Select for current campaign. Working copy describes its origin; it is not a selection control. Edit or clone only when you want a different message." }));
     const banner = el("div", { class: "policy-banner" });
     banner.appendChild(el("strong", { text: "Nothing here has been sent. " }));
     banner.appendChild(document.createTextNode(
@@ -5833,8 +6016,8 @@
               ...template.reusable ? [el("button", {
                 class: "btn small primary",
                 type: "button",
-                text: "Use this email",
-                "aria-label": `Use ${template.subject || "untitled template"} in a campaign`,
+                text: "Select for current campaign",
+                "aria-label": `Select for current campaign: ${template.subject || "untitled template"}`,
                 onclick: async () => {
                   selectedLibraryTemplateId = template.template_version_id;
                   await navigateTo("campaigns");
@@ -6845,11 +7028,47 @@
     const canManageExclusions = hasCapability(CAPABILITY.MANAGE_EXCLUSIONS);
     const canManageSuppressions = hasCapability(CAPABILITY.MANAGE_SUPPRESSIONS);
     root.appendChild(el("h2", { text: "Recipients" }));
-    root.appendChild(el("p", { class: "sub", text: "Import recipients, manage explicit canary and exclusion controls, or review and apply a bounded Microsoft 365 directory preview." }));
+    root.appendChild(el("p", { class: "sub", text: "Upload a campaign roster and review its recipients. Each saved roster contains only the people in that upload; older imports are kept separately." }));
+    const [rosterResult, roeResult] = await Promise.allSettled([
+      hasCapability(CAPABILITY.VIEW_AGGREGATE) ? api("/audience-groups") : Promise.resolve({ groups: [] }),
+      hasCapability(CAPABILITY.SIGN_ROE) ? boundedCollection("/roe", "roes") : Promise.resolve(null)
+    ]);
+    const rosters = rosterResult.status === "fulfilled" && Array.isArray(rosterResult.value?.groups) ? rosterResult.value.groups : [];
+    const authorizedRoes = roeResult.status === "fulfilled" ? roeResult.value : null;
+    const recipientDomains = authorizedRoes === null ? null : [...new Set(authorizedRoes.filter(
+      (roe) => !roe.revoked_at && Date.parse(roe.window_start) <= Date.now() && Date.parse(roe.window_end) >= Date.now()
+    ).flatMap((roe) => roe.target_domains || []))].sort();
+    if (recipientRosterGroupId === null) {
+      const latest = [...rosters].sort((a, b) => Date.parse(b.created_at || "1970-01-01") - Date.parse(a.created_at || "1970-01-01"))[0];
+      recipientRosterGroupId = selectedRosterGroupId || latest?.audience_group_id || "";
+    }
+    const selectedRoster = rosters.find((roster) => roster.audience_group_id === recipientRosterGroupId);
+    const rosterFilter = el("select", { id: "r-view-roster", disabled: rosterResult.status === "rejected" ? "disabled" : null }, [
+      el("option", { value: "", text: "All imported recipients \u2014 includes past rosters" }),
+      ...rosters.map((roster) => el("option", { value: roster.audience_group_id, text: `${roster.name} (${roster.member_count} people)` }))
+    ]);
+    rosterFilter.value = recipientRosterGroupId;
+    rosterFilter.addEventListener("change", async () => {
+      recipientRosterGroupId = rosterFilter.value;
+      selectedRosterGroupId = rosterFilter.value || null;
+      recipientPageOffset = 0;
+      await render();
+    });
+    root.appendChild(el("div", { class: "card" }, [
+      el("label", { for: "r-view-roster", text: "Viewing recipient roster" }),
+      rosterFilter,
+      el("p", { class: "field-help", text: selectedRoster ? `Showing only ${selectedRoster.name}. Choosing this roster in a campaign includes its members automatically.` : "All-imports history is not a campaign audience. Choose a saved roster or upload one below." }),
+      ...selectedRoster ? [el("button", { class: "btn primary", type: "button", text: "Choose an email for this roster", onclick: () => {
+        selectedRosterGroupId = selectedRoster.audience_group_id;
+        navigateTo("templates");
+      } })] : [],
+      ...rosterResult.status === "rejected" ? [el("p", { role: "alert", text: "Saved rosters could not be loaded. Refresh before selecting a campaign roster." })] : []
+    ]));
     let recipientPage;
     try {
+      const rosterScope = recipientRosterGroupId ? `&roster_id=${encodeURIComponent(recipientRosterGroupId)}` : "";
       recipientPage = boundedRecipientPage(
-        await api(`/recipients?limit=${RECIPIENT_PAGE_LIMIT}&offset=${recipientPageOffset}`),
+        await api(`/recipients?limit=${RECIPIENT_PAGE_LIMIT}&offset=${recipientPageOffset}${rosterScope}`),
         RECIPIENT_PAGE_LIMIT
       );
     } catch (e) {
@@ -6947,7 +7166,7 @@
         }
       } })
     ] : [];
-    if (canManageRecipients) integrationControls.push(el("button", { class: "btn", type: "button", text: "Poll reported mailbox now", disabled: mailboxDisabled, title: mailboxDisabled ? mailboxUnavailable : null, onclick: async (event) => {
+    if (canManageRecipients) integrationControls.push(el("button", { class: "btn", type: "button", text: "Collect employee-reported phishing", disabled: mailboxDisabled, title: mailboxDisabled ? mailboxUnavailable : "Read the reporting inbox for messages employees reported as phishing; does not validate target mailboxes.", onclick: async (event) => {
       event.target.disabled = true;
       try {
         await api("/integrations/reported-mail/poll", { method: "POST" });
@@ -6959,8 +7178,9 @@
         if (event.target.isConnected) event.target.disabled = mailboxDisabled;
       }
     } }));
-    if (canManageRecipients) root.appendChild(el("div", { class: "card" }, [
-      el("h3", { text: "Microsoft 365 integration" }),
+    const integrationPanel = canManageRecipients ? el("details", { class: "card" }, [
+      el("summary", { text: "Optional: directory sync and employee-reported phishing" }),
+      el("p", { class: "field-help", text: "Directory sync imports Microsoft 365 users. Collect employee-reported phishing reads the dedicated reporting inbox and updates report statistics. It does not check whether recipient mailboxes exist and is not needed for a CSV campaign." }),
       el("p", { text: `Directory: ${healthLine(directory)}` }),
       el("p", { text: `Reported-mail canary mailbox: ${healthLine(mailbox)}` }),
       directoryUnavailable ? el("p", { class: "modal-help", text: `Directory actions unavailable: ${directoryUnavailable}` }) : null,
@@ -6968,7 +7188,8 @@
       !directoryUnavailable && !previewReference ? el("p", { class: "modal-help", text: "Apply and Discard become available after the directory worker produces a complete preview." }) : null,
       el("p", { class: "modal-help", text: "Preview is non-mutating. Apply uses the exact encrypted preview and advances its cursor atomically. Incomplete or failed directory results never deactivate recipients." }),
       el("div", { class: "btn-row" }, integrationControls)
-    ].filter(Boolean)));
+    ].filter(Boolean)) : null;
+    let importCard = null;
     if (canManageRecipients) {
       let populateMappingSelect = function(select, columns, { optional = false, resolved = void 0 } = {}) {
         const previous = select.value;
@@ -7025,6 +7246,7 @@
           content.push(el("p", { class: "modal-warn", role: "alert", text: "Deactivate missing is blocked until every invalid, blocked, and duplicate row is fixed." }));
         }
         const roe = preview.roe_coverage;
+        if (roe?.checked) content.push(el("p", { class: "policy-banner", role: "status", text: `Approved recipient domains: ${(roe.active_roe_domains || []).join(", ") || "none"}. All other domains will be rejected for sending. Campaign dates must also fall within the signed authorization.` }));
         if (roe && roe.checked && roe.uncovered > 0) {
           content.push(el("p", { class: "modal-warn", role: "alert", text: `${roe.uncovered} recipient${roe.uncovered === 1 ? "" : "s"} will import but cannot be sent to: ${roe.uncovered === 1 ? "its domain is" : "their domains are"} not covered by any active Rules of Engagement. Uncovered: ${roe.uncovered_domains.join(", ")}. Sign or extend an RoE covering ${roe.uncovered_domains.length === 1 ? "it" : "them"}, or drop those rows. Currently authorized: ${(roe.active_roe_domains || []).join(", ") || "none"}.` }));
         } else if (roe && !roe.checked) {
@@ -7066,7 +7288,7 @@
       const previewStatus = el("div", {
         class: "modal-help",
         role: "status",
-        text: "Preview is required before Apply."
+        text: "Choose a CSV file, then Validate roster to review its recipients."
       });
       let currentPreview = null;
       let explicitHeaderColumnsReviewed = false;
@@ -7076,9 +7298,10 @@
       const applyButton = el("button", {
         class: "btn primary",
         type: "button",
-        text: "Apply exact preview",
+        text: "Confirm validated roster",
         disabled: "disabled",
         onclick: async (event) => {
+          const button = event.currentTarget;
           if (!currentPreview) return;
           let body;
           try {
@@ -7089,19 +7312,21 @@
           }
           const deactivating = body.deactivate_missing;
           const confirmed = await confirmDialog({
-            title: deactivating ? "Deactivate CSV recipients missing from this file?" : "Apply this exact recipient CSV preview?",
-            message: deactivating ? "This second confirmation changes only CSV-managed, non-directory recipients to Departed. It never deletes recipients or changes frozen campaign audiences." : "The server will recompute the exact digest and current recipient state before applying this preview.",
+            title: deactivating ? "Deactivate CSV recipients missing from this file?" : "Confirm this validated recipient roster?",
+            message: deactivating ? "This second confirmation changes only CSV-managed, non-directory recipients to Departed. It never deletes recipients or changes frozen campaign audiences." : "Save the valid recipients from this upload as your campaign roster. Other imports are not added to it. Authorization and exclusions will be checked again for the campaign dates before sending.",
             detail: {
-              "Preview digest": currentPreview.preview_digest,
               "Create": currentPreview.counts.created || 0,
               "Update": currentPreview.counts.updateable || 0,
+              "Already recorded": currentPreview.counts.existing || 0,
+              "Invalid rows": currentPreview.counts.invalid || 0,
+              "Blocked rows": currentPreview.counts.blocked || 0,
               "Deactivate": currentPreview.counts.deactivateable || 0
             },
-            confirmLabel: deactivating ? "Deactivate missing and apply" : "Apply exact preview",
+            confirmLabel: deactivating ? "Deactivate missing and apply" : "Confirm roster",
             danger: deactivating
           });
           if (!confirmed) return;
-          event.currentTarget.disabled = true;
+          button.disabled = true;
           try {
             const result = await api("/recipients/import/apply", {
               method: "POST",
@@ -7115,23 +7340,28 @@
             showImportResult(result);
             if (result.roster) {
               selectedRosterGroupId = result.roster.audience_group_id;
+              recipientRosterGroupId = result.roster.audience_group_id;
+              recipientPageOffset = 0;
               previewStatus.appendChild(el("p", { text: `Saved roster: ${result.roster.name} (${result.roster.member_count} people).` }));
               previewStatus.appendChild(el("button", { class: "btn primary", type: "button", text: "Choose an email for this roster", onclick: () => navigateTo("templates") }));
+              await render();
+              toast(`Roster saved: ${result.roster.name}, ${result.roster.member_count} people. The recipient list now shows only this upload.`, "success");
             }
           } catch (err) {
             toast(err.message, "error");
             invalidateImportPreview();
           } finally {
-            if (event.currentTarget.isConnected) event.currentTarget.disabled = currentPreview === null;
+            if (button.isConnected) button.disabled = currentPreview === null;
           }
         }
       });
       const previewButton = el("button", {
         class: "btn primary",
         type: "button",
-        text: "Preview CSV changes",
+        text: "Validate roster",
         onclick: async (event) => {
-          event.currentTarget.disabled = true;
+          const button = event.currentTarget;
+          button.disabled = true;
           try {
             const requiresHeaderMappingReview = headerMode.value === "first_row" && !explicitHeaderColumnsReviewed;
             const preview = await api("/recipients/import/preview", {
@@ -7162,7 +7392,7 @@
             invalidateImportPreview();
             toast(err.message, "error");
           } finally {
-            if (event.currentTarget.isConnected) event.currentTarget.disabled = false;
+            if (button.isConnected) button.disabled = false;
           }
         }
       });
@@ -7198,14 +7428,29 @@
         control.addEventListener("input", invalidateImportPreview);
         control.addEventListener("change", invalidateImportPreview);
       }
-      root.appendChild(el("div", { class: "card" }, [
+      importCard = el("div", { class: "card" }, [
         el("h3", { text: "Upload a roster" }),
+        el("button", { class: "btn primary", type: "button", text: "Download CSV template", onclick: () => {
+          const url = URL.createObjectURL(new Blob(["\uFEFFemail,name,department\r\n"], { type: "text/csv;charset=utf-8" }));
+          const link = el("a", { href: url, download: "recipient-roster-template.csv" });
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+        } }),
+        el("p", { class: "field-help", text: "Email is required. Name and department are optional. For a personalized greeting, enter the name you want used, such as Erik; a full legal name is not required. Save the completed spreadsheet as CSV and upload it here." }),
+        el("div", { class: "policy-banner", role: "status" }, [
+          el("strong", { text: "Approved recipient domains: " }),
+          document.createTextNode(recipientDomains === null ? "Authorization could not be checked here" : recipientDomains.join(", ") || "None currently authorized"),
+          el("p", { text: "Only domains covered by the campaign's signed Rules of Engagement may receive mail. All other recipient domains will be rejected at launch. Importing a valid address does not prove that its mailbox exists." }),
+          el("button", { class: "btn small", type: "button", text: "View domain authorization", onclick: () => navigateTo("sending") })
+        ]),
         ...canSaveRoster ? [
           el("label", { for: "r-roster-name", text: "Save this upload as a named roster" }),
           rosterName,
           el("p", { class: "field-help", text: "The saved roster contains only valid people in this file, including people already imported. Choose this roster in Campaigns to avoid selecting the wider recipient pool. Leave blank to import without saving a roster." })
         ] : [],
-        el("p", { text: "Preview is non-mutating and shows only counts plus bounded row-number error codes. Apply is bound to the exact CSV, mapping, options, domain policy, and current recipient state." }),
+        el("p", { text: "Validate the file, review any rejected rows, then confirm the roster. Nothing is sent during upload." }),
         // D6 acceptance finding: an operator could reach this form with no idea
         // what the spreadsheet should contain. The header aliases and limits below
         // are the ones recipient_import.py actually accepts - keep them in step
@@ -7249,11 +7494,14 @@
         el("label", { for: "r-file", text: "Choose a CSV file" }),
         filePicker,
         el("p", { class: "modal-help", text: "The browser refuses files over 512 KiB or 5,000 lines. File contents stay in this page until Preview." }),
-        el("label", { for: "r-csv", text: "CSV text" }),
-        csvArea,
-        el("label", { for: "r-header-mode", text: "Header row handling" }),
-        headerMode,
-        el("p", { class: "modal-help", text: "For nonstandard header names, choose first-row headers and Preview once to load safe, bounded labels. Review the mappings, then Preview again before Apply." }),
+        el("details", { class: "context-help" }, [
+          el("summary", { text: "Optional: paste CSV or change header handling" }),
+          el("label", { for: "r-csv", text: "CSV text" }),
+          csvArea,
+          el("label", { for: "r-header-mode", text: "Header row handling" }),
+          headerMode,
+          el("p", { class: "modal-help", text: "For nonstandard header names, choose first-row headers and validate once to load the column labels. Review mappings, then validate again before confirming." })
+        ]),
         // D6 acceptance finding: "all the other stuff is noise". Column mapping
         // auto-detects, and the merge/deactivate options only matter on a re-import,
         // so a first-time operator should not have to read past them. They stay
@@ -7281,20 +7529,20 @@
         ]),
         el("div", { class: "btn-row" }, [previewButton, applyButton]),
         previewStatus
-      ]));
+      ]);
     }
     const table = el("table", { "aria-label": "Authorized recipient records and test-account designations" }, [
       el("thead", {}, [el("tr", {}, [
-        el("th", { text: "Recipient reference" }),
+        el("th", { text: "Recipient" }),
         el("th", { text: "Department" }),
-        el("th", { text: "Status" }),
+        el("th", { text: "Recipient checks" }),
         el("th", { text: "Test-send eligibility" }),
         el("th", { text: "Action" })
       ])]),
       el("tbody", {}, recipients.length ? recipients.map((r) => el("tr", {}, [
         el("td", { text: recipientReference(r) }),
         el("td", { text: r.department || "No department" }),
-        el("td", { text: r.status }),
+        el("td", { text: r.status !== "active" ? `Excluded: ${r.status}` : recipientDomains === null || !r.masked_mailbox ? "Domain check pending at campaign confirmation" : recipientDomains.includes(r.masked_mailbox.split("@").pop()) ? "Active \xB7 domain authorized; mailbox existence unverified" : "Rejected for sending: domain not authorized" }),
         el("td", { text: r.is_test_account ? "Server-designated test account" : "Standard recipient" }),
         el("td", {}, [
           ...canManageRecipients ? [el("button", {
@@ -7303,11 +7551,12 @@
             text: r.is_test_account ? "Remove designation" : "Designate test account",
             "aria-label": `${r.is_test_account ? "Remove test-account designation from" : "Designate as test account"} recipient ${recipientReference(r)}`,
             onclick: async (event) => {
-              event.currentTarget.disabled = true;
+              const button = event.currentTarget;
+              button.disabled = true;
               try {
                 await changeTestAccountDesignation(r);
               } finally {
-                event.currentTarget.disabled = false;
+                if (button.isConnected) button.disabled = false;
               }
             }
           })] : [],
@@ -7366,16 +7615,27 @@
         await render();
       }
     });
-    root.appendChild(el("div", { class: "card" }, [
-      el("h3", { text: "Recipients" }),
-      el("p", { class: "modal-help", text: "Test accounts are explicitly designated server records. The console never infers eligibility from mailbox text, names, or departments. Frozen or assigned nonterminal campaigns lock designation changes." }),
+    const recipientCard = el("div", { class: "card" }, [
+      el("h3", { text: selectedRoster ? `Recipients in ${selectedRoster.name}` : "All imported recipients" }),
+      el("p", { class: "modal-help", text: "The list reflects saved recipient records and domain authorization, not verified mailbox existence. Use Designate test account on the recipient that should receive the first test email. All other rows remain ordinary campaign recipients." }),
       table,
       el("div", { class: "btn-row", "aria-label": "Recipient page controls" }, [
         previousPage,
         el("span", { role: "status", text: `Showing ${pageStart}\u2013${pageEnd} of ${recipientPage.total} recipients.` }),
         nextPage
       ])
-    ]));
+    ]);
+    if (selectedRoster) {
+      root.appendChild(recipientCard);
+      if (importCard) root.appendChild(el("details", { id: "r-upload-panel", class: "card" }, [
+        el("summary", { text: "Upload another roster" }),
+        importCard
+      ]));
+    } else {
+      if (importCard) root.appendChild(importCard);
+      root.appendChild(recipientCard);
+    }
+    if (integrationPanel) root.appendChild(integrationPanel);
   };
   var PRIVACY_TYPES = ["search", "access_export", "correction", "deletion", "exception"];
   views.privacy = async (root) => {

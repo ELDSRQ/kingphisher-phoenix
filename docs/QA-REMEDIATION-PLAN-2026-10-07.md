@@ -340,3 +340,49 @@ still requires integration into `main`; this trial runs its feature branch.
 No unresolved implementation or model-reasoning blocker was found. Release
 image, recovery, cloud/provider and production approval gates are not renewed
 by this synthetic diagnostic; production/RSA remains NO-GO.
+
+## Operator-flow remediation — 2026-10-09
+
+The October 9 human attempt failed on authorization inspection, CSV preparation,
+roster ambiguity, email selection, separate audience/launch controls and silent
+send buttons. D6 remains open. Preserve the user's approved, unsent campaign
+`8a0a7e2a-ebb5-464f-9d0f-9a555be5e838` ("Test 10-09-2026").
+
+`fix/human-operator-flow-20261009` builds on PR #132. Domain rows now open the
+signed authorization record and show approved target domains. Recipients offers
+a header-only CSV template, optional greeting names, a saved-roster selector
+and server-scoped pagination; earlier imports appear only when explicitly
+selected. The current roster is displayed first; subsequent uploads and
+employee-reported mail collection are expandable. That collector reads reported
+phishing and does not validate target mailboxes. Recipient checks distinguish
+address/domain eligibility from unverified mailbox existence.
+
+Approved email cards and their safe previews offer Select for current campaign,
+retaining the roster. One Confirm recipients dialog shows the server-derived
+included/excluded list and campaign-bound RoE domains; it performs the existing
+exact-manifest freeze and launch review internally. Editing roster options is
+optional. A missing designated test account is detected before confirmation can
+commit. Server authorization, immutable review, exclusions and worker delivery
+checks remain in force.
+
+The silent send failure was an event-handler bug: `currentTarget` was read after
+awaiting a confirmation dialog. The handlers now capture the clicked button
+before awaiting. Queued, successful, failed and expired test states have explicit
+next-action wording; full send remains a separate confirmed action.
+
+Local validation: **3,591 passed, 113 deliberately deselected** in 211.41 seconds;
+lint/format and strict types passed. The final wording and freshly generated
+bundle passed 30 focused contracts and **four isolated browser checks** in
+8.4 seconds, including CSV download, scoped roster/history, preview selection,
+cancel-without-mutation, missing-test-account handling, exact confirmation and
+observable test/full sends. The final source CI and live deployment are pending
+at this record's initial commit. No migrations or dependency changes are needed.
+
+The user also requested an optional canary. The pending scope question is
+whether this applies only to on-prem single-operator mode or to production/cloud
+too. This repair does not claim an exemption or canary success: both the API and
+worker currently require fresh campaign/provider/config-bound evidence. A launch
+policy change must cover both enforcement paths and its audit/evidence semantics;
+changing only button availability would leave the operator blocked at delivery.
+This is the remaining design decision suitable for a separate model review.
+Password rotation remains deferred until the user's completed-build sign-off.

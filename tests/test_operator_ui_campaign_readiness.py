@@ -21,8 +21,8 @@ def test_campaign_console_builds_one_truthful_readiness_gate() -> None:
 
     assert "check.required && check.ready === false" in APP
     assert '"data-readiness-blockers"' in APP
-    assert 'text: "Send test to canary"' in APP
-    assert 'text: "Send to everyone"' in APP
+    assert 'text: "Send test email"' in APP
+    assert 'text: "Send campaign"' in APP
     assert 'disabled: blockers.length ? "disabled" : null' in APP
     assert "The scheduling API will revalidate it and fail closed" in APP
 

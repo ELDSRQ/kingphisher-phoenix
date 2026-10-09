@@ -65,7 +65,7 @@ def test_campaign_buttons_do_not_reconstruct_identity_or_lifecycle_authority() -
     assert 'text: "Approve security"' in action_block
     assert 'text: "Approve privacy"' in action_block
     assert 'text: "Recall"' in action_block
-    assert 'text: "Send to everyone"' in action_block
+    assert 'text: "Send campaign"' in action_block
     assert 'text: "Send to test accounts"' not in action_block
 
 

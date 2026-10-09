@@ -56,56 +56,57 @@ locked in.
 
 ## Run your first campaign
 
-Use these sections in order; the Campaigns page links to each one:
+1. **Domains & RoE → Verified domains → View authorization** beside your
+   domain. Check the recorded authorizing party, approved recipient domains,
+   authorized dates and active status. DNS verification alone does not grant
+   permission to target recipients. Existing authorization can be reused while
+   it remains valid for the campaign dates; you do not sign it again each time.
+2. **Recipients → Upload a roster → Download CSV template**. If a saved roster
+   is already selected, expand **Upload another roster** below its table first.
+   Populate `email`
+   (required), `name` and `department` (optional), save as CSV, then upload it.
+   Give the roster a distinct name. **Validate roster** reports invalid rows
+   and domain coverage; **Confirm validated roster → Confirm roster** saves it.
+   The saved roster contains only valid people from that file, including people
+   previously imported. Select **Review saved recipients** to inspect it or
+   **Choose an email for this roster** to continue. The **Viewing recipient
+   roster** selector separates each saved roster from all-imports history.
+3. **Template review → Choose an email → Safe preview → Select for current
+   campaign**. The same selection button appears on approved library rows.
+   Working copy describes the message's origin. Clone and Edit create new
+   drafts; use them only to change the message, and approve the copy before
+   selecting it. A full name is not required for AI generation. If the email
+   uses `{{ recipient.first_name }}`, delivery inserts the optional roster name;
+   enter the greeting name you want, for example Erik. A template without a
+   name placeholder does not gain personalization automatically.
+4. **Campaigns → New campaign**. Select the sending domain and uploaded roster,
+   check the email, title and send window, then **Create campaign**. The approved
+   after-click page and recipient-page host are supplied. Optional changes are
+   under After-click content and Advanced delivery settings.
+5. **Campaigns → All campaigns → your campaign row → Confirm recipients**.
+   Review the included list, excluded counts and approved domains. The uploaded
+   roster is already selected; you do not select each person again. If no test
+   recipient is designated, its row offers **Designate test account** before
+   confirmation. **Confirm recipients** records the exact audience and launch
+   review internally, without separate freeze or lock controls in this path.
+   **Edit roster options (optional)** is available only when you want different
+   selectors or exclusions. In two-person mode this confirmation requests
+   security and privacy approval; the creator cannot supply those approvals.
+6. **Send test email**. Confirm the test dialog. The row changes to **Test email
+   queued — waiting for delivery confirmation**, then **Test email passed** when
+   the server has the required provider evidence. Status refreshes every 30
+   seconds. **Send campaign** appears when publication is permitted and sends
+   only the reviewed recipient list, excluding the test cohort already sent.
+7. **Report** on the campaign row shows delivery and training results and offers
+   report CSV and evidence-bundle downloads. **Recall** stops this campaign's
+   queued mail and invalidates its tracking links.
 
-1. **Domains & RoE**: verify the sending domain and record the domain owner's
-   authorization, target domains and permitted dates. RoE means Rules of
-   Engagement: the signed permission for this exercise.
-2. **Recipients → Upload a roster**: give the upload a roster name, choose a
-   CSV with an `email` column, preview it, and apply that exact preview. Leave
-   deactivation unchecked for an ordinary addition. The named roster contains
-   only valid addresses in this file, including people previously imported.
-3. **Template review → Choose an email**: the library initially shows approved
-   emails. Search, use **Safe preview**, then **Use this email**. To adapt a
-   message, choose **Edit wording & graphics**. It creates an unapproved copy;
-   changed wording rebuilds the email layout, and its draft review offers
-   **Upload logo image**. Preview and approve the copy before using it.
-4. **Campaigns → New campaign**: select the verified domain, saved roster,
-   email, title and send window. The internal content category is supplied
-   automatically. Approved after-click content has a default; its optional
-   control lets you change it, and the exact binding stays in the launch review.
-   Recipient-page host, recipient limit and spreading are under **Advanced
-   delivery settings**.
-5. **Configure audience** on the new campaign: the selected roster is already
-   bound. Save and preview, check the exact recipients and exclusions, then
-   freeze that audience. Lock/review the launch, send the canary first, and
-   send to the reviewed roster once provider evidence permits it.
-
-These steps prepare a draft and exact review. Choosing a roster or clicking
-**Use this email** never sends mail or carries over an approval.
-
-1. **Create** — choose the approved email and your saved roster. The form supplies
-   the internal category and approved after-click content; check the latter in
-   the final review.
-2. **Freeze the audience** — lock the exact list of recipients so what was
-   reviewed is exactly what gets sent.
-3. **Approve** — this depends on your deployment's approval mode:
-   - **Two-person mode** (`enforce`; always the case in Azure): the person who
-     created the campaign cannot approve it. A single independent reviewer with
-     both capabilities may complete the security and privacy approvals, or two
-     reviewers may split them.
-   - **Single-operator mode** (`single-operator`; the supported small-team
-     posture, and what a default on-prem install runs): there is no second
-     approver. Submitting the campaign for review approves it, and you may
-     approve the threat pattern and the AI-generated draft you requested
-     yourself. Every such decision is still recorded in the audit trail, marked
-     `self_approved` / `self_reviewed`, so who did each step is never lost.
-   Both modes keep everything below this line unchanged — the canary gate, the
-   Rules-of-Engagement boundary, and the audit trail apply identically.
-4. **Run the canary** — send only to a small group of internal test accounts and
-   wait for the mail provider to confirm it actually went out.
-5. **Publish** — send to the full audience. This button stays disabled until the
-   canary evidence is current.
+Recipient validation checks address format, status, exclusions and authorized
+recipient domains. It does not prove a mailbox exists or that a human received
+mail. **Collect employee-reported phishing**, under the collapsed optional
+Microsoft 365 integration panel in Recipients, reads messages employees reported
+as phishing and updates report statistics. It is not recipient validation and
+is not required for a CSV campaign.
 
 ## Send safety
 
