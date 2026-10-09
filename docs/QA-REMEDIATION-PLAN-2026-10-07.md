@@ -412,3 +412,12 @@ throttled test request does not change campaign state or queue a send, and that
 a failed template read does not falsely announce lost approval. All four browser
 checks passed in 10 seconds, plus 26 focused contracts and lint/strict types.
 Live continuation will reuse only the above rehearsal campaign at a slower pace.
+
+The paced continuation queued exactly one test email and Mailpit captured it;
+the server derived successful canary evidence. A fresh page load then returned
+the incomplete-setup session to Get started. The test-send action now refreshes
+the campaign view in place, just like full send. Initial programmatic roster
+selection also incorrectly marked the new-campaign form as dirty, pausing the
+30-second status refresh; initial defaults are now marked saved while genuine
+operator edits retain their refresh guard. The browser scenario explicitly
+covers incomplete setup and an unedited prefilled form.

@@ -4226,6 +4226,7 @@
         if (trainingUrl) document.getElementById("c-tdomain").value = new URL(trainingUrl).hostname;
       } catch {
       }
+      markFormSaved(form);
     }
     const advancedGroups = el("details", { class: "card" }, [el("summary", { text: "Advanced: reusable audience groups" }), groupCard]);
     root.appendChild(advancedGroups);
@@ -4397,7 +4398,8 @@
         try {
           const res = await api(`/campaigns/${campaign.campaign_id}/schedule`, { method: "POST" });
           toast(`Test email queued: ${res.queued} designated test account${res.queued === 1 ? "" : "s"}`, "success");
-          location.reload();
+          focusedCampaignId = campaign.campaign_id;
+          await render();
         } catch (err) {
           if (!await refreshAfterStaleActionFailure(err, render)) toast(err.message, "error");
         } finally {

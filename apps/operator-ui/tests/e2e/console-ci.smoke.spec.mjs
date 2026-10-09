@@ -13,7 +13,7 @@ async function installHumanFlowFixture(page) {
     { recipient_id: id(12), display_name: "Outside", masked_mailbox: "o***@unauthorized.example", department: "Trial", status: "active", is_test_account: false },
   ];
   const pastRecipient = { ...recipients[1], recipient_id: id(90), display_name: "Past import" };
-  const state = { rosterSaved: false, campaign: null, writes: [], noTestAccount: false, failFreeze: false, failTemplates: false, throttleSchedule: false };
+  const state = { rosterSaved: false, campaign: null, writes: [], noTestAccount: false, failFreeze: false, failTemplates: false, throttleSchedule: false, setupIncomplete: false };
   const roe = { roe_id: roeId, authorizing_party: "Synthetic company", signer: "Fixture operator", window_start: "2020-01-01T00:00:00Z", window_end: "2050-12-31T00:00:00Z", target_domains: ["example.com"], terms: "Synthetic exercise authorization", revoked_at: null };
   const data = {
     "/patterns": [{ campaign_pattern_id: patternId, approval_state: "approved", lure_category: "credential" }],
@@ -40,6 +40,7 @@ async function installHumanFlowFixture(page) {
     const request = route.request(), url = new URL(request.url());
     const path = url.pathname.replace("/api/v1", ""), method = request.method();
     if (path === "/templates" && state.failTemplates) return route.fulfill({ status: 429, headers: { "Retry-After": "1" }, json: { detail: "Too many requests" } });
+    if (path === "/console/onboarding") return route.fulfill({ json: { ...data[path], complete: !state.setupIncomplete } });
     if (path === "/audience-groups") return route.fulfill({ json: { groups: state.rosterSaved ? [{ audience_group_id: rosterId, name: "Human trial roster", member_count: 3, recipient_ids: recipients.map((r) => r.recipient_id), created_at: "2026-10-09T00:00:00Z" }] : [] } });
     if (path === "/recipients") {
       const rows = url.searchParams.get("roster_id") === rosterId ? recipients : [pastRecipient, ...recipients];
@@ -166,13 +167,16 @@ test("human flow: downloadable CSV, exact saved roster, email selection in previ
   expect(state.writes.filter((w) => w.path.endsWith("/schedule"))).toHaveLength(0);
   expect(state.campaign.launch_gate.state).toBe("reviewed");
   state.throttleSchedule = false;
+  state.setupIncomplete = true;
   await page.getByRole("button", { name: "Send the test (canary) for Human workflow fixture", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Send test email", exact: true }).click();
   await expect(page.getByText(/Test email queued — waiting for delivery confirmation/)).toBeVisible();
+  await expect(page).toHaveURL(/#campaigns$/);
+  await expect(page.locator('fieldset[data-refresh-guard="New campaign draft"]')).toHaveAttribute("data-dirty", "false");
   await expect(page.getByRole("button", { name: "Send the test (canary) for Human workflow fixture", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send to everyone (publish full audience) for Human workflow fixture", exact: true })).toHaveCount(0);
   state.campaign.launch_gate = { state: "canary_succeeded", provider: "smtp", canary_evidence_hash: "synthetic-evidence", canary_expires_at: "2050-01-01T00:00:00Z" };
-  await page.reload();
+  await page.getByRole("button", { name: "Refresh current view", exact: true }).click();
   await expect(page.getByText("Test email passed. Next: Send campaign to the confirmed recipient list.", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Send to everyone (publish full audience) for Human workflow fixture", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Send campaign", exact: true }).click();
