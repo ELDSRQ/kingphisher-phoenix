@@ -62,6 +62,7 @@ from kp_database.models import (
     Campaign,
     CampaignApproval,
     CampaignAudience,
+    CampaignAudienceManifest,
     CampaignCanaryRecipient,
     CampaignLaunchGate,
     CampaignPattern,
@@ -1089,7 +1090,7 @@ def _launch_delivery_gate_reason(
     """Revalidate phase evidence before any provider side effect."""
 
     phase = payload.get("delivery_phase")
-    if phase not in {"canary", "full"}:
+    if phase not in {"canary", "full", "reviewed_direct"}:
         return None, "delivery_phase_missing"
     gate = session.get(CampaignLaunchGate, campaign.campaign_id, with_for_update=True, populate_existing=True)
     audience = session.get(CampaignAudience, campaign.campaign_id)
@@ -1104,6 +1105,44 @@ def _launch_delivery_gate_reason(
         return gate, "training_manifest_drift"
     if payload.get("launch_manifest_hash") != gate.review_manifest_hash:
         return gate, "launch_manifest_mismatch"
+    direct = getattr(campaign, "delivery_mode", None) == "reviewed_direct"
+    if direct != (phase == "reviewed_direct"):
+        return gate, "delivery_mode_mismatch"
+    if direct:
+        if audience is None:
+            return gate, "launch_manifest_drift"
+        if gate.state != "direct_published" or gate.full_published_at is None:
+            return gate, "direct_campaign_not_published"
+        if gate.canary_evidence_hash is not None or gate.canary_succeeded_at is not None:
+            return gate, "direct_campaign_has_canary_evidence"
+        provider, config_hash = _delivery_provider_binding(settings)
+        if gate.provider is None and gate.provider_config_hash is None:
+            gate.provider, gate.provider_config_hash = provider, config_hash
+            gate.updated_at = datetime.now(UTC)
+        elif gate.provider != provider or gate.provider_config_hash != config_hash:
+            return gate, "provider_configuration_drift"
+        try:
+            assignment_uuids = [uuid.UUID(item) for item in assignment_ids]
+        except ValueError:
+            return gate, "assignment_binding_invalid"
+        assignments = list(
+            session.scalars(
+                select(RecipientAssignment)
+                .join(
+                    CampaignAudienceManifest,
+                    (CampaignAudienceManifest.campaign_id == RecipientAssignment.campaign_id)
+                    & (CampaignAudienceManifest.recipient_id == RecipientAssignment.recipient_id),
+                )
+                .where(
+                    RecipientAssignment.recipient_assignment_id.in_(assignment_uuids),
+                    RecipientAssignment.campaign_id == campaign.campaign_id,
+                    CampaignAudienceManifest.audience_version == audience.version,
+                )
+            )
+        )
+        if not assignment_ids or len(assignments) != len(assignment_ids):
+            return gate, "assignment_binding_invalid"
+        return gate, None
     now = datetime.now(UTC)
     if gate.canary_expires_at is None or gate.canary_expires_at <= now:
         gate.state = "expired"

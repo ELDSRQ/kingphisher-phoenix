@@ -31,6 +31,578 @@
     return node;
   }
 
+  // src/console-js/simple-campaigns.js
+  function installSimpleCampaigns(ui) {
+    const {
+      views: views2,
+      api: api2,
+      el: el2,
+      boundedCollection: boundedCollection2,
+      hasCapability: hasCapability2,
+      CAPABILITY: CAPABILITY2,
+      sessionInfo: sessionInfo2,
+      toast: toast2,
+      navigateTo: navigateTo2,
+      dialogShell: dialogShell2,
+      openDialog: openDialog2,
+      confirmDialog: confirmDialog2,
+      promptDialog: promptDialog2,
+      guardUnsavedForm: guardUnsavedForm2,
+      markFormSaved: markFormSaved2,
+      showCampaignReport
+    } = ui;
+    const key = "kp_campaign_setup";
+    let flow;
+    try {
+      flow = JSON.parse(sessionStorage.getItem(key) || "{}");
+    } catch {
+      flow = {};
+    }
+    const save = () => sessionStorage.setItem(key, JSON.stringify(flow));
+    window.addEventListener("kp-select-library-template", (event) => {
+      flow.sourceTemplateId = event.detail.templateId;
+      delete flow.templateId;
+      emailContent = null;
+      save();
+    });
+    let csvText = "", importPreview = null, emailContent = null;
+    const activeRoe = (r) => !r.revoked_at && Date.parse(r.window_start) <= Date.now() && Date.parse(r.window_end) > Date.now();
+    const button = (text, onclick, disabled = false, primary = false) => el2("button", {
+      type: "button",
+      class: `btn${primary ? " primary" : ""}`,
+      text,
+      onclick,
+      disabled: disabled ? "disabled" : null
+    });
+    const table = (headers, rows, label) => el2("div", { class: "table-scroll" }, [el2("table", {
+      "aria-label": label
+    }, [
+      el2("thead", {}, [el2("tr", {}, headers.map((text) => el2("th", { scope: "col", text })))]),
+      el2("tbody", {}, rows.map((row) => el2("tr", {}, row.map((value) => el2("td", { text: String(value ?? "\u2014") })))))
+    ])]);
+    const card = (title, children) => el2("section", { class: "card" }, [el2("h3", { text: title }), ...children]);
+    const field = (form, label, id, attrs = {}) => {
+      const input = el2(attrs.rows ? "textarea" : "input", { id, ...attrs });
+      form.append(el2("label", { for: id, text: label }), input);
+      return input;
+    };
+    const fail = (node, error) => {
+      node.textContent = error.message;
+      toast2(error.message, "error");
+    };
+    function downloadTemplate() {
+      const url = URL.createObjectURL(new Blob(["\uFEFFemail,name,department\r\n"], { type: "text/csv;charset=utf-8" }));
+      const link = el2("a", { href: url, download: "recipient-roster-template.csv" });
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1e3);
+    }
+    async function monitor(campaign, target) {
+      target.replaceChildren(el2("p", { role: "status", text: "Loading recipient results\u2026" }));
+      try {
+        const items = await boundedCollection2(`/campaigns/${campaign.campaign_id}/recipients`, "items");
+        target.replaceChildren(
+          el2("h3", { text: `Recipient results: ${campaign.title}` }),
+          el2("p", { text: "Clicks are observed link requests; automated email scanners can generate them. Confirmed interaction indicates a human action on the training page." }),
+          el2("p", { class: "notice", text: "Replies: unavailable. This deployment has no recipient-reply ingestion. Employee-reported phishing is a separate metric." }),
+          table(["Recipient", "Delivery", "Clicked", "Confirmed interaction", "Reported", "Training"], items.map((r) => [
+            `${r.display_name || "Unnamed"} (${r.masked_mailbox || "masked"})`,
+            r.send_state,
+            r.clicked ? "Yes" : "No",
+            r.confirmed_interaction ? "Yes" : "No",
+            r.reported ? "Yes" : "No",
+            r.training_state
+          ]), "Campaign recipient results"),
+          button("Refresh recipient results", () => monitor(campaign, target))
+        );
+      } catch (e) {
+        target.replaceChildren(el2("p", { role: "alert", text: e.message }));
+      }
+    }
+    const oldDashboard = views2.dashboard;
+    views2.dashboard = async (root) => {
+      await oldDashboard(root);
+      if (!hasCapability2(CAPABILITY2.VIEW_NAMED_RESULTS) || !root.isConnected) return;
+      const panel = card("Monitor recipients", []);
+      root.appendChild(panel);
+      try {
+        const campaigns = await boundedCollection2("/campaigns");
+        const choice = el2("select", { id: "monitor-campaign" }, [
+          el2("option", { value: "", text: "Choose a campaign\u2026" }),
+          ...campaigns.map((c) => el2("option", { value: c.campaign_id, text: c.title }))
+        ]);
+        const results = el2("div");
+        panel.append(el2("label", { for: "monitor-campaign", text: "Campaign" }), choice, results);
+        choice.addEventListener("change", () => {
+          const campaign = campaigns.find((c) => c.campaign_id === choice.value);
+          if (campaign) {
+            flow.monitorId = campaign.campaign_id;
+            save();
+            monitor(campaign, results);
+          } else results.replaceChildren();
+        });
+        if (campaigns.some((c) => c.campaign_id === flow.monitorId)) {
+          choice.value = flow.monitorId;
+          await monitor(campaigns.find((c) => c.campaign_id === flow.monitorId), results);
+        }
+      } catch (e) {
+        panel.appendChild(el2("p", { role: "alert", text: e.message }));
+      }
+    };
+    views2.campaigns = async (root) => {
+      if (!hasCapability2(CAPABILITY2.VIEW_AGGREGATE)) return;
+      root.append(el2("h2", { text: "Campaigns" }), el2("p", { class: "sub", text: "Select domain \u2192 sign RoE \u2192 upload and confirm recipients \u2192 choose and edit an email \u2192 approve \u2192 send \u2192 monitor." }));
+      const error = el2("p", { role: "alert", class: "modal-error" });
+      root.appendChild(error);
+      let campaigns, domains, roes, templates, patterns, lessons, onboarding;
+      try {
+        [campaigns, domains, roes, templates, patterns, lessons, onboarding] = await Promise.all([
+          boundedCollection2("/campaigns"),
+          hasCapability2(CAPABILITY2.VERIFY_DOMAIN) ? boundedCollection2("/sending-domains", "domains") : Promise.resolve([]),
+          hasCapability2(CAPABILITY2.SIGN_ROE) ? boundedCollection2("/roe", "roes") : Promise.resolve([]),
+          hasCapability2(CAPABILITY2.CREATE_CAMPAIGN) ? boundedCollection2("/templates") : Promise.resolve([]),
+          hasCapability2(CAPABILITY2.CREATE_CAMPAIGN) ? boundedCollection2("/patterns") : Promise.resolve([]),
+          hasCapability2(CAPABILITY2.CREATE_CAMPAIGN) ? boundedCollection2("/training-resources?approval_state=approved") : Promise.resolve([]),
+          hasCapability2(CAPABILITY2.MANAGE_ROLES) ? api2("/console/onboarding") : Promise.resolve(null)
+        ]);
+      } catch (e) {
+        fail(error, e);
+        root.appendChild(button("Retry", () => {
+          root.replaceChildren();
+          views2.campaigns(root);
+        }));
+        return;
+      }
+      if (!root.isConnected) return;
+      const redraw = async () => {
+        root.replaceChildren();
+        await views2.campaigns(root);
+      };
+      const own = campaigns.find((c) => c.campaign_id === flow.campaignId);
+      if (hasCapability2(CAPABILITY2.CREATE_CAMPAIGN) && !own) {
+        const domainSelect = el2("select", { id: "setup-domain" }, [
+          el2("option", { value: "", text: "Choose a verified company domain\u2026" }),
+          ...domains.filter((d) => d.active).map((d) => el2("option", { value: d.domain, text: d.domain }))
+        ]);
+        domainSelect.value = flow.domain || "";
+        const selectDomain = button("Select domain", async () => {
+          if (!domainSelect.value) {
+            error.textContent = "Choose your company domain first.";
+            return;
+          }
+          if (flow.domain !== domainSelect.value) {
+            flow = { domain: domainSelect.value };
+            csvText = "";
+            importPreview = null;
+            emailContent = null;
+          }
+          flow.domain = domainSelect.value;
+          save();
+          await redraw();
+        }, false, true);
+        root.appendChild(card("1. Select domain", [
+          el2("label", { for: "setup-domain", text: "Company domain" }),
+          domainSelect,
+          selectDomain,
+          button("Add or verify a domain", () => navigateTo2("sending")),
+          el2("p", { text: "Choose the verified domain your recipients use. Domain suggestions do not select or authorize a domain." })
+        ]));
+        if (flow.domain) {
+          const matching = roes.filter((r) => activeRoe(r) && (r.target_domains || []).includes(flow.domain));
+          const roe = matching.find((r) => r.roe_id === flow.roeId);
+          const roeChoice = el2("select", { id: "setup-roe" }, [
+            el2("option", { value: "", text: "Choose a signed authorization\u2026" }),
+            ...matching.map((r) => el2("option", { value: r.roe_id, text: `${r.authorizing_party} \u2014 expires ${new Date(r.window_end).toLocaleDateString()}` }))
+          ]);
+          roeChoice.value = flow.roeId || "";
+          const useRoe = button("Use signed RoE", async () => {
+            if (!roeChoice.value) {
+              error.textContent = "Select a signed authorization or sign a new RoE.";
+              return;
+            }
+            if (flow.roeId !== roeChoice.value) {
+              delete flow.rosterId;
+              delete flow.templateId;
+              emailContent = null;
+            }
+            flow.roeId = roeChoice.value;
+            save();
+            await redraw();
+          }, false, true);
+          const sign = button("Sign RoE for selected domain", async () => {
+            const values = await promptDialog2({ title: `Sign RoE for ${flow.domain}`, description: "Confirm the domain owner's authorization for this awareness campaign.", fields: [
+              { name: "confirmed", label: "The domain owner has authorized this simulation", type: "checkbox", required: true },
+              { name: "party", label: "Authorizing organization or person", type: "text", required: true }
+            ], submitLabel: "Sign RoE" });
+            if (!values) return;
+            const start = /* @__PURE__ */ new Date(), end = new Date(start);
+            end.setFullYear(end.getFullYear() + 1);
+            try {
+              const record = await api2("/roe", { method: "POST", body: JSON.stringify({
+                authorizing_party: values.party,
+                terms: `${values.party} authorizes a simulated phishing awareness campaign for ${flow.domain}. Recipients are restricted to this domain. Training is disclosed after interaction. Authorization may be revoked.`,
+                target_domains: [flow.domain],
+                window_start: start.toISOString(),
+                window_end: end.toISOString()
+              }) });
+              flow.roeId = record.roe_id;
+              delete flow.rosterId;
+              save();
+              await redraw();
+              toast2("RoE signed and selected", "success");
+            } catch (e) {
+              fail(error, e);
+            }
+          }, !hasCapability2(CAPABILITY2.SIGN_ROE));
+          root.appendChild(card("2. Sign RoE", [
+            el2("label", { for: "setup-roe", text: "Saved signed authorization" }),
+            roeChoice,
+            useRoe,
+            sign,
+            ...roe ? [
+              el2("p", { class: "policy-banner", role: "status", text: `Per signed RoE, only these domains are approved: ${roe.target_domains.join(", ")}. All others are rejected. This campaign targets ${flow.domain} only.` }),
+              el2("p", { text: `Signed by ${roe.signer}; valid ${new Date(roe.window_start).toLocaleString()} to ${new Date(roe.window_end).toLocaleString()}.` }),
+              el2("details", {}, [el2("summary", { text: "View signed terms" }), el2("p", { text: roe.terms })])
+            ] : []
+          ]));
+          if (roe) {
+            const upload = el2("form", { "aria-label": "Upload and review recipients" });
+            upload.addEventListener("submit", (e) => e.preventDefault());
+            guardUnsavedForm2(upload, "Recipient roster");
+            upload.append(button("Download CSV template", downloadTemplate), el2("p", { text: "The blank file is named recipient-roster-template.csv. Your browser saves it to Downloads, or asks you to choose a folder. Fill in email (required), name and department (optional); save as CSV and upload it here. Names personalize greetings when supplied; full names are not required." }));
+            const file = field(upload, "Completed recipient CSV", "setup-file", { type: "file", accept: ".csv,text/csv" });
+            const text = field(upload, "Or paste the completed CSV", "setup-csv", { rows: "5", maxlength: "524288" });
+            text.value = csvText;
+            const invalidate = () => {
+              importPreview = null;
+              csvText = text.value;
+            };
+            text.addEventListener("input", invalidate);
+            file.addEventListener("change", async () => {
+              if (!file.files[0]) return;
+              if (file.files[0].size > 524288) {
+                error.textContent = "CSV must be no larger than 512 KB.";
+                return;
+              }
+              text.value = await file.files[0].text();
+              invalidate();
+            });
+            const previewNode = el2("div");
+            const importBody = () => ({
+              csv_text: csvText,
+              header_mode: "auto",
+              merge_existing: "skip",
+              roster_name: `Campaign roster ${(/* @__PURE__ */ new Date()).toISOString()}`,
+              roe_id: flow.roeId,
+              target_domain: flow.domain
+            });
+            let body = null;
+            const validate = button("Review uploaded recipients", async (event) => {
+              const btn = event.currentTarget;
+              btn.disabled = true;
+              try {
+                csvText = text.value;
+                body = importBody();
+                importPreview = await api2("/recipients/import/preview", { method: "POST", body: JSON.stringify(body) });
+                const counts = importPreview.counts;
+                previewNode.replaceChildren(
+                  el2("p", { role: "status", text: `Recipients validated against ${flow.domain}, authorized by the selected RoE. New: ${counts.created || 0}; already recorded: ${counts.existing || 0}; rejected: ${(counts.blocked || 0) + (counts.invalid || 0) + (counts.duplicate || 0)}.` }),
+                  ...(importPreview.errors || []).map((r) => el2("p", { text: `Row ${r.row}: ${r.code}` }))
+                );
+                if (importPreview.recipients) previewNode.appendChild(table(["Recipient", "Department"], importPreview.recipients.map((r) => [r.display_name ? `${r.display_name} (${r.masked_mailbox})` : r.masked_mailbox, r.department]), "Validated recipients before confirmation"));
+                previewNode.appendChild(button("Confirm validated recipients", async (event2) => {
+                  const confirm = event2.currentTarget;
+                  confirm.disabled = true;
+                  try {
+                    if (!importPreview) throw new Error("The CSV changed. Review the uploaded recipients again.");
+                    const result = await api2("/recipients/import/apply", { method: "POST", body: JSON.stringify({ ...body, preview_digest: importPreview.preview_digest }) });
+                    if (!result.roster) throw new Error("The server did not save a campaign roster.");
+                    flow.rosterId = result.roster.audience_group_id;
+                    flow.rosterName = result.roster.name;
+                    save();
+                    csvText = "";
+                    importPreview = null;
+                    markFormSaved2(upload);
+                    await redraw();
+                  } catch (e) {
+                    fail(error, e);
+                  } finally {
+                    if (confirm.isConnected) confirm.disabled = false;
+                  }
+                }, !importPreview.can_apply || !(counts.created || counts.existing || counts.updateable), true));
+              } catch (e) {
+                fail(error, e);
+              } finally {
+                if (btn.isConnected) btn.disabled = false;
+              }
+            }, !hasCapability2(CAPABILITY2.MANAGE_RECIPIENTS), true);
+            upload.append(validate, previewNode);
+            markFormSaved2(upload);
+            if (flow.rosterId) {
+              const roster = await boundedCollection2(`/recipients?roster_id=${encodeURIComponent(flow.rosterId)}`, "items");
+              const confirmed = card("3. Recipients confirmed", [
+                el2("p", { role: "status", text: `${roster.length} recipients from this upload only. The whole roster will be sent; no individual selection is required.` }),
+                table(["Recipient", "Department", "Status"], roster.map((r) => [r.display_name ? `${r.display_name} (${r.masked_mailbox})` : r.masked_mailbox || r.recipient_id, r.department, r.status]), "Confirmed campaign roster"),
+                el2("details", {}, [el2("summary", { text: "Replace uploaded roster" }), upload])
+              ]);
+              root.appendChild(confirmed);
+            } else root.appendChild(card("3. Upload, review and confirm recipients", [upload]));
+            if (flow.rosterId) {
+              const choices = templates.filter((t) => t.approval_state === "approved");
+              const library = el2("select", { id: "setup-library" }, [
+                el2("option", { value: "", text: "Choose an email from the library\u2026" }),
+                ...choices.map((t) => el2("option", { value: t.template_version_id, text: t.subject }))
+              ]);
+              library.value = flow.sourceTemplateId || "";
+              root.appendChild(card("4. Select an email from the library", [
+                el2("p", { text: "The library provides a starting example. Select one to load its wording, then edit the fake email for your campaign and review it before approval." }),
+                el2("label", { for: "setup-library", text: "Library email" }),
+                library,
+                button("Use this email as a starting point", async () => {
+                  if (!library.value) {
+                    error.textContent = "Choose a library email first.";
+                    return;
+                  }
+                  try {
+                    emailContent = await api2(`/templates/${library.value}/preview`);
+                    flow.sourceTemplateId = library.value;
+                    delete flow.templateId;
+                    save();
+                    await redraw();
+                  } catch (e) {
+                    fail(error, e);
+                  }
+                }, false, true)
+              ]));
+              if (flow.sourceTemplateId) {
+                if (!emailContent) emailContent = await api2(`/templates/${flow.templateId || flow.sourceTemplateId}/preview`);
+                const edit = el2("form", { "aria-label": "Create campaign email" });
+                edit.addEventListener("submit", (e) => e.preventDefault());
+                guardUnsavedForm2(edit, "Campaign email");
+                const subject = field(edit, "Email subject", "setup-subject", { required: "", maxlength: "998", value: emailContent.editable_subject || emailContent.subject });
+                const wording = field(edit, "Email body", "setup-body", { rows: "9", required: "", maxlength: "200000" });
+                wording.value = emailContent.editable_plain_text || emailContent.plain_text;
+                edit.appendChild(el2("p", { text: "The training link is inserted safely. Supplied recipient names are used for greetings; empty names use a neutral greeting." }));
+                const previewEmail = button("Create fake email for review", async (event) => {
+                  const btn = event.currentTarget;
+                  if (!edit.reportValidity()) return;
+                  btn.disabled = true;
+                  try {
+                    const draft = await api2(`/templates/${flow.sourceTemplateId}/clone`, { method: "POST", body: JSON.stringify({
+                      reason: "Campaign email prepared for operator review",
+                      subject: subject.value,
+                      plain_text: wording.value
+                    }) });
+                    flow.templateId = draft.template_version_id;
+                    delete flow.emailApproved;
+                    save();
+                    markFormSaved2(edit);
+                    emailContent = await api2(`/templates/${flow.templateId}/preview`);
+                    await redraw();
+                  } catch (e) {
+                    fail(error, e);
+                  } finally {
+                    if (btn.isConnected) btn.disabled = false;
+                  }
+                }, false, true);
+                subject.addEventListener("input", () => {
+                  delete flow.templateId;
+                  delete flow.emailApproved;
+                  save();
+                });
+                wording.addEventListener("input", () => {
+                  delete flow.templateId;
+                  delete flow.emailApproved;
+                  save();
+                });
+                edit.appendChild(previewEmail);
+                markFormSaved2(edit);
+                root.appendChild(card("5. Create fake email for review", [edit]));
+                if (flow.templateId) {
+                  const preview = card("Email preview", [
+                    el2("h4", { text: emailContent.subject }),
+                    el2("pre", { class: "email-preview", text: emailContent.plain_text }),
+                    el2("p", { text: "Review the subject, wording and sender below. Nothing has been sent." })
+                  ]);
+                  root.appendChild(preview);
+                  const setup = el2("form", { "aria-label": "Approve campaign" });
+                  setup.addEventListener("submit", (e) => e.preventDefault());
+                  guardUnsavedForm2(setup, "Campaign details");
+                  const title = field(setup, "Campaign name", "setup-title", { required: "", maxlength: "255", value: "" });
+                  const sender = field(setup, "From email", "setup-sender", { required: "", type: "email", value: `security-awareness@${flow.domain}` });
+                  const persona = field(setup, "From display name", "setup-persona", { maxlength: "255", value: "Security Awareness" });
+                  const advanced = el2("details", {}, [el2("summary", { text: "Delivery window and after-click training page" })]);
+                  setup.appendChild(advanced);
+                  const values = (onboarding?.steps || []).flatMap((s) => s.fields || []);
+                  let trainingHost = "";
+                  try {
+                    trainingHost = new URL(values.find((f) => f.key.endsWith("_TRAINING_BASE_URL") && f.value)?.value || "").hostname;
+                  } catch {
+                  }
+                  const training = field(advanced, "Training hostname", "setup-training", { required: "", value: trainingHost });
+                  const lesson = el2("select", { id: "setup-lesson", required: "" }, lessons.map((l) => el2("option", { value: l.training_resource_id, text: l.title })));
+                  advanced.append(el2("label", { for: "setup-lesson", text: "Training lesson after a click" }), lesson);
+                  const localTime = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
+                  const begin = field(advanced, "Send from (local time)", "setup-start", { required: "", type: "datetime-local", value: localTime(/* @__PURE__ */ new Date()) });
+                  const end = field(advanced, "Stop sending after (local time)", "setup-end", { required: "", type: "datetime-local", value: localTime(new Date(Date.now() + 864e5)) });
+                  const approve = button(sessionInfo2()?.approvalPolicy === "enforce" ? "Request campaign approval" : "Approve campaign", async (event) => {
+                    const btn = event.currentTarget;
+                    const invalid = setup.querySelector(":invalid");
+                    if (invalid) {
+                      advanced.open = true;
+                      invalid.reportValidity();
+                      invalid.focus();
+                      return;
+                    }
+                    const approved = await confirmDialog2({
+                      title: "Approve this campaign?",
+                      message: `Send only the confirmed uploaded roster at ${flow.domain}, using this reviewed email. Nothing is sent until you press Send.`,
+                      detail: { "Campaign": title.value, "Email": subject.value, "From": `${persona.value} <${sender.value}>`, "Recipient roster": flow.rosterName, "Authorized domain": flow.domain },
+                      confirmLabel: sessionInfo2()?.approvalPolicy === "enforce" ? "Request approval" : "Approve"
+                    });
+                    if (!approved) return;
+                    btn.disabled = true;
+                    try {
+                      const pattern = choices.find((t) => t.template_version_id === flow.sourceTemplateId)?.pattern_id || patterns.find((p) => p.approval_state === "approved")?.campaign_pattern_id;
+                      if (!pattern) throw new Error("No approved campaign pattern is available. Open Patterns to approve one.");
+                      if (emailContent.approval_state !== "approved") await api2(`/templates/${flow.templateId}/decision`, { method: "POST", body: JSON.stringify({ decision: "approved", rationale: "Reviewed campaign email and safe preview" }) });
+                      const roster = await boundedCollection2(`/recipients?roster_id=${encodeURIComponent(flow.rosterId)}`, "items");
+                      const created = await api2("/campaigns", { method: "POST", body: JSON.stringify({
+                        delivery_mode: "reviewed_direct",
+                        pattern_id: pattern,
+                        title: title.value,
+                        sender_mailbox: sender.value,
+                        sender_display_name: persona.value,
+                        training_domain: training.value,
+                        schedule_start: new Date(Math.max(new Date(begin.value).getTime(), Date.parse(roe.window_start))).toISOString(),
+                        schedule_end: new Date(end.value).toISOString(),
+                        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                        max_recipients: roster.length,
+                        template_version_id: flow.templateId,
+                        training_resource_id: lesson.value
+                      }) });
+                      flow.campaignId = created.campaign_id;
+                      save();
+                      markFormSaved2(setup);
+                      await api2(`/campaigns/${flow.campaignId}/audience`, { method: "PUT", body: JSON.stringify({ group_ids: [flow.rosterId], roe_id: flow.roeId }) });
+                      const audience = await api2(`/campaigns/${flow.campaignId}/audience/preview`);
+                      if (audience.included_count !== roster.length || audience.excluded_count) throw new Error("The roster changed or contains newly rejected recipients. Review the current list before approval.");
+                      await api2(`/campaigns/${flow.campaignId}/confirm`, { method: "POST", body: JSON.stringify({ preview_hash: audience.preview_hash }) });
+                      await redraw();
+                      toast2("Campaign reviewed. Use Send when ready.", "success");
+                    } catch (e) {
+                      fail(error, e);
+                    } finally {
+                      if (btn.isConnected) btn.disabled = false;
+                    }
+                  }, !hasCapability2(CAPABILITY2.APPROVE_TEMPLATE) || !lessons.length, true);
+                  setup.append(approve);
+                  markFormSaved2(setup);
+                  root.appendChild(card("6. Approve", [setup]));
+                }
+              }
+            }
+          }
+        }
+      }
+      root.appendChild(card("Campaigns and results", []));
+      for (const c of campaigns) {
+        const section = card(c.title, [el2("p", { role: "status", text: `Status: ${c.state}. ${c.delivery_mode === "reviewed_direct" ? "Approved whole-roster send." : "Saved campaign from the previous workflow."}` })]);
+        const outcomes = el2("div");
+        if (c.can_send === true) section.appendChild(button("Send", async (event) => {
+          const btn = event.currentTarget;
+          const ok = await confirmDialog2({ title: `Send ${c.title}?`, message: "Send the approved email to the complete confirmed roster. The server rechecks the signed RoE and current recipients before queueing.", confirmLabel: "Send" });
+          if (!ok) return;
+          btn.disabled = true;
+          try {
+            const sent = await api2(`/campaigns/${c.campaign_id}/send`, { method: "POST" });
+            flow.monitorId = c.campaign_id;
+            save();
+            await redraw();
+            toast2(`${sent.queued} recipient emails queued. Monitor delivery and clicks in Dashboard.`, "success");
+          } catch (e) {
+            fail(error, e);
+          } finally {
+            if (btn.isConnected) btn.disabled = false;
+          }
+        }, false, true));
+        if (hasCapability2(CAPABILITY2.CREATE_CAMPAIGN) && (c.state === "draft" || c.delivery_mode !== "reviewed_direct" && c.state === "approved" && ["reviewed", "unreviewed"].includes(c.launch_gate?.state))) section.appendChild(button("Review current recipients and approve", async (event) => {
+          const btn = event.currentTarget;
+          try {
+            const preview = await api2(`/campaigns/${c.campaign_id}/audience/preview`);
+            const email = await api2(`/templates/${c.current_template_id}/preview`);
+            const { dlg, form } = dialogShell2("Review current recipients", `${preview.included_count} included; ${preview.excluded_count} rejected. Nothing is sent by approval.`);
+            const authorization = roes.find((r) => r.roe_id === preview.roe_id);
+            form.append(
+              el2("p", { text: `Approved domains: ${(authorization?.target_domains || []).join(", ") || "No active authorization"}. All other domains are rejected.` }),
+              el2("h4", { text: email.subject }),
+              el2("pre", { class: "email-preview", text: email.plain_text })
+            );
+            form.appendChild(table(["Recipient", "Department"], preview.recipients.map((r) => [r.mailbox || r.recipient_id, r.department]), "Recipients for approval"));
+            form.appendChild(button("Approve reviewed list", async (event2) => {
+              const approveBtn = event2.currentTarget;
+              approveBtn.disabled = true;
+              try {
+                await api2(`/campaigns/${c.campaign_id}/confirm`, { method: "POST", body: JSON.stringify({ preview_hash: preview.preview_hash, use_simple_flow: c.delivery_mode !== "reviewed_direct" }) });
+                dlg.close();
+                await redraw();
+              } catch (e) {
+                toast2(e.message, "error");
+              } finally {
+                if (approveBtn.isConnected) approveBtn.disabled = false;
+              }
+            }, !preview.included_count, true));
+            form.appendChild(button("Cancel", () => dlg.close()));
+            openDialog2(dlg);
+          } catch (e) {
+            fail(error, e);
+          } finally {
+            if (btn.isConnected) btn.disabled = false;
+          }
+        }));
+        for (const [flag, type, label] of [["can_approve_security", "security", "Approve security review"], ["can_approve_privacy", "privacy", "Approve privacy review"]]) {
+          if (c[flag]) section.appendChild(button(label, async () => {
+            const ok = await confirmDialog2({ title: label, message: `Approve the reviewed email and roster for ${c.title}?`, confirmLabel: "Approve" });
+            if (!ok) return;
+            try {
+              await api2(`/campaigns/${c.campaign_id}/approvals/${type}`, { method: "POST", body: JSON.stringify({ decision: "approved", rationale: "Reviewed campaign email and recipients" }) });
+              await redraw();
+            } catch (e) {
+              fail(error, e);
+            }
+          }));
+        }
+        if (hasCapability2(CAPABILITY2.VIEW_NAMED_RESULTS)) section.appendChild(button("Monitor recipient results", () => monitor(c, outcomes)));
+        section.appendChild(button("Open dashboard", () => {
+          flow.monitorId = c.campaign_id;
+          save();
+          navigateTo2("dashboard");
+        }));
+        section.appendChild(button("Report and exports", () => showCampaignReport(c)));
+        if (c.can_recall) section.appendChild(button("Stop this campaign", async () => {
+          if (!await confirmDialog2({ title: `Stop ${c.title}?`, message: "Stop future deliveries and disable this campaign's tracking links.", confirmLabel: "Stop campaign", danger: true })) return;
+          try {
+            await api2(`/campaigns/${c.campaign_id}/recall`, { method: "POST" });
+            await redraw();
+          } catch (e) {
+            fail(error, e);
+          }
+        }));
+        section.appendChild(outcomes);
+        root.appendChild(section);
+      }
+      if (flow.campaignId) root.appendChild(button("Start a new campaign", async () => {
+        flow = {};
+        csvText = "";
+        importPreview = null;
+        emailContent = null;
+        save();
+        await redraw();
+      }));
+    };
+  }
+
   // src/console-js/chart.js
   function ledgerTrendChart(report) {
     const buckets = report.buckets || [];
@@ -5095,7 +5667,11 @@
       el("div", { class: "card-head" }, [
         el("h3", { text: "Verified domains" }),
         el("div", { class: "btn-row" }, [
-          el("button", { class: "btn", text: "Lookalike generator", onclick: lookalike }),
+          el("details", {}, [
+            el("summary", { text: "Optional: domain suggestions" }),
+            el("p", { text: "Suggest domains resembling another domain. Suggestions do not select, verify or authorize a domain for this campaign." }),
+            el("button", { class: "btn", text: "Lookalike generator", onclick: lookalike })
+          ]),
           el("button", { class: "btn primary", text: "Onboard a sending domain", onclick: onboard })
         ])
       ]),
@@ -5874,6 +6450,7 @@
         text: "Select for current campaign",
         onclick: async () => {
           selectedLibraryTemplateId = selectableTemplate.template_version_id;
+          window.dispatchEvent(new CustomEvent("kp-select-library-template", { detail: { templateId: selectedLibraryTemplateId } }));
           dlg.close();
           await navigateTo("campaigns");
         }
@@ -6025,6 +6602,7 @@
                 "aria-label": `Select for current campaign: ${template.subject || "untitled template"}`,
                 onclick: async () => {
                   selectedLibraryTemplateId = template.template_version_id;
+                  window.dispatchEvent(new CustomEvent("kp-select-library-template", { detail: { templateId: selectedLibraryTemplateId } }));
                   await navigateTo("campaigns");
                 }
               })] : [],
@@ -9550,7 +10128,7 @@
       if (hasCapability(CAPABILITY.MANAGE_ROLES)) {
         try {
           const onboarding = await api("/console/onboarding");
-          if (!onboarding.complete) location.hash = "getstarted";
+          if (!location.hash) location.hash = "campaigns";
         } catch (e) {
           toast(`Unable to check setup status: ${e.message}`, "error");
         }
@@ -9584,6 +10162,25 @@
       render();
     }, REFRESH_MS);
   }
+  installSimpleCampaigns({
+    views,
+    api,
+    el,
+    boundedCollection,
+    hasCapability,
+    CAPABILITY,
+    sessionInfo,
+    toast,
+    navigateTo,
+    dialogShell,
+    openDialog,
+    confirmDialog,
+    promptDialog,
+    guardUnsavedForm,
+    markFormSaved,
+    downloadApiCsv,
+    showCampaignReport: openCampaignAnalytics
+  });
   window.addEventListener("hashchange", render);
   window.addEventListener("beforeunload", (event) => {
     if (!currentUnsavedForm()) return;

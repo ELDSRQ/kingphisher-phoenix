@@ -60,12 +60,15 @@ These rules apply to every agent working in this repository.
   full-suite, exact-final-image, native AMD64/registry, browser/WCAG,
   cloud/provider, recovery, and human-acceptance gates are proven. External
   restore/install verification is necessary evidence, not production approval.
-- Campaign launch review is immutable and evidence-bound. Scheduling queues
-  only the exact server-designated test-account cohort from that review. Full
-  publication is a separate action and requires current provider/config-bound
-  canary evidence; ACS evidence requires authenticated delivered receipts.
-  Never restore direct full-audience preparation, ad-hoc test-send bypasses, or
-  operator-asserted canary success.
+- Campaign launch review binds the exact signed RoE, validated uploaded roster,
+  reviewed email and training content. The user's 2026-10-09 instruction makes
+  the primary operator flow Select domain → Sign RoE → Upload/review/confirm
+  recipients → Choose/edit email → Approve → Send → Monitor. New campaigns use
+  `reviewed_direct`; no test-account designation, canary, manual freeze or launch
+  lock is required. Workers must revalidate that exact review, recipient scope,
+  live authorization, approval policy and provider configuration before sending.
+  Preserve existing `canary` campaigns and their evidence without reinterpretation.
+  Never manufacture canary success or treat provider acceptance as confirmed delivery.
 - A uniquely named disposable database or container created during the current
   task may be removed after its result is recorded, but it must never share a
   name or volume with the normal development stack.

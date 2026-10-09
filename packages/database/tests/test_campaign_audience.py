@@ -400,3 +400,58 @@ def test_concurrent_prepare_serializes_to_one_assignment() -> None:
         assert audience is not None and audience.frozen_at is not None
     finally:
         verify.close()
+
+
+@requires_db
+def test_reviewed_direct_launch_uses_all_ordinary_recipients_without_canary_rows() -> None:
+    from kp_database.campaign_service import bind_campaign_launch_review, campaign_launch_gate_error
+    from kp_database.models import CampaignCanaryRecipient, TemplateVersion
+
+    _setup()
+    session = _session()
+    campaign = _campaign(session)
+    campaign.delivery_mode = "reviewed_direct"
+    first = _recipient(session, "ordinary-first@example.com")
+    second = _recipient(session, "ordinary-second@example.com")
+    assert not first.is_test_account and not second.is_test_account
+    configure_campaign_audience(
+        session, campaign, AudienceDefinition(include_recipient_ids=(first.recipient_id, second.recipient_id))
+    )
+    preview = preview_campaign_audience(
+        session,
+        campaign,
+        allowed_domains=frozenset({"example.com"}),
+        roe_options=[(uuid.UUID(int=1), frozenset({"example.com"}))],
+    )
+    audience = freeze_campaign_audience(session, campaign, preview, expected_preview_hash=preview.preview_hash)
+    template = TemplateVersion(
+        template_version_id=uuid.uuid4(),
+        version=1,
+        generator_version="test",
+        prompt_template_version="test",
+        model_id="test",
+        input_hash="a" * 64,
+        subject="Reviewed direct email",
+        plain_text="Continue: {{ tracking.training_url }}",
+        safe_html=None,
+        approval_state=dm.TemplateApprovalState.APPROVED,
+    )
+    session.add(template)
+    session.flush()
+    campaign.current_template_id = template.template_version_id
+    gate = bind_campaign_launch_review(session, campaign, template)
+    assert (
+        session.scalar(
+            select(CampaignCanaryRecipient).where(CampaignCanaryRecipient.campaign_id == campaign.campaign_id)
+        )
+        is None
+    )
+    assert campaign_launch_gate_error(campaign, audience, template, gate) is None
+    prepared = prepare_campaign(
+        session, campaign, tracking_base_url="https://track.example.com", token_hmac_key=TOKEN_KEY
+    )
+    assert len(prepared) == 2
+    assert gate.canary_evidence_hash is None and gate.canary_succeeded_at is None
+    campaign.delivery_mode = "canary"
+    assert campaign_launch_gate_error(campaign, audience, template, gate) is not None
+    session.close()

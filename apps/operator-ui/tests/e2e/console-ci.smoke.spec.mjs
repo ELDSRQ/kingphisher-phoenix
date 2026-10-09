@@ -8,10 +8,12 @@ async function installHumanFlowFixture(page) {
   const id = (suffix) => `30000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
   const rosterId = id(1), templateId = id(2), patternId = id(3), lessonId = id(4), campaignId = id(5), roeId = id(6);
   const recipients = [
-    { recipient_id: id(10), display_name: "Erik", masked_mailbox: "c***@example.com", department: "Trial", status: "active", is_test_account: true },
+    { recipient_id: id(10), display_name: "Erik", masked_mailbox: "c***@example.com", department: "Trial", status: "active", is_test_account: false },
     { recipient_id: id(11), display_name: "", masked_mailbox: "p***@example.com", department: "Trial", status: "active", is_test_account: false },
     { recipient_id: id(12), display_name: "Outside", masked_mailbox: "o***@unauthorized.example", department: "Trial", status: "active", is_test_account: false },
   ];
+  const approvedRecipients = recipients.slice(0, 2);
+  const draftId = id(20);
   const pastRecipient = { ...recipients[1], recipient_id: id(90), display_name: "Past import" };
   const state = { rosterSaved: false, campaign: null, writes: [], noTestAccount: false, failFreeze: false, failTemplates: false, throttleSchedule: false, setupIncomplete: false };
   const roe = { roe_id: roeId, authorizing_party: "Synthetic company", signer: "Fixture operator", window_start: "2020-01-01T00:00:00Z", window_end: "2050-12-31T00:00:00Z", target_domains: ["example.com"], terms: "Synthetic exercise authorization", revoked_at: null };
@@ -32,8 +34,9 @@ async function installHumanFlowFixture(page) {
     can_configure_audience: state.campaign.state === "draft", can_configure_training: state.campaign.state === "draft",
     can_submit: state.campaign.state === "draft" && state.campaign.audience_frozen,
     can_approve_security: false, can_approve_privacy: false,
-    can_schedule: state.campaign.launch_gate.state === "reviewed",
-    can_publish: state.campaign.launch_gate.state === "canary_succeeded",
+    can_send: state.campaign.state === "approved",
+    can_schedule: false,
+    can_publish: false,
     can_test_send: false, can_proof_send: false, can_recall: false,
   });
   await page.route("**/api/v1/**", async (route) => {
@@ -43,21 +46,30 @@ async function installHumanFlowFixture(page) {
     if (path === "/console/onboarding") return route.fulfill({ json: { ...data[path], complete: !state.setupIncomplete } });
     if (path === "/audience-groups") return route.fulfill({ json: { groups: state.rosterSaved ? [{ audience_group_id: rosterId, name: "Human trial roster", member_count: 3, recipient_ids: recipients.map((r) => r.recipient_id), created_at: "2026-10-09T00:00:00Z" }] : [] } });
     if (path === "/recipients") {
-      const rows = url.searchParams.get("roster_id") === rosterId ? recipients : [pastRecipient, ...recipients];
+      const rows = url.searchParams.get("roster_id") === rosterId ? approvedRecipients : [pastRecipient, ...recipients];
       const limit = Number(url.searchParams.get("limit") || 100), offset = Number(url.searchParams.get("offset") || 0);
       return route.fulfill({ json: { items: rows.slice(offset, offset + limit), total: rows.length, limit, offset, truncated: offset + limit < rows.length } });
     }
     if (path === "/recipients/import/preview") return route.fulfill({ json: {
-      preview_digest: "synthetic-preview-digest", input_rows: 3, header_detected: true, header_mode: "auto",
+      preview_digest: "a".repeat(64), input_rows: 3, header_detected: true, header_mode: "auto",
       columns: [{ index: 0, label: "email" }, { index: 1, label: "name" }, { index: 2, label: "department" }], mapping: { mailbox: 0, display_name: 1, department: 2 },
-      counts: { created: 3, existing: 0, updateable: 0, blocked: 0, invalid: 0, duplicate: 0 }, can_apply: true, errors: [],
+      counts: { created: 2, existing: 0, updateable: 0, blocked: 1, invalid: 0, duplicate: 0 }, can_apply: true, errors: [{ row: 4, code: "recipient_domain_not_allowed" }], recipients: approvedRecipients,
       roe_coverage: { checked: true, active_roe_domains: ["example.com"], uncovered: 1, uncovered_domains: ["unauthorized.example"] },
     } });
     if (path === "/recipients/import/apply") {
       state.writes.push({ path, body: request.postDataJSON() }); state.rosterSaved = true;
-      return route.fulfill({ json: { created: 3, roster: { audience_group_id: rosterId, name: "Human trial roster", member_count: 3 } } });
+      return route.fulfill({ json: { created: 3, roster: { audience_group_id: rosterId, name: "Human trial roster", member_count: 2 } } });
     }
-    if (path === `/templates/${templateId}/preview`) return route.fulfill({ json: { subject: "Approved human trial email", plain_text: "Dear sample recipient, this is a safe fixture preview." } });
+    if ([`/templates/${templateId}/preview`, `/templates/${draftId}/preview`].includes(path)) return route.fulfill({ json: {
+      template_version_id: path.includes(draftId) ? draftId : templateId, approval_state: path.includes(draftId) ? "draft" : "approved",
+      subject: "Human trial email", plain_text: "Dear sample recipient, review your request.",
+      editable_subject: "Human trial email", editable_plain_text: "Review your request. Continue: {{ tracking.training_url }}",
+    } });
+    if (path === `/templates/${templateId}/clone`) {
+      state.writes.push({ path, body: request.postDataJSON() });
+      return route.fulfill({ status: 201, json: { template_version_id: draftId } });
+    }
+    if (path === `/templates/${draftId}/decision`) { state.writes.push({ path }); return route.fulfill({ json: { approval_state: "approved" } }); }
     if (path === "/campaigns" && method === "GET") return route.fulfill({ json: state.campaign ? [{ ...state.campaign, ...campaignFlags() }] : [] });
     if (path === "/campaigns" && method === "POST") {
       state.writes.push({ path, body: request.postDataJSON() });
@@ -68,123 +80,91 @@ async function installHumanFlowFixture(page) {
       state.writes.push({ path, body: request.postDataJSON() }); return route.fulfill({ json: {} });
     }
     if (path === `/campaigns/${campaignId}/audience/preview`) return route.fulfill({ json: {
-      preview_hash: "exact-server-preview-hash", selected_count: 3, included_count: 2, excluded_count: 1, excluded_counts: { recipient_domain_not_authorized: 1 }, roe_id: roeId, over_limit: false,
-      test_account_count: state.noTestAccount ? 0 : 1,
-      recipients: recipients.slice(0, 2).map((r) => ({ ...r, mailbox: r.masked_mailbox, is_test_account: state.noTestAccount ? false : r.is_test_account })),
+      preview_hash: "b".repeat(64), selected_count: 2, included_count: 2, excluded_count: 0, excluded_counts: {}, roe_id: roeId,
+      test_account_count: 0, recipients: approvedRecipients.map((r) => ({ ...r, mailbox: r.masked_mailbox })),
     } });
-    if (path === `/campaigns/${campaignId}/audience/freeze`) {
+    if (path === `/campaigns/${campaignId}/confirm`) {
       state.writes.push({ path, body: request.postDataJSON() });
-      if (state.failFreeze) return route.fulfill({ status: 409, json: { detail: "recipient roster changed; preview again" } });
-      state.campaign.audience_frozen = true; state.campaign.roe_bound = true;
-      return route.fulfill({ json: { recipient_count: 2 } });
-    }
-    if (path === `/campaigns/${campaignId}/submit`) {
-      state.writes.push({ path }); state.campaign.state = "approved"; state.campaign.launch_gate.state = "reviewed";
+      if (state.failFreeze) return route.fulfill({ status: 409, json: { detail: "recipient list changed; review again" } });
+      state.campaign.state = "approved"; state.campaign.audience_frozen = true; state.campaign.launch_gate.state = "reviewed";
       return route.fulfill({ json: { state: "approved" } });
     }
-    if (path === `/campaigns/${campaignId}/schedule`) {
+    if (path === `/campaigns/${campaignId}/send`) {
+      state.sendAttempts = (state.sendAttempts || 0) + 1;
       if (state.throttleSchedule) return route.fulfill({ status: 429, headers: { "Retry-After": "1" }, json: { detail: "Too many requests" } });
-      state.writes.push({ path }); state.campaign.state = "scheduled"; state.campaign.launch_gate.state = "canary_queued";
-      return route.fulfill({ json: { queued: 1 } });
+      state.writes.push({ path }); state.campaign.state = "scheduled"; state.campaign.launch_gate.state = "direct_published";
+      return route.fulfill({ json: { queued: 2 } });
     }
-    if (path === `/campaigns/${campaignId}/publish`) {
-      state.writes.push({ path }); state.campaign.launch_gate.state = "full_published";
-      return route.fulfill({ json: { queued: 1 } });
-    }
+    if (path === `/campaigns/${campaignId}/recipients`) return route.fulfill({ json: { items: approvedRecipients.map((r, i) => ({ ...r, send_state: "accepted", clicked: i === 0, confirmed_interaction: false, reported: false, training_state: "assigned" })) } });
     if (Object.hasOwn(data, path)) return route.fulfill({ json: data[path] });
     await route.continue();
   });
   return { state, rosterId, campaignId };
 }
 
-test("human flow: downloadable CSV, exact saved roster, email selection in preview, one recipient confirmation and observable sends", async ({ page }, testInfo) => {
-  const { state, rosterId, campaignId } = await installHumanFlowFixture(page);
-  const errors = []; page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto("/console/#sending");
-  await page.locator("#console-password").fill(FIXTURE_PASSWORD);
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await page.getByRole("button", { name: "View authorization for example.com", exact: true }).click();
-  const authorization = page.getByRole("dialog", { name: "Authorization for example.com", exact: true });
-  await expect(authorization).toContainText("Synthetic company"); await expect(authorization).toContainText("Status: Active");
-  await authorization.getByRole("button", { name: "Close", exact: true }).click();
-  await page.getByRole("button", { name: "Continue to recipient roster", exact: true }).click();
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download CSV template", exact: true }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("recipient-roster-template.csv");
-  await download.saveAs(testInfo.outputPath("recipient-roster-template.csv"));
-  expect(await readFile(await download.path(), "utf8")).toBe("\uFEFFemail,name,department\r\n");
-  await expect(page.getByText("Approved recipient domains: ", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Collect employee-reported phishing", exact: true })).not.toBeVisible();
-  await page.getByLabel("Save this upload as a named roster", { exact: true }).fill("Human trial roster");
-  await page.getByLabel("Choose a CSV file", { exact: true }).setInputFiles({ name: "roster.csv", mimeType: "text/csv", buffer: Buffer.from("email,name,department\ncanary@example.com,Erik,Trial\nparticipant@example.com,,Trial\noutside@unauthorized.example,Outside,Trial\n") });
-  await page.getByRole("button", { name: "Validate roster", exact: true }).click();
-  await expect(page.getByText(/1 recipient will import but cannot be sent to/)).toBeVisible();
-  await page.getByRole("button", { name: "Confirm validated roster", exact: true }).click();
-  await page.getByRole("dialog", { name: "Confirm this validated recipient roster?", exact: true }).getByRole("button", { name: "Confirm roster", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Review saved recipients", exact: true }).click();
-  await expect(page.getByLabel("Viewing recipient roster", { exact: true })).toHaveValue(rosterId);
-  const recipientTable = page.getByRole("table", { name: "Authorized recipient records and test-account designations", exact: true });
-  await expect(recipientTable.locator("tbody tr")).toHaveCount(3); await expect(recipientTable).not.toContainText("Past import");
-  await expect(recipientTable).toContainText("Rejected for sending: domain not authorized");
-  await page.screenshot({ path: testInfo.outputPath("human-roster.png"), fullPage: true });
-  await page.getByRole("button", { name: "Choose an email for this roster", exact: true }).click();
-  await page.getByRole("button", { name: "Safely preview Approved human trial email", exact: true }).click();
-  await page.getByRole("dialog", { name: "Preview: Approved human trial email", exact: true }).getByRole("button", { name: "Select for current campaign", exact: true }).click();
-  await expect(page.locator("#c-roster")).toHaveValue(rosterId);
-  await page.locator("#c-title").fill("Human workflow fixture");
-  await page.getByRole("button", { name: "Create campaign", exact: true }).click();
-  await page.getByRole("button", { name: "Confirm recipients for Human workflow fixture", exact: true }).click();
-  let confirmation = page.getByRole("dialog", { name: "Confirm recipients: Human workflow fixture", exact: true });
-  await expect(confirmation).toContainText("2 recipients included; 1 excluded");
-  await expect(confirmation.getByRole("table", { name: "Validated campaign recipients", exact: true })).not.toContainText("unauthorized.example");
-  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
-  expect(state.writes.filter((w) => /freeze|submit|schedule|publish/.test(w.path))).toEqual([]);
-  state.noTestAccount = true;
-  await page.getByRole("button", { name: "Confirm recipients for Human workflow fixture", exact: true }).click();
-  confirmation = page.getByRole("dialog", { name: "Confirm recipients: Human workflow fixture", exact: true });
-  await expect(confirmation.getByRole("button", { name: "Confirm recipients", exact: true })).toBeDisabled();
-  await expect(confirmation.getByRole("button", { name: /Designate .* as the test recipient/ }).first()).toBeVisible();
-  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click(); state.noTestAccount = false;
-  await page.getByRole("button", { name: "Confirm recipients for Human workflow fixture", exact: true }).click();
-  await page.getByRole("dialog", { name: "Confirm recipients: Human workflow fixture", exact: true }).getByRole("button", { name: "Confirm recipients", exact: true }).click();
-  await expect(page.getByText("Recipients confirmed. Next: Send test email to the designated test account.", { exact: true })).toBeVisible();
-  const preparation = state.writes.filter((w) => /freeze|submit/.test(w.path));
-  expect(preparation.map((w) => w.path)).toEqual([`/campaigns/${campaignId}/audience/freeze`, `/campaigns/${campaignId}/submit`]);
-  expect(preparation[0].body).toEqual({ preview_hash: "exact-server-preview-hash" });
-  expect(state.writes.find((w) => w.path.endsWith("/audience")).body.group_ids).toEqual([rosterId]);
-  state.failTemplates = true;
-  await page.getByRole("button", { name: "Refresh current view", exact: true }).click();
-  await expect(page.getByText(/Some campaign data could not be loaded.*Wait at least 1 seconds/)).toBeVisible();
-  await expect(page.getByText("That email is no longer approved. Choose another approved template.", { exact: true })).toHaveCount(0);
-  state.failTemplates = false;
-  await page.getByRole("button", { name: "Refresh current view", exact: true }).click();
-  await expect(page.locator("#c-template")).toHaveValue("30000000-0000-4000-8000-000000000002");
-  state.throttleSchedule = true;
-  await page.getByRole("button", { name: "Send the test (canary) for Human workflow fixture", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Send test email", exact: true }).click();
-  await expect(page.getByText(/Too many requests.*Wait at least 1 seconds.*not been automatically retried/)).toBeVisible();
-  expect(state.writes.filter((w) => w.path.endsWith("/schedule"))).toHaveLength(0);
-  expect(state.campaign.launch_gate.state).toBe("reviewed");
-  state.throttleSchedule = false;
-  state.setupIncomplete = true;
-  await page.getByRole("button", { name: "Send the test (canary) for Human workflow fixture", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Send test email", exact: true }).click();
-  await expect(page.getByText(/Test email queued — waiting for delivery confirmation/)).toBeVisible();
-  await expect(page).toHaveURL(/#campaigns$/);
-  await expect(page.locator('fieldset[data-refresh-guard="New campaign draft"]')).toHaveAttribute("data-dirty", "false");
-  await expect(page.getByRole("button", { name: "Send the test (canary) for Human workflow fixture", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Send to everyone (publish full audience) for Human workflow fixture", exact: true })).toHaveCount(0);
-  state.campaign.launch_gate = { state: "canary_succeeded", provider: "smtp", canary_evidence_hash: "synthetic-evidence", canary_expires_at: "2050-01-01T00:00:00Z" };
-  await page.getByRole("button", { name: "Refresh current view", exact: true }).click();
-  await expect(page.getByText("Test email passed. Next: Send campaign to the confirmed recipient list.", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Send to everyone (publish full audience) for Human workflow fixture", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Send campaign", exact: true }).click();
-  await expect(page.getByText("Campaign send started. Open Report to follow delivery and training results.", { exact: true })).toBeVisible();
-  expect(state.writes.filter((w) => w.path.endsWith("/schedule"))).toHaveLength(1);
-  expect(state.writes.filter((w) => w.path.endsWith("/publish"))).toHaveLength(1);
-  expect(errors).toEqual([]);
-});
+for (const width of [1280, 768]) {
+  test(`whole-roster human flow at ${width}px: domain, signed RoE, CSV, edit, approve, send and named results`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const { state, campaignId } = await installHumanFlowFixture(page);
+    state.setupIncomplete = true; // Optional integration setup must not hijack the campaign view.
+    const errors = []; page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto("/console/#campaigns");
+    await page.locator("#console-password").fill(FIXTURE_PASSWORD);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByLabel("Company domain", { exact: true }).selectOption("example.com");
+    await page.getByRole("button", { name: "Select domain", exact: true }).click();
+    await page.getByLabel("Saved signed authorization", { exact: true }).selectOption("30000000-0000-4000-8000-000000000006");
+    await page.getByRole("button", { name: "Use signed RoE", exact: true }).click();
+    await expect(page.getByText(/only these domains are approved: example.com/)).toBeVisible();
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Download CSV template", exact: true }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe("recipient-roster-template.csv");
+    expect(await readFile(await download.path(), "utf8")).toBe("\uFEFFemail,name,department\r\n");
+    await expect(page.getByText(/browser saves it to Downloads/)).toBeVisible();
+    await page.getByLabel("Completed recipient CSV", { exact: true }).setInputFiles({ name: "roster.csv", mimeType: "text/csv", buffer: Buffer.from("email,name,department\nfirst@example.com,Erik,Trial\nparticipant@example.com,,Trial\noutside@unauthorized.example,Outside,Trial\n") });
+    await page.getByRole("button", { name: "Review uploaded recipients", exact: true }).click();
+    const review = page.getByRole("table", { name: "Validated recipients before confirmation", exact: true });
+    await expect(review.locator("tbody tr")).toHaveCount(2);
+    await expect(review).not.toContainText("Outside");
+    await page.getByRole("button", { name: "Confirm validated recipients", exact: true }).click();
+    const roster = page.getByRole("table", { name: "Confirmed campaign roster", exact: true });
+    await expect(roster.locator("tbody tr")).toHaveCount(2);
+    await expect(roster).not.toContainText("Past import");
+    await page.getByLabel("Library email", { exact: true }).selectOption("30000000-0000-4000-8000-000000000002");
+    await page.getByRole("button", { name: "Use this email as a starting point", exact: true }).click();
+    await page.getByLabel("Email subject", { exact: true }).fill("Reviewed human trial email");
+    await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
+    await page.getByLabel("Campaign name", { exact: true }).fill("Streamlined human trial");
+    await expect(page.getByLabel("Training hostname", { exact: true })).toHaveValue("127.0.0.1");
+    await page.getByRole("button", { name: "Approve campaign", exact: true }).click();
+    await page.getByRole("dialog", { name: "Approve this campaign?", exact: true }).getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+    const created = state.writes.find((w) => w.path === "/campaigns").body;
+    expect(created.delivery_mode).toBe("reviewed_direct"); expect(created.max_recipients).toBe(2);
+    expect(state.writes.find((w) => w.path.endsWith("/audience")).body.group_ids).toHaveLength(1);
+    expect(state.writes.find((w) => w.path.endsWith("/confirm")).body.preview_hash).toBe("b".repeat(64));
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(state.sendAttempts || 0).toBe(0);
+    state.throttleSchedule = true;
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: /Wait at least 1 second/ }).first()).toBeVisible();
+    expect(state.sendAttempts).toBe(1);
+    state.throttleSchedule = false;
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Send", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
+    expect(state.writes.filter((w) => w.path === `/campaigns/${campaignId}/send`)).toHaveLength(1);
+    expect(state.writes.some((w) => /freeze|schedule|publish|test-account/.test(w.path))).toBe(false);
+    await page.getByRole("button", { name: "Monitor recipient results", exact: true }).click();
+    await expect(page.getByRole("table", { name: "Campaign recipient results", exact: true }).locator("tbody tr")).toHaveCount(2);
+    await expect(page.getByText(/Replies: unavailable/)).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("reviewed-direct-campaign.png"), fullPage: true });
+    expect(errors).toEqual([]);
+  });
+}
 
 test("password login, status and an audited reversible Settings edit", async ({ page, request, baseURL }, testInfo) => {
   const marker = await request.get("/__smoke__/ready");
@@ -371,58 +351,9 @@ for (const width of [1280, 768]) {
     await expect(page.getByText("Draft saved. Preview it, upload a logo if needed, and approve it in Draft review below.", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Dismiss notification", exact: true }).click();
     await page.getByRole("button", { name: `Select for current campaign: ${subject}`, exact: true }).click();
-    await expect(page.locator("#c-template")).toHaveValue(templateId);
-    await expect(page.locator("#c-pattern")).toBeHidden();
-    await expect(page.locator("#c-training-resource")).toBeHidden();
-    await expect(page.locator("#c-training-resource")).toHaveValue(lessonId);
-    // Training setup is independent of either registered sending domain.
-    // A missing hidden required field otherwise blocks the ordinary Create path.
-    await expect(page.locator("#c-tdomain")).toHaveValue("127.0.0.1");
-    await expect(page.locator("#c-sender")).toHaveValue("");
-    if (width === 768) {
-      const titleField = await page.locator("#c-title").boundingBox();
-      const templateField = await page.locator("#c-template").boundingBox();
-      expect(Math.abs(templateField.x - titleField.x)).toBeLessThanOrEqual(1);
-      expect(Math.abs(templateField.width - titleField.width)).toBeLessThanOrEqual(1);
-      expect(templateField.y).toBeGreaterThan(titleField.y);
-    }
-    await expect(page.locator(".campaign-table thead")).not.toContainText("Training lesson");
-    await expect(page.locator(".campaign-table thead")).toContainText("Next steps");
-    const campaignBox = await page.locator('.table-scroll[aria-label="Campaign table"]').boundingBox();
-    for (const button of await page.locator(".campaign-table").getByRole("button").all()) {
-      const buttonBox = await button.boundingBox();
-      expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(campaignBox.x + campaignBox.width + 1);
-    }
-    await expect(page.getByRole("button", { name: "Review audience for Synthetic campaign with a long title", exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Change after-click page for Synthetic campaign with a long title", exact: true })).toBeVisible();
+    await expect(page.getByLabel("Company domain", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Send test email", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /freeze|lock/i })).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("campaigns.png"), fullPage: true });
-    await page.locator("#c-domain").selectOption("example.com");
-    await expect(page.locator("#c-sender")).toHaveValue("security-awareness@example.com");
-    await page.locator("#c-roster").selectOption(rosterId);
-    await page.locator('nav[aria-label="Operator sections"]').getByRole("button", { name: "Template review", exact: true }).click();
-    await page.getByRole("dialog", { name: "Discard unsaved changes?", exact: true }).getByRole("button", { name: "Discard changes", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Template library & review", exact: true })).toBeVisible();
-    await page.getByRole("button", { name: `Select for current campaign: ${subject}`, exact: true }).click();
-    await expect(page.locator("#c-roster")).toHaveValue(rosterId);
-    await expect(page.locator("#c-template")).toHaveValue(templateId);
-    await page.locator("#c-domain").selectOption("example.com");
-    await expect(page.locator("#c-tdomain")).toHaveValue("127.0.0.1");
-    await page.locator("#c-title").fill("Synthetic roster exercise");
-    await page.getByRole("button", { name: "Create campaign", exact: true }).click();
-    await expect.poll(() => audiencePayload).toBeTruthy();
-    expect(createdPayload.pattern_id).toBe(patternId);
-    expect(createdPayload.template_version_id).toBe(templateId);
-    expect(createdPayload.training_resource_id).toBe(lessonId);
-    expect(createdPayload.training_domain).toBe("127.0.0.1");
-    expect(audiencePayload.group_ids).toEqual([rosterId]);
-    expect(audiencePayload.departments).toEqual([]);
-    expect(audiencePayload.include_recipient_ids).toEqual([]);
-
-    // Missing setup must stay visible rather than inventing training.<mail-domain>.
-    data["/console/onboarding"] = { complete: true, completed: true, steps: [] };
-    data["/sending-domains"] = { domains: [{ domain: "example.com", active: true }] };
-    await page.reload();
-    await expect(page.locator("#c-sender")).toHaveValue("security-awareness@example.com");
-    await expect(page.locator("#c-tdomain")).toHaveValue("");
   });
 }

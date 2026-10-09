@@ -55,7 +55,7 @@ def test_worker_rechecks_gate_before_initial_and_per_assignment_provider_boundar
 def test_worker_requires_phase_manifest_provider_and_evidence_bindings() -> None:
     gate = JOBS[JOBS.index("def _launch_delivery_gate_reason(") : JOBS.index("def _refresh_canary_evidence(")]
     for required in (
-        'phase not in {"canary", "full"}',
+        'phase not in {"canary", "full", "reviewed_direct"}',
         'payload.get("launch_manifest_hash") != gate.review_manifest_hash',
         'payload.get("canary_evidence_hash") != gate.canary_evidence_hash',
         'payload.get("provider_config_hash") != gate.provider_config_hash',

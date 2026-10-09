@@ -56,57 +56,70 @@ locked in.
 
 ## Run your first campaign
 
-1. **Domains & RoE → Verified domains → View authorization** beside your
-   domain. Check the recorded authorizing party, approved recipient domains,
-   authorized dates and active status. DNS verification alone does not grant
-   permission to target recipients. Existing authorization can be reused while
-   it remains valid for the campaign dates; you do not sign it again each time.
-2. **Recipients → Upload a roster → Download CSV template**. If a saved roster
-   is already selected, expand **Upload another roster** below its table first.
-   Populate `email`
-   (required), `name` and `department` (optional), save as CSV, then upload it.
-   Give the roster a distinct name. **Validate roster** reports invalid rows
-   and domain coverage; **Confirm validated roster → Confirm roster** saves it.
-   The saved roster contains only valid people from that file, including people
-   previously imported. Select **Review saved recipients** to inspect it or
-   **Choose an email for this roster** to continue. The **Viewing recipient
-   roster** selector separates each saved roster from all-imports history.
-3. **Template review → Choose an email → Safe preview → Select for current
-   campaign**. The same selection button appears on approved library rows.
-   Working copy describes the message's origin. Clone and Edit create new
-   drafts; use them only to change the message, and approve the copy before
-   selecting it. A full name is not required for AI generation. If the email
-   uses `{{ recipient.first_name }}`, delivery inserts the optional roster name;
-   enter the greeting name you want, for example Erik. A template without a
-   name placeholder does not gain personalization automatically.
-4. **Campaigns → New campaign**. Select the sending domain and uploaded roster,
-   check the email, title and send window, then **Create campaign**. The approved
-   after-click page and recipient-page host are supplied. Optional changes are
-   under After-click content and Advanced delivery settings.
-5. **Campaigns → All campaigns → your campaign row → Confirm recipients**.
-   Review the included list, excluded counts and approved domains. The uploaded
-   roster is already selected; you do not select each person again. If no test
-   recipient is designated, its row offers **Designate test account** before
-   confirmation. **Confirm recipients** records the exact audience and launch
-   review internally, without separate freeze or lock controls in this path.
-   **Edit roster options (optional)** is available only when you want different
-   selectors or exclusions. In two-person mode this confirmation requests
-   security and privacy approval; the creator cannot supply those approvals.
-6. **Send test email**. Confirm the test dialog. The row changes to **Test email
-   queued — waiting for delivery confirmation**, then **Test email passed** when
-   the server has the required provider evidence. Status refreshes every 30
-   seconds. **Send campaign** appears when publication is permitted and sends
-   only the reviewed recipient list, excluding the test cohort already sent.
-7. **Report** on the campaign row shows delivery and training results and offers
-   report CSV and evidence-bundle downloads. **Recall** stops this campaign's
-   queued mail and invalidates its tracking links.
+Open http://127.0.0.1:8600/console/ and sign in. Click **Campaigns** in the left
+navigation. Complete the numbered panels on that page. The primary flow has no
+canary, test-account designation, manual freeze, launch lock, or individual
+recipient selection. The server records and rechecks your reviewed roster.
 
-Recipient validation checks address format, status, exclusions and authorized
-recipient domains. It does not prove a mailbox exists or that a human received
-mail. **Collect employee-reported phishing**, under the collapsed optional
-Microsoft 365 integration panel in Recipients, reads messages employees reported
-as phishing and updates report statistics. It is not recipient validation and
-is not required for a CSV campaign.
+1. **Select domain:** choose your verified company domain in **Company domain**,
+   then click **Select domain**. For the local trial, select `example.com`.
+   **Add or verify a domain** opens DNS verification if yours is missing. The
+   optional lookalike generator only suggests domain names; it does not select,
+   register, verify or authorize a domain.
+2. **Sign RoE:** choose an existing current record under **Saved signed
+   authorization**, then **Use signed RoE**, or click **Sign RoE for selected
+   domain** and record the domain owner's authorization. Read the signed terms,
+   signer, dates and approved-domain notice in this panel. DNS verification alone
+   does not authorize sending. This campaign targets the selected domain only;
+   all other domains in an uploaded roster are rejected.
+3. **Upload, review and confirm recipients:** click **Download CSV template**.
+   The blank file is **recipient-roster-template.csv**, saved by your browser to
+   **Downloads** or the folder you choose. Open it in a spreadsheet editor; keep
+   `email,name,department` as the first row. Add one recipient per row, then save
+   as CSV. Email is required; name and department are optional. Upload through
+   **Completed recipient CSV**, then **Review uploaded recipients**. Inspect
+   the masked recipient table, counts and rejected row numbers. Click **Confirm
+   validated recipients** to accept the valid list. **Recipients confirmed**
+   shows this upload only; past imports are not automatically added. The whole
+   confirmed roster is included without a second individual-selection task.
+4. **Select an email from the library:** choose **Library email**, then **Use
+   this email as a starting point**. The library supplies example wording for
+   the fake campaign email you create next.
+5. **Create fake email for review:** edit **Email subject** and **Email body**,
+   then click **Create fake email for review**. Read **Email preview**. The
+   training link is handled by the server. Optional recipient names personalize
+   greetings; a full name is not required. Editing again creates a newly
+   reviewable copy rather than changing an already approved email.
+6. **Approve:** enter **Campaign name**, review **From email** and **From display
+   name**. The collapsed **Delivery window and after-click training page** holds
+   the configured training hostname, lesson and delivery dates; expand it to
+   inspect or change them. Dates must fit the signed RoE. Click **Approve
+   campaign**, read the confirmation, then **Approve**. This single-operator
+   deployment records your approval immediately. Deployments that enforce
+   independent review still require their authorized reviewers.
+7. **Send:** under **Campaigns and results**, find the campaign by its name.
+   Click **Send**, read the confirmation, then **Send** in the dialog. The
+   button disappears after successful queueing and status becomes scheduled
+   or active. A queue acknowledgement is not confirmed mailbox delivery.
+   A visible error leaves the action available for an explicit retry; requests
+   are not automatically resubmitted.
+8. **Monitor:** click **Open dashboard** on that campaign. **Monitor recipients**
+   selects that campaign and shows delivery state, observed clicks, confirmed
+   interaction, employee reports and training by masked recipient. Use **Refresh
+   recipient results** for fresh data. **Replies are currently unavailable**:
+   reply ingestion has not been built/configured. Employee reports are separate
+   from replies. **Report and exports** opens results and download actions.
+   **Stop this campaign** stops future deliveries and disables its tracking links.
+
+For an unsent campaign created in the earlier workflow, use **Review current
+recipients and approve** on its row. Inspect its saved email, authorized domains
+and current recipient list, then **Approve reviewed list**. This explicitly
+moves that unsent campaign to the simplified flow; sent campaigns retain their
+original history and evidence. Engineering validation does not send your saved
+campaigns.
+
+For a full local evaluation, use the concrete checks and failure cases in
+[D6 human acceptance](D6-HUMAN-ACCEPTANCE-SCRIPT.md#current-trial-simplified-campaign-flow).
 
 ## Send safety
 
