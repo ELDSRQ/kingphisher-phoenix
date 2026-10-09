@@ -1,6 +1,7 @@
 // Production UI/auth/config/status on scratch fixture state. No live deployment.
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import AxeBuilder from "@axe-core/playwright";
 
 const FIXTURE_PASSWORD = "ConsoleSmokeSynthetic2026";
 
@@ -167,6 +168,10 @@ for (const width of [1280, 768]) {
     await page.getByRole("dialog").getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: /Wait at least 1 second/ }).first()).toBeVisible();
     expect(state.sendAttempts).toBe(1);
+    if (width === 1280) {
+      const accessibility = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+      expect(accessibility.violations.filter((v) => ["serious", "critical"].includes(v.impact)).map((v) => v.id)).toEqual([]);
+    }
     state.throttleSchedule = false;
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Send", exact: true }).click();

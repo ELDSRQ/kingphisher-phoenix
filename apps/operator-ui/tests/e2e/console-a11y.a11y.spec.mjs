@@ -23,8 +23,9 @@ import { expect, test } from "@playwright/test";
 // Several real API reads accompany each view. Respect the deployed user
 // limiter during this automated sweep; normal limits stay in force.
 test.beforeEach(async () => {
-  await new Promise((resolve) => setTimeout(resolve, 8_000));
+  await new Promise((resolve) => setTimeout(resolve, 20_000));
 });
+test.setTimeout(60_000);
 
 // Fail only on the impacts that block use. 'minor' and 'moderate' are reported
 // to stdout so they stay visible and can be tightened later, but they do not

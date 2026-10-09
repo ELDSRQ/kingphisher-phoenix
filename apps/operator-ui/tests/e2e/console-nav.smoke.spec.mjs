@@ -15,8 +15,9 @@ import { expect, test } from "@playwright/test";
 // Each fresh login loads several real API collections. Pace the live sweep
 // below the ordinary 120 requests/minute user limit; never relax the server.
 test.beforeEach(async () => {
-  await new Promise((resolve) => setTimeout(resolve, 8_000));
+  await new Promise((resolve) => setTimeout(resolve, 20_000));
 });
+test.setTimeout(60_000);
 
 // The full navigation, from app.js `const NAV`: six "run" items always
 // visible, fourteen "more" items behind a collapsed <details>. Capability-gated
