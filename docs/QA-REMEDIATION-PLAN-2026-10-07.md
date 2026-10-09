@@ -386,3 +386,29 @@ policy change must cover both enforcement paths and its audit/evidence semantics
 changing only button availability would leave the operator blocked at delivery.
 This is the remaining design decision suitable for a separate model review.
 Password rotation remains deferred until the user's completed-build sign-off.
+
+### Live verification findings
+
+Implementation `3527c7c` and plain-language confirmation follow-up `fc7ba16`
+passed all three required CI jobs. `.105` was switched to the preserved feature
+branch at `fc7ba16` and normally restarted. Its served bundle matched SHA-256
+`2c84708300c2787a00d5d88d52cdb3659e1de04262cf5c0362cec57f175281b7`.
+
+The live UI saved two new synthetic recipients, inspected authorization,
+selected an approved email from preview, created campaign
+`b534f3e4-2800-424b-a9c0-9d32536c24bc`, and confirmed its exact roster through
+the single confirmation control. A rapid automated test-send attempt received
+HTTP 429; it never queued mail. Its retained evidence is
+`data/qualification/human-readiness/ui-rehearsal-1a1de79fc45941cabd84a51f84d16921/`.
+An earlier navigation-only helper attempt remains retained separately; initial
+login correctly redirected the incomplete setup session to Get started, so the
+helper needed to click Domains & RoE explicitly.
+
+The request-limit follow-up gives HTTP 429 a bounded Retry-After instruction,
+does not automatically retry mutations, retains the selected email when the
+template collection is unavailable, and prevents detached campaign renders
+from changing current selections. The isolated browser test now proves that a
+throttled test request does not change campaign state or queue a send, and that
+a failed template read does not falsely announce lost approval. All four browser
+checks passed in 10 seconds, plus 26 focused contracts and lint/strict types.
+Live continuation will reuse only the above rehearsal campaign at a slower pace.

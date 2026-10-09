@@ -397,7 +397,9 @@
     }
     if (!resp.ok) {
       const detail = body && (body.detail || body.detail_text || body.message);
-      const error = new Error(detail || `${resp.status} ${resp.statusText}`);
+      const retryHeader = Number(resp.headers.get("Retry-After"));
+      const retrySeconds = Number.isInteger(retryHeader) && retryHeader >= 1 && retryHeader <= 3600 ? retryHeader : 60;
+      const error = new Error(resp.status === 429 ? `Too many requests. Wait at least ${retrySeconds} seconds, then retry. This request has not been automatically retried.` : detail || `${resp.status} ${resp.statusText}`);
       error.status = resp.status;
       error.body = body;
       throw error;
@@ -3111,6 +3113,7 @@
       canSubscribeAlerts ? boundedCollection("/alerts/subscriptions") : Promise.resolve([]),
       canCreateCampaign ? boundedCollection("/training-resources?approval_state=approved") : Promise.resolve([])
     ]);
+    if (!root.isConnected) return;
     const fallback = (index, value) => dependencyResults[index].status === "fulfilled" ? dependencyResults[index].value : value;
     const patternPayload = fallback(0, []);
     const templatePayload = fallback(1, []);
@@ -4207,7 +4210,7 @@
         syncTemplateCategory();
       });
       if (rosterSelect.value) rosterSelect.dispatchEvent(new Event("change"));
-      if (selectedLibraryTemplateId) {
+      if (selectedLibraryTemplateId && templatesLoaded) {
         const choice = document.getElementById("c-template");
         if ([...choice.options].some((option) => option.value === selectedLibraryTemplateId)) {
           choice.value = selectedLibraryTemplateId;
