@@ -1,4 +1,4 @@
-> **Current operational reference:** [October 6 handoff](SESSION-HANDOFF-2026-10-06.md) and [October 7 remediation status](QA-REMEDIATION-PLAN-2026-10-07.md). Dated source counts, deployments and qualification results below are historical; preserve their dates and scope.
+> **Current operational reference:** [October 9 simplified campaign flow](SESSION-HANDOFF-2026-10-09-SIMPLE-FLOW.md) and [October 7 remediation status](QA-REMEDIATION-PLAN-2026-10-07.md). Dated source counts, deployments and qualification results below are historical; preserve their dates and scope.
 
 > **CURRENT STATE (2026-09-20):** `main` is at `5341c35`, CI green, zero open PRs. Azure staging is FULLY DEPLOYED and verified (all Container Apps running, ACS Domain/SPF/DKIM/DKIM2 Verified, 5 private endpoints, network mode `private`), then POWERED DOWN via `scripts/operator/azure-nightly-shutdown.sh`. On-prem B1 boot persistence and DOC-030 are done. Read [`AI_HANDOFF_2026-09-19.md`](../AI_HANDOFF_2026-09-19.md) for the full current state and its six deploy constraints.
 

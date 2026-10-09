@@ -47,8 +47,12 @@ Do not send or modify an existing real campaign merely to test the software.
 5. In **4. Select an email from the library**, choose an approved library example
    and **Use this email as a starting point**. Edit subject/body in **5. Create
    fake email for review**, using a unique subject to find this trial in Mailpit.
+   Keep `[recipient name]` in the greeting to use each uploaded name (or
+   “colleague” when blank), and `[training link]` for the recipient's link.
    Click **Create fake email for review**. Pass: **Email preview** contains the
-   reviewed wording and there is no received message with that subject yet.
+   reviewed wording with a sample greeting, and there is no received message
+   with that subject yet. If you edit again, approval stays disabled until you
+   create an updated preview. A failed preview must not enable approval.
 6. In **6. Approve**, enter the unique **Campaign name** and inspect From address
    and display name. Expand **Delivery window and after-click training page**;
    verify training hostname `127.0.0.1`, an approved completion-required lesson,
