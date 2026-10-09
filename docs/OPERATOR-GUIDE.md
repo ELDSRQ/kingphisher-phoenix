@@ -87,8 +87,9 @@ recipient selection. The server records and rechecks your reviewed roster.
    the fake campaign email you create next.
 5. **Create fake email for review:** edit **Email subject** and **Email body**,
    then click **Create fake email for review**. Read **Email preview**. The
-   training link is handled by the server. Optional recipient names personalize
-   greetings; a full name is not required. Editing again creates a newly
+   `[recipient name]` in the body uses the uploaded name, or “colleague” when
+   blank; the preview uses a sample name. `[training link]` becomes each
+   recipient's training link. A full name is not required. Editing again creates a newly
    reviewable copy rather than changing an already approved email.
 6. **Approve:** enter **Campaign name**, review **From email** and **From display
    name**. The collapsed **Delivery window and after-click training page** holds

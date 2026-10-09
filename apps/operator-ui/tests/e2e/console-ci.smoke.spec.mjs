@@ -142,6 +142,9 @@ for (const width of [1280, 768]) {
     await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
     const created = state.writes.find((w) => w.path === "/campaigns").body;
     expect(created.delivery_mode).toBe("reviewed_direct"); expect(created.max_recipients).toBe(2);
+    const emailCopy = state.writes.find((w) => w.path.endsWith("/clone")).body.plain_text;
+    expect(emailCopy).toContain('{{ recipient.first_name or "colleague" }}');
+    expect(emailCopy).toContain("{{ tracking.training_url }}");
     expect(state.writes.find((w) => w.path.endsWith("/audience")).body.group_ids).toHaveLength(1);
     expect(state.writes.find((w) => w.path.endsWith("/confirm")).body.preview_hash).toBe("b".repeat(64));
     await page.getByRole("button", { name: "Send", exact: true }).click();

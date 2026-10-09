@@ -382,8 +382,11 @@
                 guardUnsavedForm2(edit, "Campaign email");
                 const subject = field(edit, "Email subject", "setup-subject", { required: "", maxlength: "998", value: emailContent.editable_subject || emailContent.subject });
                 const wording = field(edit, "Email body", "setup-body", { rows: "9", required: "", maxlength: "200000" });
-                wording.value = emailContent.editable_plain_text || emailContent.plain_text;
-                edit.appendChild(el2("p", { text: "The training link is inserted safely. Supplied recipient names are used for greetings; empty names use a neutral greeting." }));
+                wording.value = (emailContent.editable_plain_text || emailContent.plain_text).replace(/\{\{\s*recipient\.first_name(?:\s+or\s+["']colleague["'])?\s*\}\}/g, "[recipient name]").replace(/\{\{\s*tracking\.training_url\s*\}\}/g, "[training link]");
+                if (!wording.value.includes("[recipient name]")) wording.value = `Dear [recipient name],
+
+${wording.value}`;
+                edit.appendChild(el2("p", { text: "The preview shows a sample name. [recipient name] uses the uploaded name for each recipient, or \u201Ccolleague\u201D when blank. [training link] becomes that recipient\u2019s training link. Review and edit the greeting with the rest of the email." }));
                 const previewEmail = button("Create fake email for review", async (event) => {
                   const btn = event.currentTarget;
                   if (!edit.reportValidity()) return;
@@ -392,7 +395,7 @@
                     const draft = await api2(`/templates/${flow.sourceTemplateId}/clone`, { method: "POST", body: JSON.stringify({
                       reason: "Campaign email prepared for operator review",
                       subject: subject.value,
-                      plain_text: wording.value
+                      plain_text: wording.value.replaceAll("[recipient name]", '{{ recipient.first_name or "colleague" }}').replaceAll("[training link]", "{{ tracking.training_url }}")
                     }) });
                     flow.templateId = draft.template_version_id;
                     delete flow.emailApproved;
@@ -510,13 +513,13 @@
       for (const c of campaigns) {
         const section = card(c.title, [el2("p", { role: "status", text: `Status: ${c.state}. ${c.delivery_mode === "reviewed_direct" ? "Approved whole-roster send." : "Saved campaign from the previous workflow."}` })]);
         const outcomes = el2("div");
-        if (c.can_send === true) section.appendChild(button("Send", async (event) => {
+        if (c.can_send === true || c.can_publish === true) section.appendChild(button("Send", async (event) => {
           const btn = event.currentTarget;
-          const ok = await confirmDialog2({ title: `Send ${c.title}?`, message: "Send the approved email to the complete confirmed roster. The server rechecks the signed RoE and current recipients before queueing.", confirmLabel: "Send" });
+          const ok = await confirmDialog2({ title: `Send ${c.title}?`, message: c.can_publish === true ? "Send the approved email to the remaining reviewed recipients. People already sent the earlier test email are not sent twice." : "Send the approved email to the complete confirmed roster. The server rechecks the signed RoE and current recipients before queueing.", confirmLabel: "Send" });
           if (!ok) return;
           btn.disabled = true;
           try {
-            const sent = await api2(`/campaigns/${c.campaign_id}/send`, { method: "POST" });
+            const sent = await api2(`/campaigns/${c.campaign_id}/${c.can_publish === true ? "publish" : "send"}`, { method: "POST" });
             flow.monitorId = c.campaign_id;
             save();
             await redraw();

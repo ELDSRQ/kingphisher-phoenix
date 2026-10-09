@@ -214,15 +214,19 @@ export function installSimpleCampaigns(ui) {
               guardUnsavedForm(edit, "Campaign email");
               const subject = field(edit, "Email subject", "setup-subject", { required: "", maxlength: "998", value: emailContent.editable_subject || emailContent.subject });
               const wording = field(edit, "Email body", "setup-body", { rows: "9", required: "", maxlength: "200000" });
-              wording.value = emailContent.editable_plain_text || emailContent.plain_text;
-              edit.appendChild(el("p", { text: "The training link is inserted safely. Supplied recipient names are used for greetings; empty names use a neutral greeting." }));
+              wording.value = (emailContent.editable_plain_text || emailContent.plain_text)
+                .replace(/\{\{\s*recipient\.first_name(?:\s+or\s+["']colleague["'])?\s*\}\}/g, "[recipient name]")
+                .replace(/\{\{\s*tracking\.training_url\s*\}\}/g, "[training link]");
+              if (!wording.value.includes("[recipient name]")) wording.value = `Dear [recipient name],\n\n${wording.value}`;
+              edit.appendChild(el("p", { text: "The preview shows a sample name. [recipient name] uses the uploaded name for each recipient, or “colleague” when blank. [training link] becomes that recipient’s training link. Review and edit the greeting with the rest of the email." }));
               const previewEmail = button("Create fake email for review", async (event) => {
                 const btn = event.currentTarget;
                 if (!edit.reportValidity()) return;
                 btn.disabled = true;
                 try {
                   const draft = await api(`/templates/${flow.sourceTemplateId}/clone`, { method: "POST", body: JSON.stringify({
-                    reason: "Campaign email prepared for operator review", subject: subject.value, plain_text: wording.value }) });
+                    reason: "Campaign email prepared for operator review", subject: subject.value,
+                    plain_text: wording.value.replaceAll("[recipient name]", '{{ recipient.first_name or "colleague" }}').replaceAll("[training link]", "{{ tracking.training_url }}") }) });
                   flow.templateId = draft.template_version_id; delete flow.emailApproved; save(); markFormSaved(edit);
                   emailContent = await api(`/templates/${flow.templateId}/preview`); await redraw();
                 } catch (e) { fail(error, e); } finally { if (btn.isConnected) btn.disabled = false; }
@@ -288,12 +292,14 @@ export function installSimpleCampaigns(ui) {
     for (const c of campaigns) {
       const section = card(c.title, [el("p", { role: "status", text: `Status: ${c.state}. ${c.delivery_mode === "reviewed_direct" ? "Approved whole-roster send." : "Saved campaign from the previous workflow."}` })]);
       const outcomes = el("div");
-      if (c.can_send === true) section.appendChild(button("Send", async (event) => {
+      if (c.can_send === true || c.can_publish === true) section.appendChild(button("Send", async (event) => {
         const btn = event.currentTarget;
-        const ok = await confirmDialog({ title: `Send ${c.title}?`, message: "Send the approved email to the complete confirmed roster. The server rechecks the signed RoE and current recipients before queueing.", confirmLabel: "Send" });
+        const ok = await confirmDialog({ title: `Send ${c.title}?`, message: c.can_publish === true
+          ? "Send the approved email to the remaining reviewed recipients. People already sent the earlier test email are not sent twice."
+          : "Send the approved email to the complete confirmed roster. The server rechecks the signed RoE and current recipients before queueing.", confirmLabel: "Send" });
         if (!ok) return; btn.disabled = true;
         try {
-          const sent = await api(`/campaigns/${c.campaign_id}/send`, { method: "POST" });
+          const sent = await api(`/campaigns/${c.campaign_id}/${c.can_publish === true ? "publish" : "send"}`, { method: "POST" });
           flow.monitorId = c.campaign_id; save(); await redraw(); toast(`${sent.queued} recipient emails queued. Monitor delivery and clicks in Dashboard.`, "success");
         } catch (e) { fail(error, e); } finally { if (btn.isConnected) btn.disabled = false; }
       }, false, true));
