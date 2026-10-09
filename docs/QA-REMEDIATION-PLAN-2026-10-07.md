@@ -421,3 +421,44 @@ selection also incorrectly marked the new-campaign form as dirty, pausing the
 30-second status refresh; initial defaults are now marked saved while genuine
 operator edits retain their refresh guard. The browser scenario explicitly
 covers incomplete setup and an unedited prefilled form.
+
+### Final source and governed UI continuation
+
+Final runtime source `2ad4936ec00e6c54e7c4925808a1a99656eea745` passed all
+required jobs ([CI](https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/37936578098))
+and is deployed on `.105` under
+[PR #133](https://github.com/ELDSRQ/kingphisher-phoenix/pull/133), stacked on
+unmerged PR #132. It was advanced through clean tracked-tree, fast-forward
+updates and normal supervisor markers. The worker's untracked Compose override,
+controller QA artifact, password, state and evidence were preserved. Served
+JavaScript matches SHA-256
+`2b7d42dd4d10e00092173645f8d86cac0c61f70d559859327fbf76a2bc1aacd3`.
+
+The recorded UI rehearsal was resumed without repeating its successful canary.
+The actual Send campaign button queued one remaining synthetic recipient;
+Mailpit captured it. The participant followed the captured tracking link and
+completed the approved quiz through the training page. The actual Report dialog
+downloaded both report CSV and evidence ZIP; the ZIP integrity check and all
+three JSON members passed. Its report showed two provider acceptances, one
+click, one completed learner and zero transport failures. The UI Recall action
+affected only campaign `b534f3e4-2800-424b-a9c0-9d32536c24bc`. The user's
+"Test 10-09-2026" campaign remains approved, reviewed and unsent.
+
+The retained log includes failed diagnostics and the eventual pass rather than
+overwriting the failed attempts. Import/confirmation ran at `fc7ba16`, test
+delivery at `3e19f94`, and full send/training/exports/recall at `2ad4936`.
+The API/worker runtime is identical across those UI follow-ups. This is an
+automated engineering rehearsal, not an unassisted D6 pass. No deployment,
+source check or rehearsal constitutes completed-build human sign-off; the
+optional-canary scope decision and manual human acceptance remain open.
+
+The final paced live browser sweep passed **17 checks, zero skips**, in 2.5
+minutes, including login plus ten views with no blocking axe findings and six
+navigation/form checks at desktop/tablet widths. Its inventory confirmed both
+APIs, PostgreSQL, Redis and all ten workers ready. Evidence:
+`data/qualification/human-readiness/71452076711c4825b31ae37000a9c523/`.
+The current D6 script contains exact screen/button locations and observable
+results for each trial step, including report-dialog scrolling for downloads.
+Later commits that only record these results or refine instructions do not
+change the tested runtime assets. D6 still requires a fresh human attempt;
+manual keyboard and screen-reader evidence must be recorded separately.
