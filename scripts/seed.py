@@ -460,9 +460,7 @@ def _seed_template_branded(session: Session) -> TemplateVersion:
     preview; this one carries a table-based branded layout, inline styles and a
     self-contained logo so the branded-HTML review path has a realistic example.
     """
-    existing = session.scalar(
-        select(TemplateVersion).where(TemplateVersion.idempotency_key == "seed-template-branded")
-    )
+    existing = session.scalar(select(TemplateVersion).where(TemplateVersion.idempotency_key == "seed-template-branded"))
     if existing is not None:
         existing.safe_html = _SEED_BRANDED_SAFE_HTML
         existing.plain_text = _SEED_BRANDED_PLAIN_TEXT
