@@ -414,3 +414,34 @@ test("live-view auto-refresh must not discard an uncommitted campaign domain sel
   await expect(page.getByLabel("Saved signed authorization", { exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+// Regression: a same-view live refresh (30s timer, or manual "Refresh current
+// view") used to re-mount the whole view and scroll the operator back to the
+// top — easy to lose your place while reading. Scroll position is now preserved
+// across a same-view re-render; only navigation jumps to the top.
+test("same-view live refresh preserves the operator's scroll position", async ({ page }) => {
+  await installHumanFlowFixture(page);
+  await page.clock.install({ time: new Date("2026-06-01T00:00:00Z") });
+  const errors = []; page.on("pageerror", (error) => errors.push(error.message));
+  // A short viewport guarantees the live view overflows so there is a scroll
+  // position to preserve. The document/window is the scroll container here
+  // (.content has no inner overflow; .shell is min-height:100vh).
+  await page.setViewportSize({ width: 1280, height: 400 });
+  await page.goto("/console/#dashboard");
+  await page.locator("#console-password").fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.locator("#console-view")).toBeVisible();
+
+  await expect.poll(() => page.evaluate(() => document.scrollingElement.scrollHeight))
+    .toBeGreaterThan(400 + 120);
+  await page.evaluate(() => document.scrollingElement.scrollTo(0, 180));
+  const before = await page.evaluate(() => document.scrollingElement.scrollTop);
+  expect(before).toBeGreaterThan(80);
+
+  // Fire the 30s live refresh. Before the fix the re-mount reset scroll to 0.
+  await page.clock.runFor(31000);
+  await expect.poll(() => page.evaluate(() => document.scrollingElement.scrollTop)).toBeGreaterThan(80);
+  const after = await page.evaluate(() => document.scrollingElement.scrollTop);
+  expect(Math.abs(after - before)).toBeLessThanOrEqual(20);
+  expect(errors).toEqual([]);
+});
