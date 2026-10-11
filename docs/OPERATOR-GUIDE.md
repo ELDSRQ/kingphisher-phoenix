@@ -19,6 +19,11 @@ that a new sign-in succeeds and the previous password fails. Share the new value
 privately with the driver. Password rotation does not invalidate already-issued
 sessions; session-signing-key rotation is a separate coordinated operation.
 
+For the current `.105` build, the user's October 8 instruction defers password
+rotation until they sign off on the build as fully completed and human ready.
+Do not rotate it before that sign-off or treat rotation as a blocker to the
+human trial. Continue to retrieve the existing credential privately.
+
 ## What this tool does
 
 Kingphisher-Phoenix sends **simulated** phishing email so your organization can

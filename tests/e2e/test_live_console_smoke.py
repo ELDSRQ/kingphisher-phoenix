@@ -251,6 +251,8 @@ def test_single_administrator_campaign_lifecycle_and_alert_health() -> None:
         "reminder",
         "alert",
         "directory",
+        "curation",
+        "audit-anchor",
     }
     assert all(worker_status.values())
 

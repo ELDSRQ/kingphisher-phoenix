@@ -3300,6 +3300,11 @@
       end.setDate(end.getDate() + 14);
       value("c-start", localInput(start));
       value("c-end", localInput(end));
+      const configuredTraining = readinessContext.training?.fields?.find((field) => field.key === "OPERATOR_API_TRAINING_BASE_URL")?.value;
+      try {
+        if (configuredTraining) value("c-tdomain", new URL(configuredTraining).hostname);
+      } catch {
+      }
       const pattern = approvedPatterns[0];
       if (pattern) {
         const month = start.toLocaleString(void 0, { month: "long", year: "numeric" });
@@ -3307,18 +3312,11 @@
         value("c-title", `${subject.charAt(0).toUpperCase()}${subject.slice(1)} exercise \u2014 ${month}`);
       }
       try {
-        const [domains, recipients2] = await Promise.all([
-          boundedCollection("/sending-domains").catch(() => []),
-          boundedCollection("/recipients", "items").catch(() => [])
-        ]);
+        const domains = readinessContext.domains || [];
+        const recipients2 = await boundedCollection("/recipients", "items").catch(() => []);
         const verified = domains.filter((d) => d.active !== false).map((d) => d.domain).filter(Boolean);
         if (verified.length === 1) {
           value("c-sender", `security-awareness@${verified[0]}`);
-          const configuredTraining = readinessContext.training?.fields?.find((field) => field.key === "OPERATOR_API_TRAINING_BASE_URL")?.value;
-          try {
-            value("c-tdomain", configuredTraining ? new URL(configuredTraining).hostname : `training.${verified[0]}`);
-          } catch {
-          }
         }
         const max = document.getElementById("c-max");
         if (max && recipients2.length && max.value === "1000") max.value = String(recipients2.length);
