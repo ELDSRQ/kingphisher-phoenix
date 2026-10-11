@@ -377,3 +377,40 @@ for (const width of [1280, 768]) {
     await page.screenshot({ path: testInfo.outputPath("campaigns.png"), fullPage: true });
   });
 }
+
+// Regression: the campaigns view is a LIVE view that re-renders on a 30s timer
+// (app.js scheduleRefresh). An uncommitted step-1 domain selection used to be
+// wiped by that refresh before "Select domain" committed it, so step 2 (Sign
+// RoE) never appeared — the operator saw the panel "blink and disappear". The
+// selection is now registered as an unsaved form, which pauses the refresh.
+test("live-view auto-refresh must not discard an uncommitted campaign domain selection", async ({ page }) => {
+  await installHumanFlowFixture(page);
+  await page.clock.install({ time: new Date("2026-06-01T00:00:00Z") });
+  const errors = []; page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/console/#campaigns");
+  await page.locator("#console-password").fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByLabel("Company domain", { exact: true })).toBeVisible();
+
+  // Pick a domain but do NOT commit it with "Select domain".
+  await page.getByLabel("Company domain", { exact: true }).selectOption("example.com");
+  // The pending selection registers as unsaved — the exact attribute
+  // scheduleRefresh() checks (currentUnsavedForm) before re-rendering.
+  await expect(page.locator('form[aria-label="Select domain"]')).toHaveAttribute("data-dirty", "true");
+
+  // Fire the 30s live-view refresh. Before the fix this re-rendered the view
+  // and reset the dropdown; now it is paused, so the selection survives.
+  await page.clock.runFor(31000);
+  await expect(page.getByLabel("Company domain", { exact: true })).toHaveValue("example.com");
+  await expect(page.getByRole("button", { name: "Use signed RoE", exact: true })).toHaveCount(0);
+
+  // Commit the domain: step 2 appears and the refresh guard clears.
+  await page.getByRole("button", { name: "Select domain", exact: true }).click();
+  await expect(page.getByLabel("Saved signed authorization", { exact: true })).toBeVisible();
+
+  // With the domain committed to session state, a refresh now proceeds and
+  // re-renders without losing step 2.
+  await page.clock.runFor(31000);
+  await expect(page.getByLabel("Saved signed authorization", { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});

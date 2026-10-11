@@ -104,14 +104,23 @@ export function installSimpleCampaigns(ui) {
         ...domains.filter((d) => d.active).map((d) => el("option", { value: d.domain, text: d.domain })),
       ]);
       domainSelect.value = flow.domain || "";
+      // The campaigns view is a LIVE view: a 30s timer re-renders it (app.js
+      // scheduleRefresh). Without a refresh guard that timer wipes an
+      // uncommitted dropdown selection before "Select domain" commits it, so
+      // step 2 never appears ("screen blinked and it disappeared"). Register
+      // the selection as an unsaved form so the refresh pauses until commit.
+      const domainForm = el("form", { "aria-label": "Select domain" });
+      domainForm.addEventListener("submit", (e) => e.preventDefault());
+      guardUnsavedForm(domainForm, "Domain selection");
       const selectDomain = button("Select domain", async () => {
         if (!domainSelect.value) { error.textContent = "Choose your company domain first."; return; }
         if (flow.domain !== domainSelect.value) { flow = { domain: domainSelect.value }; csvText = ""; importPreview = null; emailContent = null; }
-        flow.domain = domainSelect.value; save(); await redraw();
+        flow.domain = domainSelect.value; save(); markFormSaved(domainForm); await redraw();
       }, false, true);
-      root.appendChild(card("1. Select domain", [el("label", { for: "setup-domain", text: "Company domain" }), domainSelect,
+      domainForm.append(el("label", { for: "setup-domain", text: "Company domain" }), domainSelect,
         selectDomain, button("Add or verify a domain", () => navigateTo("sending")),
-        el("p", { text: "Choose the verified domain your recipients use. Domain suggestions do not select or authorize a domain." })]));
+        el("p", { text: "Choose the verified domain your recipients use. Domain suggestions do not select or authorize a domain." }));
+      root.appendChild(card("1. Select domain", [domainForm]));
       if (flow.domain) {
         const matching = roes.filter((r) => activeRoe(r) && (r.target_domains || []).includes(flow.domain));
         const roe = matching.find((r) => r.roe_id === flow.roeId);
@@ -119,10 +128,16 @@ export function installSimpleCampaigns(ui) {
           ...matching.map((r) => el("option", { value: r.roe_id, text: `${r.authorizing_party} — expires ${new Date(r.window_end).toLocaleDateString()}` })),
         ]);
         roeChoice.value = flow.roeId || "";
+        // Same live-refresh hazard as step 1: guard the uncommitted RoE
+        // selection so the 30s re-render cannot discard it before "Use signed
+        // RoE" commits.
+        const roeForm = el("form", { "aria-label": "Sign RoE" });
+        roeForm.addEventListener("submit", (e) => e.preventDefault());
+        guardUnsavedForm(roeForm, "RoE selection");
         const useRoe = button("Use signed RoE", async () => {
           if (!roeChoice.value) { error.textContent = "Select a signed authorization or sign a new RoE."; return; }
           if (flow.roeId !== roeChoice.value) { delete flow.rosterId; delete flow.templateId; emailContent = null; }
-          flow.roeId = roeChoice.value; save(); await redraw();
+          flow.roeId = roeChoice.value; save(); markFormSaved(roeForm); await redraw();
         }, false, true);
         const sign = button("Sign RoE for selected domain", async () => {
           const values = await promptDialog({ title: `Sign RoE for ${flow.domain}`, description: "Confirm the domain owner's authorization for this awareness campaign.", fields: [
@@ -135,14 +150,14 @@ export function installSimpleCampaigns(ui) {
             const record = await api("/roe", { method: "POST", body: JSON.stringify({ authorizing_party: values.party,
               terms: `${values.party} authorizes a simulated phishing awareness campaign for ${flow.domain}. Recipients are restricted to this domain. Training is disclosed after interaction. Authorization may be revoked.`,
               target_domains: [flow.domain], window_start: start.toISOString(), window_end: end.toISOString() }) });
-            flow.roeId = record.roe_id; delete flow.rosterId; save(); await redraw(); toast("RoE signed and selected", "success");
+            flow.roeId = record.roe_id; delete flow.rosterId; save(); markFormSaved(roeForm); await redraw(); toast("RoE signed and selected", "success");
           } catch (e) { fail(error, e); }
         }, !hasCapability(CAPABILITY.SIGN_ROE));
-        root.appendChild(card("2. Sign RoE", [el("label", { for: "setup-roe", text: "Saved signed authorization" }), roeChoice, useRoe, sign,
+        roeForm.append(el("label", { for: "setup-roe", text: "Saved signed authorization" }), roeChoice, useRoe, sign,
           ...(roe ? [el("p", { class: "policy-banner", role: "status", text: `Per signed RoE, only these domains are approved: ${roe.target_domains.join(", ")}. All others are rejected. This campaign targets ${flow.domain} only.` }),
             el("p", { text: `Signed by ${roe.signer}; valid ${new Date(roe.window_start).toLocaleString()} to ${new Date(roe.window_end).toLocaleString()}.` }),
-            el("details", {}, [el("summary", { text: "View signed terms" }), el("p", { text: roe.terms })])] : []),
-        ]));
+            el("details", {}, [el("summary", { text: "View signed terms" }), el("p", { text: roe.terms })])] : []));
+        root.appendChild(card("2. Sign RoE", [roeForm]));
         if (roe) {
           const upload = el("form", { "aria-label": "Upload and review recipients" });
           upload.addEventListener("submit", (e) => e.preventDefault());
