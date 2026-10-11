@@ -292,7 +292,9 @@ def _audience_preview_for_request(
     )
 
 
-def _audience_preview_payload(preview: AudiencePreview) -> dict[str, Any]:
+def _audience_preview_payload(
+    preview: AudiencePreview, *, test_account_ids: set[uuid.UUID] | None = None
+) -> dict[str, Any]:
     return {
         "campaign_id": str(preview.campaign_id),
         "audience_version": preview.audience_version,
@@ -306,6 +308,7 @@ def _audience_preview_payload(preview: AudiencePreview) -> dict[str, Any]:
         "sample_seed": preview.sample_seed,
         "roe_id": str(preview.roe_id) if preview.roe_id else None,
         "over_limit": preview.over_limit,
+        "test_account_count": len(test_account_ids) if test_account_ids is not None else None,
         "diff": {
             "added": preview.added_count,
             "removed": preview.removed_count,
@@ -318,6 +321,7 @@ def _audience_preview_payload(preview: AudiencePreview) -> dict[str, Any]:
                 "mailbox": item.masked_mailbox,
                 "department": item.department,
                 "status": item.status.value,
+                **({"is_test_account": item.recipient_id in test_account_ids} if test_account_ids is not None else {}),
             }
             for item in preview.included
         ],
@@ -669,7 +673,20 @@ def preview_campaign_audience_route(
 ) -> dict[str, Any]:
     del principal
     campaign = _get_campaign(session, campaign_id)
-    return _audience_preview_payload(_audience_preview_for_request(request, session, campaign))
+    preview = _audience_preview_for_request(request, session, campaign)
+    test_account_ids = set(
+        session.scalars(
+            select(Recipient.recipient_id)
+            .where(
+                Recipient.recipient_id.in_([item.recipient_id for item in preview.included]),
+                Recipient.is_test_account.is_(True),
+                Recipient.status == dm.RecipientStatus.ACTIVE,
+                Recipient.deleted_at.is_(None),
+            )
+            .limit(MAX_AUDIENCE_RECIPIENTS)
+        )
+    )
+    return _audience_preview_payload(preview, test_account_ids=test_account_ids)
 
 
 @router.post("/campaigns/{campaign_id}/audience/freeze")
@@ -1971,6 +1988,7 @@ def list_campaigns(
             "schedule_end": c.schedule_end,
             "sender_mailbox": c.sender_mailbox,
             "sender_display_name": c.sender_display_name,
+            "current_template_id": str(c.current_template_id) if c.current_template_id else None,
             # A campaign scheduled before the RoE gate landed (or whose RoE
             # was revoked) cannot deliver until it is re-scheduled onto an
             # active RoE; the console surfaces this rather than letting the

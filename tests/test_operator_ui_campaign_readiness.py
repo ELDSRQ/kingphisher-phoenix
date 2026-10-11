@@ -21,8 +21,8 @@ def test_campaign_console_builds_one_truthful_readiness_gate() -> None:
 
     assert "check.required && check.ready === false" in APP
     assert '"data-readiness-blockers"' in APP
-    assert 'text: "Send test to canary"' in APP
-    assert 'text: "Send to everyone"' in APP
+    assert 'text: "Send test email"' in APP
+    assert 'text: "Send campaign"' in APP
     assert 'disabled: blockers.length ? "disabled" : null' in APP
     assert "The scheduling API will revalidate it and fail closed" in APP
 
@@ -47,17 +47,16 @@ def test_campaign_review_surfaces_and_rebinds_the_exact_training_lesson() -> Non
     assert "Changing a reviewed campaign resets it to draft" in APP
 
 
-def test_canary_and_publish_confirmations_name_authoritative_server_gates() -> None:
+def test_send_confirmations_explain_scope_result_and_next_action() -> None:
     for phrase in (
-        "test accounts locked into the reviewed manifest",
-        "full audience remains blocked until successful provider evidence",
-        "reviewed, server-marked test cohort",
-        "reviewed manifest, approvals, RoE",
-        "emergency stop",
-        "provider configuration and unexpired canary evidence",
-        "queueing non-canary recipients",
-        "Queue locked canary",
-        "Publish exact audience",
+        "designated test accounts in your confirmed roster",
+        "Send campaign becomes available after successful delivery confirmation",
+        "No other recipients are sent during this test",
+        "remaining recipients in your confirmed roster",
+        "Test accounts are not sent a second time",
+        "Domain authorization and current delivery checks are rechecked before sending",
+        'confirmLabel: "Send test email"',
+        'confirmLabel: "Send campaign"',
     ):
         assert phrase in APP
     assert '"Reported mail"' in APP
@@ -67,8 +66,8 @@ def test_canary_is_server_designated_and_has_no_ad_hoc_send_bypass() -> None:
     assert "api(`/campaigns/${campaign.campaign_id}/test-send`" not in APP
     assert "api(`/campaigns/${campaign.campaign_id}/schedule`" in APP
     assert "api(`/campaigns/${campaign.campaign_id}/publish`" in APP
-    assert "only the test accounts locked into the reviewed manifest" in APP
-    assert "Only the reviewed, server-marked test cohort is queued in this phase" in APP
+    assert "only to the designated test accounts in your confirmed roster" in APP
+    assert "Confirmed roster; designated test accounts only" in APP
 
 
 def test_template_preview_is_safe_accessible_and_device_explicit() -> None:

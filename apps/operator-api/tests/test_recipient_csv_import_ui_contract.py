@@ -19,7 +19,7 @@ def test_gui_golden_path_previews_then_applies_exact_digest() -> None:
     assert 'api("/recipients/import/apply"' in RECIPIENTS
     assert 'api("/recipients/import",' not in RECIPIENTS
     assert "preview_digest: currentPreview.preview_digest" in RECIPIENTS
-    assert 'text: "Apply exact preview", disabled: "disabled"' in RECIPIENTS
+    assert 'text: "Confirm validated roster", disabled: "disabled"' in RECIPIENTS
     assert "function invalidateImportPreview()" in RECIPIENTS
 
 
@@ -46,7 +46,7 @@ def test_gui_supports_reviewed_arbitrary_first_row_headers() -> None:
 
 
 def test_gui_preview_is_non_pii_and_surfaces_all_required_counts() -> None:
-    assert "Preview is non-mutating and shows only counts plus bounded row-number error codes" in RECIPIENTS
+    assert "Nothing is sent during upload." in RECIPIENTS
     for count in ("created", "updateable", "existing", "blocked", "invalid", "duplicate"):
         assert f'"{count}"' in RECIPIENTS
     assert "text: `Row ${issue.row}: ${issue.code}`" in RECIPIENTS

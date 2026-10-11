@@ -169,7 +169,7 @@ test.describe("operator console navigation (real DOM effect)", () => {
       await nav.locator('button[data-nav="templates"]').click();
       const library = page.locator(".template-library-table");
       await expect(page.getByLabel("Filter templates by review state", { exact: true })).toHaveValue("approved");
-      const chooseEmail = library.getByRole("button", { name: /^Use .+ in a campaign$/ }).first();
+      const chooseEmail = library.getByRole("button", { name: /^Select for current campaign: / }).first();
       await expect(chooseEmail, "The human run needs at least one approved library email.").toBeVisible();
       await chooseEmail.click();
       await expect(page).toHaveURL(/#campaigns$/);

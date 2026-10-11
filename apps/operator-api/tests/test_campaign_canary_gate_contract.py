@@ -38,8 +38,8 @@ def test_ad_hoc_test_send_is_a_fail_closed_compatibility_route() -> None:
 
 def test_gui_uses_server_flags_for_two_explicit_phases() -> None:
     assert '"can_schedule", "can_publish", "can_test_send"' in UI
-    assert 'text: "Send test to canary"' in UI
-    assert 'text: "Send to everyone"' in UI
+    assert 'text: "Send test email"' in UI
+    assert 'text: "Send campaign"' in UI
     assert "c.can_schedule === true" in UI
     assert "c.can_publish === true" in UI
     assert "`/campaigns/${campaign.campaign_id}/publish`" in UI

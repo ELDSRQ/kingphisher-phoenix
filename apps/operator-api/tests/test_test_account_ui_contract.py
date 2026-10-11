@@ -15,10 +15,10 @@ RECIPIENT_VIEW = APP[
 
 def test_recipient_view_uses_only_server_designation_state() -> None:
     assert "Server-designated test account" in APP
-    assert "The console never infers eligibility from mailbox text, names, or departments" in APP
+    assert "All other rows remain ordinary campaign recipients." in APP
     assert "r.is_test_account" in APP
     assert "+test@example.com" not in APP
-    assert 'el("th", { text: "Recipient reference" })' in APP
+    assert 'el("th", { text: "Recipient" })' in APP
     assert "r.mailbox" not in RECIPIENT_VIEW
 
 

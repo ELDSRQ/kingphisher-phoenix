@@ -85,6 +85,7 @@ def list_audience_groups(
             {
                 "audience_group_id": str(item.audience_group_id),
                 "name": item.name,
+                "created_at": item.created_at,
                 "member_count": member_counts.get(item.audience_group_id, 0),
                 "recipient_ids": sorted(member_ids.get(item.audience_group_id, [])),
                 "directory_group_ref": item.directory_group_ref,

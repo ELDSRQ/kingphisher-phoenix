@@ -1,18 +1,19 @@
 # On-prem GO runbook (readiness gates D1–D6)
 
-> **Current preparation (October 8):** PR #131 is deployed, followed by the
-> PR #132 training-host repair at `680429c` on its feature branch. It has not
-> been merged into `main`; later follow-up commits change tests/docs only.
-> All 17 post-deploy browser checks and the synthetic lifecycle rehearsal
-> passed. The build is ready for a controlled human trial. Per the user's
-> October 8 instruction, password rotation waits until build sign-off and
-> does not block the human trial. The older
-> deploy gap below is historical. Follow the current
-> [D6 scenario](D6-HUMAN-ACCEPTANCE-SCRIPT.md) and
-> [human-readiness follow-up](QA-REMEDIATION-PLAN-2026-10-07.md#human-readiness-follow-up--2026-10-08)
-> for training setup, valid synthetic-domain authorization and final verification.
-> Dated image/recovery results below remain historical evidence; D6 and manual
-> D3 are still open. Current controller tunnels use ports 8600/8001/8025.
+> **Current preparation (October 9):** the operator-flow repair is deployed on
+> `.105` at `2ad4936` under PR #133, stacked on unmerged PR #132. Exact-source CI
+> and all 17 live browser checks passed with zero skips. The governed UI
+> rehearsal completed test delivery, separate roster
+> publication, recipient training, report/evidence downloads and recall of only
+> its synthetic campaign. The user's existing campaign remains unsent.
+> The October 9 human attempt failed; **D6 and manual D3 remain open**.
+> The requested optional-canary policy is still a scope decision; current
+> campaign-bound evidence enforcement remains in place. Use the detailed
+> [current D6 scenario](D6-HUMAN-ACCEPTANCE-SCRIPT.md#current-run-october-9-operator-findings)
+> and [October 9 verification](QA-REMEDIATION-PLAN-2026-10-07.md#operator-flow-remediation--2026-10-09).
+> Password rotation waits until the user's completed-build sign-off. Older
+> deploy gaps and image/recovery results below are historical evidence.
+> Current controller tunnels use ports 8600/8001/8025.
 
 Purpose: the exact steps to clear the remaining `AGENTS.md` NO-GO gates for the
 on-prem (.105 / standalone) deployment, and — once on-prem is signed off — to

@@ -121,6 +121,7 @@ def list_recipients(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     mailbox: str | None = Query(default=None, max_length=320),
+    roster_id: uuid.UUID | None = None,
     session: Session = Depends(get_session),
     settings: OperatorApiSettings = Depends(get_settings),
     principal: Principal = Depends(require_any_capability(Capability.VIEW_NAMED_RESULTS, Capability.MANAGE_RECIPIENTS)),
@@ -131,17 +132,26 @@ def list_recipients(
     # never returned raw — only the same masked form the audience preview uses.
     can_view_named = principal.can(Capability.VIEW_NAMED_RESULTS)
 
+    query = select(Recipient)
+    count_query = select(func.count()).select_from(Recipient)
+    if roster_id is not None:
+        if session.get(AudienceGroup, roster_id) is None:
+            raise NotFoundError("saved roster not found")
+        membership = select(AudienceGroupMember.recipient_id).where(AudienceGroupMember.audience_group_id == roster_id)
+        query = query.where(Recipient.recipient_id.in_(membership))
+        count_query = count_query.where(Recipient.recipient_id.in_(membership))
+
     if mailbox is not None:
         # Exact-address lookup: hash the full address with the deployment salt
         # and match the indexed digest. No wildcard, no prefix, no LIKE — a
         # reader can only confirm an address they already typed in full.
         digest = hash_mailbox(_normalize_mailbox(mailbox, max_length=320), settings.require_recipient_hash_salt())
-        rows = list(session.scalars(select(Recipient).where(Recipient.mailbox_sha256 == digest).limit(1)))
+        rows = list(session.scalars(query.where(Recipient.mailbox_sha256 == digest).limit(1)))
         total = len(rows)
         truncated = False
     else:
-        total = int(session.scalar(select(func.count()).select_from(Recipient)) or 0)
-        rows = list(session.scalars(select(Recipient).order_by(Recipient.recipient_id).offset(offset).limit(limit)))
+        total = int(session.scalar(count_query) or 0)
+        rows = list(session.scalars(query.order_by(Recipient.recipient_id).offset(offset).limit(limit)))
         truncated = offset + len(rows) < total
 
     items: list[dict[str, Any]] = []
