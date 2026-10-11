@@ -170,6 +170,10 @@ class WorkerSupervisor:
                 from kp_workers.reported_mail_jobs import ensure_reported_mail_state
 
                 ensure_reported_mail_state(spec.context)
+            elif spec.topic == "reply-mailbox":
+                from kp_workers.reply_mail_jobs import ensure_reply_mail_state
+
+                ensure_reply_mail_state(spec.context)
             elif spec.topic == "audit-anchor":
                 from kp_workers.audit_anchor_jobs import ensure_audit_anchor_configured
 
@@ -281,6 +285,11 @@ class WorkerSupervisor:
                 from kp_workers.reported_mail_jobs import maybe_publish_mailbox
 
                 maybe_publish_mailbox(spec.context, self._utcnow())
+                state.last_self_publish = now
+            if spec.topic == "reply-mailbox" and now - state.last_self_publish >= 60:
+                from kp_workers.reply_mail_jobs import maybe_publish_reply_mailbox
+
+                maybe_publish_reply_mailbox(spec.context, self._utcnow())
                 state.last_self_publish = now
             if spec.topic == "curate" and now - state.last_self_publish >= settings.curation_interval_seconds:
                 from kp_workers.curation_jobs import maybe_publish_curate

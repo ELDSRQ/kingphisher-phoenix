@@ -36,6 +36,7 @@ CHILDREN: dict[str, list[str]] = {
     "worker-delivery": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "delivery"],
     "worker-retention": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "retention"],
     "worker-mailbox": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "mailbox"],
+    "worker-reply-mailbox": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "reply-mailbox"],
     "worker-reminder": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "reminder"],
     "worker-alert": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "alert"],
     "worker-directory": ["uv", "run", "--frozen", "--no-sync", "kp-worker", "directory"],

@@ -195,6 +195,11 @@ class EventType(StrEnum):
     PAGE_RENDERED = "page_rendered"
     HUMAN_INTERACTION_CONFIRMED = "human_interaction_confirmed"
     MESSAGE_REPORTED = "message_reported"
+    # A recipient replied to the simulated phishing email. Correlated from the
+    # inbound reply's In-Reply-To/References headers to the sent message's
+    # RFC822 Message-ID; data-minimizing (the reply body and sender address are
+    # never stored, only hashes and a bounded disposition).
+    MESSAGE_REPLIED = "message_replied"
     TRAINING_STARTED = "training_started"
     TRAINING_COMPLETED = "training_completed"
     EVENT_CORRECTED = "event_corrected"

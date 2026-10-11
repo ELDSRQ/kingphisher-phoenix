@@ -180,7 +180,7 @@ for (const width of [1280, 768]) {
     expect(state.writes.some((w) => /freeze|schedule|publish|test-account/.test(w.path))).toBe(false);
     await page.getByRole("button", { name: "Monitor recipient results", exact: true }).click();
     await expect(page.getByRole("table", { name: "Campaign recipient results", exact: true }).locator("tbody tr")).toHaveCount(2);
-    await expect(page.getByText(/Replies: unavailable/)).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Replied", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("reviewed-direct-campaign.png"), fullPage: true });
     expect(errors).toEqual([]);
   });

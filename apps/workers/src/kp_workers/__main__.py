@@ -28,6 +28,7 @@ WORKERS = {
     "delivery": ("deliver", jobs.process_delivery),
     "retention": ("retention", jobs.process_retention),
     "mailbox": ("mailbox", jobs.process_mailbox),
+    "reply-mailbox": ("reply-mailbox", jobs.process_reply_mailbox),
     "reminder": ("remind", jobs.process_reminder),
     "alert": ("alert", jobs.process_alert),
     "directory": ("directory", jobs.process_directory_sync),

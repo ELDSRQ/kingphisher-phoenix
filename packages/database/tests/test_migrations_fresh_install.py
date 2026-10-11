@@ -30,6 +30,7 @@ from kp_database.models import (
     Recipient,
     RecipientAssignment,
     RecipientExclusion,
+    ReplyMailReceipt,
     ReportedMailReceipt,
     TrackingEvent,
     TrackingToken,
@@ -42,6 +43,9 @@ from kp_domain_models import models as dm
 from kp_workers.directory_jobs import _group_hash, _object_hash, _scope, apply_directory, preview_directory
 from kp_workers.providers.graph import DirectorySyncResult
 from kp_workers.providers.microsoft365 import ReportedMailboxPollResult
+from kp_workers.providers.reply_mailbox import ReplyMailboxPollResult
+from kp_workers.reply_mail_jobs import _consume as _consume_reply
+from kp_workers.reply_mail_jobs import process_reply_mailbox
 from kp_workers.reported_mail_jobs import _consume, process_mailbox
 from psycopg import sql
 from sqlalchemy import create_engine, inspect, select, text
@@ -699,6 +703,256 @@ def test_mailbox_job_replay_and_stale_poll_cannot_regress_cursor(monkeypatch: py
             )
             assert state is not None and state.cursor == "cursor-from-newer-worker"
             assert session.scalar(select(ReportedMailReceipt)) is None
+        engine.dispose()
+
+
+def _seed_delivered_assignment(session: Session, *, message_id: str) -> uuid.UUID:
+    """Create a minimal delivered assignment correlated to one sent Message-ID."""
+
+    pattern_id = uuid.uuid4()
+    campaign_id = uuid.uuid4()
+    recipient_id = uuid.uuid4()
+    assignment_id = uuid.uuid4()
+    attempt_id = uuid.uuid4()
+    session.add(
+        CampaignPattern(
+            campaign_pattern_id=pattern_id,
+            lure_category=dm.LureCategory.OTHER,
+            confidence=dm.Confidence.HIGH,
+        )
+    )
+    session.flush()
+    session.add(
+        Campaign(
+            campaign_id=campaign_id,
+            pattern_id=pattern_id,
+            title="Reply round trip",
+            state=dm.CampaignState.ACTIVE,
+            sender_mailbox="security@example.com",
+            training_domain="example.com",
+            max_recipients=1,
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        )
+    )
+    session.flush()
+    session.add(
+        Recipient(
+            recipient_id=recipient_id,
+            employee_key="learner",
+            mailbox="learner@example.com",
+            mailbox_sha256="7" * 64,
+            status=dm.RecipientStatus.ACTIVE,
+        )
+    )
+    session.flush()
+    session.add(
+        RecipientAssignment(
+            recipient_assignment_id=assignment_id,
+            campaign_id=campaign_id,
+            recipient_id=recipient_id,
+            send_state=dm.SendState.ACCEPTED,
+            delivery_attempt_id=attempt_id,
+            delivery_attempt_count=1,
+            idempotency_key="reply-round-trip",
+        )
+    )
+    session.flush()
+    session.add(
+        TrackingToken(
+            token_id=uuid.uuid4(),
+            token_hash="8" * 64,
+            token_prefix="888888",
+            campaign_id=campaign_id,
+            recipient_assignment_id=assignment_id,
+            status=dm.TokenStatus.ACTIVE,
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        )
+    )
+    session.flush()
+    session.add(
+        DeliveryReportCorrelation(
+            delivery_attempt_id=attempt_id,
+            recipient_assignment_id=assignment_id,
+            report_verifier="rpt1_" + "D" * 43,
+            verifier_hash=hashlib.sha256(message_id.encode("ascii")).hexdigest(),
+            message_id=message_id,
+        )
+    )
+    session.commit()
+    return assignment_id
+
+
+@pytest.mark.postgres
+@requires_db
+def test_reply_ingestion_records_one_idempotent_message_replied_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _isolated_database(monkeypatch) as (config, database_url):
+        command.upgrade(config, "head")
+        engine = create_engine(database_url, pool_pre_ping=True)
+        CipherText.configure_key(b"r" * 32)
+        message_id = "<reply-round-trip@example.com>"
+        external_secret = "graph-reply-external-id"
+        try:
+            with Session(engine) as session:
+                assignment_id = _seed_delivered_assignment(session, message_id=message_id)
+
+                # In-Reply-To/References match on the sent Message-ID records the event.
+                assert (
+                    _consume_reply(
+                        session,
+                        provider="microsoft365",
+                        scope_hash="9" * 64,
+                        external_id=external_secret,
+                        received_at=datetime.now(UTC),
+                        referenced_message_ids=("<root@example.com>", message_id),
+                        evidence={"references_seen": 2},
+                    )
+                    == "replied"
+                )
+                session.commit()
+
+                # Replaying the same external message is a no-op (durable boundary).
+                assert (
+                    _consume_reply(
+                        session,
+                        provider="microsoft365",
+                        scope_hash="9" * 64,
+                        external_id=external_secret,
+                        received_at=datetime.now(UTC),
+                        referenced_message_ids=(message_id,),
+                        evidence={"references_seen": 1},
+                    )
+                    == "replay"
+                )
+                session.commit()
+
+                # A distinct reply to the same assignment does not double-count.
+                assert (
+                    _consume_reply(
+                        session,
+                        provider="microsoft365",
+                        scope_hash="9" * 64,
+                        external_id="second-reply-external-id",
+                        received_at=datetime.now(UTC),
+                        referenced_message_ids=(message_id,),
+                        evidence={"references_seen": 1},
+                    )
+                    == "duplicate_assignment"
+                )
+                session.commit()
+
+                # A reply referencing no known sent Message-ID records no event.
+                assert (
+                    _consume_reply(
+                        session,
+                        provider="microsoft365",
+                        scope_hash="9" * 64,
+                        external_id="unmatched-reply-external-id",
+                        received_at=datetime.now(UTC),
+                        referenced_message_ids=("<nobody@example.com>",),
+                        evidence={"references_seen": 1},
+                    )
+                    == "no_match"
+                )
+                session.commit()
+
+                replied = list(
+                    session.scalars(
+                        select(TrackingEvent).where(TrackingEvent.event_type == dm.EventType.MESSAGE_REPLIED)
+                    )
+                )
+                assert len(replied) == 1
+                assert replied[0].recipient_assignment_id == assignment_id
+                assert replied[0].confidence == dm.Confidence.HIGH
+                assert len(list(session.scalars(select(ReplyMailReceipt)))) == 4
+
+            with engine.connect() as connection:
+                # Data minimization: the external id is stored only encrypted.
+                raw_external = connection.scalar(
+                    text("SELECT external_id FROM reply_mail_receipts WHERE external_id_hash = :h"),
+                    {"h": hashlib.sha256(f"microsoft365\0{'9' * 64}\0{external_secret}".encode()).hexdigest()},
+                )
+                assert raw_external is not None and external_secret not in raw_external
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.postgres
+@requires_db
+def test_reply_mailbox_job_replay_and_stale_poll_cannot_regress_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _isolated_database(monkeypatch) as (config, database_url):
+        command.upgrade(config, "head")
+        engine = create_engine(database_url, pool_pre_ping=True)
+        CipherText.configure_key(b"s" * 32)
+
+        class _Audit:
+            @staticmethod
+            def record(**kwargs) -> None:
+                session = kwargs.pop("session")
+                enqueue_audit(session, **kwargs)
+
+        settings = SimpleNamespace(
+            reply_mailbox_provider="microsoft365",
+            microsoft_tenant_id="11111111-1111-1111-1111-111111111111",
+            reply_mailbox_id="replies@example.com",
+            reply_mailbox_folder_id="inbox",
+            effective_reply_mailbox_url="https://graph.microsoft.com/v1.0",
+            reply_mailbox_bearer_token=None,
+            reply_mailbox_client_id=None,
+            reply_mailbox_basic_username=None,
+            reply_mailbox_basic_password=None,
+            provider_timeout_seconds=2.0,
+            mailbox_poll_limit=10,
+        )
+        context = SimpleNamespace(
+            settings=settings,
+            session_factory=sessionmaker(engine, expire_on_commit=False),
+            audit_store=_Audit(),
+            queue=SimpleNamespace(),
+        )
+        calls = 0
+
+        class _Provider:
+            def poll(self, _cursor: str | None) -> ReplyMailboxPollResult:
+                nonlocal calls
+                calls += 1
+                return ReplyMailboxPollResult("complete", (), "reply-cursor-one", "watermark", 1, 0)
+
+        monkeypatch.setattr("kp_workers.reply_mail_jobs._m365_provider", lambda _ctx: _Provider())
+        message = {"id": "reply-job-1", "idempotency_key": "reply-mailbox-job-1", "payload": {}}
+        process_reply_mailbox(context, message)
+        process_reply_mailbox(context, message)
+        assert calls == 1
+
+        class _StaleProvider:
+            def poll(self, _cursor: str | None) -> ReplyMailboxPollResult:
+                with Session(engine) as session:
+                    state = session.scalar(
+                        select(Microsoft365IntegrationState).where(Microsoft365IntegrationState.kind == "reply_mailbox")
+                    )
+                    assert state is not None
+                    state.cursor = "reply-cursor-from-newer-worker"
+                    state.generation += 1
+                    state.active_job_key = "newer-reply-job"
+                    state.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+                    session.commit()
+                item = SimpleNamespace(
+                    external_id="stale-reply",
+                    received_at=datetime.now(UTC),
+                    referenced_message_ids=("<whatever@example.com>",),
+                )
+                return ReplyMailboxPollResult("complete", (item,), "stale-reply-cursor", "watermark", 1, 0)
+
+        monkeypatch.setattr("kp_workers.reply_mail_jobs._m365_provider", lambda _ctx: _StaleProvider())
+        process_reply_mailbox(
+            context,
+            {"id": "reply-job-2", "idempotency_key": "reply-mailbox-job-2", "payload": {}},
+        )
+        with Session(engine) as session:
+            state = session.scalar(
+                select(Microsoft365IntegrationState).where(Microsoft365IntegrationState.kind == "reply_mailbox")
+            )
+            assert state is not None and state.cursor == "reply-cursor-from-newer-worker"
+            assert session.scalar(select(ReplyMailReceipt)) is None
         engine.dispose()
 
 

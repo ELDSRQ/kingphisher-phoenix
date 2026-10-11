@@ -209,7 +209,8 @@ def test_campaign_recipient_query_bounds_rows_and_related_evidence() -> None:
     assert page["truncated"] is True
     assert "count(*)" in str(session.count_statement).lower()
     assert "ORDER BY recipient_assignments.recipient_assignment_id" in str(session.page_statement)
-    assert len(session.related_statements) == 2
+    # events-by-token, training-by-assignment, and replies-by-assignment.
+    assert len(session.related_statements) == 3
     related_parameters = [statement.compile().params for statement in session.related_statements]
     bounded_lists = [value for params in related_parameters for value in params.values() if isinstance(value, list)]
     assert bounded_lists
