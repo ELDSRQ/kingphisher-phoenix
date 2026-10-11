@@ -1281,6 +1281,14 @@ function shell() {
   document.title = `${activeLabel} — Kingphisher-Phoenix Operator Console`;
   const viewChanged = active !== lastRenderedView;
   lastRenderedView = active;
+  // A same-view re-render (the 30s live refresh, or the manual "Refresh current
+  // view") must not scroll the operator back to the top and make them lose
+  // their place. Capture the current scroll position before the re-mount so it
+  // can be restored once the new content paints. Navigation (viewChanged) still
+  // jumps to the top and focuses the heading.
+  const previousView = document.getElementById("console-view");
+  const preservedScrollTop = previousView ? previousView.scrollTop : 0;
+  const preservedWindowScroll = window.scrollY;
   const nav = el("nav", { "aria-label": "Operator sections" });
   const navButton = ([id, label]) => el("button", {
     type: "button",
@@ -1364,7 +1372,14 @@ function shell() {
   document.getElementById("app").replaceChildren(root);
   if (active && views[active]) {
     Promise.resolve(views[active](content)).then(() => {
-      if (!viewChanged || !content.isConnected) return;
+      if (!content.isConnected) return;
+      if (!viewChanged) {
+        // Same-view refresh: keep the operator's place instead of moving focus
+        // or jumping to the top.
+        content.scrollTop = preservedScrollTop;
+        window.scrollTo(0, preservedWindowScroll);
+        return;
+      }
       const heading = content.querySelector("h1, h2");
       if (heading) {
         heading.setAttribute("tabindex", "-1");

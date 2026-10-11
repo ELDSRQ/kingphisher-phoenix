@@ -2065,6 +2065,9 @@ ${wording.value}`;
     document.title = `${activeLabel} \u2014 Kingphisher-Phoenix Operator Console`;
     const viewChanged = active !== lastRenderedView;
     lastRenderedView = active;
+    const previousView = document.getElementById("console-view");
+    const preservedScrollTop = previousView ? previousView.scrollTop : 0;
+    const preservedWindowScroll = window.scrollY;
     const nav = el("nav", { "aria-label": "Operator sections" });
     const navButton = ([id, label]) => el("button", {
       type: "button",
@@ -2152,7 +2155,12 @@ ${wording.value}`;
     document.getElementById("app").replaceChildren(root);
     if (active && views[active]) {
       Promise.resolve(views[active](content)).then(() => {
-        if (!viewChanged || !content.isConnected) return;
+        if (!content.isConnected) return;
+        if (!viewChanged) {
+          content.scrollTop = preservedScrollTop;
+          window.scrollTo(0, preservedWindowScroll);
+          return;
+        }
         const heading = content.querySelector("h1, h2");
         if (heading) {
           heading.setAttribute("tabindex", "-1");
