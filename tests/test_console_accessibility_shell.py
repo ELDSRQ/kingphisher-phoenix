@@ -88,7 +88,11 @@ def test_dynamic_navigation_and_views_have_keyboard_focus_contracts() -> None:
     assert '"aria-current": id === active ? "page" : null' in APP
     assert 'id: "console-view", class: "content", role: "region", tabindex: "-1"' in APP
     assert 'const heading = content.querySelector("h1, h2")' in APP
-    assert "if (!viewChanged || !content.isConnected) return" in APP
+    # A disconnected re-mount makes no focus move; a same-view refresh returns
+    # before the heading-focus block (it preserves scroll instead of stealing
+    # focus); only navigation (viewChanged) focuses the heading.
+    assert "if (!content.isConnected) return" in APP
+    assert "if (!viewChanged) {" in APP
     assert "document.title = `${activeLabel} — Kingphisher-Phoenix Operator Console`" in APP
     assert 'class: "brand-logo", width: "36", height: "36"' in APP
 
