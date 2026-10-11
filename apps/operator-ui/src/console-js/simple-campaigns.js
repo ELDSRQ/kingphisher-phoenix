@@ -24,6 +24,23 @@ export function installSimpleCampaigns(ui) {
     el("tbody", {}, rows.map((row) => el("tr", {}, row.map((value) => el("td", { text: String(value ?? "—") }))))),
   ])]);
   const card = (title, children) => el("section", { class: "card" }, [el("h3", { text: title }), ...children]);
+  // Email preview body. When the server returns sanitized branded HTML, render
+  // it in a sandboxed srcdoc iframe (sandbox="" disables scripts/forms/plugins
+  // and gives the frame a unique origin) so the operator reviews the email as a
+  // recipient sees it. The plain-text body stays available as a collapsed
+  // accessibility/fallback aid. Plain drafts (no safe_html) keep the <pre>.
+  const emailPreviewNode = (content) => {
+    if (content.safe_html) {
+      return [
+        el("iframe", { class: "email-preview-html", sandbox: "", title: "Rendered email preview", srcdoc: content.safe_html }),
+        el("details", { class: "email-preview-fallback" }, [
+          el("summary", { text: "Show plain-text version" }),
+          el("pre", { class: "email-preview", text: content.plain_text }),
+        ]),
+      ];
+    }
+    return [el("pre", { class: "email-preview", text: content.plain_text })];
+  };
   const field = (form, label, id, attrs = {}) => {
     const input = el(attrs.rows ? "textarea" : "input", { id, ...attrs });
     form.append(el("label", { for: id, text: label }), input);
@@ -256,7 +273,7 @@ export function installSimpleCampaigns(ui) {
               root.appendChild(card("5. Create fake email for review", [edit]));
               if (flow.templateId) {
                 const preview = card("Email preview", [el("h4", { text: emailContent.subject }),
-                  el("pre", { class: "email-preview", text: emailContent.plain_text }),
+                  ...emailPreviewNode(emailContent),
                   el("p", { text: "Review the subject, wording and sender below. Nothing has been sent." })]); root.appendChild(preview);
                 const setup = el("form", { "aria-label": "Approve campaign" }); setup.addEventListener("submit", (e) => e.preventDefault());
                 guardUnsavedForm(setup, "Campaign details");
@@ -335,7 +352,7 @@ export function installSimpleCampaigns(ui) {
           const { dlg, form } = dialogShell("Review current recipients", `${preview.included_count} included; ${preview.excluded_count} rejected. Nothing is sent by approval.`);
           const authorization = roes.find((r) => r.roe_id === preview.roe_id);
           form.append(el("p", { text: `Approved domains: ${(authorization?.target_domains || []).join(", ") || "No active authorization"}. All other domains are rejected.` }),
-            el("h4", { text: email.subject }), el("pre", { class: "email-preview", text: email.plain_text }));
+            el("h4", { text: email.subject }), ...emailPreviewNode(email));
           form.appendChild(table(["Recipient", "Department"], preview.recipients.map((r) => [r.mailbox || r.recipient_id, r.department]), "Recipients for approval"));
           form.appendChild(button("Approve reviewed list", async (event) => {
             const approveBtn = event.currentTarget; approveBtn.disabled = true;
