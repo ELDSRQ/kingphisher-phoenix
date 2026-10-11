@@ -9,8 +9,10 @@ this guards:
 - the browser only reaches the two Azure control-plane origins;
 - the redirect page hands the one-time code back only to the exact console
   origin (never a wildcard postMessage target);
-- the CSP relaxation is exactly connect-src to those two origins — no frame-src
-  (the flow is a popup, not an iframe) and the rest of the policy stays locked;
+- the DEP-010 relaxation is exactly connect-src to those origins — discovery
+  is a popup, not an iframe, so it introduces no frame-src of its own (the
+  frame-src 'self' now in the policy is for the sandboxed email-preview iframe,
+  a separate feature) and discovery adds nothing to script-src;
 - discovery is fail-closed: any failure leaves manual entry untouched.
 
 Source-text checks (this repo has no browser-JS unit runner; the console is
@@ -97,16 +99,17 @@ def test_wizard_exposes_failclosed_discovery_control() -> None:
     assert "Discovery unavailable" in APP_SRC_JS
 
 
-def test_csp_relaxation_is_exactly_the_three_azure_origins_no_frame_src() -> None:
+def test_csp_connect_src_is_exactly_the_three_azure_origins() -> None:
     assert (
         "connect-src 'self' https://login.microsoftonline.com https://management.azure.com https://graph.microsoft.com"
         in _CONSOLE_CSP
     )
-    # The rest of the hardened policy is unchanged.
+    # The locked core of the hardened policy is unchanged.
     assert "default-src 'none'" in _CONSOLE_CSP
-    assert "script-src 'self'" in _CONSOLE_CSP
-    assert "style-src 'self'" in _CONSOLE_CSP
-    # Popup, not iframe: no frame-src is introduced.
-    assert "frame-src" not in _CONSOLE_CSP
-    assert "'unsafe-inline'" not in _CONSOLE_CSP
+    # Discovery never relaxes script execution; the sandboxed email preview
+    # runs no scripts, so script-src stays exactly 'self'.
+    assert "script-src 'self'; " in _CONSOLE_CSP
     assert "'unsafe-eval'" not in _CONSOLE_CSP
+    # DEP-010 itself (a popup, not an iframe) introduces no frame-src and no
+    # inline-style relaxation; those come only from the email-preview feature.
+    assert "'unsafe-inline'" not in _CONSOLE_CSP.split("style-src")[0]

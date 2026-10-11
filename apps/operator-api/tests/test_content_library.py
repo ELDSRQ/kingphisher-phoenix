@@ -216,7 +216,9 @@ def test_previews_are_non_executing_and_privacy_minimized(client: TestClient) ->
     assert "Sample" in payload["plain_text"]
     assert payload["safe_html_present"] is True
     assert payload["html_execution"] is False
-    assert "safe_html" not in payload
+    # The sanitized HTML is now returned so the operator review preview can
+    # render the branded email in a sandboxed srcdoc iframe.
+    assert payload["safe_html"] == "<p>Review the warning cues.</p>"
     assert "private_prompt" not in template.text
 
     pattern = client.get(f"/api/v1/patterns/{pattern_id}/preview", headers=AUTHOR_HEADERS)

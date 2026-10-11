@@ -76,9 +76,12 @@ def test_template_preview_is_safe_accessible_and_device_explicit() -> None:
     assert 'role: "group", "aria-label": "Preview format"' in APP
     assert '"aria-pressed": "false"' in APP
     assert "plain-text body" in APP
-    assert "deliberately not executed in the operator console" in APP
+    # The sanitized HTML is rendered in a sandboxed srcdoc iframe (sandbox="":
+    # no scripts/forms/plugins), never by assigning innerHTML.
+    assert "email-preview-html" in APP
+    assert 'sandbox: ""' in APP
+    assert "allow-scripts" not in APP
     assert ".innerHTML" not in APP
-    assert ".srcdoc" not in APP
 
 
 def test_campaign_drafts_survive_automatic_refresh_and_navigation_requires_confirmation() -> None:

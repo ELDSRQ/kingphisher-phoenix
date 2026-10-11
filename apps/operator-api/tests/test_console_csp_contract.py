@@ -8,9 +8,14 @@ StaticFiles mount — so the SPA must be compatible with that strict policy:
 
 - event handlers are attached with ``addEventListener`` (never inline
   ``onclick="..."`` HTML attributes), which ``script-src 'self'`` permits; and
-- dynamic presentation comes from stylesheet classes (never inline
-  ``style="..."`` attributes), which ``style-src 'self'`` without
-  ``'unsafe-inline'`` permits.
+- the console's own dynamic presentation comes from stylesheet classes, never
+  inline ``style="..."`` attributes.
+
+``style-src`` carries ``'unsafe-inline'`` so a sandboxed ``srcdoc`` email
+preview (which inherits this embedder CSP) can render the inline styles in the
+server-sanitized email body; that relaxation is scoped to styles only.
+``script-src`` stays exactly ``'self'`` — the preview iframe is ``sandbox=""``
+(no scripts) and no inline/eval script source is ever added.
 
 This test is the deterministic precursor to the live browser/WCAG
 qualification lane.  It cannot replace a real browser, but it fails fast on
@@ -64,11 +69,16 @@ def test_console_static_responses_carry_the_strict_csp() -> None:
         assert response.headers.get("content-security-policy") == _CONSOLE_CSP, path
 
 
-def test_console_csp_forbids_unsafe_inline_and_unsafe_eval() -> None:
-    assert "'unsafe-inline'" not in _CONSOLE_CSP
+def test_console_csp_keeps_scripts_locked_and_relaxes_only_inline_styles() -> None:
+    # Scripts stay fully locked: no unsafe-inline and no unsafe-eval ever.
     assert "'unsafe-eval'" not in _CONSOLE_CSP
-    assert "script-src 'self'" in _CONSOLE_CSP
-    assert "style-src 'self'" in _CONSOLE_CSP
+    assert "script-src 'self'; " in _CONSOLE_CSP
+    assert "'unsafe-inline'" not in _CONSOLE_CSP.split("style-src")[0]
+    # 'unsafe-inline' is present only for styles (sanitized email bodies use
+    # inline style attributes that a nonce cannot cover).
+    assert "style-src 'self' 'unsafe-inline'" in _CONSOLE_CSP
+    # The sandboxed srcdoc email preview is admitted by frame-src.
+    assert "frame-src 'self'" in _CONSOLE_CSP
 
 
 def test_console_index_has_no_inline_script_or_handler_attributes() -> None:

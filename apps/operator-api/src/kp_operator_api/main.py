@@ -773,6 +773,8 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.add_middleware(AccessLogMiddleware, logger_name="kp.access.operator")
     app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes)
 
+    console_csp = _build_console_csp(settings)
+
     @app.middleware("http")
     async def security_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
         try:
@@ -809,7 +811,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         if request.url.path.startswith("/console"):
-            response.headers.setdefault("Content-Security-Policy", _CONSOLE_CSP)
+            response.headers.setdefault("Content-Security-Policy", console_csp)
         return response
 
     # Registered after every inner request middleware so HSTS is also present
@@ -904,17 +906,51 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     return app
 
 
-# DEP-010: connect-src is widened to the two Azure control-plane origins so the
+# Console Content-Security-Policy.
+#
+# DEP-010: connect-src is widened to the Azure control-plane origins so the
 # browser-side deployment discovery (PKCE popup) can exchange its auth code at
 # login.microsoftonline.com and read ARM at management.azure.com with the
-# operator's own delegated token. The token never touches this server. The auth
-# step is a popup navigation, not an iframe, so no frame-src is required and the
-# rest of the policy stays locked (default-src 'none', script/style/img 'self').
-_CONSOLE_CSP = (
-    "default-src 'none'; script-src 'self'; style-src 'self'; "
-    "connect-src 'self' https://login.microsoftonline.com https://management.azure.com https://graph.microsoft.com; "
-    "img-src 'self'"
-)
+# operator's own delegated token. The token never touches this server.
+#
+# UX (branded email preview): the console authenticates with a bearer token via
+# fetch, so a cross-origin ``<iframe src=...>`` could not carry that token.
+# Branded email previews are therefore rendered from already-fetched,
+# server-sanitized ``safe_html`` inside a fully sandboxed ``srcdoc`` iframe. A
+# srcdoc iframe inherits the embedder's (console) CSP, so the policy must admit
+# what sanitized email bodies legitimately carry:
+#   - script-src stays 'self' UNCHANGED (sandbox="" runs no scripts; no inline
+#     or eval script source is ever added) — defense in depth on top of the
+#     server-side sanitizer;
+#   - style-src gains 'unsafe-inline' because sanitized bodies use inline
+#     ``style`` attributes, which a nonce cannot cover;
+#   - img-src gains ``data:`` (self-contained logos) plus the configured
+#     ``safe_html_image_hosts`` (``*`` widens to ``https:`` rather than a literal
+#     wildcard);
+#   - frame-src 'self' admits the sandboxed srcdoc iframe.
+# The hosts come from settings, so the policy is built per-app from the settings
+# object; ``_CONSOLE_CSP`` is the sensible default for the shipped host list.
+
+
+def _build_console_csp(settings: OperatorApiSettings) -> str:
+    """Build the console CSP from settings (image allow-list drives ``img-src``)."""
+    image_hosts = settings.image_host_set()
+    # A literal ``*`` with ``data:`` is valid, but an explicit ``https:`` is
+    # clearer and still forbids plaintext http image loads.
+    image_sources = "https:" if "*" in image_hosts else " ".join(sorted(image_hosts))
+    img_src = "img-src 'self' data:" + (f" {image_sources}" if image_sources else "")
+    return (
+        "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "frame-src 'self'; "
+        "connect-src 'self' https://login.microsoftonline.com "
+        "https://management.azure.com https://graph.microsoft.com; " + img_src
+    )
+
+
+#: Default policy for the shipped ``safe_html_image_hosts`` list. The running
+#: app uses ``_build_console_csp(settings)``; this constant mirrors it for the
+#: default host set so source-contract tests have a stable reference.
+_CONSOLE_CSP = _build_console_csp(OperatorApiSettings.model_construct())
 
 
 def _mount_console(app: FastAPI, settings: OperatorApiSettings) -> None:

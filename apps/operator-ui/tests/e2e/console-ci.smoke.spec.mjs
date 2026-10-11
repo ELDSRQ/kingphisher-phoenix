@@ -5,6 +5,21 @@ import AxeBuilder from "@axe-core/playwright";
 
 const FIXTURE_PASSWORD = "ConsoleSmokeSynthetic2026";
 
+// Server-sanitized branded HTML the preview endpoint returns. The operator
+// review preview renders it in a sandboxed srcdoc iframe (table layout, inline
+// styles, a self-contained data:image logo, and the single training link).
+const BRANDED_PREVIEW_HTML = [
+  '<div style="font-family:Arial,sans-serif">',
+  '<table width="100%" cellpadding="0" cellspacing="0">',
+  '<tr><td style="background-color:#0f4c81;padding:16px;color:#ffffff;font-weight:bold">',
+  '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" alt="Northwind IT" width="24" height="24"> Northwind IT Service Desk',
+  "</td></tr>",
+  '<tr><td style="padding:16px"><p>Hello sample recipient,</p>',
+  "<p>Your mailbox has reached <strong>98% of its storage quota</strong>.</p>",
+  '<p><a href="/recipient-training-link" style="color:#0f4c81;font-weight:bold">Review my mailbox</a></p>',
+  "</td></tr></table></div>",
+].join("");
+
 async function installHumanFlowFixture(page) {
   const id = (suffix) => `30000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
   const rosterId = id(1), templateId = id(2), patternId = id(3), lessonId = id(4), campaignId = id(5), roeId = id(6);
@@ -65,6 +80,7 @@ async function installHumanFlowFixture(page) {
     if ([`/templates/${templateId}/preview`, `/templates/${draftId}/preview`].includes(path)) return route.fulfill({ json: {
       template_version_id: path.includes(draftId) ? draftId : templateId, approval_state: path.includes(draftId) ? "draft" : "approved",
       subject: "Human trial email", plain_text: "Dear sample recipient, review your request.",
+      safe_html: BRANDED_PREVIEW_HTML, safe_html_present: true,
       editable_subject: "Human trial email", editable_plain_text: "Review your request. Continue: {{ tracking.training_url }}",
     } });
     if (path === `/templates/${templateId}/clone`) {
@@ -143,6 +159,17 @@ for (const width of [1280, 768]) {
     state.failPreview = false;
     await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
     await expect(page.getByLabel("Campaign name", { exact: true })).toBeVisible();
+    // The email-review preview renders the server-sanitized branded HTML in a
+    // fully sandboxed srcdoc iframe (no graphics-less plain-text-only preview).
+    const brandedPreview = page.locator("iframe.email-preview-html");
+    await expect(brandedPreview).toBeVisible();
+    await expect(brandedPreview).toHaveAttribute("sandbox", "");
+    const srcdoc = await brandedPreview.getAttribute("srcdoc");
+    expect(srcdoc).toContain("Review my mailbox");
+    expect(srcdoc).toContain("data:image/png;base64,");
+    expect(srcdoc).toContain("Northwind IT Service Desk");
+    // The rendered iframe body actually shows the branded content to the reviewer.
+    await expect(brandedPreview.contentFrame().getByText("Review my mailbox")).toBeVisible();
     await page.getByLabel("Email subject", { exact: true }).fill("Revised reviewed human trial email");
     await expect(page.getByRole("button", { name: "Approve campaign", exact: true })).toBeDisabled();
     await expect(page.getByText(/Email edited\. Click Create fake email for review/)).toBeVisible();

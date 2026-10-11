@@ -282,11 +282,13 @@ def _validate_template_content(session: Session, content: TemplatePreview) -> No
 
 
 def _render_template_preview(body: TemplatePreview, request: Request) -> dict[str, Any]:
-    """Render with fixed synthetic contexts and return HTML only as inert JSON text.
+    """Render with fixed synthetic contexts and return the sanitized HTML as JSON.
 
-    The authoring API preserves the rendered ``safe_html`` string for its public
-    response contract. It never emits an HTML response; clients must not inject
-    the value into an executable document.
+    The API returns the already-sanitized ``safe_html`` as a JSON string; it
+    never emits an HTML response. The operator console renders it for review
+    only inside a fully sandboxed ``srcdoc`` iframe (``sandbox=""``: no scripts,
+    forms or plugins, unique origin), so the branded email looks as the
+    recipient would see it without executing anything.
     """
     from kp_templating.render import CampaignContext, RecipientContext, TrackingContext
 
@@ -318,8 +320,9 @@ def _render_template_preview(body: TemplatePreview, request: Request) -> dict[st
             tracking=tracking,
             sender_email="sender@example.com",
         )
-        # Render to prove the sanitized alternative has no invalid template
-        # variables. It is deliberately withheld so the console cannot execute it.
+        # Render the sanitized alternative so the console can show the branded
+        # email in a sandboxed iframe; rendering here also proves it has no
+        # invalid template variables before review.
         rendered_html = _renderer.render(
             body.safe_html,
             recipient=recipient,
@@ -588,8 +591,13 @@ def preview_library_template(
         raise NotFoundError("template not found")
     content = _template_content(template)
     _validate_template_content(session, content)
+    # The rendered ``safe_html`` is returned so the operator review preview can
+    # render the branded email in a sandboxed ``srcdoc`` iframe (``sandbox=""``:
+    # no scripts/forms, unique origin). The value is already server-sanitized
+    # (scripts/forms stripped, links restricted to the training URL, images
+    # allow-listed); the sandbox and the unchanged console ``script-src 'self'``
+    # are defense in depth.
     rendered = _render_template_preview(content, request)
-    rendered.pop("safe_html", None)
     return {
         "template_version_id": str(template.template_version_id),
         "approval_state": template.approval_state.value,
