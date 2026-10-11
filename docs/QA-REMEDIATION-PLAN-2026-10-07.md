@@ -8,6 +8,13 @@ until the user signs off on this build as fully completed and human ready.
 Earlier pre-D6 rotation sequencing below is superseded. Do not rotate before
 that sign-off or treat rotation as a blocker to the human trial.
 
+**Current campaign workflow (October 9):** the latest user instruction removes
+mandatory canary, test-account designation, manual freeze and launch-lock tasks.
+Use the [simplified-flow handoff](SESSION-HANDOFF-2026-10-09-SIMPLE-FLOW.md) and
+the current [human trial](D6-HUMAN-ACCEPTANCE-SCRIPT.md#current-trial-simplified-campaign-flow).
+Earlier dated workflow records remain historical evidence. Reply ingestion and
+the user's human acceptance remain open.
+
 Reviewed source: `ad997f9f64368d3c7ccb9bb7ae8e127b08e52b83`. The source review is the user-provided `docs/QA-REVIEW-2026-10-07.md`, retained unchanged. Scope: bounded static inspection of relevant code, tests, CI and dated operational evidence, plus inert Python/SQLAlchemy demonstrations. No full suite, SSH probes, campaign actions, storage access, process signals, deployments or source changes were performed.
 
 The assessment identifies useful work, but its executable plan should not be adopted verbatim. Select the worker-status fix, bounded credential hygiene, bootstrap correctness repair, current-document cleanup and evidence reporting. Keep the previously accepted key-file and flake investigations as bounded follow-ups. Do not turn all of UX Wave 2 into a prerequisite for the pending D6 human run. Several blanket evidence statements and the review's replacement route count are demonstrably wrong.

@@ -1,4 +1,4 @@
-> **Current operational reference:** [October 6 handoff](docs/SESSION-HANDOFF-2026-10-06.md) and [October 7 remediation status](docs/QA-REMEDIATION-PLAN-2026-10-07.md). Dated source counts, deployments and qualification results below are historical; preserve their dates and scope.
+> **Current operational reference:** [October 9 simplified campaign flow](docs/SESSION-HANDOFF-2026-10-09-SIMPLE-FLOW.md), [current resume prompt](docs/NEXT-SESSION-PROMPT.md#current-resume-prompt--october-9) and [current human trial](docs/D6-HUMAN-ACCEPTANCE-SCRIPT.md#current-trial-simplified-campaign-flow). Older “read first,” canonical-handoff and current-state directives below are historical and superseded by this reference. Preserve their dates and scope.
 
 # RESUME HERE — 2026-09-05 (Azure IDLED; full app + Qwen now run LOCAL on .105; head `a57345d`)
 

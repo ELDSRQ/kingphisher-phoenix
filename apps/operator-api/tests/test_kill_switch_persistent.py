@@ -8,13 +8,14 @@ from uuid import uuid4
 
 import jwt
 import pytest
+from _migrate_schema import isolated_migrated_database
 from fastapi.testclient import TestClient
-from kp_database.base import Base
 from kp_database.models import Campaign, CampaignPattern, SystemSafetyState
 from kp_database.session import create_db_engine, make_session_factory
 from kp_domain_models import models as dm
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import create_app
+from sqlalchemy import text
 
 pytestmark = pytest.mark.postgres
 
@@ -41,6 +42,23 @@ def _db_available() -> bool:
 
 
 requires_db = pytest.mark.skipif(not _db_available(), reason="PostgreSQL integration database is not reachable")
+
+
+@pytest.fixture
+def isolated_stop_database(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    # Keep audit functions, private chain state and mapped tables in one
+    # migrated fixture. Metadata-only recreation leaves stale chain state.
+    with isolated_migrated_database(TEST_URL, prefix="kp_stop") as database_url:
+        monkeypatch.setitem(globals(), "TEST_URL", database_url)
+        engine = create_db_engine(database_url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("INSERT INTO audit_integrity_secret (singleton_id, key_hex) VALUES (1, :key)"), {"key": HMAC}
+                )
+        finally:
+            engine.dispose()
+        yield
 
 
 def _settings() -> OperatorApiSettings:
@@ -74,20 +92,19 @@ def _token(role: str) -> str:
 
 def _client() -> TestClient:
     app = create_app(_settings())
-    # This metadata-only integration test verifies persistence and audit
-    # events, while immutable-chain health is independently migration-tested.
+    # This persistence case uses its own migrated audit chain; chain health is
+    # independently verified by the migration and privilege gates.
     app.state.audit_health_check = lambda: True
     return TestClient(app)
 
 
 @requires_db
-def test_global_stop_survives_app_restart_and_only_authorized_reset_reopens() -> None:
+def test_global_stop_survives_app_restart_and_only_authorized_reset_reopens(isolated_stop_database: None) -> None:
     engine = create_db_engine(TEST_URL)
-    Base.metadata.drop_all(bind=engine)
-    Base.metadata.create_all(bind=engine)
     factory = make_session_factory(engine)
     campaign_id = uuid4()
     with factory() as session:
+        assert session.get(SystemSafetyState, 1).emergency_stop_engaged is False
         pattern = CampaignPattern(
             campaign_pattern_id=uuid4(),
             lure_category=dm.LureCategory.OTHER,
@@ -97,7 +114,6 @@ def test_global_stop_survives_app_restart_and_only_authorized_reset_reopens() ->
         session.flush()
         session.add_all(
             [
-                SystemSafetyState(singleton_id=1, emergency_stop_engaged=False),
                 Campaign(
                     campaign_id=campaign_id,
                     pattern_id=pattern.campaign_pattern_id,

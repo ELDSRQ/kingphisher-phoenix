@@ -28,7 +28,7 @@ from typing import Any, Literal
 from kp_database.models import Recipient, RulesOfEngagement
 from kp_domain_models import models as dm
 from kp_domain_models.policy import mailbox_domain
-from kp_domain_models.roe import recipient_domain_roe_covered, roe_active_at
+from kp_domain_models.roe import recipient_domain_roe_covered, roe_active_at, verify_roe_signature
 from kp_telemetry.errors import ValidationError_
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy import select, text
@@ -48,6 +48,7 @@ from kp_operator_api.recipient_import import (
     validate_csv_text,
 )
 from kp_operator_api.send_policy import resolve_recipient_policy
+from kp_operator_api.sending_domains_roe import _roe_signing_key
 
 _RECIPIENT_IMPORT_ADVISORY_LOCK_KEY = 0x4B505243494D5054  # "KPRCIMPT"
 _RECIPIENT_IMPORT_LOCAL_LOCK = threading.Lock()
@@ -64,6 +65,8 @@ class RecipientImportColumnMapping(BaseModel):
 class RecipientImportPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    roe_id: uuid.UUID | None = None
+    target_domain: str | None = Field(default=None, min_length=1, max_length=253)
     csv_text: str = Field(min_length=1, max_length=MAX_RECIPIENT_CSV_BYTES)
     department: str = Field(default="", max_length=255)
     header_mode: RecipientHeaderMode = "auto"
@@ -259,6 +262,34 @@ def _recipient_import_plan(
 ) -> _RecipientImportPlan:
     salt = settings.require_recipient_hash_salt()
     allowlist, unrestricted = resolve_recipient_policy(settings)
+    if body.roe_id is not None or body.target_domain is not None:
+        roe = session.get(RulesOfEngagement, body.roe_id) if body.roe_id is not None else None
+        if (
+            roe is None
+            or not body.target_domain
+            or body.target_domain not in (roe.target_domains or [])
+            or not roe_active_at(
+                revoked_at=roe.revoked_at,
+                window_start=roe.window_start,
+                window_end=roe.window_end,
+                when=datetime.now(UTC),
+            )
+            or not verify_roe_signature(
+                roe.terms_hash,
+                roe.signer,
+                roe.signed_at,
+                roe.signature,
+                authorizing_party=roe.authorizing_party,
+                target_domains=roe.target_domains or [],
+                window_start=roe.window_start,
+                window_end=roe.window_end,
+                signature_version=roe.signature_version,
+                signing_key=_roe_signing_key(settings),
+            )
+        ):
+            raise ValidationError_("choose a domain covered by current signed Rules of Engagement before uploading")
+        allowlist = frozenset({body.target_domain}) if unrestricted else allowlist & frozenset({body.target_domain})
+        unrestricted = False
     try:
         parsed = parse_recipient_csv(
             body.csv_text,
@@ -367,6 +398,9 @@ def _recipient_import_plan(
         ],
         "deactivation_safe": deactivation_safe,
     }
+    if body.roe_id is not None:
+        digest_payload["roe_id"] = str(body.roe_id)
+        digest_payload["target_domain"] = body.target_domain
     if body.roster_name is not None:
         digest_payload["roster_name"] = body.roster_name
     return _RecipientImportPlan(

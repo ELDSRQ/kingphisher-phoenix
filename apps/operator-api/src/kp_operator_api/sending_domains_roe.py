@@ -439,6 +439,7 @@ def list_roes(
                 "signer": row.signer,
                 "authorizing_party": row.authorizing_party,
                 "terms_hash": row.terms_hash,
+                "terms": row.terms_text,
                 "signature": row.signature,
                 "signature_version": row.signature_version,
                 "signed_at": row.signed_at,

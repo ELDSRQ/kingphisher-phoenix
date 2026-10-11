@@ -51,6 +51,16 @@ def test_training_placeholder_renders_only_the_supplied_recipient_bound_value() 
     assert out == f"Complete training: {recipient_bound_url}"
 
 
+@pytest.mark.parametrize(("name", "greeting"), [("Erik", "Dear Erik,"), ("", "Dear colleague,")])
+def test_campaign_editor_greeting_uses_uploaded_name_or_neutral_fallback(name: str, greeting: str) -> None:
+    out = _render(
+        MessageRenderer(),
+        'Dear {{ recipient.first_name or "colleague" }},',
+        recipient=RecipientContext(first_name=name),
+    )
+    assert out == greeting
+
+
 def test_render_rejects_unauthorized_variable() -> None:
     renderer = MessageRenderer()
     with pytest.raises(TemplateVariableError):
