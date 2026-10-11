@@ -186,6 +186,9 @@
           ...domains.filter((d) => d.active).map((d) => el2("option", { value: d.domain, text: d.domain }))
         ]);
         domainSelect.value = flow.domain || "";
+        const domainForm = el2("form", { "aria-label": "Select domain" });
+        domainForm.addEventListener("submit", (e) => e.preventDefault());
+        guardUnsavedForm2(domainForm, "Domain selection");
         const selectDomain = button("Select domain", async () => {
           if (!domainSelect.value) {
             error.textContent = "Choose your company domain first.";
@@ -199,15 +202,17 @@
           }
           flow.domain = domainSelect.value;
           save();
+          markFormSaved2(domainForm);
           await redraw();
         }, false, true);
-        root.appendChild(card("1. Select domain", [
+        domainForm.append(
           el2("label", { for: "setup-domain", text: "Company domain" }),
           domainSelect,
           selectDomain,
           button("Add or verify a domain", () => navigateTo2("sending")),
           el2("p", { text: "Choose the verified domain your recipients use. Domain suggestions do not select or authorize a domain." })
-        ]));
+        );
+        root.appendChild(card("1. Select domain", [domainForm]));
         if (flow.domain) {
           const matching = roes.filter((r) => activeRoe(r) && (r.target_domains || []).includes(flow.domain));
           const roe = matching.find((r) => r.roe_id === flow.roeId);
@@ -216,6 +221,9 @@
             ...matching.map((r) => el2("option", { value: r.roe_id, text: `${r.authorizing_party} \u2014 expires ${new Date(r.window_end).toLocaleDateString()}` }))
           ]);
           roeChoice.value = flow.roeId || "";
+          const roeForm = el2("form", { "aria-label": "Sign RoE" });
+          roeForm.addEventListener("submit", (e) => e.preventDefault());
+          guardUnsavedForm2(roeForm, "RoE selection");
           const useRoe = button("Use signed RoE", async () => {
             if (!roeChoice.value) {
               error.textContent = "Select a signed authorization or sign a new RoE.";
@@ -228,6 +236,7 @@
             }
             flow.roeId = roeChoice.value;
             save();
+            markFormSaved2(roeForm);
             await redraw();
           }, false, true);
           const sign = button("Sign RoE for selected domain", async () => {
@@ -249,13 +258,14 @@
               flow.roeId = record.roe_id;
               delete flow.rosterId;
               save();
+              markFormSaved2(roeForm);
               await redraw();
               toast2("RoE signed and selected", "success");
             } catch (e) {
               fail(error, e);
             }
           }, !hasCapability2(CAPABILITY2.SIGN_ROE));
-          root.appendChild(card("2. Sign RoE", [
+          roeForm.append(
             el2("label", { for: "setup-roe", text: "Saved signed authorization" }),
             roeChoice,
             useRoe,
@@ -265,7 +275,8 @@
               el2("p", { text: `Signed by ${roe.signer}; valid ${new Date(roe.window_start).toLocaleString()} to ${new Date(roe.window_end).toLocaleString()}.` }),
               el2("details", {}, [el2("summary", { text: "View signed terms" }), el2("p", { text: roe.terms })])
             ] : []
-          ]));
+          );
+          root.appendChild(card("2. Sign RoE", [roeForm]));
           if (roe) {
             const upload = el2("form", { "aria-label": "Upload and review recipients" });
             upload.addEventListener("submit", (e) => e.preventDefault());
