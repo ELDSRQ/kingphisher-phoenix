@@ -14,11 +14,12 @@ assistant call:
   echo supplied values.
 
 The upstream backend is selected by configuration, not code: locally it is a
-self-hosted ``llama.cpp`` server (unauthenticated), and in managed deployments
-an Azure AI Foundry Serverless endpoint reached with an Entra managed-identity
-bearer (AI-015 "Path D", decision ``D-0001``). Only the base URL and the
-outbound auth mode differ; the contract, safety framing, and pinned ``model_id``
-are identical in both.
+self-hosted ``llama.cpp`` server (unauthenticated), in managed deployments an
+Azure AI Foundry Serverless endpoint reached with an Entra managed-identity
+bearer (AI-015 "Path D", decision ``D-0001``), or any OpenAI-compatible upstream
+that takes a static ``Authorization: Bearer <key>`` (``bearer`` mode, e.g.
+OpenRouter). Only the base URL and the outbound auth mode differ; the contract,
+safety framing, and pinned ``model_id`` are identical in all three.
 
 The gateway holds no authority: it cannot approve, target, schedule, or send.
 The platform re-runs its own ``SafetyValidator`` on every response and a human
@@ -122,9 +123,19 @@ async def _upstream_headers() -> dict[str, str]:
     ``Authorization`` header is sent and the local path is byte-for-byte
     unchanged. ``entra`` (AI-015 Path D) returns
     ``Authorization: Bearer <Entra token>`` minted from the gateway's
-    user-assigned managed identity — never an API key.
+    user-assigned managed identity — never an API key. ``bearer`` returns
+    ``Authorization: Bearer <upstream_api_key>`` for an OpenAI-compatible
+    upstream that authenticates with a static key (e.g. OpenRouter).
+
+    In ``bearer`` mode a missing key is a fail-closed ``UpstreamAuthError``
+    (mapped to a clean 502), a request-time backstop for the config validator;
+    the key itself is never placed in the exception message or any log.
     """
 
+    if settings.upstream_auth_mode == "bearer":
+        if not settings.upstream_api_key:
+            raise UpstreamAuthError("upstream api key is not configured")
+        return {"Authorization": f"Bearer {settings.upstream_api_key}"}
     if settings.upstream_auth_mode != "entra":
         return {}
     token = await asyncio.to_thread(_acquire_upstream_token)
@@ -908,14 +919,15 @@ async def readyz() -> JSONResponse:
     check. Its one dependency is the pinned llama.cpp server, so readiness is a
     bounded, fast probe of that server's ``/health`` endpoint.
 
-    In ``entra`` mode (AI-015 Path D) the upstream is a managed multi-tenant
-    Foundry endpoint: it exposes no ``/health`` on this base URL, and polling a
-    pay-per-token endpoint from the platform's readiness loop would both bill
-    and report a false negative. Readiness there is therefore process-local —
-    the upstream is proven by the request path, not by a probe.
+    In the ``entra`` (AI-015 Path D) and ``bearer`` (e.g. OpenRouter) postures
+    the upstream is a managed multi-tenant endpoint: it exposes no ``/health`` on
+    this base URL, and polling a pay-per-token endpoint from the platform's
+    readiness loop would both bill and report a false negative. Readiness there
+    is therefore process-local — the upstream is proven by the request path, not
+    by a probe.
     """
 
-    if settings.upstream_auth_mode == "entra":
+    if settings.upstream_auth_mode in ("entra", "bearer"):
         return JSONResponse(status_code=200, content={"status": "ready"})
     try:
         async with httpx.AsyncClient(timeout=_READYZ_TIMEOUT_SECONDS) as client:

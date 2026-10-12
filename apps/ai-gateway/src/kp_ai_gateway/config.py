@@ -25,7 +25,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #:   (AI-015 "Path D"), reached with an Entra bearer minted from the gateway's
 #:   User-Assigned Managed Identity. No API key is supported or stored: managed
 #:   identity is the only managed posture, so no key can be leaked or rotated.
-UpstreamAuthMode = Literal["none", "entra"]
+#: * ``bearer`` — any OpenAI-compatible upstream that authenticates with a static
+#:   API key sent as ``Authorization: Bearer <key>`` (e.g. OpenRouter at
+#:   https://openrouter.ai/api/v1, or a self-hosted vLLM/llama.cpp server started
+#:   with ``--api-key``). The key is read from ``upstream_api_key`` and is
+#:   required in this mode. Unlike ``entra`` this is a long-lived secret, so it is
+#:   never logged and is kept out of every error/debug surface.
+UpstreamAuthMode = Literal["none", "entra", "bearer"]
 
 #: How the gateway asks the backend for structured output.
 #: * ``auto`` — the default: pick per backend from ``upstream_auth_mode`` so a
@@ -213,8 +219,19 @@ class GatewaySettings(BaseSettings):
     #: ``UpstreamAuthMode``). ``none`` (the default) keeps the local llama.cpp
     #: path byte-for-byte unchanged: no ``Authorization`` header is sent.
     #: ``entra`` is the managed/Foundry posture and requires
-    #: ``upstream_managed_identity_client_id``.
+    #: ``upstream_managed_identity_client_id``. ``bearer`` is the static-API-key
+    #: posture for an OpenAI-compatible upstream (e.g. OpenRouter) and requires
+    #: ``upstream_api_key``.
     upstream_auth_mode: UpstreamAuthMode = "none"
+
+    #: Static API key for an ``upstream_auth_mode == "bearer"`` backend, sent as
+    #: ``Authorization: Bearer <key>`` on every upstream call. Required in that
+    #: mode (the config validator fails closed at construction if it is missing)
+    #: and ignored in ``none``/``entra`` modes. This is a long-lived secret: it is
+    #: NEVER logged and must stay out of every error/debug surface, exactly like
+    #: the inbound ``api_key``. It is a DIFFERENT axis from ``api_key`` (which
+    #: authenticates INBOUND callers); the two must never be conflated.
+    upstream_api_key: str | None = None
 
     #: Client id of the User-Assigned Managed Identity the gateway uses to mint
     #: an Entra bearer for the upstream (AI-015 Path D). Required when
@@ -256,6 +273,16 @@ class GatewaySettings(BaseSettings):
                 "KP_AI_GATEWAY_UPSTREAM_MANAGED_IDENTITY_CLIENT_ID; set it to the client id of the "
                 "gateway's user-assigned managed identity, or select upstream_auth_mode=none for local "
                 "development."
+            )
+        if self.upstream_auth_mode == "bearer" and not self.upstream_api_key:
+            # Fail closed, mirroring the entra rule: a bearer upstream with no key
+            # would send ``Authorization: Bearer `` and the backend would 401 at
+            # request time. Surface it as a boot-time misconfiguration instead.
+            # The error names only the env var, never any (absent) secret value.
+            raise ValueError(
+                "KP_AI_GATEWAY_UPSTREAM_AUTH_MODE=bearer requires KP_AI_GATEWAY_UPSTREAM_API_KEY; "
+                "set it to the upstream's API key (e.g. an OpenRouter key), or select "
+                "upstream_auth_mode=none for local development."
             )
         if not self.upstream_token_scope.strip():
             raise ValueError("KP_AI_GATEWAY_UPSTREAM_TOKEN_SCOPE must not be empty")
