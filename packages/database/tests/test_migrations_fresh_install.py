@@ -863,7 +863,10 @@ def test_reply_ingestion_records_one_idempotent_message_replied_event(monkeypatc
                 assert len(replied) == 1
                 assert replied[0].recipient_assignment_id == assignment_id
                 assert replied[0].confidence == dm.Confidence.HIGH
-                assert len(list(session.scalars(select(ReplyMailReceipt)))) == 4
+                # Three distinct external messages were consumed; the second
+                # call replays the first external id (durable boundary), so it
+                # creates no extra receipt — one receipt per distinct message.
+                assert len(list(session.scalars(select(ReplyMailReceipt)))) == 3
 
             with engine.connect() as connection:
                 # Data minimization: the external id is stored only encrypted.
