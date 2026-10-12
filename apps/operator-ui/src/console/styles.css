@@ -522,6 +522,24 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
 .preview-frame.mobile { max-width: 360px; }
 .preview-frame.desktop { max-width: 720px; }
 
+/* Sandboxed srcdoc iframe that renders the server-sanitized branded email
+   exactly as a recipient's client would show it. White canvas because email
+   bodies assume a light background; a border/radius frames it inside the card.
+   The modifier widths mirror the desktop/mobile reading frames above. */
+.email-preview-html {
+  display: block;
+  width: 100%;
+  min-height: 320px;
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+}
+.email-preview-html.mobile { max-width: 360px; min-height: 420px; margin: 8px auto; }
+.email-preview-html.desktop { max-width: 720px; margin: 8px auto; }
+.email-preview-fallback { margin: 8px 0; }
+.email-preview-fallback summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+
 /* Sending-domain wizard + RoE: ready-to-paste DNS record blocks. */
 .card-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
 .dns-record { border: 1px solid var(--border, #444); border-radius: 6px; padding: 10px 12px; margin: 8px 0; }

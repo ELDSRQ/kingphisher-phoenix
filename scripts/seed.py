@@ -137,6 +137,7 @@ def main() -> None:
         source_id = _seed_source(session)
         pattern = _seed_pattern(session, source_id)
         template = _seed_template(session)
+        _seed_template_branded(session)
         training_resource = _seed_training_resource(session)
         roe = _seed_roe(session)
         campaign = _seed_campaign(
@@ -343,6 +344,155 @@ def _seed_template(session: Session) -> TemplateVersion:
         warning_cues=["urgent-language", "unexpected-sender"],
         training_explanation="Fraudulent invoices are a top lure; verify with the sender out-of-band.",
         approval_hash=hashlib.sha256(b"seed-template").hexdigest(),
+        approval_state=dm.TemplateApprovalState.APPROVED,
+        unicode_validation={},
+    )
+    session.add(template)
+    session.commit()
+    return template
+
+
+#: Self-contained brand logo for the branded seed template: a rounded-square
+#: badge (corporate blue) with a white "N" monogram and an amber underline.
+#: Embedded as a data:image/png;base64 URI so the branded email is fully
+#: self-contained and passes the sanitizer's raster-image allow-list (no remote
+#: fetch, no host allow-list needed). 128x128 RGBA PNG, ~0.6 KB.
+_SEED_BRANDED_LOGO_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAACB0lEQVR42u3cwU3EQBAEQGdAYiRFOJce"
+    "CcCTL4/b3Z7tamn+p+mSwPbazyMiIiIiIrIlH59fP+ZvFG3ugaG4UgxKKoWglGIIiihGoIBiBBZfjMD"
+    "CixFYdDECCy5GYLHlCCy1GICFliOwzGIAFlmOwBIBsMhWABZYjsDyALBAAAwABgBTBsDiyhFYGgAWB4A"
+    "BwADgADAAGAAOzH/itwHgtzUDOLVoAIIAnFg2AAAAkARg98IBCASwc+kAhALYtXgAAAAgFcCO5QMQDmB1"
+    "AQAMALCyBAAAAGACgFVFABD0n/aJMgAIu9TaXQgAAACQdq29sxQAQu+27SoGAAAASL3duqMcAMIfuKwu"
+    "CIABT9xWlgQAAABMeOS6qigABh26WFEWAMNO3by7MAAAAGDasatkUAAM+9sNwOCTt8lXFwAAAMCEGzkA"
+    "XPDyRfKzBgDCn+oBAAAAt7x+lXzwBIDQM34AAADAbW/gJh9DByDsjR8ALv4IQ/I7iQAAAEDK698AXP4Z"
+    "FgB8KxgAAACo/yI3AOUA0r9aCoBvFwMAAABxCAC49B18AMoBeBhkRg0AAAAAAAAAAAAAAABAoHwAAJgA"
+    "4Pv1jB4AAAAAAAAAmAggAQEAB8sHAACXgq2XgBAoHwAAIFA+AABAoHwIlA+B8iFQPgTKh0D5ECgfBMWD"
+    "oHgYlA6GokVEREREZE5+AVl2HJJlhbTfAAAAAElFTkSuQmCC"
+)
+
+# A realistic branded IT-notice lure: table-based layout, inline styles, a
+# self-contained logo, the neutral-name greeting, and a SINGLE link (the
+# training URL). Assembled from short fragments (concatenated with no inter-tag
+# whitespace) so the {{ ... }} Jinja tokens stay literal and lines stay short.
+_SEED_BRANDED_SAFE_HTML = "".join(
+    [
+        '<div style="margin:0; padding:0; background-color:#eef2f7;">',
+        '<table width="100%" cellpadding="0" cellspacing="0"',
+        ' style="background-color:#eef2f7; padding:24px 0;">',
+        '<tr><td align="center">',
+        '<table width="600" cellpadding="0" cellspacing="0"',
+        ' style="width:600px; max-width:600px; background-color:#ffffff;',
+        " border:1px solid #d6dee8; border-radius:10px;",
+        " font-family:'Segoe UI', Arial, sans-serif;\">",
+        '<tr><td style="background-color:#0f4c81; padding:20px 28px;',
+        ' border-top-left-radius:10px; border-top-right-radius:10px;">',
+        '<table cellpadding="0" cellspacing="0" width="100%"><tr>',
+        '<td align="left" valign="middle" width="56">',
+        '<img src="data:image/png;base64,' + _SEED_BRANDED_LOGO_PNG_B64 + '"',
+        ' alt="Northwind IT" width="44" height="44"',
+        ' style="display:block; border:0;"></td>',
+        '<td align="left" valign="middle"',
+        ' style="color:#ffffff; font-size:18px; font-weight:bold;',
+        ' padding-left:12px;">Northwind IT Service Desk</td>',
+        "</tr></table></td></tr>",
+        '<tr><td style="padding:28px 28px 8px 28px; color:#1b2733;',
+        ' font-size:15px; line-height:1.6;">',
+        '<p style="margin:0 0 14px 0;">Hello',
+        ' {{ recipient.first_name or "colleague" }},</p>',
+        '<p style="margin:0 0 14px 0;">Our systems show your mailbox has',
+        " reached <strong>98% of its storage quota</strong>. When the quota",
+        " is exceeded you will stop receiving new email until additional",
+        " space is provisioned.</p>",
+        '<table width="100%" cellpadding="0" cellspacing="0"',
+        ' style="margin:8px 0 18px 0; border-collapse:collapse;">',
+        '<tr><td style="padding:10px 14px; background-color:#f5f8fc;',
+        " border:1px solid #d6dee8; color:#425466;",
+        ' font-size:13px;">Mailbox</td>',
+        '<td style="padding:10px 14px; background-color:#f5f8fc;',
+        " border:1px solid #d6dee8; color:#1b2733; font-size:13px;",
+        ' font-weight:bold;">98% used &mdash; 19.6 GB of 20 GB</td></tr>',
+        '<tr><td style="padding:10px 14px; border:1px solid #d6dee8;',
+        ' color:#425466; font-size:13px;">Action</td>',
+        '<td style="padding:10px 14px; border:1px solid #d6dee8;',
+        ' color:#1b2733; font-size:13px;">Confirm your account to keep',
+        " your current storage</td></tr></table>",
+        '<table cellpadding="0" cellspacing="0"',
+        ' style="margin:6px 0 18px 0;"><tr>',
+        '<td align="center" style="background-color:#0f4c81;',
+        ' border-radius:6px;">',
+        '<a href="{{ tracking.training_url }}"',
+        ' style="display:inline-block; padding:12px 26px; color:#ffffff;',
+        " font-size:15px; font-weight:bold;",
+        ' text-decoration:none;">Review my mailbox</a>',
+        "</td></tr></table>",
+        '<p style="margin:0 0 14px 0; color:#425466; font-size:13px;">If',
+        " you do not confirm within 24 hours, inbound and outbound mail",
+        " may be paused by the service desk.</p>",
+        "</td></tr>",
+        '<tr><td style="padding:16px 28px 24px 28px;',
+        " border-top:1px solid #e3e9f0; color:#8595a7; font-size:11px;",
+        ' line-height:1.5;">',
+        '<p style="margin:0;">Northwind Corporation &middot; IT Service',
+        " Desk &middot; 200 Lakeshore Ave, Suite 400</p>",
+        '<p style="margin:6px 0 0 0;">This is an automated message.',
+        " Please do not reply to this email.</p>",
+        "</td></tr></table></td></tr></table></div>",
+    ]
+)
+
+_SEED_BRANDED_PLAIN_TEXT = (
+    'Hello {{ recipient.first_name or "colleague" }},\n\n'
+    "Our systems show your mailbox has reached 98% of its storage quota "
+    "(19.6 GB of 20 GB). When the quota is exceeded you will stop receiving new "
+    "email until additional space is provisioned.\n\n"
+    "Review your mailbox to keep your current storage: {{ tracking.training_url }}\n\n"
+    "If you do not confirm within 24 hours, inbound and outbound mail may be "
+    "paused by the service desk.\n\n"
+    "Northwind Corporation - IT Service Desk\n"
+    "This is an automated message. Please do not reply to this email."
+)
+
+
+def _seed_template_branded(session: Session) -> TemplateVersion:
+    """Seed a second, APPROVED library template with a realistic branded body.
+
+    The seeded plain-only example looks text-only in the operator review
+    preview; this one carries a table-based branded layout, inline styles and a
+    self-contained logo so the branded-HTML review path has a realistic example.
+    """
+    existing = session.scalar(select(TemplateVersion).where(TemplateVersion.idempotency_key == "seed-template-branded"))
+    if existing is not None:
+        existing.safe_html = _SEED_BRANDED_SAFE_HTML
+        existing.plain_text = _SEED_BRANDED_PLAIN_TEXT
+        session.commit()
+        return existing
+    template = TemplateVersion(
+        template_version_id=uuid5(NAMESPACE_URL, "seed-template-branded"),
+        version=1,
+        idempotency_key="seed-template-branded",
+        generator_version="0.1.0",
+        prompt_template_version="0.1.0",
+        model_id="mock-ai",
+        input_hash=hashlib.sha256(b"seed-template-branded-mailbox-quota").hexdigest(),
+        raw_proposal={
+            "subject": "Action required: your mailbox storage is almost full",
+            "plain_text": _SEED_BRANDED_PLAIN_TEXT,
+            "safe_html": _SEED_BRANDED_SAFE_HTML,
+        },
+        safe_html=_SEED_BRANDED_SAFE_HTML,
+        plain_text=_SEED_BRANDED_PLAIN_TEXT,
+        subject="Action required: your mailbox storage is almost full",
+        synthetic_sender_display="Northwind IT Service Desk",
+        learning_objectives=[
+            "recognize IT service-desk impersonation",
+            "verify storage and quota alerts out of band",
+        ],
+        warning_cues=["urgency-deadline", "brand-impersonation", "account-verification-lure"],
+        training_explanation=(
+            "Quota and storage warnings that brand themselves as the IT service desk are a "
+            "common credential lure; confirm storage alerts through your real IT portal."
+        ),
+        approval_hash=hashlib.sha256(b"seed-template-branded").hexdigest(),
         approval_state=dm.TemplateApprovalState.APPROVED,
         unicode_validation={},
     )

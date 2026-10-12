@@ -1281,6 +1281,14 @@ function shell() {
   document.title = `${activeLabel} — Kingphisher-Phoenix Operator Console`;
   const viewChanged = active !== lastRenderedView;
   lastRenderedView = active;
+  // A same-view re-render (the 30s live refresh, or the manual "Refresh current
+  // view") must not scroll the operator back to the top and make them lose
+  // their place. Capture the current scroll position before the re-mount so it
+  // can be restored once the new content paints. Navigation (viewChanged) still
+  // jumps to the top and focuses the heading.
+  const previousView = document.getElementById("console-view");
+  const preservedScrollTop = previousView ? previousView.scrollTop : 0;
+  const preservedWindowScroll = window.scrollY;
   const nav = el("nav", { "aria-label": "Operator sections" });
   const navButton = ([id, label]) => el("button", {
     type: "button",
@@ -1364,7 +1372,14 @@ function shell() {
   document.getElementById("app").replaceChildren(root);
   if (active && views[active]) {
     Promise.resolve(views[active](content)).then(() => {
-      if (!viewChanged || !content.isConnected) return;
+      if (!content.isConnected) return;
+      if (!viewChanged) {
+        // Same-view refresh: keep the operator's place instead of moving focus
+        // or jumping to the top.
+        content.scrollTop = preservedScrollTop;
+        window.scrollTo(0, preservedWindowScroll);
+        return;
+      }
       const heading = content.querySelector("h1, h2");
       if (heading) {
         heading.setAttribute("tabindex", "-1");
@@ -5547,6 +5562,9 @@ function showRenderedTemplatePreview(rendered, selectableTemplate = null) {
   const controls = el("div", { class: "btn-row", role: "group", "aria-label": "Preview format" });
   const buttons = new Map();
 
+  // The server-sanitized HTML is rendered for review in a sandboxed srcdoc
+  // iframe; fall back to the plain-text frames when a draft has no HTML.
+  const hasHtml = Boolean(rendered.safe_html);
   const draw = (mode) => {
     for (const [name, button] of buttons) button.setAttribute("aria-pressed", String(name === mode));
     if (mode === "plain") {
@@ -5557,6 +5575,19 @@ function showRenderedTemplatePreview(rendered, selectableTemplate = null) {
       return;
     }
     const mobile = mode === "mobile";
+    if (hasHtml) {
+      status.textContent = mobile
+        ? "Rendered HTML in a narrow mobile frame, as the recipient's email client shows it."
+        : "Rendered HTML in a desktop frame, as the recipient's email client shows it.";
+      // sandbox="" (empty) disables scripts/forms/plugins and gives the frame a
+      // unique origin; the console's own script-src 'self' stays in force.
+      stage.replaceChildren(el("iframe", {
+        class: `email-preview-html ${mobile ? "mobile" : "desktop"}`,
+        sandbox: "", title: "Rendered email preview", srcdoc: rendered.safe_html,
+        "aria-label": `${mobile ? "Mobile" : "Desktop"} rendered email preview`,
+      }));
+      return;
+    }
     status.textContent = mobile
       ? "Narrow mobile reading frame using the approved plain-text fallback."
       : "Desktop reading frame using the approved plain-text fallback.";
@@ -5586,10 +5617,10 @@ function showRenderedTemplatePreview(rendered, selectableTemplate = null) {
   }
   form.appendChild(controls);
   form.appendChild(status);
-  if (rendered.safe_html || rendered.safe_html_present) {
+  if (hasHtml) {
     form.appendChild(el("p", {
       class: "modal-help",
-      text: "A sanitized HTML alternative exists but is deliberately not executed in the operator console. Use the plain-text fallback below for safe review.",
+      text: "The HTML is server-sanitized and rendered in a sandboxed frame (no scripts, forms, or outbound navigation). Switch to Plain text for the text-only alternative.",
     }));
     if (rendered.html_summary) {
       form.appendChild(renderHtmlStructureSummary(rendered.html_summary));
@@ -5597,7 +5628,7 @@ function showRenderedTemplatePreview(rendered, selectableTemplate = null) {
   } else {
     form.appendChild(el("p", {
       class: "modal-help",
-      text: "This pending-draft contract exposes only the plain-text body, so desktop and mobile frames do not claim to be an HTML-client rendering.",
+      text: "This draft exposes only the plain-text body, so the desktop and mobile frames show the text alternative.",
     }));
   }
   form.appendChild(stage);

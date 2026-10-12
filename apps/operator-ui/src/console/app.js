@@ -81,6 +81,18 @@
       el2("tbody", {}, rows.map((row) => el2("tr", {}, row.map((value) => el2("td", { text: String(value ?? "\u2014") })))))
     ])]);
     const card = (title, children) => el2("section", { class: "card" }, [el2("h3", { text: title }), ...children]);
+    const emailPreviewNode = (content) => {
+      if (content.safe_html) {
+        return [
+          el2("iframe", { class: "email-preview-html", sandbox: "", title: "Rendered email preview", srcdoc: content.safe_html }),
+          el2("details", { class: "email-preview-fallback" }, [
+            el2("summary", { text: "Show plain-text version" }),
+            el2("pre", { class: "email-preview", text: content.plain_text })
+          ])
+        ];
+      }
+      return [el2("pre", { class: "email-preview", text: content.plain_text })];
+    };
     const field = (form, label, id, attrs = {}) => {
       const input = el2(attrs.rows ? "textarea" : "input", { id, ...attrs });
       form.append(el2("label", { for: id, text: label }), input);
@@ -448,7 +460,7 @@ ${wording.value}`;
                 if (flow.templateId) {
                   const preview = card("Email preview", [
                     el2("h4", { text: emailContent.subject }),
-                    el2("pre", { class: "email-preview", text: emailContent.plain_text }),
+                    ...emailPreviewNode(emailContent),
                     el2("p", { text: "Review the subject, wording and sender below. Nothing has been sent." })
                   ]);
                   root.appendChild(preview);
@@ -568,7 +580,7 @@ ${wording.value}`;
             form.append(
               el2("p", { text: `Approved domains: ${(authorization?.target_domains || []).join(", ") || "No active authorization"}. All other domains are rejected.` }),
               el2("h4", { text: email.subject }),
-              el2("pre", { class: "email-preview", text: email.plain_text })
+              ...emailPreviewNode(email)
             );
             form.appendChild(table(["Recipient", "Department"], preview.recipients.map((r) => [r.mailbox || r.recipient_id, r.department]), "Recipients for approval"));
             form.appendChild(button("Approve reviewed list", async (event2) => {
@@ -2066,6 +2078,9 @@ ${wording.value}`;
     document.title = `${activeLabel} \u2014 Kingphisher-Phoenix Operator Console`;
     const viewChanged = active !== lastRenderedView;
     lastRenderedView = active;
+    const previousView = document.getElementById("console-view");
+    const preservedScrollTop = previousView ? previousView.scrollTop : 0;
+    const preservedWindowScroll = window.scrollY;
     const nav = el("nav", { "aria-label": "Operator sections" });
     const navButton = ([id, label]) => el("button", {
       type: "button",
@@ -2153,7 +2168,12 @@ ${wording.value}`;
     document.getElementById("app").replaceChildren(root);
     if (active && views[active]) {
       Promise.resolve(views[active](content)).then(() => {
-        if (!viewChanged || !content.isConnected) return;
+        if (!content.isConnected) return;
+        if (!viewChanged) {
+          content.scrollTop = preservedScrollTop;
+          window.scrollTo(0, preservedWindowScroll);
+          return;
+        }
         const heading = content.querySelector("h1, h2");
         if (heading) {
           heading.setAttribute("tabindex", "-1");
@@ -6413,6 +6433,7 @@ ${wording.value}`;
     const stage = el("div", { "aria-label": "Rendered message preview" });
     const controls = el("div", { class: "btn-row", role: "group", "aria-label": "Preview format" });
     const buttons = /* @__PURE__ */ new Map();
+    const hasHtml = Boolean(rendered.safe_html);
     const draw = (mode) => {
       for (const [name, button] of buttons) button.setAttribute("aria-pressed", String(name === mode));
       if (mode === "plain") {
@@ -6425,6 +6446,17 @@ ${wording.value}`;
         return;
       }
       const mobile = mode === "mobile";
+      if (hasHtml) {
+        status.textContent = mobile ? "Rendered HTML in a narrow mobile frame, as the recipient's email client shows it." : "Rendered HTML in a desktop frame, as the recipient's email client shows it.";
+        stage.replaceChildren(el("iframe", {
+          class: `email-preview-html ${mobile ? "mobile" : "desktop"}`,
+          sandbox: "",
+          title: "Rendered email preview",
+          srcdoc: rendered.safe_html,
+          "aria-label": `${mobile ? "Mobile" : "Desktop"} rendered email preview`
+        }));
+        return;
+      }
       status.textContent = mobile ? "Narrow mobile reading frame using the approved plain-text fallback." : "Desktop reading frame using the approved plain-text fallback.";
       const message = el("article", {
         tabindex: "0",
@@ -6459,10 +6491,10 @@ ${wording.value}`;
     }
     form.appendChild(controls);
     form.appendChild(status);
-    if (rendered.safe_html || rendered.safe_html_present) {
+    if (hasHtml) {
       form.appendChild(el("p", {
         class: "modal-help",
-        text: "A sanitized HTML alternative exists but is deliberately not executed in the operator console. Use the plain-text fallback below for safe review."
+        text: "The HTML is server-sanitized and rendered in a sandboxed frame (no scripts, forms, or outbound navigation). Switch to Plain text for the text-only alternative."
       }));
       if (rendered.html_summary) {
         form.appendChild(renderHtmlStructureSummary(rendered.html_summary));
@@ -6470,7 +6502,7 @@ ${wording.value}`;
     } else {
       form.appendChild(el("p", {
         class: "modal-help",
-        text: "This pending-draft contract exposes only the plain-text body, so desktop and mobile frames do not claim to be an HTML-client rendering."
+        text: "This draft exposes only the plain-text body, so the desktop and mobile frames show the text alternative."
       }));
     }
     form.appendChild(stage);
