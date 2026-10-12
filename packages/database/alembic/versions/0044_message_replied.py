@@ -7,7 +7,7 @@ state to carry a 'reply_mailbox' lease scope. Data-minimizing: the reply table
 stores only the encrypted external id, its hash, and a bounded disposition —
 never the reply body or the sender address.
 
-Revision ID: 0044_message_replied_reply_receipts
+Revision ID: 0044_message_replied
 Revises: 0043_reviewed_direct_campaigns
 Create Date: 2026-10-11
 """
@@ -18,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0044_message_replied_reply_receipts"
+revision = "0044_message_replied"
 down_revision = "0043_reviewed_direct_campaigns"
 branch_labels = None
 depends_on = None

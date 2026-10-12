@@ -249,7 +249,7 @@ test("password login, status and an audited reversible Settings edit", async ({ 
   expect(status.status()).toBe(200);
   const health = await status.json();
   expect(health.runtime_control).toBe("local_supervisor");
-  expect(Object.keys(health.workers)).toHaveLength(10);
+  expect(Object.keys(health.workers)).toHaveLength(11);
   expect(health.workers.curation).toBe(false);
   expect(health.workers["audit-anchor"]).toBe(false);
 
