@@ -94,6 +94,7 @@ local_supervisor_worker_children=(
   worker-delivery
   worker-retention
   worker-mailbox
+  worker-reply-mailbox
   worker-reminder
   worker-alert
   worker-directory

@@ -289,6 +289,19 @@ class WorkerSettings(BaseSettings):
     reported_mailbox_bearer_token: str | None = None
     reported_mailbox_basic_username: str | None = None
     reported_mailbox_basic_password: str | None = None
+    # --- recipient reply ingestion ---
+    # The mailbox simulated-phishing replies land in. Mirrors reported_mailbox_*
+    # exactly; empty url falls back to the local Mailpit API for development.
+    # Data-minimizing: the worker reads reply headers only (In-Reply-To /
+    # References) to correlate to the sent Message-ID, never the body or sender.
+    reply_mailbox_url: str | None = None
+    reply_mailbox_provider: Literal["mailpit", "microsoft365"] = "mailpit"
+    reply_mailbox_client_id: str | None = None
+    reply_mailbox_id: str | None = None
+    reply_mailbox_folder_id: str = "inbox"
+    reply_mailbox_bearer_token: str | None = None
+    reply_mailbox_basic_username: str | None = None
+    reply_mailbox_basic_password: str | None = None
     # 10s was fine for plain-text generation but dead-letters realistic branded
     # HTML (~20-30s locally) and hosted BYO providers (frontier model + network
     # latency). Default 60s covers both; the cap allows up to 180s for slow
@@ -402,18 +415,28 @@ class WorkerSettings(BaseSettings):
             raise ValueError("reported mailbox basic username and password must be configured together")
         if self.reported_mailbox_bearer_token and all(basic_values):
             raise ValueError("reported mailbox bearer and basic authentication cannot both be configured")
-        if (
-            self.graph_client_id
-            and self.reported_mailbox_client_id
-            and self.graph_client_id.strip().lower() == self.reported_mailbox_client_id.strip().lower()
-        ):
-            raise ValueError("directory and reported mailbox must use distinct managed identity client IDs")
+        reply_basic_values = (self.reply_mailbox_basic_username, self.reply_mailbox_basic_password)
+        if any(reply_basic_values) and not all(reply_basic_values):
+            raise ValueError("reply mailbox basic username and password must be configured together")
+        if self.reply_mailbox_bearer_token and all(reply_basic_values):
+            raise ValueError("reply mailbox bearer and basic authentication cannot both be configured")
+        mailbox_client_ids = {
+            "directory": self.graph_client_id,
+            "reported mailbox": self.reported_mailbox_client_id,
+            "reply mailbox": self.reply_mailbox_client_id,
+        }
+        normalized = [value.strip().lower() for value in mailbox_client_ids.values() if value and value.strip()]
+        if len(normalized) != len(set(normalized)):
+            raise ValueError(
+                "directory, reported mailbox, and reply mailbox must use distinct managed identity client IDs"
+            )
         _validate_provider_url("mock Graph URL", self.mock_graph_url)
         _validate_provider_url("mock AI URL", self.mock_ai_url)
         _validate_provider_url("Mailpit API URL", self.mailpit_api_url)
         _validate_provider_url("Graph base URL", self.graph_base_url)
         _validate_provider_url("AI base URL", self.ai_base_url)
         _validate_provider_url("reported mailbox URL", self.reported_mailbox_url)
+        _validate_provider_url("reply mailbox URL", self.reply_mailbox_url)
         if self.ai_model_id and ("\x00" in self.ai_model_id or "\r" in self.ai_model_id or "\n" in self.ai_model_id):
             raise ValueError("AI model ID must be a single line without control characters")
         if self.ai_extract_model_id and any(c in self.ai_extract_model_id for c in ("\x00", "\r", "\n")):
@@ -543,6 +566,22 @@ class WorkerSettings(BaseSettings):
                 (self.reported_mailbox_basic_username, self.reported_mailbox_basic_password)
             ):
                 raise ValueError("managed Microsoft 365 mailbox must use its dedicated managed identity")
+        elif self.worker_name == "reply-mailbox":
+            _require_managed_provider_url("reply mailbox URL", self.reply_mailbox_url)
+            if self.reply_mailbox_provider != "microsoft365":
+                raise ValueError("managed reply mailbox workers must use the microsoft365 provider")
+            if _provider_hostname(self.reply_mailbox_url) != _MICROSOFT_GRAPH_HOST:
+                raise ValueError("managed Microsoft 365 reply mailbox must use the native Microsoft Graph endpoint")
+            _require_uuid("Microsoft tenant ID", self.microsoft_tenant_id)
+            _require_uuid("reply mailbox client ID", self.reply_mailbox_client_id)
+            if not self.reply_mailbox_id or _MAILBOX.fullmatch(self.reply_mailbox_id.strip()) is None:
+                raise ValueError("reply mailbox ID must be a mailbox address")
+            if not self.reply_mailbox_folder_id.strip() or len(self.reply_mailbox_folder_id) > 256:
+                raise ValueError("reply mailbox folder ID is malformed")
+            if self.reply_mailbox_bearer_token or any(
+                (self.reply_mailbox_basic_username, self.reply_mailbox_basic_password)
+            ):
+                raise ValueError("managed Microsoft 365 reply mailbox must use its dedicated managed identity")
         elif self.worker_name == "retention":
             try:
                 self.require_awareness_pseudonym_config()
@@ -758,6 +797,10 @@ class WorkerSettings(BaseSettings):
     @property
     def effective_reported_mailbox_url(self) -> str:
         return self.reported_mailbox_url or self.mailpit_api_url
+
+    @property
+    def effective_reply_mailbox_url(self) -> str:
+        return self.reply_mailbox_url or self.mailpit_api_url
 
     @property
     def effective_ai_base_url(self) -> str:

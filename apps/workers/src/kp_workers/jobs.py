@@ -2440,6 +2440,12 @@ def process_mailbox(ctx: WorkerContext, message: dict[str, Any]) -> None:
     process_durable_mailbox(ctx, message)
 
 
+def process_reply_mailbox(ctx: WorkerContext, message: dict[str, Any]) -> None:
+    from kp_workers.reply_mail_jobs import process_reply_mailbox as process_durable_reply_mailbox
+
+    process_durable_reply_mailbox(ctx, message)
+
+
 def process_directory_sync(ctx: WorkerContext, message: dict[str, Any]) -> None:
     from kp_workers.directory_jobs import process_directory_sync as process_durable_directory_sync
 

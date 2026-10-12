@@ -1000,7 +1000,7 @@ class Microsoft365IntegrationState(Base):
     __tablename__ = "microsoft365_integration_states"
     __table_args__ = (
         UniqueConstraint("kind", "scope_hash", name="uq_m365_integration_kind_scope"),
-        CheckConstraint("kind IN ('directory', 'mailbox')", name="ck_m365_integration_kind"),
+        CheckConstraint("kind IN ('directory', 'mailbox', 'reply_mailbox')", name="ck_m365_integration_kind"),
         CheckConstraint("provider IN ('microsoft365', 'mailpit')", name="ck_m365_integration_provider"),
         CheckConstraint("generation >= 0", name="ck_m365_integration_generation"),
         CheckConstraint(
@@ -1018,7 +1018,8 @@ class Microsoft365IntegrationState(Base):
         ),
         CheckConstraint(
             "(active_job_key IS NULL AND lease_expires_at IS NULL) OR "
-            "(kind = 'mailbox' AND active_job_key IS NOT NULL AND lease_expires_at IS NOT NULL)",
+            "(kind IN ('mailbox', 'reply_mailbox') AND active_job_key IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL)",
             name="ck_m365_integration_mailbox_lease",
         ),
     )
@@ -1071,6 +1072,34 @@ class ReportedMailReceipt(Base):
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
 
 
+class ReplyMailReceipt(Base):
+    """Durable replay boundary for one inbound recipient reply.
+
+    Mirrors :class:`ReportedMailReceipt`. Data-minimizing: the inbound reply's
+    body and sender address are never persisted — only the encrypted external
+    message id, its hash, and a bounded disposition.
+    """
+
+    __tablename__ = "reply_mail_receipts"
+    __table_args__ = (UniqueConstraint("provider", "scope_hash", "external_id_hash", name="uq_reply_mail_external"),)
+
+    reply_mail_receipt_id = _pk()
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_id: Mapped[str] = mapped_column(CipherText)
+    external_id_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    recipient_assignment_id = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("recipient_assignments.recipient_assignment_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_id = mapped_column(UUID(as_uuid=True), ForeignKey("events.event_id", ondelete="SET NULL"), nullable=True)
+    disposition: Mapped[str] = mapped_column(String(32), nullable=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    received_at = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+
 class TrackingEvent(Base):
     __tablename__ = "events"
     __table_args__ = (
@@ -1103,6 +1132,14 @@ class TrackingEvent(Base):
             "recipient_assignment_id",
             unique=True,
             postgresql_where=sa_text("event_type = 'MESSAGE_REPORTED' AND recipient_assignment_id IS NOT NULL"),
+        ),
+        # One MESSAGE_REPLIED event per assignment; the partial unique index
+        # makes reply-ingestion dedup race-safe (mirrors the reported index).
+        Index(
+            "uq_events_replied_assignment",
+            "recipient_assignment_id",
+            unique=True,
+            postgresql_where=sa_text("event_type = 'MESSAGE_REPLIED' AND recipient_assignment_id IS NOT NULL"),
         ),
     )
 

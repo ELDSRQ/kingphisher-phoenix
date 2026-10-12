@@ -128,6 +128,7 @@ DEFAULT_QUEUE_TOPICS = (
     "deliver",
     "retention",
     "mailbox",
+    "reply-mailbox",
     "remind",
     "alert",
     "directory",

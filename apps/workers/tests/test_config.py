@@ -12,6 +12,7 @@ DIRECTORY_CLIENT_ID = "22222222-2222-4222-8222-222222222222"
 MAILBOX_CLIENT_ID = "33333333-3333-4333-8333-333333333333"
 ANCHOR_CLIENT_ID = "55555555-5555-4555-8555-555555555555"
 GROUP_ID = "44444444-4444-4444-8444-444444444444"
+REPLY_CLIENT_ID = "66666666-6666-4666-8666-666666666666"
 
 _VALID_MANAGED_ROLE_CONFIG: dict[str, dict[str, object]] = {
     "audit-anchor": {
@@ -39,6 +40,13 @@ _VALID_MANAGED_ROLE_CONFIG: dict[str, dict[str, object]] = {
         "reported_mailbox_provider": "microsoft365",
         "reported_mailbox_client_id": MAILBOX_CLIENT_ID,
         "reported_mailbox_id": "reports@example.com",
+        "microsoft_tenant_id": TENANT_ID,
+    },
+    "reply-mailbox": {
+        "reply_mailbox_url": "https://graph.microsoft.com/v1.0",
+        "reply_mailbox_provider": "microsoft365",
+        "reply_mailbox_client_id": REPLY_CLIENT_ID,
+        "reply_mailbox_id": "replies@example.com",
         "microsoft_tenant_id": TENANT_ID,
     },
     "reminder": {
@@ -359,6 +367,36 @@ def test_managed_mailbox_rejects_legacy_credentials() -> None:
     }
     with pytest.raises(ValidationError, match="dedicated managed identity"):
         _settings(**base, reported_mailbox_bearer_token="short-lived-token")
+
+
+def test_managed_reply_mailbox_rejects_legacy_credentials() -> None:
+    base = {
+        "worker_name": "reply-mailbox",
+        "runtime_mode": "managed",
+        **_VALID_MANAGED_ROLE_CONFIG["reply-mailbox"],
+    }
+    with pytest.raises(ValidationError, match="dedicated managed identity"):
+        _settings(**base, reply_mailbox_bearer_token="short-lived-token")
+
+
+def test_reply_mailbox_basic_auth_must_be_configured_together() -> None:
+    with pytest.raises(ValidationError, match="reply mailbox basic username and password"):
+        _settings(worker_name="reply-mailbox", reply_mailbox_basic_username="user")
+
+
+def test_reply_mailbox_shares_mailpit_when_url_unset() -> None:
+    settings = _settings(worker_name="reply-mailbox")
+    assert settings.reply_mailbox_provider == "mailpit"
+    assert settings.effective_reply_mailbox_url == "http://localhost:8025"
+
+
+def test_reply_and_reported_mailbox_require_distinct_identity_client_ids() -> None:
+    with pytest.raises(ValidationError, match="distinct managed identity client IDs"):
+        _settings(
+            worker_name="reply-mailbox",
+            reply_mailbox_client_id=REPLY_CLIENT_ID,
+            reported_mailbox_client_id=REPLY_CLIENT_ID,
+        )
 
 
 @pytest.mark.parametrize(

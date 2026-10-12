@@ -61,10 +61,11 @@ export function installSimpleCampaigns(ui) {
       const items = await boundedCollection(`/campaigns/${campaign.campaign_id}/recipients`, "items");
       target.replaceChildren(el("h3", { text: `Recipient results: ${campaign.title}` }),
         el("p", { text: "Clicks are observed link requests; automated email scanners can generate them. Confirmed interaction indicates a human action on the training page." }),
-        el("p", { class: "notice", text: "Replies: unavailable. This deployment has no recipient-reply ingestion. Employee-reported phishing is a separate metric." }),
-        table(["Recipient", "Delivery", "Clicked", "Confirmed interaction", "Reported", "Training"], items.map((r) => [
+        el("p", { class: "notice", text: "Replied indicates a recipient answered the simulated email. Employee-reported phishing is a separate metric." }),
+        table(["Recipient", "Delivery", "Clicked", "Confirmed interaction", "Reported", "Replied", "Training"], items.map((r) => [
           `${r.display_name || "Unnamed"} (${r.masked_mailbox || "masked"})`, r.send_state,
-          r.clicked ? "Yes" : "No", r.confirmed_interaction ? "Yes" : "No", r.reported ? "Yes" : "No", r.training_state,
+          r.clicked ? "Yes" : "No", r.confirmed_interaction ? "Yes" : "No", r.reported ? "Yes" : "No",
+          r.replied ? "Yes" : "No", r.training_state,
         ]), "Campaign recipient results"),
         button("Refresh recipient results", () => monitor(campaign, target)));
     } catch (e) { target.replaceChildren(el("p", { role: "alert", text: e.message })); }

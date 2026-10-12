@@ -39,6 +39,7 @@ LOCAL_WORKER_ROLES: tuple[str, ...] = (
     "delivery",
     "retention",
     "mailbox",
+    "reply-mailbox",
     "reminder",
     "alert",
     "directory",

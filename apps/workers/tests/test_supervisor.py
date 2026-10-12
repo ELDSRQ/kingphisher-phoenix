@@ -429,6 +429,7 @@ def test_entrypoint_role_topics_match_their_single_owned_queues() -> None:
         "delivery": "deliver",
         "retention": "retention",
         "mailbox": "mailbox",
+        "reply-mailbox": "reply-mailbox",
         "reminder": "remind",
         "alert": "alert",
         "directory": "directory",

@@ -2550,6 +2550,23 @@ def campaign_recipient_results(
     training_by_assignment = {
         item.recipient_assignment_id: item for item in training_rows if item.recipient_assignment_id is not None
     }
+    # Replies are correlated to an assignment (not a token) by the reply-mail
+    # worker, so resolve them by assignment id rather than through by_token.
+    replied_assignments: set[Any] = (
+        {
+            assignment_id
+            for assignment_id in session.scalars(
+                select(TrackingEvent.recipient_assignment_id).where(
+                    TrackingEvent.campaign_id == campaign.campaign_id,
+                    TrackingEvent.event_type == dm.EventType.MESSAGE_REPLIED,
+                    TrackingEvent.recipient_assignment_id.in_(assignment_ids),
+                )
+            ).all()
+            if assignment_id is not None
+        }
+        if assignment_ids
+        else set()
+    )
     report_time = datetime.now(UTC)
 
     results: list[dict[str, Any]] = []
@@ -2587,6 +2604,7 @@ def campaign_recipient_results(
                 "opened": dm.EventType.OPENED.value in seen,
                 "clicked": dm.EventType.CLICKED.value in seen,
                 "reported": dm.EventType.MESSAGE_REPORTED.value in seen,
+                "replied": assignment.recipient_assignment_id in replied_assignments,
                 "confirmed_interaction": confirmed_interaction,
                 "close_disposition": close_disposition,
                 "training_state": (

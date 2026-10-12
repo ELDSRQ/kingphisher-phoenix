@@ -207,7 +207,7 @@ for (const width of [1280, 768]) {
     expect(state.writes.some((w) => /freeze|schedule|publish|test-account/.test(w.path))).toBe(false);
     await page.getByRole("button", { name: "Monitor recipient results", exact: true }).click();
     await expect(page.getByRole("table", { name: "Campaign recipient results", exact: true }).locator("tbody tr")).toHaveCount(2);
-    await expect(page.getByText(/Replies: unavailable/)).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Replied", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath("reviewed-direct-campaign.png"), fullPage: true });
     expect(errors).toEqual([]);
   });
@@ -249,7 +249,7 @@ test("password login, status and an audited reversible Settings edit", async ({ 
   expect(status.status()).toBe(200);
   const health = await status.json();
   expect(health.runtime_control).toBe("local_supervisor");
-  expect(Object.keys(health.workers)).toHaveLength(10);
+  expect(Object.keys(health.workers)).toHaveLength(11);
   expect(health.workers.curation).toBe(false);
   expect(health.workers["audit-anchor"]).toBe(false);
 
