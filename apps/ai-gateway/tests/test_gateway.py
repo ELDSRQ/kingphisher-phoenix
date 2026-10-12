@@ -467,6 +467,7 @@ def _clear_gateway_env(monkeypatch) -> None:
         "KP_AI_GATEWAY_API_KEY",
         "KP_AI_GATEWAY_REQUIRE_AUTH",
         "KP_AI_GATEWAY_UPSTREAM_AUTH_MODE",
+        "KP_AI_GATEWAY_UPSTREAM_API_KEY",
         "KP_AI_GATEWAY_UPSTREAM_MANAGED_IDENTITY_CLIENT_ID",
         "KP_AI_GATEWAY_UPSTREAM_TOKEN_SCOPE",
         "KP_AI_GATEWAY_AGGREGATE_MODEL_ID",
@@ -784,6 +785,82 @@ def test_upstream_auth_accepts_entra_with_an_identity(monkeypatch) -> None:
         upstream_auth_mode="entra", upstream_managed_identity_client_id="11111111-1111-1111-1111-111111111111"
     )
     assert settings.upstream_auth_mode == "entra"
+
+
+# --- bearer (static API key) upstream, e.g. OpenRouter -----------------------
+#
+# A third outbound posture: an OpenAI-compatible upstream that authenticates
+# with a long-lived API key sent as ``Authorization: Bearer <key>``. The key is
+# a dummy here and must never appear in code or committed files.
+
+#: Non-secret stand-in for the hermetic bearer-path tests.
+_UPSTREAM_API_KEY = "test-upstream-key"
+
+
+def _use_bearer(monkeypatch, tmp_path, *, api_key: str | None = _UPSTREAM_API_KEY) -> None:
+    """Switch the live settings into the static-API-key (bearer) upstream posture.
+
+    ``provider_state_file`` is pointed at an absent tmp path so the BYO-provider
+    seam is inert and the request exercises the ``_upstream_headers`` leg — never
+    a live ``data/run/ai-provider.json`` (a known source of false failures).
+    """
+
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "bearer")
+    monkeypatch.setattr(gateway_main.settings, "upstream_api_key", api_key)
+    monkeypatch.setattr(gateway_main.settings, "provider_state_file", str(tmp_path / "absent.json"))
+
+
+def test_propose_sends_a_static_bearer_api_key_to_the_upstream(monkeypatch, tmp_path) -> None:
+    # bearer mode (e.g. OpenRouter) attaches the configured static API key as an
+    # ``Authorization: Bearer <key>`` header on the upstream chat/completions call.
+    _use_bearer(monkeypatch, tmp_path)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["headers"] == {"Authorization": "Bearer test-upstream-key"}
+
+
+def test_propose_sends_no_authorization_header_in_none_mode(monkeypatch, tmp_path) -> None:
+    # The counterpart to the bearer test, isolated from any live provider-state
+    # file: ``none`` (the local llama.cpp default) sends no Authorization header.
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "none")
+    monkeypatch.setattr(gateway_main.settings, "provider_state_file", str(tmp_path / "absent.json"))
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["headers"] == {}
+    assert "authorization" not in {k.lower() for k in captured[0]["headers"]}
+
+
+def test_propose_502s_in_bearer_mode_when_the_api_key_is_missing(monkeypatch, tmp_path) -> None:
+    # Request-time backstop for the config validator: if bearer mode is somehow
+    # active with no key, the gateway fails closed (clean 502) rather than send a
+    # keyless ``Authorization: Bearer `` and let the backend 401. No key leaks.
+    _use_bearer(monkeypatch, tmp_path, api_key=None)
+    _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 502
+    assert "test-upstream-key" not in json.dumps(resp.json())
+
+
+def test_upstream_auth_fails_closed_when_bearer_has_no_key(monkeypatch) -> None:
+    # A bearer upstream selected without a key is a boot-time misconfiguration,
+    # not a licence to call the endpoint keyless (which would 401).
+    import pytest
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    with pytest.raises(ValueError, match="UPSTREAM_API_KEY"):
+        GatewaySettings(upstream_auth_mode="bearer")
+
+
+def test_upstream_auth_accepts_bearer_with_a_key(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    settings = GatewaySettings(upstream_auth_mode="bearer", upstream_api_key=_UPSTREAM_API_KEY)
+    assert settings.upstream_auth_mode == "bearer"
+    assert settings.upstream_api_key == _UPSTREAM_API_KEY
 
 
 # --- P1: /extract endpoint + campaign_record evidence folding ----------------
