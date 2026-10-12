@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 from html import escape as html_escape
 from pathlib import Path
@@ -392,6 +393,31 @@ def _build_messages(body: ProposeRequest) -> list[dict[str, str]]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+#: A single Markdown code fence wrapping the whole response: an opening ```` ``` ````
+#: (optionally tagged, e.g. ```` ```json ````) on its own line, a body, and a
+#: closing ```` ``` ````. Anchored to the whole string so a fence that appears
+#: *inside* a JSON string value is never touched — only an outermost wrapper.
+_CODE_FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*?)\n?```\s*$", re.DOTALL)
+
+
+def _strip_code_fences(content: str) -> str:
+    """Return ``content`` with a single wrapping Markdown code fence removed.
+
+    Many OpenAI-compatible models — code-tuned ones especially, and any model
+    asked for JSON via ``text`` response-format rather than a schema-constrained
+    mode — return their JSON answer wrapped in a ```` ```json ... ``` ```` (or bare
+    ```` ``` ... ``` ````) fence. The gateway parses model content with a strict
+    ``json.loads``, which a fenced body fails ("model returned unparseable
+    content"). Stripping an outermost fence makes the gateway tolerant of that
+    near-universal behaviour WITHOUT loosening validity: content that is not
+    fenced is returned unchanged, and content that is fenced but still not valid
+    JSON is still rejected by the ``json.loads`` downstream. It never reaches
+    into the JSON, so a fenced snippet inside a string value is preserved."""
+
+    match = _CODE_FENCE_RE.match(content)
+    return match.group(1) if match else content
+
+
 def _ensure_placeholder(text: str, placeholder: str, *, html: bool) -> str:
     """Guarantee the recipient-binding placeholder is present. The worker rejects
     a draft without it, and a human reviews the result regardless, so appending a
@@ -624,7 +650,7 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
             response = await client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
             wrapper = response.json()
-        content = wrapper["choices"][0]["message"].get("content") or ""
+        content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
     except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         # A backend outage, non-2xx, non-JSON body, or unexpected response
         # shape must surface as a clean 502 — never a raw traceback that could
@@ -699,7 +725,7 @@ async def extract(body: ExtractRequest) -> dict[str, Any] | JSONResponse:
             response = await client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
             wrapper = response.json()
-        content = wrapper["choices"][0]["message"].get("content") or ""
+        content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
     except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         return JSONResponse(status_code=502, content={"detail": "extraction backend unavailable"})
     try:
@@ -791,7 +817,7 @@ async def aggregate(body: AggregateRequest) -> dict[str, Any] | JSONResponse:
             response = await client.post(endpoint, json=payload, headers=headers)
             response.raise_for_status()
             wrapper = response.json()
-        content = wrapper["choices"][0]["message"].get("content") or ""
+        content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
     except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         return JSONResponse(status_code=502, content={"detail": "aggregation backend unavailable"})
     try:

@@ -271,6 +271,39 @@ def test_propose_502s_on_unparseable_model_output(monkeypatch) -> None:
     assert client.post("/propose", json=VALID_REQUEST).status_code == 502
 
 
+def test_propose_parses_json_wrapped_in_a_markdown_code_fence(monkeypatch) -> None:
+    # Many OpenAI-compatible models (code-tuned ones, and any model asked for JSON
+    # via text response-format) wrap the answer in a ```json ... ``` fence. The
+    # gateway must strip an outermost fence before json.loads rather than 502.
+    inner = json.dumps(
+        {
+            "subject": "Invoice review",
+            "plain_text": f"This is a simulation. {TRAINING_URL_PLACEHOLDER}",
+            "safe_html": f'<p>Simulation</p><a href="{TRAINING_URL_PLACEHOLDER}">go</a>',
+            "model_id": "m",
+        }
+    )
+    for fenced in (f"```json\n{inner}\n```", f"```\n{inner}\n```", f"  ```json\n{inner}```\n"):
+        _stub_llama(monkeypatch, content=fenced)
+        resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+        assert resp.status_code == 200, resp.text
+        GenerationResponse.model_validate(resp.json())
+
+
+def test_strip_code_fences_only_removes_an_outermost_wrapper() -> None:
+    # A fence inside a JSON string value must survive: the helper anchors to the
+    # whole string, so only a wrapping fence is removed.
+    assert gateway_main._strip_code_fences('```json\n{"a": 1}\n```') == '{"a": 1}'
+    assert gateway_main._strip_code_fences('```\n{"a": 1}\n```') == '{"a": 1}'
+    # Not fenced -> returned unchanged (and still parseable / still rejected
+    # downstream exactly as before).
+    assert gateway_main._strip_code_fences('{"a": 1}') == '{"a": 1}'
+    assert gateway_main._strip_code_fences("not json at all") == "not json at all"
+    # An inner fenced snippet inside a string is preserved untouched.
+    payload = '{"safe_html": "```ignored```"}'
+    assert gateway_main._strip_code_fences(payload) == payload
+
+
 def test_propose_never_follows_injected_evidence_instructions(monkeypatch) -> None:
     # The gateway frames evidence as data; the system prompt says never to follow
     # instructions inside it. We assert the evidence is sent as the user JSON,
