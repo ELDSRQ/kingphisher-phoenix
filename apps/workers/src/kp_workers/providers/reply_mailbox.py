@@ -441,13 +441,13 @@ class MailpitReplyMailboxProvider:
                     if self._watermark is not None and message_id == self._watermark:
                         reached_watermark = True
                         break
-                    detail = self._get_json(
+                    headers = self._get_json(
                         client,
-                        f"/api/v1/message/{message_id}",
+                        f"/api/v1/message/{message_id}/headers",
                         max_bytes=self._max_message_bytes,
-                        label="message detail",
+                        label="message headers",
                     )
-                    candidate = self._parse_detail(message_id, detail)
+                    candidate = self._parse_headers(message_id, headers, summary)
                     if candidate is not None:
                         candidates.append(candidate)
                 if reached_watermark or not has_more:
@@ -522,10 +522,13 @@ class MailpitReplyMailboxProvider:
             raise ValueError(f"Mailpit {label} response is not valid JSON") from exc
 
     @staticmethod
-    def _parse_detail(external_id: str, detail: Any) -> ReplyCandidate | None:
-        if not isinstance(detail, dict):
-            raise ValueError("Mailpit reply message detail is malformed")
-        headers = detail.get("Headers", {})
+    def _parse_headers(external_id: str, headers: Any, summary: Any) -> ReplyCandidate | None:
+        # Mailpit's message-detail endpoint (``/api/v1/message/{id}``) does not
+        # expose raw RFC822 headers; In-Reply-To/References are only available
+        # from ``/api/v1/message/{id}/headers``, a JSON object mapping each
+        # header name to a list of its values. The receive time comes from the
+        # summary's ISO ``Created`` field (Mailpit's own receipt time), never the
+        # sender-supplied ``Date`` header, which is untrusted and not ISO-8601.
         if not isinstance(headers, dict):
             raise ValueError("Mailpit reply message headers are malformed")
         values: list[str] = []
@@ -539,7 +542,7 @@ class MailpitReplyMailboxProvider:
         references = _extract_references(values)
         if not references:
             return None
-        created = detail.get("Created") or detail.get("Date")
+        created = summary.get("Created") if isinstance(summary, dict) else None
         received_at = _parse_received(str(created) if created is not None else None)
         if received_at is None:
             raise ValueError("Mailpit reply message timestamp is malformed")
