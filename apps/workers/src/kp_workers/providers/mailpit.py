@@ -123,13 +123,13 @@ class ReportedMailboxProvider:
                         continue
 
                     pending_seen[message_id] = None
-                    detail = self._get_json(
+                    headers = self._get_json(
                         client,
-                        f"/api/v1/message/{message_id}",
+                        f"/api/v1/message/{message_id}/headers",
                         max_bytes=self._max_message_bytes,
-                        label="message detail",
+                        label="message headers",
                     )
-                    report = self._parse_detail(message_id, detail)
+                    report = self._parse_headers(message_id, headers, summary)
                     if report is not None:
                         reports.append(report)
 
@@ -221,15 +221,21 @@ class ReportedMailboxProvider:
             raise ValueError(f"Mailpit {label} response is not valid JSON") from exc
 
     @staticmethod
-    def _parse_detail(external_id: str, detail: Any) -> ReportedMessage | None:
-        if not isinstance(detail, dict):
-            raise ValueError("Mailpit message detail is malformed")
-        headers = detail.get("Headers", {})
+    def _parse_headers(external_id: str, headers: Any, summary: Any) -> ReportedMessage | None:
+        # Mailpit's message-detail endpoint (``/api/v1/message/{id}``) does not
+        # expose raw RFC822 headers; the ``X-KP-Reported`` / ``X-KP-Token-Hash``
+        # markers are only available from ``/api/v1/message/{id}/headers``, a JSON
+        # object mapping each header name to a list of its values. The report time
+        # comes from the summary's ISO ``Created`` field (Mailpit's own receipt
+        # time), never the sender-supplied ``Date`` header.
         if not isinstance(headers, dict):
             raise ValueError("Mailpit message headers are malformed")
 
+        # Header names are matched case-insensitively; Mailpit may normalize case.
+        lowered: dict[str, Any] = {name.lower(): value for name, value in headers.items() if isinstance(name, str)}
+
         def first(name: str) -> str:
-            value = headers.get(name, "")
+            value = lowered.get(name.lower(), "")
             if isinstance(value, list):
                 value = value[0] if value else ""
             return str(value).strip()
@@ -239,7 +245,7 @@ class ReportedMailboxProvider:
         token_hash = first("X-KP-Token-Hash")
         if _TOKEN_HASH.fullmatch(token_hash) is None:
             return None
-        created = detail.get("Created") or detail.get("Date")
+        created = summary.get("Created") if isinstance(summary, dict) else None
         try:
             reported_at = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
         except (TypeError, ValueError) as exc:

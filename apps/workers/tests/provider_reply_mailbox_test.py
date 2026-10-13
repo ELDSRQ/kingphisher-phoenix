@@ -89,22 +89,32 @@ def test_m365_reply_provider_reports_error_without_exposing_messages() -> None:
 
 
 def test_mailpit_reply_provider_returns_only_messages_with_references() -> None:
+    # Mirrors the real Mailpit (v1.20.x) contract: the summary list carries the
+    # receipt time in ``Created``; In-Reply-To/References come only from the
+    # ``/api/v1/message/{id}/headers`` endpoint. The message-body endpoint
+    # (``/api/v1/message/{id}``) must never be fetched -- it holds the reply body.
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v1/messages":
-            return httpx.Response(200, json={"messages": [{"ID": "reply"}, {"ID": "ordinary"}]})
-        if request.url.path.endswith("/reply"):
             return httpx.Response(
                 200,
                 json={
-                    "Headers": {
-                        "In-Reply-To": ["<sent-9@corp.example>"],
-                        "References": ["<sent-9@corp.example>"],
-                    },
-                    "Created": "2026-02-03T04:05:06Z",
-                    "Text": "sensitive reply body that must never be returned",
+                    "messages": [
+                        {"ID": "reply", "Created": "2026-02-03T04:05:06Z"},
+                        {"ID": "ordinary", "Created": "2026-02-03T04:05:06Z"},
+                    ]
                 },
             )
-        return httpx.Response(200, json={"Headers": {"Subject": ["hello"]}, "Created": "2026-02-03T04:05:06Z"})
+        if request.url.path == "/api/v1/message/reply/headers":
+            return httpx.Response(
+                200,
+                json={
+                    "In-Reply-To": ["<sent-9@corp.example>"],
+                    "References": ["<sent-9@corp.example>"],
+                },
+            )
+        if request.url.path == "/api/v1/message/ordinary/headers":
+            return httpx.Response(200, json={"Subject": ["hello"]})
+        raise AssertionError(f"reply poll must fetch only headers, not {request.url.path}")
 
     provider = MailpitReplyMailboxProvider("http://mailpit.test", transport=httpx.MockTransport(handler))
     replies = provider.poll()
@@ -115,18 +125,17 @@ def test_mailpit_reply_provider_returns_only_messages_with_references() -> None:
 
 
 def test_mailpit_reply_provider_advances_watermark_and_skips_seen() -> None:
-    messages = [{"ID": "m-1"}, {"ID": "m-0"}]
+    messages = [
+        {"ID": "m-1", "Created": "2026-02-03T04:05:06Z"},
+        {"ID": "m-0", "Created": "2026-02-03T04:05:06Z"},
+    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v1/messages":
             return httpx.Response(200, json={"messages": messages})
-        return httpx.Response(
-            200,
-            json={
-                "Headers": {"References": ["<sent@corp.example>"]},
-                "Created": "2026-02-03T04:05:06Z",
-            },
-        )
+        if request.url.path.endswith("/headers"):
+            return httpx.Response(200, json={"References": ["<sent@corp.example>"]})
+        raise AssertionError(f"reply poll must fetch only headers, not {request.url.path}")
 
     provider = MailpitReplyMailboxProvider("http://mailpit.test", transport=httpx.MockTransport(handler))
     first = provider.poll()
