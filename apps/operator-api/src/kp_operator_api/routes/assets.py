@@ -54,9 +54,7 @@ _MAX_CONTENT_B64 = 1_000_000
 def _asset_approval_hash(asset: TemplateAsset) -> str:
     """Bind the approval to this exact asset's identity, bytes and role."""
 
-    return hashlib.sha256(
-        f"asset:{asset.asset_id}:{asset.sha256}:{asset.kind.value}".encode()
-    ).hexdigest()
+    return hashlib.sha256(f"asset:{asset.asset_id}:{asset.sha256}:{asset.kind.value}".encode()).hexdigest()
 
 
 def _asset_metadata(asset: TemplateAsset) -> dict[str, Any]:
@@ -222,9 +220,7 @@ def approve_asset(
     requested_by = asset.requested_by
     self_reviewed = requested_by is not None and requested_by == _principal_uuid(principal)
     if self_reviewed and not _single_operator(settings):
-        raise PermissionDeniedError(
-            "you uploaded this asset; approval must come from someone else"
-        )
+        raise PermissionDeniedError("you uploaded this asset; approval must come from someone else")
 
     approved = body.decision == dm.ApprovalDecision.APPROVED
     if approved:
@@ -268,9 +264,7 @@ def apply_asset_to_template(
     if template is None:
         raise NotFoundError("template not found")
     if template.approval_state != dm.TemplateApprovalState.DRAFT:
-        raise ConflictError(
-            f"template is already {template.approval_state.value}; only DRAFT templates can be branded"
-        )
+        raise ConflictError(f"template is already {template.approval_state.value}; only DRAFT templates can be branded")
     if not isinstance(template.safe_html, str) or not template.safe_html.strip():
         raise ValidationError_("template has no HTML body to brand")
 
@@ -281,7 +275,8 @@ def apply_asset_to_template(
         raise ConflictError("asset is not approved; only approved assets can be applied")
 
     edited = dict(template.edited_content) if isinstance(template.edited_content, dict) else {}
-    prior_slots = dict(edited.get("assets")) if isinstance(edited.get("assets"), dict) else {}
+    stored_slots = edited.get("assets")
+    prior_slots = dict(stored_slots) if isinstance(stored_slots, dict) else {}
     previous_srcs = [s for s in prior_slots.values() if isinstance(s, str)]
 
     new_uri = asset_data_uri(asset.media_type, asset.content)

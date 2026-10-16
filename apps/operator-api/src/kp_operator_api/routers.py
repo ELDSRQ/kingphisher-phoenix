@@ -32,6 +32,9 @@ from kp_operator_api.routes.alerts import (
 from kp_operator_api.routes.alerts import (
     router as alerts_router,
 )
+from kp_operator_api.routes.assets import (
+    router as assets_router,
+)
 from kp_operator_api.routes.audience_groups import (
     router as audience_groups_router,
 )
@@ -83,9 +86,6 @@ from kp_operator_api.routes.patterns import (
     approve_pattern,
     decide_template,
     list_pending_templates,
-)
-from kp_operator_api.routes.assets import (
-    router as assets_router,
 )
 from kp_operator_api.routes.patterns import (
     router as patterns_router,

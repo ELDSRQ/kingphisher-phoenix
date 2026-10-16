@@ -24,6 +24,7 @@ Manifest (JSON):
 Usage:
     python3 upload_assets.py --manifest assets.json --dir /path/to/pngs --approve
 """
+
 from __future__ import annotations
 
 import argparse
@@ -94,8 +95,9 @@ def main() -> int:
     ap.add_argument("--token", default=None, help="use this bearer token instead of console password auth")
     ap.add_argument("--approve", action="store_true", help="also approve each uploaded asset")
     ap.add_argument("--force", action="store_true", help="upload even if an asset with the same sha256 exists")
-    ap.add_argument("--dry-run", action="store_true",
-                    help="validate files and print the planned requests without calling the API")
+    ap.add_argument(
+        "--dry-run", action="store_true", help="validate files and print the planned requests without calling the API"
+    )
     args = ap.parse_args()
 
     base = args.base_url.rstrip("/")
@@ -141,8 +143,10 @@ def main() -> int:
         }
         if args.dry_run:
             tail = "  then approve" if args.approve else ""
-            print(f"  DRY-RUN {name}: would POST /api/v1/assets kind={kind} brand={body['brand']} "
-                  f"bytes={len(content)} sha256={digest[:12]} b64={len(body['content_base64'])}{tail}")
+            print(
+                f"  DRY-RUN {name}: would POST /api/v1/assets kind={kind} brand={body['brand']} "
+                f"bytes={len(content)} sha256={digest[:12]} b64={len(body['content_base64'])}{tail}"
+            )
             uploaded += 1
             seen.add(digest)
             continue
@@ -152,14 +156,21 @@ def main() -> int:
             failed += 1
             continue
         asset_id = out["asset_id"]
-        print(f"  UPLOADED {name}: {asset_id} "
-              f"({out['media_type']} {out['width']}x{out['height']}, {out['byte_size']}B) DRAFT")
+        print(
+            f"  UPLOADED {name}: {asset_id} "
+            f"({out['media_type']} {out['width']}x{out['height']}, {out['byte_size']}B) DRAFT"
+        )
         uploaded += 1
         seen.add(digest)
 
         if args.approve:
-            astatus, aout = req("POST", f"/api/v1/assets/{asset_id}/approve", base, tok,
-                                body={"decision": "approved", "rationale": "vetted asset upload"})
+            astatus, aout = req(
+                "POST",
+                f"/api/v1/assets/{asset_id}/approve",
+                base,
+                tok,
+                body={"decision": "approved", "rationale": "vetted asset upload"},
+            )
             if astatus == 200 and aout.get("approval_state") == "approved":
                 print(f"    APPROVED {asset_id}")
                 approved += 1

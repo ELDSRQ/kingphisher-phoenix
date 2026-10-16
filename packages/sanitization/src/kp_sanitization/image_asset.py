@@ -23,9 +23,7 @@ from dataclasses import dataclass
 
 #: The only media types that may enter the asset store — identical to the raster
 #: set the sanitizer/validator permit for inline ``data:image`` URIs.
-ALLOWED_MEDIA_TYPES: frozenset[str] = frozenset(
-    {"image/png", "image/jpeg", "image/gif", "image/webp"}
-)
+ALLOWED_MEDIA_TYPES: frozenset[str] = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 #: Hard ceiling on a single stored asset's raw byte size. An applied banner is
 #: base64-inlined into ``safe_html`` (~4/3 expansion) and must still leave room

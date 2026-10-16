@@ -139,6 +139,7 @@ def _approved_asset(kind: dm.AssetKind, uploader: uuid.UUID | None = None) -> Te
 
 # --- upload -----------------------------------------------------------------
 
+
 def test_upload_valid_png_stores_draft() -> None:
     session, audit = _Session(), _Audit()
     body = AssetUploadRequest(
@@ -174,6 +175,7 @@ def test_upload_rejects_bad_base64() -> None:
 
 
 # --- approve ----------------------------------------------------------------
+
 
 def test_approve_rejects_self_review_under_enforce() -> None:
     uploader = _principal()
@@ -223,6 +225,7 @@ def test_approve_conflicts_when_not_draft() -> None:
 
 # --- apply to template ------------------------------------------------------
 
+
 def _apply(session: _Session, template: TemplateVersion, asset: TemplateAsset) -> dict[str, Any]:
     return apply_asset_to_template(
         template.template_version_id,
@@ -254,7 +257,7 @@ def test_apply_banner_then_logo_are_both_present_banner_first() -> None:
     assert sorted(result["applied_slots"]) == ["banner", "logo"]
     # banner block (full-width img) precedes the centered logo block
     assert template.safe_html.count("<img") == 2
-    assert template.safe_html.index('width:100%') < template.safe_html.index("max-height:48px")
+    assert template.safe_html.index("width:100%") < template.safe_html.index("max-height:48px")
 
 
 def test_apply_rejects_unapproved_asset() -> None:
