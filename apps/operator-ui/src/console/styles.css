@@ -600,3 +600,8 @@ legend { color: var(--muted); font-size: 12px; padding: 0 6px; }
   background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
   padding: 10px; overflow-x: auto; font-size: 12px; line-height: 1.5; margin: 6px 0;
 }
+
+.asset-thumb {
+  max-height: 64px; max-width: 160px; border: 1px solid var(--border);
+  background: #fff; object-fit: contain;
+}

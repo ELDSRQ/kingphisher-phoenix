@@ -8844,8 +8844,8 @@ views.assets = async (root) => {
   // the token — fetch the bytes with auth and hand the <img> a blob URL instead.
   function thumbEl(asset) {
     const img = el("img", {
+      class: "asset-thumb",
       alt: `${asset.kind} ${asset.brand || ""} ${asset.name}`.trim(),
-      style: "max-height:64px; max-width:160px; border:1px solid #ddd; background:#fff; object-fit:contain",
     });
     fetch(`${API}/assets/${asset.asset_id}/content`, { headers: { Authorization: `Bearer ${token()}` } })
       .then((r) => (r.ok ? r.blob() : null))

@@ -9857,8 +9857,8 @@ ${wording.value}`;
     root.appendChild(content);
     function thumbEl(asset) {
       const img = el("img", {
-        alt: `${asset.kind} ${asset.brand || ""} ${asset.name}`.trim(),
-        style: "max-height:64px; max-width:160px; border:1px solid #ddd; background:#fff; object-fit:contain"
+        class: "asset-thumb",
+        alt: `${asset.kind} ${asset.brand || ""} ${asset.name}`.trim()
       });
       fetch(`${API}/assets/${asset.asset_id}/content`, { headers: { Authorization: `Bearer ${token()}` } }).then((r) => r.ok ? r.blob() : null).then((b) => {
         if (b) img.src = URL.createObjectURL(b);
