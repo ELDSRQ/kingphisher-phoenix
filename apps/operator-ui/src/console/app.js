@@ -6843,6 +6843,13 @@ ${wording.value}`;
           "aria-label": `Set the logo by URL, or remove it, for ${draft.subject || "untitled template"}`,
           onclick: setLogo(draft)
         })] : [],
+        ...canCreateCampaign ? [el("button", {
+          class: "btn small",
+          type: "button",
+          text: "Apply from asset library",
+          "aria-label": `Apply an approved banner or logo from the asset library to ${draft.subject || "untitled template"}`,
+          onclick: applyAssetFromLibrary(draft)
+        })] : [],
         ...canReviewDraft ? [
           el("button", { class: "btn small primary", type: "button", text: "Approve", onclick: decide(draft, "approved") }),
           el("button", { class: "btn small danger", type: "button", text: "Reject", onclick: decide(draft, "rejected") }),
@@ -6931,6 +6938,56 @@ ${wording.value}`;
             body: JSON.stringify({ logo: (values.logo || "").trim() })
           });
           toast(res.logo_applied ? "Logo applied" : "Logo removed", "success");
+          render();
+        } catch (err) {
+          toast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+        }
+      };
+    }
+    function applyAssetFromLibrary(draft) {
+      return async (e) => {
+        const btn = e.target;
+        btn.disabled = true;
+        try {
+          let listing;
+          try {
+            listing = await api("/assets?approval_state=approved");
+          } catch (err) {
+            toast(`Could not load the asset library: ${err.message}`, "error");
+            return;
+          }
+          const assets = listing && listing.assets || [];
+          if (!assets.length) {
+            toast("No approved assets in the library yet. Upload and approve banners/logos first.", "error");
+            return;
+          }
+          const values = await promptDialog({
+            title: "Apply an asset from the library",
+            description: draft.subject || "",
+            fields: [
+              {
+                name: "asset_id",
+                label: "Approved asset",
+                type: "select",
+                required: true,
+                options: assets.map((a) => ({
+                  value: a.asset_id,
+                  label: `${a.kind}${a.brand ? " \xB7 " + a.brand : ""} \u2014 ${a.name} (${a.width}\xD7${a.height})`
+                })),
+                help: "A banner fills the full-width header; a logo is centered below it. Re-applying replaces that slot."
+              }
+            ],
+            submitLabel: "Apply"
+          });
+          if (!values) return;
+          const res = await api(`/templates/${draft.template_version_id}/apply-asset`, {
+            method: "POST",
+            body: JSON.stringify({ asset_id: values.asset_id })
+          });
+          const slots = res && res.applied_slots || [];
+          toast(`Applied \u2014 header now has: ${slots.join(", ") || "the asset"}`, "success");
           render();
         } catch (err) {
           toast(err.message, "error");
