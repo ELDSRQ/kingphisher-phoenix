@@ -2021,6 +2021,7 @@ ${wording.value}`;
     ["sending", "Domains & RoE", "run"],
     ["recipients", "Recipients", "run"],
     ["templates", "Template review", "run"],
+    ["assets", "Asset library", "more"],
     ["training", "Training lessons", "more"],
     ["campaigns", "Campaigns", "run"],
     ["dashboard", "Dashboard", "run"],
@@ -2054,6 +2055,7 @@ ${wording.value}`;
     aggregation: [CAPABILITY.MANAGE_SOURCES],
     patterns: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_PATTERN],
     templates: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE],
+    assets: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE],
     training: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE],
     privacy: [CAPABILITY.HANDLE_PRIVACY],
     queues: [CAPABILITY.MANAGE_QUEUE],
@@ -6843,6 +6845,13 @@ ${wording.value}`;
           "aria-label": `Set the logo by URL, or remove it, for ${draft.subject || "untitled template"}`,
           onclick: setLogo(draft)
         })] : [],
+        ...canCreateCampaign ? [el("button", {
+          class: "btn small",
+          type: "button",
+          text: "Apply from asset library",
+          "aria-label": `Apply an approved banner or logo from the asset library to ${draft.subject || "untitled template"}`,
+          onclick: applyAssetFromLibrary(draft)
+        })] : [],
         ...canReviewDraft ? [
           el("button", { class: "btn small primary", type: "button", text: "Approve", onclick: decide(draft, "approved") }),
           el("button", { class: "btn small danger", type: "button", text: "Reject", onclick: decide(draft, "rejected") }),
@@ -6931,6 +6940,56 @@ ${wording.value}`;
             body: JSON.stringify({ logo: (values.logo || "").trim() })
           });
           toast(res.logo_applied ? "Logo applied" : "Logo removed", "success");
+          render();
+        } catch (err) {
+          toast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+        }
+      };
+    }
+    function applyAssetFromLibrary(draft) {
+      return async (e) => {
+        const btn = e.target;
+        btn.disabled = true;
+        try {
+          let listing;
+          try {
+            listing = await api("/assets?approval_state=approved");
+          } catch (err) {
+            toast(`Could not load the asset library: ${err.message}`, "error");
+            return;
+          }
+          const assets = listing && listing.assets || [];
+          if (!assets.length) {
+            toast("No approved assets in the library yet. Upload and approve banners/logos first.", "error");
+            return;
+          }
+          const values = await promptDialog({
+            title: "Apply an asset from the library",
+            description: draft.subject || "",
+            fields: [
+              {
+                name: "asset_id",
+                label: "Approved asset",
+                type: "select",
+                required: true,
+                options: assets.map((a) => ({
+                  value: a.asset_id,
+                  label: `${a.kind}${a.brand ? " \xB7 " + a.brand : ""} \u2014 ${a.name} (${a.width}\xD7${a.height})`
+                })),
+                help: "A banner fills the full-width header; a logo is centered below it. Re-applying replaces that slot."
+              }
+            ],
+            submitLabel: "Apply"
+          });
+          if (!values) return;
+          const res = await api(`/templates/${draft.template_version_id}/apply-asset`, {
+            method: "POST",
+            body: JSON.stringify({ asset_id: values.asset_id })
+          });
+          const slots = res && res.applied_slots || [];
+          toast(`Applied \u2014 header now has: ${slots.join(", ") || "the asset"}`, "success");
           render();
         } catch (err) {
           toast(err.message, "error");
@@ -9766,6 +9825,204 @@ ${wording.value}`;
       content.replaceChildren(summary, table);
     };
     topic.addEventListener("change", load);
+    await load();
+  };
+  views.assets = async (root) => {
+    if (!requireAnyCapability(root, CAPABILITY.CREATE_CAMPAIGN)) return;
+    const canApprove = hasCapability(CAPABILITY.APPROVE_TEMPLATE);
+    root.replaceChildren();
+    root.appendChild(el("h2", { text: "Asset library" }));
+    root.appendChild(el("p", {
+      class: "sub",
+      text: "Reusable banners and logos. Upload a raster image (PNG, JPG, GIF, WebP \u2014 SVG is not accepted), have it approved, then apply it to a draft from Template review. Applying inlines the image into the email as self-contained data, so delivery stays self-contained."
+    }));
+    const kindFilter = el("select", { "aria-label": "Filter by kind" }, [
+      el("option", { value: "", text: "All kinds" }),
+      ...["banner", "logo", "decorative"].map((k) => el("option", { value: k, text: k }))
+    ]);
+    const stateFilter = el("select", { "aria-label": "Filter by approval state" }, [
+      el("option", { value: "approved", text: "Approved" }),
+      el("option", { value: "draft", text: "Draft (awaiting approval)" }),
+      el("option", { value: "rejected", text: "Rejected" }),
+      el("option", { value: "", text: "All states" })
+    ]);
+    const toolbar = el("div", { class: "btn-row" }, [
+      kindFilter,
+      stateFilter,
+      el("button", { class: "btn primary", type: "button", text: "Upload image", onclick: () => uploadAsset() }),
+      el("button", { class: "btn", type: "button", text: "Refresh", onclick: () => load() })
+    ]);
+    root.appendChild(toolbar);
+    const content = el("div", { class: "card", "aria-live": "polite" });
+    root.appendChild(content);
+    function thumbEl(asset) {
+      const img = el("img", {
+        class: "asset-thumb",
+        alt: `${asset.kind} ${asset.brand || ""} ${asset.name}`.trim()
+      });
+      fetch(`${API}/assets/${asset.asset_id}/content`, { headers: { Authorization: `Bearer ${token()}` } }).then((r) => r.ok ? r.blob() : null).then((b) => {
+        if (b) img.src = URL.createObjectURL(b);
+      }).catch(() => {
+      });
+      return img;
+    }
+    function uploadAsset() {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/png,image/jpeg,image/gif,image/webp";
+      input.style.display = "none";
+      input.onchange = async () => {
+        const file = input.files && input.files[0];
+        input.remove();
+        if (!file) return;
+        const MAX = 500 * 1024;
+        if (file.size > MAX) {
+          toast("Image too large (max ~500 KB). Use a web-optimized asset.", "error");
+          return;
+        }
+        let dataUri = "";
+        try {
+          dataUri = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(new Error("could not read the image file"));
+            reader.readAsDataURL(file);
+          });
+        } catch (err) {
+          toast(err.message, "error");
+          return;
+        }
+        if (!dataUri.startsWith("data:image/")) {
+          toast("That file is not a supported image (PNG, JPG, GIF, WebP).", "error");
+          return;
+        }
+        const base64 = dataUri.slice(dataUri.indexOf(",") + 1);
+        const values = await promptDialog({
+          title: "Upload an asset",
+          description: file.name,
+          fields: [
+            {
+              name: "kind",
+              label: "Kind",
+              type: "select",
+              required: true,
+              options: [
+                { value: "banner", label: "banner \u2014 full-width email header" },
+                { value: "logo", label: "logo \u2014 centered brand mark" },
+                { value: "decorative", label: "decorative \u2014 other imagery" }
+              ]
+            },
+            { name: "name", label: "Name", type: "text", required: true, value: file.name },
+            { name: "brand", label: "Brand (optional)", type: "text", required: false, placeholder: "microsoft" }
+          ],
+          submitLabel: "Upload (draft)"
+        });
+        if (!values) return;
+        try {
+          await api("/assets", {
+            method: "POST",
+            body: JSON.stringify({
+              kind: values.kind,
+              name: values.name,
+              brand: values.brand || null,
+              content_base64: base64,
+              provenance: { uploaded_via: "console" }
+            })
+          });
+          toast("Uploaded as a draft asset. It needs approval before it can be applied.", "success");
+          if (stateFilter.value && stateFilter.value !== "draft") stateFilter.value = "draft";
+          await load();
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      };
+      document.body.appendChild(input);
+      input.click();
+    }
+    async function decideAsset(asset, decision, button) {
+      const approving = decision === "approved";
+      const ok = await confirmDialog({
+        title: `${approving ? "Approve" : "Reject"} this asset?`,
+        message: approving ? "Approved assets can be applied to templates. The uploader cannot also approve unless this is a single-operator deployment." : "A rejected asset cannot be applied.",
+        detail: { Kind: asset.kind, Brand: asset.brand || "\u2014", Name: asset.name },
+        confirmLabel: approving ? "Approve" : "Reject",
+        danger: !approving
+      });
+      if (!ok) return;
+      button.disabled = true;
+      try {
+        await api(`/assets/${asset.asset_id}/approve`, {
+          method: "POST",
+          body: JSON.stringify({ decision, rationale: "reviewed in console" })
+        });
+        toast(`Asset ${decision}`, "success");
+        await load();
+      } catch (err) {
+        toast(err.message, "error");
+        button.disabled = false;
+      }
+    }
+    async function load() {
+      content.replaceChildren(el("p", { class: "empty", text: "Loading assets\u2026" }));
+      const params = new URLSearchParams();
+      if (kindFilter.value) params.set("kind", kindFilter.value);
+      if (stateFilter.value) params.set("approval_state", stateFilter.value);
+      const query = params.toString() ? `?${params.toString()}` : "";
+      let result;
+      try {
+        result = await api(`/assets${query}`);
+      } catch (err) {
+        content.replaceChildren(el("p", { class: "down", text: `Failed to load: ${err.message}` }));
+        return;
+      }
+      const assets = result && result.assets || [];
+      if (!assets.length) {
+        content.replaceChildren(el("p", { class: "empty", text: "No assets match. Upload a banner or logo to get started." }));
+        return;
+      }
+      const rows = assets.map((a) => {
+        const actions = [];
+        if (canApprove && a.approval_state === "draft") {
+          const approveBtn = el("button", { class: "btn small primary", type: "button", text: "Approve" });
+          approveBtn.addEventListener("click", () => decideAsset(a, "approved", approveBtn));
+          const rejectBtn = el("button", { class: "btn small danger", type: "button", text: "Reject" });
+          rejectBtn.addEventListener("click", () => decideAsset(a, "rejected", rejectBtn));
+          actions.push(approveBtn, rejectBtn);
+        }
+        return el("tr", {}, [
+          el("td", {}, [thumbEl(a)]),
+          el("td", { text: a.kind }),
+          el("td", { text: a.brand || "\u2014" }),
+          el("td", { text: a.name }),
+          el("td", { class: "num", text: `${a.width}\xD7${a.height}` }),
+          el("td", { class: "num", text: `${Math.round((a.byte_size || 0) / 1024)} KB` }),
+          el("td", {}, [el("span", {
+            class: `pill ${a.approval_state === "approved" ? "ok" : a.approval_state === "rejected" ? "down" : ""}`.trim(),
+            text: a.approval_state
+          })]),
+          el("td", {}, actions.length ? actions : [el("span", { class: "modal-help", text: canApprove ? "\u2014" : "approval needed" })])
+        ]);
+      });
+      const table = el("table", {}, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", { text: "Preview" }),
+          el("th", { text: "Kind" }),
+          el("th", { text: "Brand" }),
+          el("th", { text: "Name" }),
+          el("th", { text: "Size" }),
+          el("th", { text: "Bytes" }),
+          el("th", { text: "State" }),
+          el("th", { text: "Actions" })
+        ])]),
+        el("tbody", {}, rows)
+      ]);
+      content.replaceChildren(
+        el("p", { class: "modal-help", text: `${assets.length} asset${assets.length === 1 ? "" : "s"}. Apply an approved asset to a draft from Template review.` }),
+        table
+      );
+    }
+    kindFilter.addEventListener("change", load);
+    stateFilter.addEventListener("change", load);
     await load();
   };
   views.audit = async (root) => {

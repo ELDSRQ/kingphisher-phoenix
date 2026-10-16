@@ -32,6 +32,9 @@ from kp_operator_api.routes.alerts import (
 from kp_operator_api.routes.alerts import (
     router as alerts_router,
 )
+from kp_operator_api.routes.assets import (
+    router as assets_router,
+)
 from kp_operator_api.routes.audience_groups import (
     router as audience_groups_router,
 )
@@ -217,6 +220,7 @@ register_content_library_routes(router)
 
 for _resource_router in (
     patterns_router,
+    assets_router,
     curation_router,
     dead_letters_router,
     audit_router,
