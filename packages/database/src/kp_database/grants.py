@@ -93,7 +93,10 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
         # candidates), lists them, and records a review verdict (UPDATE
         # review_state / promoted_pattern_id). Promotion writes campaign_patterns,
         # already in the full-CRUD slice above.
-        "SELECT, INSERT, UPDATE": ("campaign_programs", "aggregation_candidates"),
+        # The console manages the reusable image-asset library: upload (INSERT),
+        # list/preview (SELECT), approve and apply/supersede (UPDATE). Assets are
+        # never hard-deleted (superseded via approval_state), so no DELETE.
+        "SELECT, INSERT, UPDATE": ("campaign_programs", "aggregation_candidates", "template_assets"),
         "SELECT, INSERT": ("campaign_program_occurrences",),
         # The console binds the durable launch review (create/re-create) and
         # reads canary membership; re-review deletes and re-inserts these rows.

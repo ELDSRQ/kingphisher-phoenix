@@ -104,6 +104,23 @@ class TemplateApprovalState(StrEnum):
     REJECTED = "rejected"
 
 
+class AssetKind(StrEnum):
+    """What role a stored image asset plays when applied to a template."""
+
+    BANNER = "banner"
+    LOGO = "logo"
+    DECORATIVE = "decorative"
+
+
+class AssetApprovalState(StrEnum):
+    """Lifecycle of a reusable image asset; only APPROVED assets may be applied."""
+
+    DRAFT = "draft"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    SUPERSEDED = "superseded"
+
+
 class CampaignState(StrEnum):
     DRAFT = "draft"
     PATTERN_REVIEW = "pattern_review"
@@ -406,6 +423,33 @@ class TemplateVersion(BaseEntity):
     approval_hash: str | None = None
     approval_state: TemplateApprovalState = TemplateApprovalState.DRAFT
     unicode_validation: dict[str, Any] = Field(default_factory=dict)
+
+
+class TemplateAsset(BaseEntity):
+    """A reusable, operator-vetted raster image (banner / logo / decorative).
+
+    Metadata only — the raw bytes live in the ORM ``content`` column, never in
+    the domain entity, so an asset can be listed/approved without serialising a
+    payload. Only an ``APPROVED`` asset may be inlined into a template's
+    ``safe_html`` as a ``data:image`` URI.
+    """
+
+    asset_id: UUID = Field(default_factory=uuid4)
+    kind: AssetKind
+    brand: str | None = None
+    name: str
+    media_type: str
+    width: int = Field(default=0, ge=0)
+    height: int = Field(default=0, ge=0)
+    byte_size: int = Field(default=0, ge=0)
+    sha256: str
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    approval_state: AssetApprovalState = AssetApprovalState.DRAFT
+    approval_hash: str | None = None
+    requested_by: UUID | None = None
+    approved_by: UUID | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class Campaign(BaseEntity):

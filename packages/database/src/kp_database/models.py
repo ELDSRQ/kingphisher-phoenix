@@ -31,6 +31,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -353,6 +354,42 @@ class TemplateVersion(Base):
         Enum(dm.TemplateApprovalState, name="template_approval_state"), default=dm.TemplateApprovalState.DRAFT
     )
     unicode_validation: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class TemplateAsset(Base):
+    """Reusable, operator-vetted raster image (banner / logo / decorative).
+
+    The raw image bytes live in ``content`` (BYTEA) so the library is
+    self-contained in the database (a preserved asset). Only an ``APPROVED``
+    asset may be inlined into a template's ``safe_html`` as a ``data:image`` URI.
+    """
+
+    __tablename__ = "template_assets"
+    __table_args__ = (
+        Index("ix_template_assets_kind_state", "kind", "approval_state"),
+        Index("ix_template_assets_brand", "brand"),
+        Index("ix_template_assets_sha256", "sha256"),
+    )
+
+    asset_id = _pk()
+    kind: Mapped[dm.AssetKind] = mapped_column(Enum(dm.AssetKind, name="asset_kind"))
+    brand: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    name: Mapped[str] = mapped_column(String(255))
+    media_type: Mapped[str] = mapped_column(String(32))
+    width: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    height: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    byte_size: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    sha256: Mapped[str] = mapped_column(String(64))
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    approval_state: Mapped[dm.AssetApprovalState] = mapped_column(
+        Enum(dm.AssetApprovalState, name="asset_approval_state"), default=dm.AssetApprovalState.DRAFT
+    )
+    approval_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requested_by = mapped_column(UUID(as_uuid=True), nullable=True)
+    approved_by = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
 
 
 class Campaign(Base):

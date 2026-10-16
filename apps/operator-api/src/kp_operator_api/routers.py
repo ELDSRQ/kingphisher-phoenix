@@ -84,6 +84,9 @@ from kp_operator_api.routes.patterns import (
     decide_template,
     list_pending_templates,
 )
+from kp_operator_api.routes.assets import (
+    router as assets_router,
+)
 from kp_operator_api.routes.patterns import (
     router as patterns_router,
 )
@@ -217,6 +220,7 @@ register_content_library_routes(router)
 
 for _resource_router in (
     patterns_router,
+    assets_router,
     curation_router,
     dead_letters_router,
     audit_router,
