@@ -9844,6 +9844,7 @@ ${wording.value}`;
       el("option", { value: "approved", text: "Approved" }),
       el("option", { value: "draft", text: "Draft (awaiting approval)" }),
       el("option", { value: "rejected", text: "Rejected" }),
+      el("option", { value: "superseded", text: "Superseded (retired)" }),
       el("option", { value: "", text: "All states" })
     ]);
     const toolbar = el("div", { class: "btn-row" }, [
@@ -9962,6 +9963,54 @@ ${wording.value}`;
         button.disabled = false;
       }
     }
+    async function fetchUsage(asset) {
+      try {
+        return await api(`/assets/${asset.asset_id}/usage`);
+      } catch {
+        return null;
+      }
+    }
+    async function showUsage(asset, button) {
+      button.disabled = true;
+      const usage = await fetchUsage(asset);
+      button.disabled = false;
+      if (!usage) {
+        toast("Could not load usage for this asset.", "error");
+        return;
+      }
+      const detail = {};
+      for (const t of usage.templates) detail[t.subject || t.template_version_id] = `${t.slots.join(", ")} (${t.approval_state})`;
+      await confirmDialog({
+        title: "Where this asset is used",
+        message: usage.template_count ? `${usage.template_count} template${usage.template_count === 1 ? "" : "s"} currently have this asset applied.` : "No templates currently have this asset applied.",
+        detail: usage.template_count ? detail : void 0,
+        confirmLabel: "Close"
+      });
+    }
+    async function retireAsset(asset, button) {
+      button.disabled = true;
+      const usage = await fetchUsage(asset);
+      const count = usage ? usage.template_count : 0;
+      const ok = await confirmDialog({
+        title: "Retire this asset?",
+        message: "A retired (superseded) asset can no longer be applied to templates. " + (count ? `${count} template${count === 1 ? "" : "s"} already using it keep their own inlined copy \u2014 those are not changed.` : "No templates currently use it.") + " Nothing is deleted; the image is preserved.",
+        detail: { Kind: asset.kind, Brand: asset.brand || "\u2014", Name: asset.name },
+        confirmLabel: "Retire",
+        danger: true
+      });
+      if (!ok) {
+        button.disabled = false;
+        return;
+      }
+      try {
+        await api(`/assets/${asset.asset_id}/retire`, { method: "POST" });
+        toast("Asset retired (superseded).", "success");
+        await load();
+      } catch (err) {
+        toast(err.message, "error");
+        button.disabled = false;
+      }
+    }
     async function load() {
       content.replaceChildren(el("p", { class: "empty", text: "Loading assets\u2026" }));
       const params = new URLSearchParams();
@@ -9988,6 +10037,14 @@ ${wording.value}`;
           const rejectBtn = el("button", { class: "btn small danger", type: "button", text: "Reject" });
           rejectBtn.addEventListener("click", () => decideAsset(a, "rejected", rejectBtn));
           actions.push(approveBtn, rejectBtn);
+        }
+        const usageBtn = el("button", { class: "btn small", type: "button", text: "Usage" });
+        usageBtn.addEventListener("click", () => showUsage(a, usageBtn));
+        actions.push(usageBtn);
+        if (canApprove && a.approval_state === "approved") {
+          const retireBtn = el("button", { class: "btn small danger", type: "button", text: "Retire" });
+          retireBtn.addEventListener("click", () => retireAsset(a, retireBtn));
+          actions.push(retireBtn);
         }
         return el("tr", {}, [
           el("td", {}, [thumbEl(a)]),
