@@ -240,6 +240,71 @@ def approve_asset(
     return {"asset_id": str(asset_id), "approval_state": asset.approval_state.value}
 
 
+@router.post("/assets/{asset_id}/retire", status_code=status.HTTP_200_OK)
+def retire_asset(
+    asset_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.APPROVE_TEMPLATE)),
+) -> dict[str, Any]:
+    """Retire an APPROVED asset so it can no longer be applied (SUPERSEDED).
+
+    Nothing is deleted — the bytes are preserved and templates that already
+    inlined this asset keep their self-contained copy; retiring only removes the
+    asset from the pool of approved assets an operator can apply going forward.
+    """
+    asset = session.get(TemplateAsset, asset_id)
+    if asset is None:
+        raise NotFoundError("asset not found")
+    if asset.approval_state != dm.AssetApprovalState.APPROVED:
+        raise ConflictError(f"only an approved asset can be retired; this asset is {asset.approval_state.value}")
+
+    asset.approval_state = dm.AssetApprovalState.SUPERSEDED
+    asset.updated_at = datetime.now(UTC)
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="asset.retire",
+        object_type="asset",
+        object_id=str(asset_id),
+        detail={"kind": asset.kind.value},
+    )
+    session.commit()
+    return {"asset_id": str(asset_id), "approval_state": asset.approval_state.value}
+
+
+@router.get("/assets/{asset_id}/usage", status_code=status.HTTP_200_OK)
+def asset_usage(
+    asset_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    _principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, Any]:
+    """List the templates that currently have this asset applied, and in which slot.
+
+    Reads the ``asset_ids`` map recorded on each template at apply time, so the
+    answer never depends on matching the large inlined data:image bytes.
+    """
+    target = str(asset_id)
+    stmt = select(TemplateVersion).where(TemplateVersion.edited_content.isnot(None))
+    templates: list[dict[str, Any]] = []
+    for template in session.scalars(stmt):
+        edited = template.edited_content if isinstance(template.edited_content, dict) else {}
+        asset_ids = edited.get("asset_ids")
+        if not isinstance(asset_ids, dict):
+            continue
+        slots = sorted(slot for slot, value in asset_ids.items() if value == target)
+        if slots:
+            templates.append(
+                {
+                    "template_version_id": str(template.template_version_id),
+                    "subject": template.subject,
+                    "approval_state": template.approval_state.value,
+                    "slots": slots,
+                }
+            )
+    return {"asset_id": target, "template_count": len(templates), "templates": templates}
+
+
 class ApplyAssetRequest(BaseModel):
     asset_id: uuid.UUID
 
@@ -304,6 +369,12 @@ def apply_asset_to_template(
 
     template.safe_html = result.safe_html
     edited["assets"] = result.slots
+    # Track which asset occupies each surviving slot, so usage ("which templates
+    # use this asset") is answerable without matching on the inlined bytes.
+    prior_ids = edited.get("asset_ids")
+    asset_ids = {k: v for k, v in prior_ids.items() if k in result.slots} if isinstance(prior_ids, dict) else {}
+    asset_ids[slot_for_kind(asset.kind)] = str(asset.asset_id)
+    edited["asset_ids"] = asset_ids
     template.edited_content = edited or None
     audit.record(
         session=session,

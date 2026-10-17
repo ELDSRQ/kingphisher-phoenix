@@ -69,6 +69,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/assets",
             "GET /api/v1/assets/{asset_id}",
             "GET /api/v1/assets/{asset_id}/content",
+            "GET /api/v1/assets/{asset_id}/usage",
             "POST /api/v1/programs",
             "POST /api/v1/training-resources",
             "POST /api/v1/training-resources/{training_resource_id}/submit",
@@ -213,6 +214,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/templates/pending",
             "POST /api/v1/training-resources/{training_resource_id}/decision",
             "POST /api/v1/assets/{asset_id}/approve",
+            "POST /api/v1/assets/{asset_id}/retire",
         ),
     ),
     (

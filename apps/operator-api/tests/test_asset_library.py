@@ -28,6 +28,8 @@ from kp_operator_api.routes.assets import (
     AssetUploadRequest,
     apply_asset_to_template,
     approve_asset,
+    asset_usage,
+    retire_asset,
     upload_asset,
 )
 from kp_telemetry.errors import ConflictError, PermissionDeniedError, ValidationError_
@@ -74,6 +76,11 @@ class _Session:
 
     def refresh(self, _obj: Any) -> None:
         pass
+
+    def scalars(self, _statement: Any) -> list[Any]:
+        # The usage route Python-filters on edited_content; the DB-side WHERE is
+        # only a prefilter, so returning every stored TemplateVersion is faithful.
+        return [v for (model, _id), v in self.store.items() if model is TemplateVersion]
 
 
 class _Audit:
@@ -281,3 +288,77 @@ def test_apply_rejects_template_without_body() -> None:
     asset = _approved_asset(dm.AssetKind.BANNER)
     with pytest.raises(ValidationError_):
         _apply(_Session(template, asset), template, asset)
+
+
+def test_apply_banner_logo_decorative_all_coexist() -> None:
+    template = _template()
+    banner = _approved_asset(dm.AssetKind.BANNER)
+    logo = _approved_asset(dm.AssetKind.LOGO)
+    decorative = _approved_asset(dm.AssetKind.DECORATIVE)
+    session = _Session(template, banner, logo, decorative)
+    _apply(session, template, banner)
+    _apply(session, template, logo)
+    result = _apply(session, template, decorative)
+    assert sorted(result["applied_slots"]) == ["banner", "decorative", "logo"]
+    # Decorative no longer evicts the banner: three distinct images are present.
+    assert template.safe_html.count("<img") == 3
+    assert template.edited_content["assets"].keys() == {"banner", "logo", "decorative"}
+
+
+# --- retire -----------------------------------------------------------------
+
+
+def test_retire_approved_asset_supersedes() -> None:
+    asset = _approved_asset(dm.AssetKind.BANNER)  # already APPROVED
+    session = _Session(asset)
+    audit = _Audit()
+    result = retire_asset(asset.asset_id, session=session, audit=audit, principal=_principal())  # type: ignore[arg-type]
+    assert result["approval_state"] == "superseded"
+    assert asset.approval_state == dm.AssetApprovalState.SUPERSEDED
+    assert audit.events[0]["action"] == "asset.retire"
+
+
+def test_retire_rejects_non_approved_asset() -> None:
+    asset = _approved_asset(dm.AssetKind.BANNER)
+    asset.approval_state = dm.AssetApprovalState.DRAFT
+    with pytest.raises(ConflictError):
+        retire_asset(asset.asset_id, session=_Session(asset), audit=_Audit(), principal=_principal())  # type: ignore[arg-type]
+
+
+def test_retired_asset_cannot_be_applied() -> None:
+    template = _template()
+    asset = _approved_asset(dm.AssetKind.BANNER)
+    asset.approval_state = dm.AssetApprovalState.SUPERSEDED
+    with pytest.raises(ConflictError):
+        _apply(_Session(template, asset), template, asset)
+
+
+# --- usage ------------------------------------------------------------------
+
+
+def test_usage_lists_templates_that_applied_the_asset() -> None:
+    using = _template()
+    other = _template()
+    banner = _approved_asset(dm.AssetKind.BANNER)
+    logo = _approved_asset(dm.AssetKind.LOGO)
+    session = _Session(using, other, banner, logo)
+    _apply(session, using, banner)
+    _apply(session, using, logo)
+    _apply(session, other, logo)
+
+    banner_usage = asset_usage(banner.asset_id, session=session, _principal=_principal())  # type: ignore[arg-type]
+    assert banner_usage["template_count"] == 1
+    assert banner_usage["templates"][0]["template_version_id"] == str(using.template_version_id)
+    assert banner_usage["templates"][0]["slots"] == ["banner"]
+
+    logo_usage = asset_usage(logo.asset_id, session=session, _principal=_principal())  # type: ignore[arg-type]
+    assert logo_usage["template_count"] == 2
+
+
+def test_usage_empty_when_asset_unused() -> None:
+    template = _template()
+    unused = _approved_asset(dm.AssetKind.BANNER)
+    session = _Session(template, unused)
+    result = asset_usage(unused.asset_id, session=session, _principal=_principal())  # type: ignore[arg-type]
+    assert result["template_count"] == 0
+    assert result["templates"] == []

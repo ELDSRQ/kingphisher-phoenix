@@ -4,10 +4,12 @@ An asset from the library (a FLUX-generated banner, a brand logo) is inlined int
 ``safe_html`` as a self-contained ``data:image`` URI — the same raster path the
 sanitizer and SafetyValidator already permit, so delivery stays self-contained
 and nothing new is reachable over the network. Placement is deterministic and
-slot-based: a ``banner``/``decorative`` asset is a full-width header at the very
-top, a ``logo`` is a centered header just below it. The header is rebuilt from
-the recorded slots on every apply, so re-applying never stacks and the order
-never depends on which asset was applied first.
+slot-based, with three independent slots so a banner, a logo and a decorative
+image can coexist: a ``banner`` is a full-width image at the very top, a ``logo``
+is centered just below it, and a ``decorative`` is a full-width image below the
+logo. The header is rebuilt from the recorded slots on every apply, so
+re-applying never stacks and the order never depends on which asset was applied
+first.
 
 Mirrors :mod:`kp_operator_api.logo_service`: the image lands in ``safe_html`` so
 it is covered by the template approval hash and re-run through the same allow-list
@@ -32,6 +34,10 @@ _MAX_BODY = 400_000
 #: The slot an asset kind occupies in the rebuilt header.
 _BANNER_SLOT = "banner"
 _LOGO_SLOT = "logo"
+_DECORATIVE_SLOT = "decorative"
+
+#: Header render order; a slot renders only when it holds a src.
+_SLOT_ORDER = (_BANNER_SLOT, _LOGO_SLOT, _DECORATIVE_SLOT)
 
 
 class AssetApplyError(ValueError):
@@ -53,9 +59,13 @@ def asset_data_uri(media_type: str, content: bytes) -> str:
 
 
 def slot_for_kind(kind: dm.AssetKind) -> str:
-    """Map an asset kind to its header slot (decorative shares the banner slot)."""
+    """Map an asset kind to its own header slot (banner, logo, decorative)."""
 
-    return _LOGO_SLOT if kind is dm.AssetKind.LOGO else _BANNER_SLOT
+    if kind is dm.AssetKind.LOGO:
+        return _LOGO_SLOT
+    if kind is dm.AssetKind.DECORATIVE:
+        return _DECORATIVE_SLOT
+    return _BANNER_SLOT
 
 
 def _escape_src(src: str) -> str:
@@ -77,6 +87,19 @@ def _logo_block(src: str) -> str:
         f'<img src="{_escape_src(src)}" alt="Logo" style="max-height:48px; max-width:240px" />'
         "</p>"
     )
+
+
+def _decorative_block(src: str) -> str:
+    return (
+        '<p style="margin:0 0 16px 0">'
+        f'<img src="{_escape_src(src)}" alt="" '
+        'style="display:block; width:100%; max-width:600px; height:auto; border:0" />'
+        "</p>"
+    )
+
+
+#: The block builder for each slot, in render order.
+_SLOT_BLOCKS = {_BANNER_SLOT: _banner_block, _LOGO_SLOT: _logo_block, _DECORATIVE_SLOT: _decorative_block}
 
 
 def _strip_previous(soup: BeautifulSoup, previous_srcs: Iterable[str]) -> None:
@@ -101,24 +124,19 @@ def apply_assets(
 ) -> AssetApplyResult:
     """Rebuild the header from ``slots`` and re-sanitize.
 
-    ``slots`` maps ``"banner"``/``"logo"`` to the data:image URI that should
-    occupy it (omit or empty to leave a slot clear). ``previous_srcs`` are the
-    data:image URIs previously injected, stripped first so nothing accretes.
-    Raises :class:`AssetApplyError` if sanitizing drops the training placeholder
-    or an applied image.
+    ``slots`` maps ``"banner"``/``"logo"``/``"decorative"`` to the data:image URI
+    that should occupy it (omit or empty to leave a slot clear). ``previous_srcs``
+    are the data:image URIs previously injected, stripped first so nothing
+    accretes. Raises :class:`AssetApplyError` if sanitizing drops the training
+    placeholder or an applied image.
     """
 
     soup = BeautifulSoup(current_safe_html or "", "html.parser")
     _strip_previous(soup, previous_srcs)
     body_without_assets = str(soup)
 
-    header = ""
-    banner = (slots.get(_BANNER_SLOT) or "").strip()
-    logo = (slots.get(_LOGO_SLOT) or "").strip()
-    if banner:
-        header += _banner_block(banner)
-    if logo:
-        header += _logo_block(logo)
+    applied_slots = {name: src for name in _SLOT_ORDER if (src := (slots.get(name) or "").strip())}
+    header = "".join(_SLOT_BLOCKS[name](src) for name, src in applied_slots.items())
 
     # data:image URIs carry their own payload and need no host allow-list.
     sanitized = sanitize_safe_html(
@@ -131,7 +149,6 @@ def apply_assets(
 
     if training_placeholder and training_placeholder not in cleaned:
         raise AssetApplyError("applying the asset removed the required training link")
-    applied_slots = {name: src for name, src in (("banner", banner), ("logo", logo)) if src}
     if applied_slots and "<img" not in cleaned:
         raise AssetApplyError("the asset image could not be applied (rejected by the sanitizer)")
 
