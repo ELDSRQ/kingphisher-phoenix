@@ -32,6 +32,7 @@ from kp_operator_api.routes.assets import (
     retire_asset,
     upload_asset,
 )
+from kp_sanitization.image_asset import inspect_raster_image
 from kp_telemetry.errors import ConflictError, PermissionDeniedError, ValidationError_
 
 _KEK = "01" * 32
@@ -43,12 +44,12 @@ _BODY = (
 )
 
 
-def _png(width: int, height: int) -> bytes:
+def _png(width: int, height: int, *, compression_level: int = -1) -> bytes:
     def chunk(tag: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    idat = zlib.compress((b"\x00" + b"\xff\xff\xff" * width) * height)
+    idat = zlib.compress((b"\x00" + b"\xff\xff\xff" * width) * height, level=compression_level)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
@@ -303,6 +304,67 @@ def test_apply_banner_logo_decorative_all_coexist() -> None:
     # Decorative no longer evicts the banner: three distinct images are present.
     assert template.safe_html.count("<img") == 3
     assert template.edited_content["assets"].keys() == {"banner", "logo", "decorative"}
+
+
+@pytest.mark.parametrize("existing_slot", [False, True], ids=["single-large-image", "combined-slots-too-large"])
+def test_apply_oversized_body_rejects_without_changing_template(existing_slot: bool) -> None:
+    template = _template()
+    asset = _approved_asset(dm.AssetKind.BANNER)
+    # Both images are valid uploads; base64 expansion can exceed the HTML cap
+    # either alone or when combined with another occupied slot.
+    size = 250 if existing_slot else 350
+    content = _png(size, size, compression_level=0)
+    info = inspect_raster_image(content)
+    asset.content = content
+    asset.byte_size = info.byte_size
+    asset.sha256 = info.sha256
+    session, audit = _Session(template, asset), _Audit()
+    if existing_slot:
+        _apply(session, template, asset)
+        asset = _approved_asset(dm.AssetKind.LOGO)
+        asset.content = content
+        asset.byte_size = info.byte_size
+        asset.sha256 = info.sha256
+        session.add(asset)
+
+    previous_html = template.safe_html
+    previous_edited = template.edited_content
+    previous_commits = session.commits
+    with pytest.raises(ValidationError_, match="too large"):
+        apply_asset_to_template(
+            template.template_version_id,
+            ApplyAssetRequest(asset_id=asset.asset_id),
+            settings=_settings(),
+            session=session,  # type: ignore[arg-type]
+            audit=audit,  # type: ignore[arg-type]
+            principal=_principal(),
+        )
+    assert template.safe_html == previous_html
+    assert template.edited_content == previous_edited
+    assert session.commits == previous_commits
+    assert audit.events == []
+
+
+def test_apply_preserves_allowed_body_images_and_removes_disallowed_images() -> None:
+    allowed = "https://brand.example/logo.png"
+    blocked = "https://untrusted.example/pixel.png"
+    template = _template(safe_html=f'<img src="{allowed}" /><img src="{blocked}" />' + _BODY)
+    asset = _approved_asset(dm.AssetKind.BANNER)
+    settings = _settings()
+    settings.safe_html_image_hosts = "brand.example"
+    session = _Session(template, asset)
+    apply_asset_to_template(
+        template.template_version_id,
+        ApplyAssetRequest(asset_id=asset.asset_id),
+        settings=settings,
+        session=session,  # type: ignore[arg-type]
+        audit=_Audit(),  # type: ignore[arg-type]
+        principal=_principal(),
+    )
+    assert allowed in template.safe_html
+    assert blocked not in template.safe_html
+    assert template.safe_html.count("<img") == 2
+    assert TRAINING_URL_PLACEHOLDER in template.safe_html
 
 
 # --- retire -----------------------------------------------------------------

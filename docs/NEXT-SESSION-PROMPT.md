@@ -1,9 +1,61 @@
 # Next-session resume prompt (copy/paste)
 
-## Current resume prompt — October 9
+## Current resume prompt — October 23
 
-Read [the current handoff](SESSION-HANDOFF-2026-10-09-SIMPLE-FLOW.md) before
-resuming. Use this block; the September prompt below is historical.
+Read [the current handoff](SESSION-HANDOFF-2026-10-23.md) before resuming. Use
+this block; the October 9 and September prompts below are historical.
+
+```text
+Resume the authorized Kingphisher-Phoenix build in:
+/Users/edierks/projects/codex-test/phishing-awareness-platform
+
+Read AGENTS.md and docs/SESSION-HANDOFF-2026-10-23.md, including its remediation
+follow-up. Follow the latest user direction. Inspect git status before editing;
+preserve all existing changes and the five pre-existing untracked files.
+
+At the original October 23 checkpoint, main was 9566530 (PRs #142–144 merged)
+and the worker was at e80146b. The operator subsequently requested committing,
+deploying and landing all pending work, including the five previously untracked
+files. Read the handoff publication scope and verify current integration and
+deployment with git log, worker git rev-parse HEAD and deployment receipts under
+data/qualification/deployments/. The remediation was tested in an isolated
+source copy on .105 before publication.
+
+Worker: SSH builder@192.168.1.105 port 2222, repository
+/home/builder/phishing-awareness-platform, kp-supervisor.service (systemd user).
+Operator API :8000, console :8600, tracking/training :8001, Mailpit API :8025.
+Readiness was 200 for both APIs; this is not delivery or production evidence.
+
+Primary flow: select domain, sign/select current RoE, upload/review/confirm the
+whole roster, choose/edit/preview email, approve, send, monitor. New campaigns
+use reviewed_direct; no mandatory canary, test-account designation, manual
+freeze or launch lock. Keep the server's exact-review and authorization gates.
+
+Reply ingestion shipped in #138 and Mailpit header handling in #141. Do not
+reimplement it based on the historical October 9 prompt. External mailbox
+configuration/qualification remains distinct from implementation.
+
+Await the operator's Proton inbox confirmation for campaign
+f9644a31-6990-402d-8955-cd57e560cd10. SMTP acceptance alone is not delivery.
+The Gmail leg needs a different Gmail recipient or a non-Gmail SMTP sender;
+wait for the operator's choice and required configuration before new sends.
+M365 provisioning is optional and requires a specific request.
+
+Preserve .env, runtime/data/audit state, all assets and qualification evidence.
+Do not clean up storage or touch retired .140. The controller .venv currently
+points to a missing Python interpreter; do not recreate it. Isolated .105
+validation can use its existing Python 3.13 environment without changing the
+deployed checkout, services or normal databases.
+
+D6 human acceptance, manual accessibility and production/cloud/image/recovery
+gates remain open. Password rotation waits for completed-build human sign-off.
+Begin with bounded read-only checks, then continue authorized remediation.
+```
+
+## Historical October 9 prompt — superseded
+
+The block below records the October 9 checkpoint. Its open PR stack and claim
+that reply ingestion is unimplemented are superseded by the October 23 block.
 
 ```text
 Resume the authorized Kingphisher-Phoenix build in:

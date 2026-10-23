@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from bs4 import BeautifulSoup
 from kp_domain_models import models as dm
+from kp_sanitization.html_to_text import SanitizationError
 from kp_sanitization.safe_html import sanitize_safe_html
 
 #: Generous cap: base64 data:image header(s) plus the body must still fit. Matches
@@ -121,14 +122,16 @@ def apply_assets(
     slots: dict[str, str],
     previous_srcs: Iterable[str],
     training_placeholder: str,
+    allowed_image_hosts: set[str],
 ) -> AssetApplyResult:
     """Rebuild the header from ``slots`` and re-sanitize.
 
     ``slots`` maps ``"banner"``/``"logo"``/``"decorative"`` to the data:image URI
     that should occupy it (omit or empty to leave a slot clear). ``previous_srcs``
     are the data:image URIs previously injected, stripped first so nothing
-    accretes. Raises :class:`AssetApplyError` if sanitizing drops the training
-    placeholder or an applied image.
+    accretes. Existing HTTPS images must satisfy ``allowed_image_hosts``.
+    Raises :class:`AssetApplyError` if the combined body exceeds the size limit
+    or sanitizing drops the training placeholder or an applied image.
     """
 
     soup = BeautifulSoup(current_safe_html or "", "html.parser")
@@ -138,13 +141,17 @@ def apply_assets(
     applied_slots = {name: src for name in _SLOT_ORDER if (src := (slots.get(name) or "").strip())}
     header = "".join(_SLOT_BLOCKS[name](src) for name, src in applied_slots.items())
 
-    # data:image URIs carry their own payload and need no host allow-list.
-    sanitized = sanitize_safe_html(
-        header + body_without_assets,
-        training_placeholder=training_placeholder,
-        max_length=_MAX_BODY,
-        allowed_image_hosts=set(),
-    )
+    # Inline assets need no host allow-list; retain the configured host policy
+    # for existing HTTPS images in the template body.
+    try:
+        sanitized = sanitize_safe_html(
+            header + body_without_assets,
+            training_placeholder=training_placeholder,
+            max_length=_MAX_BODY,
+            allowed_image_hosts=allowed_image_hosts,
+        )
+    except SanitizationError as error:
+        raise AssetApplyError(f"{error}; use smaller images or shorten the email body") from error
     cleaned = sanitized.html
 
     if training_placeholder and training_placeholder not in cleaned:
