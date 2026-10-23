@@ -3,7 +3,66 @@
 Supersedes `docs/SESSION-HANDOFF-2026-10-09-SIMPLE-FLOW.md` for the asset-library /
 real-send thread. Earlier handoffs remain valid for their own topics.
 
-**Repo state:** `main` is the deployed state at **`e80146b`**, **0 open PRs**,
+## Remediation follow-up — October 23
+
+Controller baseline is `main @ 9566530` (#144 merged). A read-only check found
+the worker still at `e80146b`, with only its preserved
+`docker-compose.override.yml` untracked, supervisor active and operator/tracking
+readiness both HTTP 200. The baseline difference is handoff documentation.
+
+The follow-up patch repairs two asset-library apply defects:
+
+- Valid uploaded rasters can exceed the 400,000-character combined HTML cap
+  after base64 expansion, alone or across multiple slots. The sanitizer error
+  now becomes an actionable API validation error before any template mutation,
+  audit event or commit; the size limit stays enforced.
+- Re-sanitization now uses the configured image-host policy, preserving allowed
+  HTTPS body images while still stripping disallowed images. Sanitization and
+  SafetyValidator use the same host set.
+
+Three regression cases failed against the baseline and pass with the patch.
+The focused asset/logo, route-authorization, sanitizer/raster and safety suite
+passed **131 tests, zero skips**; the existing handoff-preservation contract
+passed **17 tests, zero skips**. Strict mypy passed **198 source files**;
+changed-file Ruff lint/format and `git diff --check` passed. Source and logs are
+preserved in `.105:/tmp/kp-asset-remediation-20261023-H4BUfWy1/`
+(`regression-before.log`, `regression-after.log`, `mypy.log`, `handoff-check.log`), with a controller
+copy under `/private/tmp/kp-asset-remediation-mtu8qkpy/`.
+
+The validation snapshot predates publication/deployment. Tests used an isolated
+source snapshot and the worker's existing Python 3.13 environment, without changing the deployed
+checkout, services, `.env`, normal databases or assets. The controller `.venv`
+points to a missing Python 3.13 interpreter and was preserved unchanged.
+No full-suite, exact-image, browser, cloud, real-mail or human-acceptance gate
+is claimed by this follow-up. Proton confirmation and the Gmail route decision
+remain pending; optional M365 provisioning was not run.
+
+Reply ingestion already shipped in #138, with the Mailpit header-endpoint fix
+in #141. The [current resume prompt](NEXT-SESSION-PROMPT.md#current-resume-prompt--october-23)
+now reflects that implementation and supersedes the historical October 9 PR
+stack/unimplemented-reply guidance. External mailbox qualification remains a
+separate gate.
+
+### Publication scope
+
+The operator subsequently requested **commit, deploy and land everything**.
+This includes the six remediation/resume files and the five previously
+untracked files listed in the original handoff below. The QA review is retained
+as dated evidence, with its assessment in `QA-REMEDIATION-PLAN-2026-10-07.md`;
+its historical prescriptions do not supersede current operator instructions.
+The four scripts are manual administrative tools; committing/deploying them
+does not run M365 provisioning or change the live Gmail SMTP configuration.
+Their Bash syntax was checked; no live M365 provisioning result is claimed.
+
+Resolve the landed source with `git log` and the deployed source with the
+worker's `git rev-parse HEAD`. Deployment receipts belong under
+`data/qualification/deployments/` on `.105`; preserved isolated test logs above
+remain the pre-publication evidence. Proton confirmation and the Gmail route
+decision remain open independently of code publication/deployment.
+
+## Original landed handoff
+
+**Repo state at the original checkpoint:** `main` was deployed at **`e80146b`**, **0 open PRs**,
 **0 uncommitted code**. `.105` is deployed to the same `main @ e80146b`
 (verified: retire/usage routes live `401` unauth, worker on the Gmail wire
 `smtp.gmail.com:587`, provider `smtp`). The only working-tree noise is five
@@ -80,7 +139,7 @@ Scripts (staged on `.105 ~/`): `flux_mailpit_proof.py`, `flux_proton_send.py`,
 
 ---
 
-## Untracked, deliberately left (NOT committed this thread)
+## Originally untracked, deliberately left (superseded by publication scope above)
 
 These five files predate this thread and are not asset-library work. The
 provisioning scripts contain interactive M365/Graph/Exchange admin sign-in flows;

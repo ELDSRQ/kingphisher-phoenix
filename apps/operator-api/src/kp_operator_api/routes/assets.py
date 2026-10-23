@@ -320,10 +320,10 @@ def apply_asset_to_template(
 ) -> dict[str, Any]:
     """Inline an APPROVED asset into a DRAFT template's HTML as a data:image.
 
-    The asset occupies the ``banner`` or ``logo`` slot (by its kind); the header
-    is rebuilt from the recorded slots so re-applying never stacks. The result is
-    re-run through the sanitizer and SafetyValidator fail-closed before it is
-    persisted; approved templates are immutable.
+    The asset occupies its ``banner``, ``logo`` or ``decorative`` slot; the
+    header is rebuilt from the recorded slots so re-applying never stacks. The
+    result is re-run through the sanitizer and SafetyValidator fail-closed
+    before it is persisted; approved templates are immutable.
     """
     template = session.get(TemplateVersion, template_version_id)
     if template is None:
@@ -347,6 +347,7 @@ def apply_asset_to_template(
     new_uri = asset_data_uri(asset.media_type, asset.content)
     slots = dict(prior_slots)
     slots[slot_for_kind(asset.kind)] = new_uri
+    image_hosts = settings.image_host_set()
 
     try:
         result = apply_assets(
@@ -354,13 +355,14 @@ def apply_asset_to_template(
             slots=slots,
             previous_srcs=previous_srcs,
             training_placeholder=TRAINING_URL_PLACEHOLDER,
+            allowed_image_hosts=image_hosts,
         )
     except AssetApplyError as error:
         raise ValidationError_(str(error)) from None
 
     # Fail-closed re-validation (data:image needs no host allow-list).
     training_domains = {d.strip() for d in settings.training_domains.split(",") if d.strip()}
-    validator = SafetyValidator(training_domains=training_domains, allowed_image_hosts=settings.image_host_set())
+    validator = SafetyValidator(training_domains=training_domains, allowed_image_hosts=image_hosts)
     validation_html = result.safe_html.replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
     validation_plain = (template.plain_text or "").replace(TRAINING_URL_PLACEHOLDER, "/recipient-training-link")
     verdict = validator.validate(template.subject, validation_plain, validation_html, content_checks=False)
