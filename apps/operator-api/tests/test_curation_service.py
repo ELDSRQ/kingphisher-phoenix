@@ -73,3 +73,43 @@ def test_curate_rejects_empty_input() -> None:
         requested_by="u",
     )
     assert not r.created and not r.deduplicated and r.reason and "empty" in r.reason
+
+
+def test_curate_populates_cue_manifest_and_label_projection() -> None:
+    s = _Session()
+    r = _curate(s)
+    assert r.created
+    t = s.added[0]
+    # Structured manifest stored in its own column, isolated from safe_html.
+    assert t.cue_manifest["ontology_version"] == "cue-ontology/1"
+    assert t.cue_manifest["source"] == "reconstruction"
+    cue_types = {cue["cue_type"] for cue in t.cue_manifest["cues"]}
+    assert {"brand_impersonation", "credential_request"} <= cue_types
+    # warning_cues is the deterministic string-label projection of the manifest.
+    assert t.warning_cues == sorted(cue_types)
+    # A transformation receipt records the neutralized real link.
+    assert any(rec["component"] == "anchor_href" for rec in t.cue_manifest["transformations"])
+    # The raw malicious destination never reaches the manifest.
+    import json as _json
+
+    assert "evil.example" not in _json.dumps(t.cue_manifest)
+
+
+def test_persisted_curation_provenance_has_no_raw_hostile_tag_name() -> None:
+    # The sanitizer provenance is persisted into the template's raw_proposal via
+    # **cloned.provenance; a hostile tag name must not survive into storage.
+    import json as _json
+
+    hostile = "evil.example:login"
+    s = _Session()
+    _curate(
+        s,
+        subject="URGENT: verify your account",
+        html=f'<p>Dear user <{hostile}>verify</{hostile}> <a href="https://evil.example/x">sign in</a></p>',
+    )
+    t = s.added[0]
+    stored = _json.dumps(t.raw_proposal)
+    assert "evil.example" not in stored  # neither the hostile tag name nor the link host
+    sanitizer = t.raw_proposal["sanitizer"]
+    assert hostile not in sanitizer["removed_tags"]
+    assert sanitizer["removed_tags_other"]["name_hashes"]  # recorded by hash only

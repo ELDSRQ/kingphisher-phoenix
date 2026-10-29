@@ -141,6 +141,31 @@ def test_provenance_is_json_safe_and_counts_removals() -> None:
     assert isinstance(prov["stripped_attributes"], int)
 
 
+def test_persisted_provenance_never_carries_a_raw_hostile_tag_name() -> None:
+    # html.parser accepts an arbitrary tag name, so a hostile ``<evil.example:login>``
+    # becomes a removed-tag name that is attacker-controlled text. as_provenance()
+    # is PERSISTED into template provenance, so the raw name must never survive it
+    # — only a count + SHA-256 hash, while known tag names stay readable.
+    import hashlib
+    import json
+
+    hostile = "evil.example:login"
+    res = sanitize_safe_html(
+        f"<p>Hi <{hostile}>x</{hostile}> <script>bad()</script> "
+        '<span onmouseover="steal(secretcookievalue)">t</span></p>',
+        training_placeholder=PLACEHOLDER,
+    )
+    prov = res.as_provenance()
+    serialized = json.dumps(prov)
+    assert "evil.example" not in serialized  # raw hostile tag name absent
+    assert "secretcookievalue" not in serialized and "onmouseover" not in serialized  # attribute path clean
+    assert prov["removed_tags"].get("script", 0) >= 1  # known names stay readable
+    assert hostile not in prov["removed_tags"]  # hostile name NOT a readable key
+    other = prov["removed_tags_other"]
+    assert other["count"] >= 1
+    assert hashlib.sha256(hostile.encode()).hexdigest() in other["name_hashes"]
+
+
 # --- branded / presentational layer -----------------------------------------
 
 _PNG = (

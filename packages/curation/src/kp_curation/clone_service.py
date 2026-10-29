@@ -19,12 +19,19 @@ which itself only sends to a domain named in a signed Rules-of-Engagement.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
 from bs4 import BeautifulSoup
+from kp_contracts.cue_ontology import (
+    MAX_EVIDENCE_HASHES,
+    build_cue_manifest,
+    receipts_from_removed_tags,
+    transformation_receipt,
+)
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER
 from kp_sanitization.safe_html import sanitize_safe_html
 
@@ -50,21 +57,34 @@ class ClonedTemplate:
     plain_text: str
     safe_html: str
     provenance: dict[str, Any]
+    #: Deterministic cue + transformation manifest (see ``kp_contracts.cue_ontology``).
+    cue_manifest: dict[str, Any]
 
 
-def _rewrite_anchor_hrefs(html: str) -> tuple[str, int]:
+def _sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _rewrite_anchor_hrefs(html: str) -> tuple[str, int, list[str]]:
     """Point every ``<a href>`` at the training placeholder.
 
     The sanitizer keeps an href only when it already equals the placeholder, so
     rewriting first preserves the deceptive link *text* ("Verify your account")
-    while guaranteeing the destination is the inert training link.
+    while guaranteeing the destination is the inert training link. Returns the
+    rewritten HTML, the count, and SHA-256 hashes of the *original* (replaced)
+    destinations — bounded, and hashed so the manifest never carries the real
+    malicious URL.
     """
     soup = BeautifulSoup(html, "html.parser")
     rewritten = 0
+    original_hashes: list[str] = []
     for anchor in soup.find_all("a"):
+        original = str(anchor.get("href", "")).strip()
+        if original and original != TRAINING_URL_PLACEHOLDER and len(original_hashes) < MAX_EVIDENCE_HASHES:
+            original_hashes.append(_sha256(original))
         anchor["href"] = TRAINING_URL_PLACEHOLDER
         rewritten += 1
-    return str(soup), rewritten
+    return str(soup), rewritten, original_hashes
 
 
 def _foreign_hrefs(html: str) -> list[str]:
@@ -97,10 +117,14 @@ def clone_real_message(
     if not raw_html.strip() and not (plain_text or "").strip():
         raise CloneError("the message body is empty")
 
+    # Capture the originating (pre-neutralization) text now: cue extraction must
+    # see the real lure, but only offsets + hashes of it are ever persisted.
+    source_text = (plain_text or BeautifulSoup(raw_html or "", "html.parser").get_text("\n")).strip()
+
     # 1. Neutralize the payload: real link destinations -> training placeholder,
     #    then allow-list sanitize (drops scripts/forms/iframes/media/trackers and
     #    every attribute except the placeholder href). The deceptive copy stays.
-    rewritten_html, rewritten_links = _rewrite_anchor_hrefs(raw_html or "")
+    rewritten_html, rewritten_links, original_href_hashes = _rewrite_anchor_hrefs(raw_html or "")
     sanitized = sanitize_safe_html(
         rewritten_html,
         training_placeholder=TRAINING_URL_PLACEHOLDER,
@@ -111,13 +135,14 @@ def clone_real_message(
 
     # 2. Guarantee the one legitimate link exists (append a CTA if the source had
     #    none), so the clone can still become a recipient-bound training link.
-    if TRAINING_URL_PLACEHOLDER not in safe_html:
+    cta_injected = TRAINING_URL_PLACEHOLDER not in safe_html
+    if cta_injected:
         safe_html = f"{safe_html}{_FALLBACK_HTML_CTA}"
 
     # 3. plain_text: prefer the supplied text, else derive from the clean HTML;
     #    neutralize any bare URL and guarantee the placeholder is present.
     text = (plain_text or BeautifulSoup(safe_html, "html.parser").get_text("\n")).strip()
-    text = _URL_RE.sub(TRAINING_URL_PLACEHOLDER, text)
+    text, bare_urls_neutralized = _URL_RE.subn(TRAINING_URL_PLACEHOLDER, text)
     if TRAINING_URL_PLACEHOLDER not in text:
         text = f"{text}\n\n{_FALLBACK_TEXT_CTA}".strip()
 
@@ -127,6 +152,42 @@ def clone_real_message(
     foreign = _foreign_hrefs(safe_html)
     if foreign:
         raise CloneError(f"a non-training link survived neutralization: {foreign[:3]}")
+
+    # 5. Transformation receipts: one per removed/replaced component class, each
+    #    citing a fixed policy reason. The anchor-rewrite receipt carries hashed
+    #    original destinations (never the raw URL); sanitiser-removed tags and
+    #    stripped attributes fold into their own receipts.
+    transformations: list[dict[str, Any]] = []
+    if rewritten_links:
+        transformations.append(
+            transformation_receipt(
+                "anchor_href",
+                "replaced",
+                "payload_link_removed",
+                count=rewritten_links,
+                evidence_hashes=tuple(original_href_hashes),
+            )
+        )
+    if bare_urls_neutralized:
+        transformations.append(
+            transformation_receipt("bare_url", "replaced", "bare_url_neutralized", count=bare_urls_neutralized)
+        )
+    transformations.extend(receipts_from_removed_tags(dict(sanitized.removed_tags)))
+    if sanitized.stripped_attributes:
+        transformations.append(
+            transformation_receipt(
+                "attribute", "stripped", "disallowed_attribute_removed", count=sanitized.stripped_attributes
+            )
+        )
+    if cta_injected:
+        transformations.append(transformation_receipt("training_cta", "injected", "training_link_guaranteed"))
+
+    cue_manifest = build_cue_manifest(
+        subject=subject,
+        body=source_text,
+        transformations=transformations,
+        source="reconstruction",
+    )
 
     provenance = {
         "source": "operator_clone",
@@ -138,4 +199,5 @@ def clone_real_message(
         plain_text=text[:_MAX_BODY],
         safe_html=safe_html[:_MAX_BODY],
         provenance=provenance,
+        cue_manifest=cue_manifest,
     )
