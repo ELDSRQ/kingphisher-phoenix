@@ -14,11 +14,12 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Final
+from typing import Any, Final, cast
 
 from kp_domain_models import models as dm
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from kp_database.models import (
@@ -153,12 +154,15 @@ def purge_recipient_awareness_ledger(
         as_of=datetime.now(UTC),
     )
     pseudonym = recipient_pseudonym(tenant_scope=tenant_scope, recipient_id=recipient_id, key=pseudonym_key)
-    result = session.execute(
-        delete(AwarenessLedgerEntry).where(
-            AwarenessLedgerEntry.tenant_scope == tenant_scope,
-            AwarenessLedgerEntry.recipient_pseudonym == pseudonym,
-            AwarenessLedgerEntry.pseudonym_key_version == pseudonym_key_version,
-        )
+    result = cast(
+        "CursorResult[Any]",
+        session.execute(
+            delete(AwarenessLedgerEntry).where(
+                AwarenessLedgerEntry.tenant_scope == tenant_scope,
+                AwarenessLedgerEntry.recipient_pseudonym == pseudonym,
+                AwarenessLedgerEntry.pseudonym_key_version == pseudonym_key_version,
+            )
+        ),
     )
     return int(result.rowcount or 0)
 
