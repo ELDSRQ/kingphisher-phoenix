@@ -426,6 +426,13 @@ class WorkerSupervisor:
                 from kp_workers.digest_jobs import maybe_publish_weekly_digest
 
                 maybe_publish_weekly_digest(spec.context, self._utcnow())
+                # W4-03: generate any due adaptive-program DRAFT iterations on the
+                # same cadence. Like the digest, it self-dedupes (program row lock
+                # + unique occurrence/adaptation keys) and never sends or approves,
+                # so running it at retention cadence cannot double-generate.
+                from kp_workers.program_jobs import maybe_materialize_due_program_iterations
+
+                maybe_materialize_due_program_iterations(spec.context, self._utcnow())
                 state.last_self_publish = now
             if spec.topic == "mailbox" and now - state.last_self_publish >= 60:
                 from kp_workers.reported_mail_jobs import maybe_publish_mailbox
