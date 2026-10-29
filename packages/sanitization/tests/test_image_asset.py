@@ -8,6 +8,8 @@ import zlib
 import pytest
 from kp_sanitization.image_asset import (
     MAX_ASSET_BYTES,
+    MAX_ASSET_DIMENSION,
+    MAX_ASSET_PIXELS,
     ImageAssetError,
     inspect_raster_image,
 )
@@ -77,3 +79,42 @@ def test_rejects_non_image_and_empty() -> None:
 def test_rejects_oversize() -> None:
     with pytest.raises(ImageAssetError):
         inspect_raster_image(b"\x89PNG\r\n\x1a\n" + b"\x00" * (MAX_ASSET_BYTES + 1))
+
+
+def _png_header(width: int, height: int) -> bytes:
+    """A PNG signature + IHDR only: carries declared geometry, no pixel data.
+
+    ``inspect_raster_image`` sniffs the magic bytes and reads IHDR, so this is
+    enough to exercise the dimension bound without allocating a huge payload.
+    """
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF)
+    return b"\x89PNG\r\n\x1a\n" + chunk
+
+
+def test_rejects_oversized_single_dimension() -> None:
+    # A tiny payload that declares an enormous side (decompression bomb) fails
+    # the dimension bound even though it is well under the byte ceiling.
+    with pytest.raises(ImageAssetError, match="per-side limit"):
+        inspect_raster_image(_png_header(MAX_ASSET_DIMENSION + 1, 10))
+
+
+def test_rejects_oversized_total_pixels() -> None:
+    # Neither side alone exceeds the per-side limit, but the total area does.
+    width, height = MAX_ASSET_DIMENSION, (MAX_ASSET_PIXELS // MAX_ASSET_DIMENSION) + 1
+    assert width <= MAX_ASSET_DIMENSION and height <= MAX_ASSET_DIMENSION
+    assert width * height > MAX_ASSET_PIXELS
+    with pytest.raises(ImageAssetError, match="pixels"):
+        inspect_raster_image(_png_header(width, height))
+
+
+def test_accepts_dimensions_within_bounds() -> None:
+    info = inspect_raster_image(_png_header(2000, 2000))
+    assert (info.width, info.height) == (2000, 2000)
+
+
+def test_unparsed_dimensions_do_not_block_a_valid_raster() -> None:
+    # A raster whose header cannot be parsed yields best-effort (0, 0); the
+    # dimension bound must not fire (the magic-byte and byte-size gates still do).
+    info = inspect_raster_image(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+    assert (info.width, info.height) == (0, 0)
