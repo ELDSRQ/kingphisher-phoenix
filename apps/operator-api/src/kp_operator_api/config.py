@@ -309,7 +309,11 @@ class OperatorApiSettings(BaseSettings):
 
     def image_host_set(self) -> set[str]:
         """Hosts allowed to serve branded <img> logos over https (or {"*"})."""
-        return {d.strip().lower() for d in self.safe_html_image_hosts.split(",") if d.strip()}
+        # Normalize exactly as the sanitizer does downstream (safe_html strips a
+        # trailing FQDN dot), so the managed wildcard check sees the same
+        # collapsed form the sanitizer would — otherwise "*." survives the check
+        # but collapses to "*" (allow-all) at render time.
+        return {d.strip().lower().rstrip(".") for d in self.safe_html_image_hosts.split(",") if d.strip()}
 
     def alert_webhook_domain_allowlist(self) -> frozenset[str]:
         """Return the shared operator/worker outbound-alert destination policy."""
@@ -398,10 +402,11 @@ class OperatorApiSettings(BaseSettings):
         # validate_image_host_policy.
         if self.config_is_managed and "safe_html_image_hosts" not in self.model_fields_set:
             self.safe_html_image_hosts = ""
-        if self.config_is_managed and "*" in self.image_host_set():
+        if self.config_is_managed and any("*" in host for host in self.image_host_set()):
             raise ValueError(
-                "OPERATOR_API_SAFE_HTML_IMAGE_HOSTS='*' wildcard is not permitted under the managed posture; "
-                "list explicit https image hosts, or leave it empty to allow no third-party images"
+                "OPERATOR_API_SAFE_HTML_IMAGE_HOSTS '*' wildcard is not permitted under the managed posture "
+                "(including malformed forms such as '*.' that collapse to allow-all); list explicit https "
+                "image hosts, or leave it empty to allow no third-party images"
             )
 
         # SINGLE_ADMIN is a disposable-dev relaxation. It is refused unless the

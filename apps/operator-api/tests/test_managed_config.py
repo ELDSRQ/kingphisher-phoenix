@@ -276,3 +276,15 @@ def test_wildcard_image_hosts_permitted_on_env_file() -> None:
     # The wildcard is a dev-only relaxation; it is still honored on the local
     # (non-managed) stack.
     assert _settings(safe_html_image_hosts="*").image_host_set() == {"*"}
+
+
+@pytest.mark.parametrize("value", ["*.", "*..", "a.com,*.", " *. "])
+def test_malformed_wildcard_image_hosts_rejected_under_managed(value: str) -> None:
+    # "*." survives a naive strip()/lower() but collapses to "*" (allow-all)
+    # once the sanitizer rstrips the trailing dot; reject it like a bare "*".
+    with pytest.raises(ValidationError, match="wildcard is not permitted"):
+        _managed_settings(safe_html_image_hosts=value)
+
+
+def test_trailing_dot_wildcard_collapses_in_host_set() -> None:
+    assert _settings(safe_html_image_hosts="*.").image_host_set() == {"*"}

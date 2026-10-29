@@ -994,3 +994,19 @@ def test_wildcard_image_hosts_rejected_under_azure_profile() -> None:
 def test_wildcard_image_hosts_permitted_in_development() -> None:
     # The wildcard is a dev-only relaxation; it is still honored on a dev worker.
     assert _settings(safe_html_image_hosts="*").image_host_set() == {"*"}
+
+
+@pytest.mark.parametrize("runtime_mode", ["managed", "production"])
+@pytest.mark.parametrize("value", ["*.", "*..", "a.com,*.", " *. "])
+def test_malformed_wildcard_image_hosts_rejected_in_managed(runtime_mode: str, value: str) -> None:
+    # "*." (and "*..") survive a naive strip()/lower() but collapse to "*"
+    # (allow-all) once the sanitizer rstrips the trailing dot — they must be
+    # rejected at startup exactly like a bare "*".
+    with pytest.raises(ValidationError, match="wildcard is not permitted"):
+        _settings(worker_name="ingestion", runtime_mode=runtime_mode, safe_html_image_hosts=value)
+
+
+def test_trailing_dot_wildcard_collapses_in_host_set() -> None:
+    # Dev still honors it, but the normalized set now shows the collapsed "*"
+    # form the sanitizer actually applies (so the managed check can see it).
+    assert _settings(safe_html_image_hosts="*.").image_host_set() == {"*"}

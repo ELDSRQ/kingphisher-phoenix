@@ -562,10 +562,11 @@ class WorkerSettings(BaseSettings):
         managed = self.runtime_mode in _MANAGED_RUNTIME_MODES
         if managed and "safe_html_image_hosts" not in self.model_fields_set:
             self.safe_html_image_hosts = ""
-        if managed and "*" in self.image_host_set():
+        if managed and any("*" in host for host in self.image_host_set()):
             raise ValueError(
-                "KP_WORKER_SAFE_HTML_IMAGE_HOSTS='*' wildcard is not permitted in managed and production "
-                "runtime modes; list explicit https image hosts, or leave it empty to allow no third-party images"
+                "KP_WORKER_SAFE_HTML_IMAGE_HOSTS '*' wildcard is not permitted in managed and production "
+                "runtime modes (including malformed forms such as '*.' that collapse to allow-all); list "
+                "explicit https image hosts, or leave it empty to allow no third-party images"
             )
         return self
 
@@ -977,7 +978,11 @@ class WorkerSettings(BaseSettings):
         return {d.strip().lower() for d in self.training_domains.split(",") if d.strip()}
 
     def image_host_set(self) -> set[str]:
-        return {d.strip().lower() for d in self.safe_html_image_hosts.split(",") if d.strip()}
+        # Normalize exactly as the sanitizer does downstream (safe_html strips a
+        # trailing FQDN dot), so the managed-mode wildcard check below sees the
+        # same collapsed form the sanitizer would — otherwise "*." survives the
+        # check here but collapses to "*" (allow-all) at render time.
+        return {d.strip().lower().rstrip(".") for d in self.safe_html_image_hosts.split(",") if d.strip()}
 
     def require_training_token_hmac_key(self) -> bytes:
         if not self.training_token_hmac_key:
