@@ -167,6 +167,15 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "POST /api/v1/console/aggregate/candidates/{candidate_id}/promote",
             "POST /api/v1/console/aggregate/candidates/{candidate_id}/dismiss",
             "POST /api/v1/curation/forwarded",
+            # W3-02 governed current-threat library (Report-04): the curated
+            # artifact catalogue, its per-artifact review, the signed-bundle
+            # import, and source freshness/provenance health all live behind
+            # the same source-stewardship authority as /sources and /threats.
+            "GET /api/v1/threat-library/artifacts",
+            "GET /api/v1/threat-library/artifacts/{threat_artifact_id}",
+            "POST /api/v1/threat-library/artifacts/{threat_artifact_id}/review",
+            "POST /api/v1/threat-library/bundles/import",
+            "GET /api/v1/threat-library/sources/health",
         ),
     ),
     (
