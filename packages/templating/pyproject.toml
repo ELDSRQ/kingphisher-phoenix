@@ -5,7 +5,7 @@ description = "Safe Jinja2 message templating, calendar-invite (ICS) generation,
 requires-python = ">=3.13"
 dependencies = [
     "jinja2>=3.1",
-    "dnspython>=2.6",
+    "dnspython>=2.9.0",  # KP-AUD-021: CVE-2026-114605 fixed in 2.9.0
 ]
 
 [build-system]

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "DNS-challenge domain ownership verification (target and sending domains)"
 requires-python = ">=3.13"
 dependencies = [
-    "dnspython>=2.6",
+    "dnspython>=2.9.0",  # KP-AUD-021: CVE-2026-114605 fixed in 2.9.0
 ]
 
 [build-system]
