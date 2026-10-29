@@ -15,15 +15,14 @@ import re
 import secrets
 import smtplib
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 from email.utils import formataddr
-from html import unescape
 from typing import Any, Protocol
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 import httpx
 from kp_contracts.generation import (
@@ -109,6 +108,23 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from kp_workers.config import WorkerSettings
+
+# W5-03 (KP-AUD-023): cohesive launch/rendering policy extracted into small typed
+# service modules. Re-exported here under their original private names so every
+# existing caller and test that reaches them through ``kp_workers.jobs`` keeps
+# working with zero behavior change.
+from kp_workers.launch_policy import (
+    DELIVERABLE_CAMPAIGN_STATES as _DELIVERABLE_CAMPAIGN_STATES,
+)
+from kp_workers.launch_policy import (
+    TEST_SEND_CAMPAIGN_STATES as _TEST_SEND_CAMPAIGN_STATES,  # noqa: F401  (re-exported; used by callers/tests)
+)
+from kp_workers.launch_policy import (
+    campaign_state_allows_delivery as _campaign_state_allows_delivery,
+)
+from kp_workers.launch_policy import (
+    two_person_approval_reason as _two_person_approval_reason,
+)
 from kp_workers.observability import metrics, provider_call
 from kp_workers.providers.acs_events import AcsDeliveryEvent, parse_acs_delivery_event
 from kp_workers.providers.reminders import ProviderReminderSender, ReminderSender
@@ -118,6 +134,15 @@ from kp_workers.providers.smtp import (
     EmailSender,
     make_email_sender,
     new_report_verifier,
+)
+from kp_workers.rendering_policy import (
+    contains_configured_url as _contains_url,
+)
+from kp_workers.rendering_policy import (
+    delivery_template_content as _delivery_template_content,
+)
+from kp_workers.rendering_policy import (
+    url_identity as _url_identity,  # noqa: F401  (re-exported; used by callers/tests)
 )
 
 logger = get_logger("kp_workers.jobs")
@@ -131,7 +156,6 @@ def _retry_delay(consecutive_errors: int) -> float:
 _renderer = MessageRenderer()
 _DEFAULT_RETENTION_DAYS = 365
 _TRACKING_BEARER_RE = re.compile(r"[A-Za-z0-9_-]{40,128}\Z")
-_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _MAX_AI_RESPONSE_BYTES = 5 * 1024 * 1024
 _RETENTION_BATCH_SIZE = 1000
 _RETENTION_ASSIGNMENT_BATCH_SIZE = min(_RETENTION_BATCH_SIZE, MAX_LEDGER_PROJECTION_BATCH)
@@ -162,13 +186,8 @@ _TERMINAL_CAMPAIGN_STATES = frozenset(
         dm.CampaignState.REJECTED,
     }
 )
-_DELIVERABLE_CAMPAIGN_STATES = frozenset(
-    {
-        dm.CampaignState.SCHEDULED,
-        dm.CampaignState.SENDING,
-        dm.CampaignState.ACTIVE,
-    }
-)
+# ``_DELIVERABLE_CAMPAIGN_STATES`` and ``_TEST_SEND_CAMPAIGN_STATES`` now live in
+# ``kp_workers.launch_policy`` and are re-exported above (W5-03 / KP-AUD-023).
 # UX-011 §2b. A proof send exists to inform a decision, so it is only honored
 # while the campaign is still being authored or reviewed. Mirrors
 # ``_PROOF_SEND_CAMPAIGN_STATES`` in the operator API; the worker re-checks it
@@ -178,20 +197,6 @@ _PROOF_SEND_CAMPAIGN_STATES = frozenset(
         dm.CampaignState.DRAFT,
         dm.CampaignState.PENDING_APPROVAL,
     }
-)
-_TEST_SEND_CAMPAIGN_STATES = (
-    frozenset(
-        {
-            dm.CampaignState.DRAFT,
-            dm.CampaignState.PATTERN_REVIEW,
-            dm.CampaignState.CONTENT_REVIEW,
-            dm.CampaignState.SECURITY_REVIEW,
-            dm.CampaignState.PRIVACY_REVIEW,
-            dm.CampaignState.PENDING_APPROVAL,
-            dm.CampaignState.APPROVED,
-        }
-    )
-    | _DELIVERABLE_CAMPAIGN_STATES
 )
 
 
@@ -1376,31 +1381,6 @@ def _delivery_assignment_ids(payload: dict[str, Any], *, limit: int) -> list[str
         seen.add(assignment_id)
         normalized.append(assignment_id)
     return normalized
-
-
-def _campaign_state_allows_delivery(state: dm.CampaignState, *, test_send: bool) -> bool:
-    """Permit test sends during review, but never after a campaign has ended."""
-
-    allowed_states = _TEST_SEND_CAMPAIGN_STATES if test_send else _DELIVERABLE_CAMPAIGN_STATES
-    return state in allowed_states
-
-
-def _two_person_approval_reason(approvals: Sequence[CampaignApproval]) -> str | None:
-    """Why the covering approvals fail the two-person rule, or ``None`` if valid.
-
-    Two-person, not two-lane: the APPROVED approvals covering this review must
-    span both the SECURITY and PRIVACY facets AND carry at least two DISTINCT
-    approver identities. A single ADMINISTRATOR holding both APPROVE_SECURITY
-    and APPROVE_PRIVACY therefore cannot satisfy the rule on their own. The
-    caller fails closed (refuses launch) on any returned reason.
-    """
-
-    granted = {row.approval_type for row in approvals}
-    if not {dm.ApprovalType.SECURITY, dm.ApprovalType.PRIVACY} <= granted:
-        return "missing_approvals"
-    if len({row.approver_id for row in approvals}) < 2:
-        return "insufficient_distinct_approvers"
-    return None
 
 
 def process_proof_send(ctx: WorkerContext, message: dict[str, Any]) -> None:
@@ -2790,23 +2770,6 @@ def _call_ai(ctx: WorkerContext, request: GenerationRequest) -> GenerationRespon
     return parsed
 
 
-def _delivery_template_content(template: TemplateVersion) -> tuple[str, str, str]:
-    """Return canonical approved content or fail before recipient rendering."""
-
-    subject = template.subject if isinstance(template.subject, str) else ""
-    plain_text = template.plain_text if isinstance(template.plain_text, str) else ""
-    safe_html = template.safe_html if isinstance(template.safe_html, str) else ""
-    if not subject.strip() or not plain_text.strip():
-        raise SafetyRejectionError("approved template content is incomplete or not recipient-bound")
-    if TRAINING_URL_PLACEHOLDER not in plain_text:
-        raise SafetyRejectionError("approved template content is incomplete or not recipient-bound")
-    # Text-only templates are supported. When an HTML alternative exists, it
-    # must carry the same recipient-bound assignment path as the plain body.
-    if safe_html.strip() and TRAINING_URL_PLACEHOLDER not in safe_html:
-        raise SafetyRejectionError("approved template content is incomplete or not recipient-bound")
-    return subject, plain_text, safe_html
-
-
 _PROOF_SUBJECT_PREFIX = "[PROOF] "
 
 
@@ -3015,36 +2978,6 @@ def _send_email(
         if correlation is None:
             return transport.send(msg)
         return transport.send(msg, correlation=correlation)
-
-
-def _url_identity(value: str) -> tuple[str, str, int | None, str] | None:
-    """Return the URL identity relevant to the static-destination fence."""
-
-    try:
-        parsed = urlparse(value.rstrip(".,);]}>"))
-        scheme = parsed.scheme.lower()
-        if scheme not in {"http", "https"} or parsed.hostname is None:
-            return None
-        port = parsed.port or (443 if scheme == "https" else 80)
-    except ValueError:
-        return None
-    path = parsed.path.rstrip("/") or "/"
-    return scheme, parsed.hostname.lower(), port, path
-
-
-def _contains_url(content: str, configured_url: str) -> bool:
-    """Detect an exact configured destination after common mail encodings.
-
-    Query strings and fragments cannot turn the configured awareness page into
-    a recipient-bound assignment, so identity deliberately uses origin + path.
-    A configured origin root does not match the distinct tracking-click path.
-    """
-
-    target = _url_identity(configured_url)
-    if target is None:
-        return False
-    visible = unquote(unescape(content))
-    return any(_url_identity(match.group(0)) == target for match in _URL_RE.finditer(visible))
 
 
 def _provider_headers(bearer_token: str | None, api_key: str | None) -> dict[str, str]:
