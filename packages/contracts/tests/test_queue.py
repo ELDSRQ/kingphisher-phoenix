@@ -18,12 +18,37 @@ from typing import Any
 
 import pytest
 import redis
-from kp_contracts.queue import AUDIT_ANCHOR_HEARTBEAT_KEY, JobQueue
+from kp_contracts.queue import AUDIT_ANCHOR_HEARTBEAT_KEY, DEFAULT_QUEUE_TOPICS, JobQueue
 
 
 def _key(topic: str, suffix: str = "") -> str:
     """Mirror the public queue namespace while asserting Redis hash tags."""
     return f"kp:queue:{{{topic}}}{suffix}"
+
+
+def test_default_queue_topics_cover_every_worker_consumed_queue() -> None:
+    # KP-AUD-004: the admin DLQ allowlist must list every topic a worker role
+    # consumes, or that queue's dead letters are invisible/undetailed/unreplayable
+    # through the operator console. Mirror the worker role registry
+    # (apps/workers/src/kp_workers/__main__.py WORKERS) without importing the
+    # worker application into the contracts package.
+    worker_consumed_topics = {
+        "audit-anchor",
+        "ingest",
+        "generate",
+        "deliver",
+        "retention",
+        "mailbox",
+        "reply-mailbox",
+        "remind",
+        "alert",
+        "directory",
+        "curate",
+    }
+    assert "curate" in DEFAULT_QUEUE_TOPICS
+    assert worker_consumed_topics <= set(DEFAULT_QUEUE_TOPICS)
+    # No duplicates crept in while extending the fixed allowlist.
+    assert len(DEFAULT_QUEUE_TOPICS) == len(set(DEFAULT_QUEUE_TOPICS))
 
 
 class _MemoryClient:
