@@ -719,9 +719,13 @@ def _active_provider() -> dict[str, Any] | None:
     generation; the reconcile fails closed on a stale/mismatched state file
     rather than serving a half-applied config.
 
-    - Marker ABSENT (pre-W1-04 / greenfield) → legacy behaviour: state file
-      absent or ``provider == "local"`` means ``None`` (use the local upstream),
-      otherwise the external state is returned as-is.
+    - Marker ABSENT + state file with no ``generation`` field (pre-W1-04 /
+      greenfield) → legacy behaviour: state absent or ``provider == "local"``
+      means ``None`` (use the local upstream), otherwise the external state is
+      returned as-is.
+    - Marker ABSENT but a generation-stamped state file present → fail closed:
+      the state file proves post-W1-04 writing, so a missing marker is tampering
+      or a partial write and must NOT reopen serving a stale external provider.
     - Marker says ``local`` → ``None``: the authoritative selection is the local
       model; any stale external state file is ignored (serving local is safe).
     - Marker says an EXTERNAL provider at generation N → the state file MUST be
@@ -735,14 +739,22 @@ def _active_provider() -> dict[str, Any] | None:
     state = _read_json_object(Path(settings.provider_state_file))
 
     if marker is None:
-        # Pre-W1-04 / greenfield: no generation protocol yet. Preserve the
-        # original fail-safe-to-local behaviour.
+        # A generation-stamped state file with no marker is a post-W1-04 write
+        # whose authoritative marker is missing: fail closed rather than serve a
+        # possibly-stale external provider (N2). Only a truly legacy/greenfield
+        # state file (no generation field) keeps the original fail-safe-to-local.
+        if state is not None and "generation" in state:
+            raise ProviderStateUnusable
         if state is None or state.get("provider", "local") == "local":
             return None
         return state
 
     auth_generation = _marker_generation(marker)
-    auth_provider = marker.get("provider", "local")
+    # The marker MUST name its provider explicitly: a missing/non-string field
+    # must never default to "local" and silently suppress the reconcile (N2).
+    auth_provider = marker.get("provider")
+    if not isinstance(auth_provider, str) or not auth_provider:
+        raise ProviderStateUnusable
     if auth_provider == "local":
         # Authoritative selection is the local model; ignore any stale external
         # state file (routing local is the safe default).

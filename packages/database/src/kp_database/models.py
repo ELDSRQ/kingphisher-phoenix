@@ -1789,4 +1789,6 @@ class ProviderConfigGeneration(Base):
     generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
     applied_generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
     active_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+    updated_at = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("now()"), onupdate=sa_text("now()")
+    )

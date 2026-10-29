@@ -15,12 +15,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from kp_authorization import Principal, Role
 from kp_database.models import AiGenerationProvider, ProviderConfigGeneration
 from kp_operator_api import ai_providers as registry
 from kp_operator_api.console import ai_providers as ai_providers_module
 from kp_operator_api.console.ai_providers import (
-    ProviderConfigApplyError,
     ProviderSaveRequest,
     ProviderSelectRequest,
     list_ai_providers,
@@ -44,7 +44,9 @@ class _Session:
         self.generation_row: ProviderConfigGeneration | None = None
         self.commits = 0
 
-    def get(self, model: object, identifier: object) -> Any:
+    def get(self, model: object, identifier: object, **_kw: Any) -> Any:
+        # ``**_kw`` absorbs ``with_for_update=True`` (row lock on the generation
+        # singleton); no-op in this hermetic fake.
         if model is ProviderConfigGeneration:
             return self.generation_row
         return self.store.get(identifier)
@@ -298,7 +300,10 @@ def test_select_custom_local_no_key_uses_auth_none(env_file: Path) -> None:
     assert state["provider"] == "custom"
     assert state["base_url"] == "http://127.0.0.1:11434/v1"
     assert state["model_id"] == "huihui/llama3.3-abliterated"
-    assert state["api_key"] == ""
+    # A keyless provider with no env reference carries no credential at all:
+    # neither a plaintext key nor a reference is written (auth is none).
+    assert "api_key" not in state
+    assert "api_key_env" not in state
     assert state["auth_style"] == "none"
     assert state["generation"] == 1
 
@@ -320,10 +325,15 @@ def test_switch_between_two_hosted_providers_leaves_one_active(env_file: Path) -
 # --- W1-04: generation token, blocked drift, plaintext minimization ----------
 
 
-def test_side_effect_fault_leaves_blocked_drift_and_detectable_marker(env_file: Path, monkeypatch) -> None:
-    """Acceptance 1: a post-commit side-effect fault leaves an explicit blocked
-    drift (committed generation ahead of applied) and an on-disk marker the
-    gateway detects as a stale generation — never a silent half-applied config."""
+def _list(session: _Session, env_file: Path) -> dict[str, Any]:
+    return list_ai_providers(request=_request(env_file), session=session, _principal=_principal())  # type: ignore[arg-type]
+
+
+def test_side_effect_fault_leaves_blocked_drift_and_typed_error(env_file: Path, monkeypatch) -> None:
+    """Acceptance 1 + B2: a post-commit side-effect fault leaves an explicit
+    blocked drift (committed ahead of applied) surfaced as a TYPED 503 (not a
+    bare 500) and as drift=true on GET, plus an on-disk marker the gateway
+    detects as a stale generation — never a silent half-applied config."""
     session = _Session()
     session.add(AiGenerationProvider(provider="openai", api_key="sk-secret", model_id="gpt-4o", is_active=False))
 
@@ -333,18 +343,37 @@ def test_side_effect_fault_leaves_blocked_drift_and_detectable_marker(env_file: 
         raise OSError("disk full")
 
     monkeypatch.setattr(ai_providers_module, "_write_state_file", _boom)
-    with pytest.raises(ProviderConfigApplyError):
+    with pytest.raises(HTTPException) as excinfo:
         _select(session, env_file, "openai")
+    # B2: typed 5xx naming the blocked-drift state and both generations.
+    assert excinfo.value.status_code == 503
+    detail = excinfo.value.detail
+    assert detail["error"] == "provider_config_blocked_drift"
+    assert detail["committed_generation"] == 1
+    assert detail["applied_generation"] == 0
 
     # DB: committed generation is 1, but applied stayed at 0 -> blocked drift.
     assert session.generation_row is not None
     assert session.generation_row.generation == 1
     assert session.generation_row.applied_generation == 0
+    # B2: the drift is EXPLICIT on the list endpoint.
+    listed = _list(session, env_file)
+    assert listed["generation"] == 1
+    assert listed["applied_generation"] == 0
+    assert listed["drift"] is True
     # Marker advanced to generation 1 while the state file was never written:
     # the gateway reconcile sees marker(1)/state(absent) and fails closed.
     marker = json.loads((env_file.parent / "data" / "run" / "ai-provider.generation").read_text())
     assert marker == {"generation": 1, "provider": "openai"}
     assert not (env_file.parent / "data" / "run" / "ai-provider.json").exists()
+
+
+def test_list_reports_no_drift_after_clean_select(env_file: Path) -> None:
+    session = _Session()
+    session.add(AiGenerationProvider(provider="openai", api_key="sk-secret", model_id="gpt-4o", is_active=False))
+    _select(session, env_file, "openai")
+    listed = _list(session, env_file)
+    assert listed["generation"] == 1 and listed["applied_generation"] == 1 and listed["drift"] is False
 
 
 def test_verify_detects_state_generation_mismatch(env_file: Path, monkeypatch) -> None:
@@ -360,19 +389,63 @@ def test_verify_detects_state_generation_mismatch(env_file: Path, monkeypatch) -
         real_write(settings, payload)
 
     monkeypatch.setattr(ai_providers_module, "_write_state_file", _write_stale)
-    with pytest.raises(ProviderConfigApplyError):
+    with pytest.raises(HTTPException) as excinfo:
         _select(session, env_file, "openai")
+    assert excinfo.value.status_code == 503
     assert session.generation_row is not None and session.generation_row.applied_generation == 0
 
 
-def test_env_secret_reference_omits_plaintext_key(env_file: Path) -> None:
-    """Acceptance 3: when the deployment provides the provider key via the
-    environment reference, the state file carries the reference and NO plaintext
-    key; the 0600 plaintext fallback is used only when the reference is absent."""
+def test_pin_write_fault_blocks_applied_generation(env_file: Path, monkeypatch) -> None:
+    """B3: a fault at the worker-pin step (marker + state consistent at gen N,
+    but the pin never written) must NOT advance applied_generation — verify
+    catches the stale pin and the state is detectable blocked drift."""
+    session = _Session()
+    session.add(AiGenerationProvider(provider="openai", api_key="sk-secret", model_id="gpt-4o", is_active=False))
+
+    # Make the pin write a no-op so the env pin stays at the previous model
+    # while the marker and state file land correctly at generation 1.
+    monkeypatch.setattr(ai_providers_module, "_atomic_update_env", lambda *_a, **_k: [])
+    with pytest.raises(HTTPException) as excinfo:
+        _select(session, env_file, "openai")
+    assert excinfo.value.status_code == 503
+    assert session.generation_row is not None
+    assert session.generation_row.generation == 1
+    assert session.generation_row.applied_generation == 0  # blocked drift
+    # Marker + state landed (the gateway alone would think it valid) — the pin
+    # verification is what catches the divergence.
+    marker = json.loads((env_file.parent / "data" / "run" / "ai-provider.generation").read_text())
+    state = json.loads((env_file.parent / "data" / "run" / "ai-provider.json").read_text())
+    assert marker["generation"] == 1 and state["generation"] == 1
+    # The env pin was never updated to the selected model.
+    assert "gpt-4o" not in env_file.read_text()
+
+
+def test_stored_key_is_never_replaced_by_env_reference(env_file: Path) -> None:
+    """B1: a provider WITH a stored key always gets that EXACT key written to the
+    0600 file; the global env reference is never substituted (the console cannot
+    see the gateway's env, and that single var would be sent to any provider)."""
     env_file.write_text("KP_WORKER_AI_MODEL_ID=qwen-local\nKP_AI_GATEWAY_PROVIDER_API_KEY=sk-from-env\n")
     session = _Session()
     session.add(AiGenerationProvider(provider="openai", api_key="sk-secret", model_id="gpt-4o", is_active=False))
     _select(session, env_file, "openai")
+    state = json.loads((env_file.parent / "data" / "run" / "ai-provider.json").read_text())
+    assert state["auth_style"] == "bearer"
+    assert state["api_key"] == "sk-secret"  # the provider's own key, not the env value
+    assert "api_key_env" not in state
+
+
+def test_env_reference_used_only_as_no_key_fallback(env_file: Path) -> None:
+    """Acceptance 3 + B1: for a KEYLESS provider the env reference is emitted and
+    no plaintext key is written; with a key the key wins (asserted above)."""
+    env_file.write_text("KP_WORKER_AI_MODEL_ID=qwen-local\nKP_AI_GATEWAY_PROVIDER_API_KEY=sk-from-env\n")
+    session = _Session()
+    # custom provider with NO stored key but a base URL + model.
+    session.add(
+        AiGenerationProvider(
+            provider="custom", api_key=None, model_id="dolphin", base_url="https://api.example.com/v1", is_active=False
+        )
+    )
+    _select(session, env_file, "custom")
     state = json.loads((env_file.parent / "data" / "run" / "ai-provider.json").read_text())
     assert state["auth_style"] == "bearer"
     assert state.get("api_key_env") == "KP_AI_GATEWAY_PROVIDER_API_KEY"

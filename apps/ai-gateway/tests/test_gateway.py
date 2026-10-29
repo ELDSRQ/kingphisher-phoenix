@@ -1693,6 +1693,73 @@ def test_resolve_provider_bearer_rejects_unlisted_env_var(monkeypatch) -> None:
     assert gateway_main._resolve_provider_bearer({"api_key_env": "SECRET_TO_STEAL", "api_key": "k"}) == "k"
 
 
+def test_propose_503_when_marker_absent_but_state_generation_stamped(monkeypatch, tmp_path) -> None:
+    # N2: a generation-stamped state file with NO marker is a post-W1-04 write
+    # whose authoritative marker is missing (tampering / partial write). The
+    # gateway must fail closed, not reopen serving the stale external provider.
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key": "sk-secret",
+            "auth_style": "bearer",
+            "generation": 4,
+        },
+        marker=None,
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "provider_state_unavailable"
+    assert captured == []
+
+
+def test_propose_503_when_marker_missing_provider_field(monkeypatch, tmp_path) -> None:
+    # N2: a marker with no (string) provider must not default to "local" and
+    # silently suppress the reconcile.
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key": "sk-secret",
+            "auth_style": "bearer",
+            "generation": 4,
+        },
+        marker={"generation": 4},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 503, resp.text
+    assert captured == []
+
+
+def test_propose_legacy_state_without_generation_still_routes(monkeypatch, tmp_path) -> None:
+    # A truly legacy state file (no generation field, no marker) keeps the
+    # original fail-safe behaviour and still routes to the external provider.
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key": "sk-secret",
+            "auth_style": "bearer",
+        },
+        marker=None,
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == "https://api.openai.com/v1/chat/completions"
+
+
 # --- KP-AUD-009: upstream responses are streamed and byte-bounded -----------
 #
 # A custom/managed upstream is untrusted for RESOURCE purposes: the gateway must
