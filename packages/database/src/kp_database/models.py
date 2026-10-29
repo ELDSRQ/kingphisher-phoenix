@@ -1758,3 +1758,35 @@ class AiGenerationProvider(Base):
     base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
     updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+
+class ProviderConfigGeneration(Base):
+    """Monotonic generation token reconciling the active generation provider
+    across the DB, the gateway state file, and the worker model pin
+    (W1-04, KP-AUD-008).
+
+    One singleton row (``id == 1``, enforced by a check constraint). The console
+    bumps ``generation`` in the SAME transaction as a provider selection, so the
+    durable selection and its generation commit atomically. ``applied_generation``
+    is advanced to match ONLY after the post-commit side effects (state file,
+    worker model pin, restart signal) are written and verified. While
+    ``generation != applied_generation`` the configuration is half-applied — an
+    explicit "blocked drift" state the operator and the next selection can
+    observe — rather than a silently inconsistent one.
+
+    The gateway holds no database handle (it is stateless by construction, with
+    no ``kp_database`` dependency), so the committed ``generation`` and
+    ``active_provider`` are mirrored to an on-disk authoritative marker written
+    as the commit shadow; the gateway reconciles its provider state file against
+    that marker and fails closed when the state file's generation is older than
+    or mismatched with it.
+    """
+
+    __tablename__ = "provider_config_generation"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_provider_config_generation_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    applied_generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    active_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))

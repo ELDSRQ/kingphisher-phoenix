@@ -32,6 +32,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import secrets
 from collections.abc import AsyncIterator
@@ -656,34 +657,129 @@ class ProviderStateUnusable(Exception):
     """
 
 
-def _active_provider() -> dict[str, Any] | None:
-    """Return the operator-selected external generation provider, or ``None``.
+#: Environment variables the state file may reference for the external
+#: provider's bearer key (W1-04 plaintext minimization). Restricted to a fixed
+#: allowlist so a tampered 0600 state file cannot name an arbitrary variable to
+#: exfiltrate from the process environment.
+_ALLOWED_PROVIDER_KEY_ENV = frozenset({"KP_AI_GATEWAY_PROVIDER_API_KEY"})
 
-    Reads the BYO-model state file (``settings.provider_state_file``, resolved
-    relative to the gateway's working directory — the repo root).
 
-    - File ABSENT, or present and selecting ``local`` → ``None``: no external
-      provider is selected, so the gateway uses its env-configured local upstream
-      (the intended, safe default). The gateway only READS this file.
-    - File PRESENT but oversized/unreadable/non-JSON/not-an-object → raises
-      ``ProviderStateUnusable``: a provider IS selected but its state is broken,
-      so the caller fails closed with a 503 rather than silently using local.
+def _generation_marker_path() -> Path:
+    """Sibling authoritative-generation marker beside the provider state file.
+
+    The console writes ``<run-dir>/ai-provider.generation`` as the on-disk
+    shadow of the committed DB generation; derive it from the configured state
+    file path so both resolve to the same run directory.
     """
 
-    path = Path(settings.provider_state_file)
+    return Path(settings.provider_state_file).with_suffix(".generation")
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    """Read a bounded JSON object from ``path``; ``None`` if absent.
+
+    Raises ``ProviderStateUnusable`` when the file is present but
+    oversized/unreadable/non-JSON/not-an-object — the fail-closed contract.
+    """
+
     if not path.is_file():
         return None
     try:
         if path.stat().st_size > _PROVIDER_STATE_MAX_BYTES:
             raise ProviderStateUnusable
-        state = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProviderStateUnusable from exc
-    if not isinstance(state, dict):
+    if not isinstance(data, dict):
         raise ProviderStateUnusable
-    if state.get("provider", "local") == "local":
+    return data
+
+
+def _marker_generation(marker: dict[str, Any]) -> int:
+    """The marker's generation as an int, or raise ``ProviderStateUnusable``.
+
+    ``bool`` is a subclass of ``int`` and is rejected, so ``true``/``false`` can
+    never masquerade as a generation.
+    """
+
+    gen = marker.get("generation")
+    if not isinstance(gen, int) or isinstance(gen, bool):
+        raise ProviderStateUnusable
+    return gen
+
+
+def _active_provider() -> dict[str, Any] | None:
+    """Return the operator-selected external generation provider, or ``None``.
+
+    Reads the BYO-model state file (``settings.provider_state_file``, resolved
+    relative to the gateway's working directory — the repo root) and reconciles
+    it against the authoritative generation marker the console writes as the
+    on-disk shadow of the committed DB generation (W1-04, KP-AUD-008). The
+    gateway holds no DB handle, so this marker is how it learns the committed
+    generation; the reconcile fails closed on a stale/mismatched state file
+    rather than serving a half-applied config.
+
+    - Marker ABSENT (pre-W1-04 / greenfield) → legacy behaviour: state file
+      absent or ``provider == "local"`` means ``None`` (use the local upstream),
+      otherwise the external state is returned as-is.
+    - Marker says ``local`` → ``None``: the authoritative selection is the local
+      model; any stale external state file is ignored (serving local is safe).
+    - Marker says an EXTERNAL provider at generation N → the state file MUST be
+      present and carry the SAME generation and provider, else the config is
+      stale/half-applied and ``ProviderStateUnusable`` is raised (never silently
+      fall back to local, never route to a stale provider).
+    - Any state/marker file present but broken → ``ProviderStateUnusable``.
+    """
+
+    marker = _read_json_object(_generation_marker_path())
+    state = _read_json_object(Path(settings.provider_state_file))
+
+    if marker is None:
+        # Pre-W1-04 / greenfield: no generation protocol yet. Preserve the
+        # original fail-safe-to-local behaviour.
+        if state is None or state.get("provider", "local") == "local":
+            return None
+        return state
+
+    auth_generation = _marker_generation(marker)
+    auth_provider = marker.get("provider", "local")
+    if auth_provider == "local":
+        # Authoritative selection is the local model; ignore any stale external
+        # state file (routing local is the safe default).
         return None
+
+    # Authoritative selection is an external provider at ``auth_generation``.
+    if state is None:
+        raise ProviderStateUnusable
+    if _marker_generation(state) != auth_generation or state.get("provider") != auth_provider:
+        # Stale or mismatched state file: the committed generation moved on but
+        # the runtime config did not (or points elsewhere). Fail closed.
+        raise ProviderStateUnusable
     return state
+
+
+def _resolve_provider_bearer(provider_state: dict[str, Any]) -> str | None:
+    """Bearer credential for an external provider, preferring a secret reference.
+
+    A deployment that supplies the provider key out of band through the
+    environment sets ``api_key_env`` in the state file (to an allow-listed
+    variable name, mirroring how the gateway's own ``upstream_api_key`` is
+    env/Key-Vault-sourced); the key is then read from that variable and no
+    plaintext key is written to disk. Only when no usable reference exists is the
+    plaintext ``api_key`` from the 0600 state file used — the fallback where no
+    secret backend exists. Returns ``None`` when neither yields a credential, so
+    the caller fails closed instead of sending an empty bearer.
+    """
+
+    ref = provider_state.get("api_key_env")
+    if isinstance(ref, str) and ref in _ALLOWED_PROVIDER_KEY_ENV:
+        value = os.environ.get(ref, "")
+        if value:
+            return value
+    key = provider_state.get("api_key")
+    if isinstance(key, str) and key:
+        return key
+    return None
 
 
 def _provider_state_unavailable() -> JSONResponse:
@@ -746,9 +842,16 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
         active_model_id = provider_model
         endpoint = provider_base + "/chat/completions"
         payload["model"] = provider_model
-        provider_headers: dict[str, str] | None = (
-            {"Authorization": f"Bearer {provider.get('api_key', '')}"} if provider.get("auth_style") == "bearer" else {}
-        )
+        # Resolve the outbound credential, preferring an env secret reference
+        # over a plaintext key on disk (W1-04). A bearer provider with no usable
+        # credential fails closed rather than sending an empty bearer.
+        if provider.get("auth_style") == "bearer":
+            bearer = _resolve_provider_bearer(provider)
+            if bearer is None:
+                return _provider_state_unavailable()
+            provider_headers: dict[str, str] | None = {"Authorization": f"Bearer {bearer}"}
+        else:
+            provider_headers = {}
     else:
         active_model_id = settings.model_id
         endpoint = settings.llama_base_url.rstrip("/") + "/chat/completions"

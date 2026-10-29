@@ -1505,6 +1505,194 @@ def test_settings_default_provider_state_file(monkeypatch) -> None:
     assert GatewaySettings().provider_state_file == "data/run/ai-provider.json"
 
 
+# --- W1-04: generation marker reconcile + plaintext minimization -------------
+#
+# The console writes an authoritative ``ai-provider.generation`` marker (the
+# on-disk shadow of the committed DB generation) beside the state file. The
+# stateless gateway reconciles the two and fails closed on a stale/mismatched
+# generation rather than serving a half-applied config.
+
+
+def _point_state_and_marker(monkeypatch, tmp_path, *, state, marker) -> None:
+    """Point the gateway at a state file + its sibling generation marker."""
+
+    state_path = tmp_path / "ai-provider.json"
+    marker_path = tmp_path / "ai-provider.generation"
+    if state is not None:
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    if marker is not None:
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    monkeypatch.setattr(gateway_main.settings, "provider_state_file", str(state_path))
+
+
+def test_propose_routes_external_when_marker_matches_state(monkeypatch, tmp_path) -> None:
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key": "sk-secret",
+            "auth_style": "bearer",
+            "generation": 7,
+        },
+        marker={"generation": 7, "provider": "openai"},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == "https://api.openai.com/v1/chat/completions"
+    assert captured[0]["headers"]["Authorization"] == "Bearer sk-secret"
+    assert resp.json()["model_id"] == "gpt-4o"
+
+
+def test_propose_503_on_stale_state_generation(monkeypatch, tmp_path) -> None:
+    # Marker committed generation 8, but the state file is still at 7: the
+    # side-effect write faulted after the marker -> fail closed, never serve
+    # the stale provider and never silently use local (W1-04 #2).
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key": "sk-secret",
+            "auth_style": "bearer",
+            "generation": 7,
+        },
+        marker={"generation": 8, "provider": "openai"},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "provider_state_unavailable"
+    assert captured == []  # no local substitution
+
+
+def test_propose_503_when_marker_external_but_state_absent(monkeypatch, tmp_path) -> None:
+    # The marker says an external provider is selected, but the state file write
+    # never landed: fail closed rather than fall back to local.
+    _point_state_and_marker(monkeypatch, tmp_path, state=None, marker={"generation": 3, "provider": "openai"})
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "provider_state_unavailable"
+    assert captured == []
+
+
+def test_propose_503_on_provider_mismatch_between_marker_and_state(monkeypatch, tmp_path) -> None:
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key": "k",
+            "auth_style": "bearer",
+            "generation": 5,
+        },
+        marker={"generation": 5, "provider": "gemini"},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 503, resp.text
+    assert captured == []
+
+
+def test_propose_uses_local_when_marker_is_local_ignoring_stale_state(monkeypatch, tmp_path) -> None:
+    # Authoritative selection is local; a stale external state file is ignored
+    # and the gateway safely routes to the local upstream.
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key": "k",
+            "auth_style": "bearer",
+            "generation": 2,
+        },
+        marker={"generation": 3, "provider": "local"},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["url"] == _local_endpoint()
+    assert resp.json()["model_id"] == gateway_main.settings.model_id
+
+
+def test_propose_503_on_non_int_marker_generation(monkeypatch, tmp_path) -> None:
+    # A boolean/string generation must never masquerade as a real generation.
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={"provider": "openai", "base_url": "https://api.openai.com/v1", "model_id": "gpt-4o", "generation": True},
+        marker={"generation": True, "provider": "openai"},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 503, resp.text
+    assert captured == []
+
+
+def test_propose_prefers_env_secret_reference_over_plaintext(monkeypatch, tmp_path) -> None:
+    # Acceptance 3: the state file carries a reference, not a plaintext key; the
+    # gateway reads the key from the allow-listed environment variable.
+    monkeypatch.setenv("KP_AI_GATEWAY_PROVIDER_API_KEY", "sk-from-env")
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key_env": "KP_AI_GATEWAY_PROVIDER_API_KEY",
+            "auth_style": "bearer",
+            "generation": 1,
+        },
+        marker={"generation": 1, "provider": "openai"},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 200, resp.text
+    assert captured[0]["headers"]["Authorization"] == "Bearer sk-from-env"
+
+
+def test_propose_503_bearer_without_any_credential(monkeypatch, tmp_path) -> None:
+    # Bearer provider with neither a usable env reference nor a plaintext key:
+    # fail closed instead of sending an empty bearer.
+    monkeypatch.delenv("KP_AI_GATEWAY_PROVIDER_API_KEY", raising=False)
+    _point_state_and_marker(
+        monkeypatch,
+        tmp_path,
+        state={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model_id": "gpt-4o",
+            "api_key_env": "KP_AI_GATEWAY_PROVIDER_API_KEY",
+            "auth_style": "bearer",
+            "generation": 1,
+        },
+        marker={"generation": 1, "provider": "openai"},
+    )
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == "provider_state_unavailable"
+    assert captured == []
+
+
+def test_resolve_provider_bearer_rejects_unlisted_env_var(monkeypatch) -> None:
+    # A tampered state file naming an arbitrary env var must not be honoured.
+    monkeypatch.setenv("SECRET_TO_STEAL", "nope")
+    assert gateway_main._resolve_provider_bearer({"api_key_env": "SECRET_TO_STEAL"}) is None
+    assert gateway_main._resolve_provider_bearer({"api_key_env": "SECRET_TO_STEAL", "api_key": "k"}) == "k"
+
+
 # --- KP-AUD-009: upstream responses are streamed and byte-bounded -----------
 #
 # A custom/managed upstream is untrusted for RESOURCE purposes: the gateway must

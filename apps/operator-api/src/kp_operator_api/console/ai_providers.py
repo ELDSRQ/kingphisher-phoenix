@@ -24,7 +24,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from kp_authorization.rbac import Capability, Principal
 from kp_database.audit_store import AuditStore
-from kp_database.models import AiGenerationProvider
+from kp_database.models import AiGenerationProvider, ProviderConfigGeneration
 from kp_telemetry.errors import NotFoundError, ValidationError_
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -41,6 +41,31 @@ router = APIRouter(prefix="/api/v1/console", tags=["console"])
 _MANAGED_MESSAGE = "generation-provider configuration is managed in this deployment and cannot be changed here"
 _WORKER_MODEL_PIN_KEY = "KP_WORKER_AI_MODEL_ID"
 _STATE_FILENAME = "ai-provider.json"
+#: Authoritative on-disk shadow of the committed DB generation (W1-04). The
+#: gateway holds no DB handle, so it reconciles its state file against THIS
+#: marker and fails closed on a stale/mismatched generation.
+_GENERATION_FILENAME = "ai-provider.generation"
+#: Singleton row id of :class:`ProviderConfigGeneration`.
+_GENERATION_SINGLETON_ID = 1
+#: Environment variable the gateway may read the external provider's bearer key
+#: from instead of a plaintext key in the state file (W1-04 plaintext
+#: minimization). When a deployment provides this (e.g. a Key-Vault-injected
+#: value, mirroring the gateway's own ``KP_AI_GATEWAY_UPSTREAM_API_KEY``), the
+#: console emits a reference and omits the plaintext key from the 0600 file. The
+#: console never writes this value — it is provided out of band by the
+#: deployment's secret backend; the 0600 plaintext key is kept only when it is
+#: absent (no secret backend).
+_PROVIDER_KEY_ENV = "KP_AI_GATEWAY_PROVIDER_API_KEY"
+
+
+class ProviderConfigApplyError(RuntimeError):
+    """A post-commit provider side effect failed or did not verify (W1-04).
+
+    The durable selection and its bumped ``generation`` are already committed,
+    but ``applied_generation`` is deliberately left behind, so the DB records an
+    explicit "blocked drift" state and the gateway fails closed — nothing is
+    silently half-applied. Carries no secret detail.
+    """
 
 
 class ProviderSaveRequest(BaseModel):
@@ -69,17 +94,42 @@ def _state_path(settings: Any) -> Path:
     return _run_dir(settings) / _STATE_FILENAME
 
 
-def _write_state_file(settings: Any, payload: dict[str, str]) -> None:
-    """Atomically write the gateway-readable selection state, mode 0600."""
-    path = _state_path(settings)
+def _generation_path(settings: Any) -> Path:
+    return _run_dir(settings) / _GENERATION_FILENAME
+
+
+def _atomic_write_private(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write ``payload`` as compact JSON, mode 0600 (tmp + rename)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
+    tmp = path.parent / (path.name + ".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     finally:
         os.close(fd)
     os.replace(tmp, path)
+
+
+def _write_state_file(settings: Any, payload: dict[str, Any]) -> None:
+    """Atomically write the gateway-readable selection state, mode 0600."""
+    _atomic_write_private(_state_path(settings), payload)
+
+
+def _write_generation_marker(settings: Any, generation: int, provider: str) -> None:
+    """Atomically write the authoritative generation marker, mode 0600.
+
+    This is the on-disk shadow of the committed DB generation. The stateless
+    gateway reconciles its provider state file against it (see ``main.py``).
+    """
+    _atomic_write_private(_generation_path(settings), {"generation": generation, "provider": provider})
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    """Read a small JSON object written by this module; raises on any problem."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ProviderConfigApplyError("state artifact is not a JSON object")
+    return data
 
 
 def _clear_state_file(settings: Any) -> None:
@@ -90,6 +140,130 @@ def _signal_restart(settings: Any) -> None:
     marker = _run_dir(settings) / "restart"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
+
+
+def _bump_generation(session: Session, provider: str) -> int:
+    """Bump the committed generation in the selection transaction and return it.
+
+    ``applied_generation`` is left behind: once this transaction commits the DB
+    records a half-applied ("blocked drift") state until the side effects are
+    written and verified and ``_mark_generation_applied`` clears it.
+    """
+    row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID)
+    if row is None:
+        row = ProviderConfigGeneration(id=_GENERATION_SINGLETON_ID, generation=0, applied_generation=0)
+        session.add(row)
+    row.generation = (row.generation or 0) + 1
+    row.active_provider = provider
+    return row.generation
+
+
+def _mark_generation_applied(session: Session, generation: int) -> None:
+    """Advance ``applied_generation`` to clear the blocked-drift state."""
+    row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID)
+    if row is not None:
+        row.applied_generation = generation
+
+
+def _build_state_payload(
+    env_path: Path,
+    *,
+    provider: str,
+    base_url: str,
+    model_id: str,
+    api_key: str,
+    preset: registry.ProviderPreset,
+    generation: int,
+) -> dict[str, Any]:
+    """Build the gateway state payload, preferring a secret reference for the key.
+
+    When the deployment provides the provider key out of band through the
+    environment (``_PROVIDER_KEY_ENV`` present in the console's env file — e.g. a
+    Key-Vault-injected value), the state file carries a reference and OMITS the
+    plaintext key, minimizing plaintext key exposure. Only when no such env
+    reference exists (no secret backend) is the plaintext key written to the
+    0600 file as the documented fallback.
+    """
+    use_env_ref = bool(_env_values(env_path).get(_PROVIDER_KEY_ENV, "").strip())
+    payload: dict[str, Any] = {
+        "provider": provider,
+        "base_url": base_url,
+        "model_id": model_id,
+        "generation": generation,
+        # Only send a bearer header when a credential is actually available (a
+        # self-hosted local model usually needs none).
+        "auth_style": preset.auth_style if (api_key or use_env_ref) else registry.AUTH_NONE,
+    }
+    if use_env_ref:
+        payload["api_key_env"] = _PROVIDER_KEY_ENV
+    else:
+        payload["api_key"] = api_key
+    return payload
+
+
+def _apply_provider_side_effects(
+    settings: Any,
+    env_path: Path,
+    *,
+    provider: str,
+    generation: int,
+    base_url: str,
+    model_id: str,
+    api_key: str,
+    preset: registry.ProviderPreset,
+    new_pin: str,
+    current_pin: str,
+) -> None:
+    """Write + verify the post-commit side effects for generation ``generation``.
+
+    Order matters for fail-closed reconcile: the authoritative generation marker
+    is written FIRST (the committed DB's on-disk shadow), then the state file
+    stamped with the SAME generation, then the worker pin and restart signal. A
+    fault between the marker and the state file leaves the marker ahead of the
+    state file, which the gateway detects as a stale generation and fails closed;
+    a fault before the marker leaves the previous working generation intact. Any
+    failure is raised as ``ProviderConfigApplyError`` so the caller keeps the DB
+    in its blocked-drift state.
+    """
+    try:
+        _write_generation_marker(settings, generation, provider)
+        if provider == registry.LOCAL:
+            _clear_state_file(settings)
+        else:
+            _write_state_file(
+                settings,
+                _build_state_payload(
+                    env_path,
+                    provider=provider,
+                    base_url=base_url,
+                    model_id=model_id,
+                    api_key=api_key,
+                    preset=preset,
+                    generation=generation,
+                ),
+            )
+        if new_pin and new_pin != current_pin:
+            _atomic_update_env(env_path, {_WORKER_MODEL_PIN_KEY: new_pin})
+        _signal_restart(settings)
+        _verify_provider_side_effects(settings, generation=generation, provider=provider)
+    except ProviderConfigApplyError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any apply fault keeps the DB in blocked drift; detail stays internal
+        raise ProviderConfigApplyError("provider configuration could not be applied") from exc
+
+
+def _verify_provider_side_effects(settings: Any, *, generation: int, provider: str) -> None:
+    """Confirm the durable artifacts the gateway reconciles against are consistent."""
+    marker = _read_json_file(_generation_path(settings))
+    if marker.get("generation") != generation or marker.get("provider") != provider:
+        raise ProviderConfigApplyError("generation marker verification failed")
+    if provider == registry.LOCAL:
+        if _state_path(settings).exists():
+            raise ProviderConfigApplyError("stale provider state file after local selection")
+        return
+    state = _read_json_file(_state_path(settings))
+    if state.get("generation") != generation or state.get("provider") != provider:
+        raise ProviderConfigApplyError("provider state verification failed")
 
 
 @router.get("/ai-providers", response_model=None)
@@ -225,6 +399,11 @@ def select_ai_provider(
 
     # Capture the plaintext key before commit (CipherText decrypts on load).
     api_key = (row.api_key or "") if (provider != registry.LOCAL and row) else ""
+    # Bump the generation token in the SAME transaction as the selection, so the
+    # durable selection and the generation the gateway/worker reconcile against
+    # commit atomically. applied_generation is left behind until the side
+    # effects are verified (blocked drift until then).
+    generation = _bump_generation(session, provider)
     # R-02: record the egress derived from the ACTUAL base URL, not the static
     # per-preset flag — otherwise the immutable audit chain can state "no data
     # leaves the network" for a custom provider pointing at the public internet.
@@ -239,30 +418,37 @@ def select_ai_provider(
             "model_id": model_id,
             "egress": egress,
             "sends_data_offsite": egress != registry.EGRESS_ON_NETWORK,
+            "generation": generation,
         },
     )
-    # Commit the durable selection BEFORE any filesystem/env side effects, so a
-    # constraint failure cannot leave an orphaned state file pointing the gateway
-    # at a provider the database rolled back.
+    # Commit the durable selection + generation BEFORE any filesystem/env side
+    # effects, so a constraint failure cannot leave an orphaned state file
+    # pointing the gateway at a provider the database rolled back.
     session.commit()
 
-    # Side effects the gateway + worker read, applied only after the DB is durable.
-    if provider == registry.LOCAL:
-        _clear_state_file(settings)
-    else:
-        _write_state_file(
-            settings,
-            {
-                "provider": provider,
-                "base_url": base_url,
-                "model_id": model_id,
-                "api_key": api_key,
-                # Only send a bearer header when a key is actually stored (a
-                # self-hosted local model usually needs none).
-                "auth_style": preset.auth_style if api_key else registry.AUTH_NONE,
-            },
-        )
-    if new_pin and new_pin != current_pin:
-        _atomic_update_env(env_path, {_WORKER_MODEL_PIN_KEY: new_pin})
-    _signal_restart(settings)
-    return {"provider": provider, "active": True, "model_id": model_id, "restart_requested": True}
+    # Side effects the gateway + worker read, applied only after the DB is
+    # durable. Written-then-verified in a fail-closed order (marker first); any
+    # fault keeps the DB in blocked drift and the gateway fails closed, so the
+    # config is never silently half-applied.
+    _apply_provider_side_effects(
+        settings,
+        env_path,
+        provider=provider,
+        generation=generation,
+        base_url=base_url,
+        model_id=model_id,
+        api_key=api_key,
+        preset=preset,
+        new_pin=new_pin,
+        current_pin=current_pin,
+    )
+    # All side effects verified: clear the blocked-drift state.
+    _mark_generation_applied(session, generation)
+    session.commit()
+    return {
+        "provider": provider,
+        "active": True,
+        "model_id": model_id,
+        "restart_requested": True,
+        "generation": generation,
+    }
