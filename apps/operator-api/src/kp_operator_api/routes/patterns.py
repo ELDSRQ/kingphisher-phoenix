@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Query, Request, status
 from kp_authorization.rbac import Capability, Principal
+from kp_contracts.cue_ontology import manifest_cue_labels
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER
 from kp_curation.clone_service import CloneError, clone_real_message
 from kp_database.audit_store import AuditStore
@@ -429,6 +430,10 @@ def clone_template(
         subject=cloned.subject,
         plain_text=cloned.plain_text,
         safe_html=cloned.safe_html,
+        # Deterministic cue + transformation manifest (W3-01), kept in its own
+        # column isolated from the deliverable; warning_cues is the label view.
+        warning_cues=manifest_cue_labels(cloned.cue_manifest),
+        cue_manifest=cloned.cue_manifest,
         approval_state=dm.TemplateApprovalState.DRAFT,
     )
     session.add(template)
@@ -442,6 +447,9 @@ def clone_template(
             "source": "operator_clone",
             "rewritten_links": cloned.provenance.get("rewritten_links"),
             "sanitizer": cloned.provenance.get("sanitizer"),
+            "cue_ontology_version": cloned.cue_manifest.get("ontology_version"),
+            "cue_count": len(cloned.cue_manifest.get("cues", [])),
+            "transformation_count": len(cloned.cue_manifest.get("transformations", [])),
         },
     )
     session.commit()

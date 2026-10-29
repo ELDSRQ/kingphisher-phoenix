@@ -47,6 +47,7 @@ from kp_operator_api.console import router as console_router
 from kp_operator_api.console.aggregation_routes import AggregationScheduler
 from kp_operator_api.console.aggregation_routes import router as aggregation_router
 from kp_operator_api.console.discovery_routes import router as discovery_router
+from kp_operator_api.health_dashboard import router as health_dashboard_router
 from kp_operator_api.program_routes import router as program_router
 from kp_operator_api.ratelimit import LoginThrottle, RateLimiter
 from kp_operator_api.routers import router
@@ -762,6 +763,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.include_router(training_library_router)
     app.include_router(threat_router)
     app.include_router(console_router)
+    app.include_router(health_dashboard_router)
     app.include_router(discovery_router)
     app.include_router(aggregation_router)
     app.include_router(acs_receipts_router)
