@@ -619,8 +619,21 @@ def fulfill_privacy_request(
     recipients = _recipients_for_request(session, settings, request)
     request.status = PrivacyRequestStatus.IN_PROGRESS.value
     if request.request_type == dm.PrivacyRequestType.DELETION:
+        # Fail closed before erasing: erasure must also purge the keyed-pseudonym
+        # awareness ledger, which requires the active governed key. Resolving it
+        # first means a missing/malformed key aborts the deletion rather than
+        # leaving re-identifiable ledger rows behind (KP-AUD-003, Option A).
+        pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()
         for recipient in recipients:
-            deleted += int(erase_recipient_data(session, recipient.recipient_id, erased_at=datetime.now(UTC)))
+            deleted += int(
+                erase_recipient_data(
+                    session,
+                    recipient.recipient_id,
+                    erased_at=datetime.now(UTC),
+                    pseudonym_key=pseudonym_key,
+                    pseudonym_key_version=pseudonym_key_version,
+                )
+            )
         request.requester_key = f"erased-request-{request.privacy_request_id}"
     elif request.request_type == dm.PrivacyRequestType.CORRECTION:
         allowed = {"employee_key", "mailbox", "display_name", "department"}
@@ -669,12 +682,22 @@ def delete_recipient(
     recipient_id: uuid.UUID,
     session: Session = Depends(get_session),
     audit: AuditStore = Depends(get_audit_store),
+    settings: OperatorApiSettings = Depends(get_settings),
     principal: Principal = Depends(require_capability(Capability.DELETE_DATA)),
 ) -> dict[str, Any]:
     recipient = session.get(Recipient, recipient_id)
     if recipient is None or recipient.deleted_at is not None:
         raise NotFoundError("recipient not found")
-    erase_recipient_data(session, recipient.recipient_id, erased_at=datetime.now(UTC))
+    # Resolve the governed ledger key first so a missing key fails the delete
+    # closed rather than leaving re-identifiable ledger rows (KP-AUD-003).
+    pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()
+    erase_recipient_data(
+        session,
+        recipient.recipient_id,
+        erased_at=datetime.now(UTC),
+        pseudonym_key=pseudonym_key,
+        pseudonym_key_version=pseudonym_key_version,
+    )
     audit.record(
         session=session,
         actor=principal.principal_id,

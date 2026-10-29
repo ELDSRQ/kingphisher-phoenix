@@ -4,10 +4,11 @@ These belong to the explicit ``make test-postgres`` profile and require its
 migrated disposable database and roles. Reply receipts previously escaped
 ``erase_recipient_data`` entirely, leaving orphaned rows carrying the subject's
 encrypted external message id. The awareness ledger is PSEUDONYMOUS (not
-anonymous): its recipient_pseudonym is HMAC(key, recipient_id) and the erased
-recipient keeps a tombstone row with its recipient_id, so a holder of the
-pseudonym key can relink surviving rows — it is retained through erasure as an
-accepted-risk retention decision, not because it is anonymous.
+anonymous): its recipient_pseudonym is HMAC(key, recipient_id), so while the
+governed key exists the rows stay re-identifiable personal data. Erasure
+therefore PURGES the subject's ledger rows under the active key version
+(Option A): the subject's rows disappear while a bystander's identical-shaped
+rows are untouched.
 """
 
 from __future__ import annotations
@@ -30,6 +31,11 @@ from kp_database.models import (
     ReplyMailReceipt,
     ReportedMailReceipt,
 )
+from kp_database.awareness_ledger import (
+    LOCAL_AWARENESS_PSEUDONYM_KEY,
+    LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
+    recipient_pseudonym,
+)
 from kp_database.privacy import erase_recipient_data
 from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
 from kp_database.session import create_db_engine, make_session_factory
@@ -40,6 +46,8 @@ from sqlalchemy.orm import Session
 pytestmark = pytest.mark.postgres
 
 KEK = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+_LEDGER_KEY = bytes.fromhex(LOCAL_AWARENESS_PSEUDONYM_KEY)
+_LEDGER_VERSION = LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION
 
 TEST_URL = os.environ.get(
     "DATABASE_URL_TEST", "postgresql+psycopg://kingphisher:kingphisher@localhost:5432/kingphisher_test"
@@ -177,8 +185,13 @@ def _seed_subject_with_receipts(tag: str) -> tuple[str, str, str, str]:
             AwarenessLedgerEntry(
                 awareness_ledger_entry_id=uuid4(),
                 tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
-                pseudonym_key_version="synthetic-local-v1",
-                recipient_pseudonym=_unique_hex(),
+                pseudonym_key_version=_LEDGER_VERSION,
+                # Real keyed pseudonym so erasure can recompute and match it.
+                recipient_pseudonym=recipient_pseudonym(
+                    tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+                    recipient_id=recipient.recipient_id,
+                    key=_LEDGER_KEY,
+                ),
                 assignment_exposure_pseudonym=_unique_hex(),
                 campaign_id=campaign.campaign_id,
                 campaign_date=campaign_date,
@@ -242,8 +255,21 @@ def test_erasure_deletes_subject_receipts_and_spares_other_subjects() -> None:
         assert _receipt_counts(session, other_assignment_uuid) == (1, 1)
         ledger_before = session.scalar(select(func.count()).select_from(AwarenessLedgerEntry)) or 0
 
+    subject_pseudonym = recipient_pseudonym(
+        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE, recipient_id=UUID(recipient_id), key=_LEDGER_KEY
+    )
+    other_pseudonym = recipient_pseudonym(
+        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE, recipient_id=UUID(other_id), key=_LEDGER_KEY
+    )
+
     with _test_session() as session:
-        erased = erase_recipient_data(session, UUID(recipient_id), erased_at=datetime.now(UTC))
+        erased = erase_recipient_data(
+            session,
+            UUID(recipient_id),
+            erased_at=datetime.now(UTC),
+            pseudonym_key=_LEDGER_KEY,
+            pseudonym_key_version=_LEDGER_VERSION,
+        )
         session.commit()
         assert erased is True
 
@@ -284,10 +310,26 @@ def test_erasure_deletes_subject_receipts_and_spares_other_subjects() -> None:
         other = session.get(Recipient, UUID(other_id))
         assert other is not None and other.deleted_at is None
 
-        # The pseudonymous awareness ledger is RETAINED through erasure (an
-        # accepted-risk retention decision; it is relinkable, not anonymous).
+        # Option A: the subject's keyed-pseudonym ledger rows are PURGED on
+        # erasure, while the bystander's identical-shaped row is untouched.
+        def _ledger_rows_for(pseudonym: str) -> int:
+            return (
+                session.scalar(
+                    select(func.count())
+                    .select_from(AwarenessLedgerEntry)
+                    .where(
+                        AwarenessLedgerEntry.tenant_scope == SINGLE_TENANT_DATABASE_SCOPE,
+                        AwarenessLedgerEntry.recipient_pseudonym == pseudonym,
+                        AwarenessLedgerEntry.pseudonym_key_version == _LEDGER_VERSION,
+                    )
+                )
+                or 0
+            )
+
+        assert _ledger_rows_for(subject_pseudonym) == 0
+        assert _ledger_rows_for(other_pseudonym) == 1
         ledger_after = session.scalar(select(func.count()).select_from(AwarenessLedgerEntry)) or 0
-        assert ledger_after == ledger_before
+        assert ledger_after == ledger_before - 1
 
         recipient = session.get(Recipient, UUID(recipient_id))
         assert recipient is not None and recipient.deleted_at is not None

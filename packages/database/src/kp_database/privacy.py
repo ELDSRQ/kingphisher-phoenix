@@ -74,13 +74,28 @@ def hash_mailbox(mailbox: str, salt: bytes) -> str:
     return hashlib.sha256(salt + inner).hexdigest()
 
 
-def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: datetime) -> bool:
+def erase_recipient_data(
+    session: Session,
+    recipient_id: UUID,
+    *,
+    erased_at: datetime,
+    pseudonym_key: bytes,
+    pseudonym_key_version: str,
+) -> bool:
     """Erase a recipient and all directly linked behavioral data.
 
     The recipient row is retained as an anonymous tombstone so historic
     aggregate/audit references remain structurally valid.  The random mailbox
     digest prevents later linkage or dictionary recovery.
+
+    ``pseudonym_key`` / ``pseudonym_key_version`` are the active governed
+    awareness-ledger key. Because the ledger pseudonym is keyed (re-identifiable
+    while the key exists), right-to-erasure must also purge the subject's ledger
+    rows; see :func:`kp_database.awareness_ledger.purge_recipient_awareness_ledger`.
+    The caller fails closed (cannot resolve the key -> raises) before invoking
+    this function, so erasure never silently leaves re-identifiable rows behind.
     """
+    from kp_database.awareness_ledger import purge_recipient_awareness_ledger
     from kp_database.models import (
         AudienceGroupMember,
         Microsoft365IntegrationState,
@@ -123,6 +138,19 @@ def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: dat
     session.execute(delete(TrainingAssignment).where(TrainingAssignment.recipient_id == recipient_id))
     session.execute(delete(RecipientExclusion).where(RecipientExclusion.recipient_id == recipient_id))
     session.execute(delete(AudienceGroupMember).where(AudienceGroupMember.recipient_id == recipient_id))
+    # Right-to-erasure must reach the keyed-pseudonym awareness ledger: while the
+    # governed key exists the subject's rows are re-identifiable personal data
+    # (KP-AUD-003, erasure Option A). The ledger carries no recipient FK, so the
+    # pseudonym is recomputed from the active key and the matching rows deleted.
+    from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
+
+    purge_recipient_awareness_ledger(
+        session,
+        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+        recipient_id=recipient_id,
+        pseudonym_key=pseudonym_key,
+        pseudonym_key_version=pseudonym_key_version,
+    )
     pending_states = list(
         session.scalars(
             select(Microsoft365IntegrationState)
