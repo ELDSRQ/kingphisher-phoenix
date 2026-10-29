@@ -124,3 +124,26 @@ def test_reconstruction_manifest_is_deterministic() -> None:
     a = clone_real_message(**kwargs).cue_manifest
     b = clone_real_message(**kwargs).cue_manifest
     assert _json.dumps(a, sort_keys=True) == _json.dumps(b, sort_keys=True)
+
+
+def test_reconstruction_manifest_never_leaks_hostile_tag_or_attribute_names() -> None:
+    # html.parser turns ``<evil.example/x>`` into a tag named with the attacker's
+    # host, and the sanitiser records that raw name. The manifest must not carry
+    # it (nor a hostile attribute name/value) verbatim — only hashes.
+    import json as _json
+
+    html = (
+        "<p>Dear user "
+        "<evil.example:login>Verify your account</evil.example:login> "
+        '<span onmouseover="steal(secretcookievalue)">hover</span> '
+        '<a href="https://evil.example/x">click here</a></p>'
+    )
+    result = clone_real_message(subject="URGENT: verify your account", raw_html=html)
+    serialized = _json.dumps(result.cue_manifest)
+    assert "evil.example" not in serialized  # hostile tag name AND link host
+    assert "secretcookievalue" not in serialized  # hostile attribute value
+    assert "onmouseover" not in serialized  # hostile attribute name
+    # The hostile tag folded into tag:other, recorded by hash only.
+    other = next(t for t in result.cue_manifest["transformations"] if t["component"] == "tag:other")
+    assert other["evidence_hashes"]
+    assert result.cue_manifest["provenance"]["raw_text_retained"] is False

@@ -324,6 +324,152 @@ _TAG_POLICY = {
     "img": "disallowed_image_removed",
 }
 
+# A fixed allow-list of real HTML element names. ``html.parser`` happily accepts
+# an arbitrary attacker-crafted "tag" (e.g. ``<evil.example:login>``), and the
+# sanitiser records that raw name in its ``removed_tags`` summary. A receipt may
+# therefore only name a tag that is on this list; every other (hostile) name is
+# folded into a single ``tag:other`` receipt whose original names appear ONLY as
+# SHA-256 hashes — so an attacker string can never reach the stored manifest.
+KNOWN_HTML_TAGS: frozenset[str] = frozenset(
+    {
+        "a",
+        "abbr",
+        "acronym",
+        "address",
+        "applet",
+        "area",
+        "article",
+        "aside",
+        "audio",
+        "b",
+        "base",
+        "basefont",
+        "bdi",
+        "bdo",
+        "big",
+        "blockquote",
+        "body",
+        "br",
+        "button",
+        "canvas",
+        "caption",
+        "center",
+        "cite",
+        "code",
+        "col",
+        "colgroup",
+        "data",
+        "datalist",
+        "dd",
+        "del",
+        "details",
+        "dfn",
+        "dialog",
+        "dir",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "embed",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "font",
+        "footer",
+        "form",
+        "frame",
+        "frameset",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "header",
+        "hgroup",
+        "hr",
+        "html",
+        "i",
+        "iframe",
+        "img",
+        "input",
+        "ins",
+        "kbd",
+        "label",
+        "legend",
+        "li",
+        "link",
+        "main",
+        "map",
+        "mark",
+        "marquee",
+        "menu",
+        "meta",
+        "meter",
+        "nav",
+        "noframes",
+        "noscript",
+        "object",
+        "ol",
+        "optgroup",
+        "option",
+        "output",
+        "p",
+        "param",
+        "picture",
+        "pre",
+        "progress",
+        "q",
+        "rp",
+        "rt",
+        "ruby",
+        "s",
+        "samp",
+        "script",
+        "section",
+        "select",
+        "slot",
+        "small",
+        "source",
+        "span",
+        "strike",
+        "strong",
+        "style",
+        "sub",
+        "summary",
+        "sup",
+        "svg",
+        "table",
+        "tbody",
+        "td",
+        "template",
+        "textarea",
+        "tfoot",
+        "th",
+        "thead",
+        "time",
+        "title",
+        "tr",
+        "track",
+        "tt",
+        "u",
+        "ul",
+        "var",
+        "video",
+        "wbr",
+        "xmp",
+    }
+)
+
+# Fixed vocabularies for transformation receipts. A receipt's ``action`` and
+# ``component`` must be drawn from these, so no caller can smuggle attacker text
+# through a free-text field. ``component`` additionally admits ``tag:<name>``
+# only for a name on :data:`KNOWN_HTML_TAGS` (plus the fold-all ``tag:other``).
+TRANSFORMATION_ACTIONS: frozenset[str] = frozenset({"replaced", "removed", "stripped", "injected"})
+_BASE_COMPONENTS: frozenset[str] = frozenset({"anchor_href", "bare_url", "attribute", "training_cta", "tag:other"})
+TRANSFORMATION_COMPONENTS: frozenset[str] = _BASE_COMPONENTS | frozenset(f"tag:{tag}" for tag in KNOWN_HTML_TAGS)
+
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -348,13 +494,19 @@ def _span(field: str, match: re.Match[str]) -> dict[str, Any]:
     }
 
 
-def _scan_rule(rule: CueRule, fields: tuple[tuple[str, str], ...]) -> list[dict[str, Any]]:
+def _scan_rule(rule: CueRule, fields: tuple[tuple[str, str], ...]) -> tuple[list[dict[str, Any]], bool]:
     """All occurrences of one rule across the given (name, text) fields.
 
     For a dynamic-target rule (brands) each distinct matched brand becomes its
     own cue, so the impersonation target is specific. Otherwise every match of
     the rule folds into a single cue with its spans gathered in document order.
+
+    Returns ``(cues, truncated)``; ``truncated`` is True when a cue had more
+    matches than :data:`MAX_SPANS_PER_CUE`, so the manifest can flag that its
+    evidence is a bounded sample rather than silently dropping the overflow.
     """
+
+    truncated = False
 
     if rule.dynamic_target:
         by_target: dict[str, list[dict[str, Any]]] = {}
@@ -368,20 +520,21 @@ def _scan_rule(rule: CueRule, fields: tuple[tuple[str, str], ...]) -> list[dict[
                 target_spans = by_target[target]
                 if len(target_spans) < MAX_SPANS_PER_CUE:
                     target_spans.append(_span(field_name, match))
-        return [
-            _cue(rule, by_target[target][:MAX_SPANS_PER_CUE], impersonation_target=target)
-            for target in order
-            if by_target[target]
-        ]
+                else:
+                    truncated = True
+        cues = [_cue(rule, by_target[target], impersonation_target=target) for target in order if by_target[target]]
+        return cues, truncated
 
     spans: list[dict[str, Any]] = []
     for field_name, text in fields:
         for match in rule.pattern.finditer(text):
             if len(spans) < MAX_SPANS_PER_CUE:
                 spans.append(_span(field_name, match))
+            else:
+                truncated = True
     if not spans:
-        return []
-    return [_cue(rule, spans, impersonation_target=rule.impersonation_target)]
+        return [], truncated
+    return [_cue(rule, spans, impersonation_target=rule.impersonation_target)], truncated
 
 
 def _cue(rule: CueRule, spans: list[dict[str, Any]], *, impersonation_target: str | None) -> dict[str, Any]:
@@ -395,6 +548,26 @@ def _cue(rule: CueRule, spans: list[dict[str, Any]], *, impersonation_target: st
     }
 
 
+def _extract(subject: str, body: str) -> tuple[list[dict[str, Any]], bool]:
+    """Extract cues and report whether any bound truncated the result."""
+
+    fields = (("subject", (subject or "")[:MAX_FIELD_CHARS]), ("body", (body or "")[:MAX_FIELD_CHARS]))
+    cues: list[dict[str, Any]] = []
+    counters: dict[str, int] = {}
+    truncated = False
+    for rule in _ONTOLOGY:
+        rule_cues, rule_truncated = _scan_rule(rule, fields)
+        truncated = truncated or rule_truncated
+        for cue in rule_cues:
+            if len(cues) >= MAX_CUES:
+                return cues, True
+            counters[rule.cue_type] = counters.get(rule.cue_type, 0) + 1
+            # Stable, readable, deterministic identity for a given input.
+            cue = {"cue_id": f"cue:{rule.cue_type}:{counters[rule.cue_type]}", **cue}
+            cues.append(cue)
+    return cues, truncated
+
+
 def extract_cues(subject: str, body: str) -> list[dict[str, Any]]:
     """Deterministically extract the known cues from ``subject`` + ``body``.
 
@@ -406,18 +579,7 @@ def extract_cues(subject: str, body: str) -> list[dict[str, Any]]:
     invented.
     """
 
-    fields = (("subject", (subject or "")[:MAX_FIELD_CHARS]), ("body", (body or "")[:MAX_FIELD_CHARS]))
-    cues: list[dict[str, Any]] = []
-    counters: dict[str, int] = {}
-    for rule in _ONTOLOGY:
-        for cue in _scan_rule(rule, fields):
-            if len(cues) >= MAX_CUES:
-                return cues
-            counters[rule.cue_type] = counters.get(rule.cue_type, 0) + 1
-            # Stable, readable, deterministic identity for a given input.
-            cue = {"cue_id": f"cue:{rule.cue_type}:{counters[rule.cue_type]}", **cue}
-            cues.append(cue)
-    return cues
+    return _extract(subject, body)[0]
 
 
 def transformation_receipt(
@@ -427,16 +589,22 @@ def transformation_receipt(
     *,
     count: int = 1,
     evidence_hashes: tuple[str, ...] = (),
-    detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one transformation receipt for a removed/replaced component.
 
-    ``policy_reason`` must be one of :data:`POLICY_REASONS`; a receipt may not
-    carry a free-text justification. ``evidence_hashes`` are SHA-256 hashes of
-    the removed/replaced token(s) (e.g. an original link destination), never the
-    raw value, and are bounded.
+    Every free-text surface is constrained so a caller cannot smuggle attacker
+    text into the stored manifest: ``component`` must be one of
+    :data:`TRANSFORMATION_COMPONENTS` (which admits ``tag:<name>`` only for a
+    real HTML tag), ``action`` one of :data:`TRANSFORMATION_ACTIONS`, and
+    ``policy_reason`` one of :data:`POLICY_REASONS`. ``evidence_hashes`` are
+    SHA-256 hashes of the removed/replaced token(s) (e.g. an original link
+    destination or a hostile tag name), never the raw value, and are bounded.
     """
 
+    if component not in TRANSFORMATION_COMPONENTS:
+        raise ValueError(f"unknown transformation component: {component!r}")
+    if action not in TRANSFORMATION_ACTIONS:
+        raise ValueError(f"unknown transformation action: {action!r}")
     if policy_reason not in POLICY_REASONS:
         raise ValueError(f"unknown transformation policy reason: {policy_reason!r}")
     receipt: dict[str, Any] = {
@@ -447,21 +615,43 @@ def transformation_receipt(
     }
     if evidence_hashes:
         receipt["evidence_hashes"] = list(evidence_hashes[:MAX_EVIDENCE_HASHES])
-    if detail:
-        receipt["detail"] = detail
     return receipt
 
 
 def receipts_from_removed_tags(removed_tags: dict[str, int]) -> list[dict[str, Any]]:
-    """Deterministic receipts for a sanitiser ``removed_tags`` summary."""
+    """Deterministic receipts for a sanitiser ``removed_tags`` summary.
+
+    A name on :data:`KNOWN_HTML_TAGS` becomes its own ``tag:<name>`` receipt.
+    Every other name is attacker-controllable (``html.parser`` accepts arbitrary
+    tag names), so all such names fold into a SINGLE ``tag:other`` receipt whose
+    original names are recorded ONLY as SHA-256 hashes — the raw name never
+    enters the manifest.
+    """
 
     receipts: list[dict[str, Any]] = []
+    other_count = 0
+    other_hashes: list[str] = []
     for tag in sorted(removed_tags):
         count = removed_tags[tag]
         if count <= 0:
             continue
-        policy = _TAG_POLICY.get(tag, "disallowed_tag_removed")
-        receipts.append(transformation_receipt("tag:" + tag, "removed", policy, count=count))
+        if tag in KNOWN_HTML_TAGS:
+            policy = _TAG_POLICY.get(tag, "disallowed_tag_removed")
+            receipts.append(transformation_receipt(f"tag:{tag}", "removed", policy, count=count))
+        else:
+            other_count += count
+            if len(other_hashes) < MAX_EVIDENCE_HASHES:
+                other_hashes.append(_sha256(tag))
+    if other_count:
+        receipts.append(
+            transformation_receipt(
+                "tag:other",
+                "removed",
+                "disallowed_tag_removed",
+                count=other_count,
+                evidence_hashes=tuple(other_hashes),
+            )
+        )
     return receipts
 
 
@@ -486,12 +676,16 @@ def build_cue_manifest(
     invariant.
     """
 
-    receipts = list(transformations or [])[:MAX_TRANSFORMATIONS]
+    all_receipts = list(transformations or [])
+    receipts = all_receipts[:MAX_TRANSFORMATIONS]
+    cues, cues_truncated = _extract(subject, body)
+    truncated = cues_truncated or len(all_receipts) > MAX_TRANSFORMATIONS
     return {
         "ontology_version": CUE_ONTOLOGY_VERSION,
         "extractor_version": CUE_EXTRACTOR_VERSION,
         "source": source,
-        "cues": extract_cues(subject, body),
+        "truncated": truncated,
+        "cues": cues,
         "transformations": receipts,
         "provenance": {
             "subject_sha256": _sha256(subject or ""),

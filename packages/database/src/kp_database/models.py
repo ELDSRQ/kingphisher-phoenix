@@ -1085,7 +1085,7 @@ class Microsoft365IntegrationState(Base):
     active_job_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lease_expires_at = mapped_column(DateTime(timezone=True), nullable=True)
     last_job_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    last_counts: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sa_text("'{}'"))
+    last_counts: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sa_text("'{}'::jsonb"))
     last_attempt_at = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at = mapped_column(DateTime(timezone=True), nullable=True)
     last_applied_at = mapped_column(DateTime(timezone=True), nullable=True)

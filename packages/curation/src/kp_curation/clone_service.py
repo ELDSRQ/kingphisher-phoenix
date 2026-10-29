@@ -166,14 +166,11 @@ def clone_real_message(
                 "payload_link_removed",
                 count=rewritten_links,
                 evidence_hashes=tuple(original_href_hashes),
-                detail={"replacement": "training_placeholder"},
             )
         )
     if bare_urls_neutralized:
         transformations.append(
-            transformation_receipt(
-                "bare_url", "replaced", "bare_url_neutralized", count=bare_urls_neutralized
-            )
+            transformation_receipt("bare_url", "replaced", "bare_url_neutralized", count=bare_urls_neutralized)
         )
     transformations.extend(receipts_from_removed_tags(dict(sanitized.removed_tags)))
     if sanitized.stripped_attributes:
@@ -183,9 +180,7 @@ def clone_real_message(
             )
         )
     if cta_injected:
-        transformations.append(
-            transformation_receipt("training_cta", "injected", "training_link_guaranteed")
-        )
+        transformations.append(transformation_receipt("training_cta", "injected", "training_link_guaranteed"))
 
     cue_manifest = build_cue_manifest(
         subject=subject,
