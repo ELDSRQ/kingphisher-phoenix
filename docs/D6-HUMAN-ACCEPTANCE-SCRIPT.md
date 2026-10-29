@@ -75,10 +75,15 @@ Do not send or modify an existing real campaign merely to test the software.
    confirmed human interaction separately when exercising the training page.
 9. On your trial's row, use **Open dashboard**. Pass: the right campaign is
    selected and two masked recipient rows show delivery/click/training outcomes.
-   **Refresh recipient results** fetches current data. Replies are explicitly
-   unavailable in this build. Do not mark reply monitoring passed or treat an
-   employee phishing report as a reply; a receiving mailbox and reply connector
-   remain required to evaluate that requested feature.
+   **Refresh recipient results** fetches current data. Reply ingestion is
+   implemented in source (the `reply-mailbox` worker and `reply_mail_jobs.py`)
+   and is available in local development; in a managed Azure deployment it is
+   provider-conditional and active only when a reply mailbox/connector is
+   configured (the `reply_mailbox_endpoint` variable), so with none configured
+   the reply view stays empty. Reply monitoring has NOT been human-accepted:
+   do not mark reply monitoring passed or treat an employee phishing report as
+   a reply; a configured receiving mailbox and reply connector remain required
+   to exercise and qualify that feature.
 10. Use **Report and exports** on the trial campaign. Download results CSV and
     evidence ZIP through their labeled buttons; confirm files appear in the
     browser's download list and the ZIP opens. Use **Stop this campaign**, confirm
@@ -88,8 +93,10 @@ Do not send or modify an existing real campaign merely to test the software.
 Record pass/fail for each task, the campaign name/ID, UTC time, browser/version,
 exact errors and any coaching needed. Test keyboard-only navigation and a
 screen reader separately. Passing automated checks prepares this trial but does
-not constitute human acceptance. **Full requested readiness remains open while
-reply monitoring is unavailable**, and production/RSA gates remain separate.
+not constitute human acceptance. **Full requested readiness remains open until
+reply monitoring is exercised against a configured reply mailbox/connector and
+human-accepted** (the capability is implemented in source but not yet qualified),
+and production/RSA gates remain separate.
 
 ## Previous October 7/8 preparation — superseded controls
 

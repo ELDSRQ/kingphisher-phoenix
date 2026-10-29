@@ -58,8 +58,9 @@ tests. The fix is synced and its non-mutating remote `--check-uv` prerequisite
 passed; no cold full installer rerun under the new default is claimed.
 
 **Current state (as of 2026-10-05, commit history head after the on-prem feature
-cycle):** migration head is `0042`; there are **ten** worker roles (the nine
-below plus `curation`); the hermetic suite is ~3,500 tests. The dated figures in
+cycle):** migration head is `0042`; there are **eleven** worker roles (the nine
+functions summarized in the multi-role worker below, plus `reply-mailbox` and
+`curation`); the hermetic suite is ~3,500 tests. The dated figures in
 the paragraphs that follow (head `0029`/`0032`/`0033`, the 2,329/2,469/2,501/2,620
 hermetic runs, and the 2026-08-29 PostgreSQL/Redis profile runs) are point-in-time
 Wave-30s records kept as history; they **predate** this cycle. The [October 7
@@ -130,7 +131,7 @@ The production-oriented topology has three deployables:
 2. **Tracking and training API** — the public, deliberately narrow boundary for opaque open/click bearers and recipient training pages.
 3. **Multi-role worker** — one supervised process for ingestion, generation, delivery, retention, reminders, alerts, directory synchronization, reported-mail ingestion, and audit-head witnessing. Delivery can be isolated as an optional scale/security choice.
 
-Local development still runs the ten worker roles (ingestion, generation, delivery, retention, mailbox, reminder, alert, directory, audit-anchor, curation) as separate child processes so that individual roles are easy to inspect. That is a development implementation detail, not the Azure deployment topology.
+Local development still runs the eleven worker roles (ingestion, generation, delivery, retention, mailbox, reply-mailbox, reminder, alert, directory, curation, audit-anchor) as separate child processes so that individual roles are easy to inspect. That is a development implementation detail, not the Azure deployment topology. In a managed Azure deployment only the six core roles (ingestion, delivery, retention, reminder, alert, audit-anchor) are always provisioned; the provider-conditional roles (generation, mailbox, reply-mailbox, directory, curation) are created only when their provider endpoint/address is configured.
 
 Implemented locally includes:
 

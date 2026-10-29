@@ -107,9 +107,16 @@ recipient selection. The server records and rechecks your reviewed roster.
 8. **Monitor:** click **Open dashboard** on that campaign. **Monitor recipients**
    selects that campaign and shows delivery state, observed clicks, confirmed
    interaction, employee reports and training by masked recipient. Use **Refresh
-   recipient results** for fresh data. **Replies are currently unavailable**:
-   reply ingestion has not been built/configured. Employee reports are separate
-   from replies. **Report and exports** opens results and download actions.
+   recipient results** for fresh data. **Reply ingestion is implemented in
+   source** (the `reply-mailbox` worker and `reply_mail_jobs.py`): it is
+   available in local development, and in a managed Azure deployment it is
+   provider-conditional — the reply-mailbox role, secret and identity are
+   created only when a reply mailbox/connector is configured (the
+   `reply_mailbox_endpoint` Terraform variable); with no reply mailbox
+   configured, replies are not collected and the reply view stays empty.
+   Human acceptance of reply monitoring (D6) remains open and is not yet
+   qualified. Employee reports are separate from replies. **Report and exports**
+   opens results and download actions.
    **Stop this campaign** stops future deliveries and disables its tracking links.
 
 For an unsent campaign created in the earlier workflow, use **Review current

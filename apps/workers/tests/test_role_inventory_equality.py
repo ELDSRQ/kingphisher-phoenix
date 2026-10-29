@@ -28,6 +28,7 @@ from kp_workers.__main__ import WORKERS
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _MAIN_TF = _REPO_ROOT / "infrastructure" / "terraform" / "main.tf"
+_README = _REPO_ROOT / "README.md"
 
 #: workload keys in RUNTIME_ROLES that are NOT worker roles (console/API logins).
 _NON_WORKER_WORKLOADS = frozenset({"operator", "tracking"})
@@ -62,6 +63,24 @@ def _grants_worker_roles() -> set[str]:
     return set(grants.RUNTIME_ROLES) - _NON_WORKER_WORKLOADS
 
 
+def _readme_worker_roles() -> set[str]:
+    """Parse the README's local-development worker-role enumeration.
+
+    KP-AUD-020: operator docs must not drift from source. The README states the
+    local-development role list as ``runs the <count> worker roles (a, b, c, …)``
+    (see README.md "Multi-role worker" section). This pins that parenthesized
+    enumeration to ``WORKERS`` so the list (and its count) is checked against the
+    worker entrypoint rather than hand-maintained.
+    """
+    text = _README.read_text(encoding="utf-8")
+    match = re.search(
+        r"runs the \w+ worker roles \(([^)]*)\)",
+        text,
+    )
+    assert match is not None, "could not locate the worker-role enumeration in README.md"
+    return {role.strip() for role in match.group(1).split(",") if role.strip()}
+
+
 def test_worker_role_inventory_is_one_equal_set() -> None:
     source = set(WORKERS)
     grant = _grants_worker_roles()
@@ -69,6 +88,15 @@ def test_worker_role_inventory_is_one_equal_set() -> None:
 
     assert source == grant, f"WORKERS vs grants.RUNTIME_ROLES drift: {source ^ grant}"
     assert source == terraform, f"WORKERS vs terraform role universe drift: {source ^ terraform}"
+
+
+def test_readme_worker_role_list_matches_source() -> None:
+    # KP-AUD-020: the README's local-development role enumeration (and its count)
+    # must equal the roles the worker entrypoint can actually run.
+    source = set(WORKERS)
+    readme = _readme_worker_roles()
+    assert source == readme, f"README vs WORKERS role-list drift: {source ^ readme}"
+    assert "reply-mailbox" in readme, "README enumeration must not drop reply-mailbox"
 
 
 def test_formerly_missing_roles_are_present_everywhere() -> None:
