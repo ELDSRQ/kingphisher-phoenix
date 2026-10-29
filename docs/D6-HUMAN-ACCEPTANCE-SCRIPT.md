@@ -75,10 +75,16 @@ Do not send or modify an existing real campaign merely to test the software.
    confirmed human interaction separately when exercising the training page.
 9. On your trial's row, use **Open dashboard**. Pass: the right campaign is
    selected and two masked recipient rows show delivery/click/training outcomes.
-   **Refresh recipient results** fetches current data. Replies are explicitly
-   unavailable in this build. Do not mark reply monitoring passed or treat an
-   employee phishing report as a reply; a receiving mailbox and reply connector
-   remain required to evaluate that requested feature.
+   **Refresh recipient results** fetches current data. Recipient-reply ingestion
+   is built: when a reply mailbox is configured (a local Mailpit inbox in
+   development, a Microsoft 365 mailbox in managed deployments), the
+   `reply-mailbox` worker header-correlates an inbound reply to its sent message
+   and marks that recipient replied. If no reply mailbox is configured for this
+   run, the replied column stays empty — record that as not-configured, not as a
+   missing feature. Do not treat an employee phishing report as a reply; reports
+   and replies are separate signals. Verifying the reply signal end to end is
+   part of human acceptance: do not mark reply monitoring passed unless you
+   actually observed a correlated reply in this run.
 10. Use **Report and exports** on the trial campaign. Download results CSV and
     evidence ZIP through their labeled buttons; confirm files appear in the
     browser's download list and the ZIP opens. Use **Stop this campaign**, confirm
@@ -88,8 +94,9 @@ Do not send or modify an existing real campaign merely to test the software.
 Record pass/fail for each task, the campaign name/ID, UTC time, browser/version,
 exact errors and any coaching needed. Test keyboard-only navigation and a
 screen reader separately. Passing automated checks prepares this trial but does
-not constitute human acceptance. **Full requested readiness remains open while
-reply monitoring is unavailable**, and production/RSA gates remain separate.
+not constitute human acceptance. **Full requested readiness remains open until a
+human run verifies every step** — including the reply signal end to end against a
+configured reply mailbox — and production/RSA gates remain separate.
 
 ## Previous October 7/8 preparation — superseded controls
 

@@ -58,7 +58,7 @@ tests. The fix is synced and its non-mutating remote `--check-uv` prerequisite
 passed; no cold full installer rerun under the new default is claimed.
 
 **Current state (as of 2026-10-05, commit history head after the on-prem feature
-cycle):** migration head is `0042`; there are **ten** worker roles (the nine
+cycle):** migration head is `0042`; there are **eleven** worker roles (the ten
 below plus `curation`); the hermetic suite is ~3,500 tests. The dated figures in
 the paragraphs that follow (head `0029`/`0032`/`0033`, the 2,329/2,469/2,501/2,620
 hermetic runs, and the 2026-08-29 PostgreSQL/Redis profile runs) are point-in-time
@@ -128,9 +128,9 @@ The production-oriented topology has three deployables:
 
 1. **Operator API and web console** — the private control plane for setup, recipients, audiences, campaigns, training, reporting, audit, and emergency controls.
 2. **Tracking and training API** — the public, deliberately narrow boundary for opaque open/click bearers and recipient training pages.
-3. **Multi-role worker** — one supervised process for ingestion, generation, delivery, retention, reminders, alerts, directory synchronization, reported-mail ingestion, and audit-head witnessing. Delivery can be isolated as an optional scale/security choice.
+3. **Multi-role worker** — one supervised process for ingestion, generation, delivery, retention, reminders, alerts, directory synchronization, reported-mail ingestion, recipient-reply ingestion, and audit-head witnessing. Delivery can be isolated as an optional scale/security choice.
 
-Local development still runs the ten worker roles (ingestion, generation, delivery, retention, mailbox, reminder, alert, directory, audit-anchor, curation) as separate child processes so that individual roles are easy to inspect. That is a development implementation detail, not the Azure deployment topology.
+Local development still runs the eleven worker roles (ingestion, generation, delivery, retention, mailbox, reply-mailbox, reminder, alert, directory, audit-anchor, curation) as separate child processes so that individual roles are easy to inspect. That is a development implementation detail, not the Azure deployment topology. The canonical role list is the single source of truth in `packages/database/src/kp_database/grants.py` (`RUNTIME_ROLES`, minus the non-worker `operator`/`tracking` logins), mirrored by `apps/workers/src/kp_workers/__main__.py` (`WORKERS`) and `packages/contracts/src/kp_contracts/queue.py` (`DEFAULT_QUEUE_TOPICS`).
 
 Implemented locally includes:
 
@@ -142,6 +142,7 @@ Implemented locally includes:
 - A finite Program Planner that materializes 2–12 independently reviewed campaign occurrences on an allowlisted elapsed-day cadence, with duplicate-safe creation and forward-only pause/resume. It is not an adaptive scheduler and does not automate approval, targeting, or sending.
 - Denominator-explicit campaign funnels and bounded longitudinal Executive Trends in JSON, CSV, and the GUI, plus the named close disposition, the confirmed-interaction distinction, basic repeat history, and the five-year pseudonymous ledger trend/repeat consumers (ANA-010). Advanced cohorts, causal training-efficacy claims, scheduled reports, and a general scanner/bot corrections workflow are explicitly deferred.
 - Microsoft Graph directory preview/apply/discard with a latest-request-wins fence around provider I/O, plus Microsoft 365 reported-message polling with bounded cursors/paging, replay, MIME, and exact-correlation controls.
+- Recipient-reply ingestion through the dedicated `reply-mailbox` worker: it polls a configured reply inbox, correlates an inbound reply to its sent message by header (`In-Reply-To`/`References`) without reading the reply body or sender, and records one idempotent `MESSAGE_REPLIED` event plus a `reply_mail_receipts` row per assignment, surfaced as the per-recipient `replied` flag and the `reply_correlated` analytics series. The reply mailbox provider is selected by deployment mode (`reply_mailbox_provider`): a local Mailpit inbox in development and a Microsoft 365 mailbox in managed deployments; with no reply mailbox configured the feature is simply inactive and the `replied` column stays empty. Evidence to date is the local/on-prem path proven end to end into Mailpit (migration `0044`, reply + report ingestion); the Microsoft 365 reply path and any human-acceptance verification of the reply signal remain separate gates.
 - SMTP for local development and Azure Communication Services Email support with custom-domain/DNS readiness, pacing, provider correlation, an explicit ACS managed-identity client ID, and Entra-authenticated Event Grid receipt ingestion. Live subscription and receipt qualification remain pending.
 - Transactional business/audit/queue intent and a database-controlled append-only audit dispatcher. Completion preserves native UUID binding. Final local acceptance exposed and fixed an audit-store owner-fallback revocation defect, reconciled 36 stranded idempotent queue intents, and left the audit chain green without exposing statement, parameter, or driver detail.
 - A create-only audit-head witness targeting a separate locked Azure Blob WORM container; the local permission boundary passes, while live Azure evidence remains pending.
