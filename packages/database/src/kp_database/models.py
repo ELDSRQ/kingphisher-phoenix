@@ -315,6 +315,9 @@ class CampaignPattern(Base):
     requested_action: Mapped[str | None] = mapped_column(Text, nullable=True)
     delivery_method: Mapped[str | None] = mapped_column(Text, nullable=True)
     warning_cues: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    # Deterministic cue + transformation manifest (W3-01). Isolated from the
+    # free-text ``warning_cues`` list; empty until a cue-manifest producer fills it.
+    cue_manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sa_text("'{}'"))
     actor_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     sector_targeting: Mapped[str | None] = mapped_column(Text, nullable=True)
     attack_mapping: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
@@ -348,6 +351,10 @@ class TemplateVersion(Base):
     synthetic_sender_display: Mapped[str | None] = mapped_column(Text, nullable=True)
     learning_objectives: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     warning_cues: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    # Deterministic cue + transformation manifest produced by reconstruction
+    # (W3-01). Isolated from the deliverable content (safe_html/plain_text) and
+    # from the free-text ``warning_cues`` labels; carries only offsets + hashes.
+    cue_manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sa_text("'{}'"))
     training_explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
     approval_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     approval_state: Mapped[dm.TemplateApprovalState] = mapped_column(
@@ -1078,7 +1085,7 @@ class Microsoft365IntegrationState(Base):
     active_job_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lease_expires_at = mapped_column(DateTime(timezone=True), nullable=True)
     last_job_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    last_counts: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sa_text("'{}'::jsonb"))
+    last_counts: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sa_text("'{}'"))
     last_attempt_at = mapped_column(DateTime(timezone=True), nullable=True)
     last_success_at = mapped_column(DateTime(timezone=True), nullable=True)
     last_applied_at = mapped_column(DateTime(timezone=True), nullable=True)

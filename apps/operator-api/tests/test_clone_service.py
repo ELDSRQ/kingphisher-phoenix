@@ -75,3 +75,52 @@ def test_rejects_empty_input() -> None:
         clone_real_message(subject="", raw_html="<p>x</p>")
     with pytest.raises(CloneError):
         clone_real_message(subject="Subject", raw_html="", plain_text="")
+
+
+# --- Deterministic cue + transformation manifest (W3-01) ---
+
+
+def test_reconstruction_emits_cue_and_transformation_manifest() -> None:
+    html = (
+        "<p>Dear user, your Microsoft 365 account is locked. "
+        '<a href="https://evil.example/login">Verify your account now</a></p>'
+        "<script>steal()</script>"
+    )
+    result = clone_real_message(subject="URGENT: verify your account", raw_html=html)
+    manifest = result.cue_manifest
+
+    assert manifest["ontology_version"] == "cue-ontology/1"
+    assert manifest["source"] == "reconstruction"
+    # Known cues were extracted deterministically from the ORIGINAL lure.
+    cue_types = {cue["cue_type"] for cue in manifest["cues"]}
+    assert {"urgency", "credential_request", "brand_impersonation"} <= cue_types
+
+    # A transformation receipt exists for the neutralized link and the stripped
+    # script, each citing a fixed policy reason.
+    receipts = {(r["component"], r["policy_reason"]) for r in manifest["transformations"]}
+    assert ("anchor_href", "payload_link_removed") in receipts
+    assert ("tag:script", "active_content_removed") in receipts
+
+
+def test_manifest_hashes_the_replaced_link_never_stores_it_raw() -> None:
+    html = '<p><a href="https://evil.example/login">Verify</a></p>'
+    result = clone_real_message(subject="Verify your account", raw_html=html)
+    import json as _json
+
+    serialized = _json.dumps(result.cue_manifest)
+    assert "evil.example" not in serialized  # raw destination never persisted
+    link_receipt = next(r for r in result.cue_manifest["transformations"] if r["component"] == "anchor_href")
+    assert link_receipt["evidence_hashes"]  # hashed original destination recorded
+    assert result.cue_manifest["provenance"]["raw_text_retained"] is False
+
+
+def test_reconstruction_manifest_is_deterministic() -> None:
+    import json as _json
+
+    kwargs = {
+        "subject": "URGENT: verify your Microsoft 365 password",
+        "raw_html": '<p>Click here: <a href="https://evil.example/x">now</a></p>',
+    }
+    a = clone_real_message(**kwargs).cue_manifest
+    b = clone_real_message(**kwargs).cue_manifest
+    assert _json.dumps(a, sort_keys=True) == _json.dumps(b, sort_keys=True)
