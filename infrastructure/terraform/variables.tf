@@ -673,6 +673,77 @@ variable "reported_mailbox_folder" {
   }
 }
 
+variable "reply_mailbox_endpoint" {
+  description = "Native Microsoft Graph v1.0 endpoint. Empty disables reply-mailbox correlation and creates no kp_worker_reply_mailbox role."
+  type        = string
+  default     = ""
+  validation {
+    condition = trimspace(var.reply_mailbox_endpoint) == "" || (
+      lower(trimsuffix(trimspace(var.reply_mailbox_endpoint), "/")) == "https://graph.microsoft.com/v1.0"
+    )
+    error_message = "reply_mailbox_endpoint must be empty or the native https://graph.microsoft.com/v1.0 endpoint."
+  }
+}
+
+variable "reply_mailbox_address" {
+  description = "Dedicated Microsoft 365 mailbox that receives replies to simulated messages."
+  type        = string
+  default     = ""
+  validation {
+    condition = trimspace(var.reply_mailbox_address) == "" || can(
+      regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", trimspace(var.reply_mailbox_address))
+    )
+    error_message = "reply_mailbox_address must be empty or a complete mailbox address."
+  }
+}
+
+variable "reply_mailbox_folder" {
+  description = "Microsoft 365 mail folder ID or well-known name containing reply messages."
+  type        = string
+  default     = "inbox"
+  validation {
+    condition = (
+      length(trimspace(var.reply_mailbox_folder)) >= 1 &&
+      length(trimspace(var.reply_mailbox_folder)) <= 256 &&
+      !strcontains(var.reply_mailbox_folder, "\n") &&
+      !strcontains(var.reply_mailbox_folder, "\r")
+    )
+    error_message = "reply_mailbox_folder must be 1-256 characters without line breaks."
+  }
+}
+
+variable "curation_mailbox_address" {
+  description = "Forward-a-phish mailbox the curation worker polls. Empty disables curation and creates no kp_worker_curation role."
+  type        = string
+  default     = ""
+  validation {
+    condition = trimspace(var.curation_mailbox_address) == "" || can(
+      regex("^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$", trimspace(var.curation_mailbox_address))
+    )
+    error_message = "curation_mailbox_address must be empty or a complete mailbox address."
+  }
+}
+
+variable "curation_interval_seconds" {
+  description = "Seconds between forwarded-phish curation polls."
+  type        = number
+  default     = 3600
+  validation {
+    condition     = var.curation_interval_seconds >= 60 && var.curation_interval_seconds <= 86400
+    error_message = "curation_interval_seconds must be between 60 and 86400."
+  }
+}
+
+variable "curation_poll_limit" {
+  description = "Maximum forwarded messages read per curation poll."
+  type        = number
+  default     = 25
+  validation {
+    condition     = var.curation_poll_limit >= 1 && var.curation_poll_limit <= 200
+    error_message = "curation_poll_limit must be between 1 and 200."
+  }
+}
+
 variable "alert_webhook_domains" {
   description = "Comma-separated exact HTTPS host allowlist; use the Azure-hosted ntfy hostname when enabled."
   type        = string
