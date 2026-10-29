@@ -226,3 +226,71 @@ def test_post_commit_dispatch_completes_queue_and_audit_intents(monkeypatch: pyt
         finally:
             audit_engine.dispose()
             business_engine.dispose()
+
+
+class _ReconcileQueue:
+    """Queue double for the reconciliation SQL proof (PG gate only, no Redis).
+
+    ``present`` lists the idempotency keys Redis still remembers; everything else
+    is treated as lost. Only the DB read path is under test here — the per-role
+    replay policy itself is covered hermetically in test_outbox_queue_reconcile.
+    """
+
+    def __init__(self, present: set[str]) -> None:
+        self._present = present
+        self.published: list[str] = []
+
+    def job_published(self, topic: str, idempotency_key: str) -> bool:
+        return idempotency_key in self._present
+
+    def publish(
+        self, topic: str, payload: dict[str, Any], *, idempotency_key: str, available_at: float | None = None
+    ) -> str:
+        self.published.append(idempotency_key)
+        return idempotency_key
+
+
+@requires_outbox_database
+def test_reconcile_queue_reads_recent_dispatched_rows_via_owner_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KP-AUD-007: the owner/development path reads recently-dispatched queue rows.
+
+    This exercises the real ``make_interval`` window SQL and the ``dispatched``
+    filter against PostgreSQL (the managed ``kp_reconcile_queue_outbox`` function
+    does not exist yet — see the W1-03 report — so the dispatcher falls back to
+    direct owner SQL). Needs the Postgres gate; Redis is faked.
+    """
+
+    with _isolated_migrated_database(monkeypatch) as (database_url, _audit_url):
+        business_engine = create_db_engine(database_url.render_as_string(hide_password=False))
+        try:
+            # Owner topology: hmac_key set and no distinct intent engine keeps the
+            # owner direct-table fallback enabled, matching development/offline.
+            store = AuditStore(business_engine, hmac_key=b"0" * 32)
+            with business_engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "INSERT INTO transactional_outbox "
+                        "(outbox_id, kind, topic, payload, idempotency_key, status, dispatched_at) VALUES "
+                        "(gen_random_uuid(), 'queue', 'remind', '{\"n\": 1}'::jsonb, 'recent-lost', "
+                        "'dispatched', now()), "
+                        "(gen_random_uuid(), 'queue', 'remind', '{\"n\": 2}'::jsonb, 'recent-present', "
+                        "'dispatched', now()), "
+                        "(gen_random_uuid(), 'queue', 'remind', '{\"n\": 3}'::jsonb, 'old-lost', "
+                        "'dispatched', now() - interval '2 hours'), "
+                        "(gen_random_uuid(), 'queue', 'remind', '{\"n\": 4}'::jsonb, 'still-pending', "
+                        "'pending', NULL), "
+                        "(gen_random_uuid(), 'queue', 'deliver', '{\"n\": 5}'::jsonb, 'other-topic-lost', "
+                        "'dispatched', now())"
+                    )
+                )
+
+            queue = _ReconcileQueue(present={"recent-present"})
+            report = store.reconcile_queue_after_restore(queue, topic="remind", replay_safe=True, window_seconds=3600)
+
+            # Only the recent, dispatched, remind-topic, Redis-missing row replays.
+            assert queue.published == ["recent-lost"]
+            assert report == {"checked": 2, "replayed": 1, "review_required": 0, "present": 1}
+        finally:
+            business_engine.dispose()

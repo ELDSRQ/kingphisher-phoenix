@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from kp_contracts.queue import QUEUE_REPLAY_REVIEW_ONLY_TOPICS
 from kp_telemetry.errors import SafetyRejectionError
 from kp_telemetry.logging import get_logger
 
@@ -41,6 +44,7 @@ class _RoleState:
     recovery_required: bool = True
     proven_live: bool = False
     last_readiness_log: float = 0.0
+    last_queue_reconcile: float = 0.0
 
 
 def _exception_code(exc: Exception) -> str:
@@ -86,6 +90,71 @@ def _error_detail(exc: BaseException, limit: int = 200) -> str:
     if not _is_first_party(exc):
         return ""
     return str(exc)[:limit]
+
+
+class _LeaseHeartbeat:
+    """Renew an in-flight claim's lease while its handler runs (KP-AUD-006).
+
+    The supervisor processes a claimed message synchronously, so a background
+    daemon thread renews the lease on a fixed interval. The renewal is fenced to
+    the claim's owner (``JobQueue.renew_lease``), and the number of renewals is
+    bounded: a wedged handler stops being renewed after ``max_renewals``, its
+    lease then expires, and recovery can reclaim it — so heartbeating cannot keep
+    a stuck job alive forever. A healthy handler that finishes within its lease
+    is never recovered because the thread keeps the deadline ahead of ``now``.
+    """
+
+    def __init__(
+        self,
+        queue: Any,
+        topic: str,
+        message: dict[str, Any],
+        *,
+        interval: float,
+        lease_seconds: float,
+        max_renewals: int,
+        logger: Any,
+        role: str,
+    ) -> None:
+        self._queue = queue
+        self._topic = topic
+        self._message = message
+        self._interval = interval
+        self._lease_seconds = lease_seconds
+        self._max_renewals = max_renewals
+        self._logger = logger
+        self._role = role
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> _LeaseHeartbeat:
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"kp-lease-heartbeat-{self._role}",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval + 5.0)
+
+    def _run(self) -> None:
+        renewals = 0
+        while renewals < self._max_renewals and not self._stop.wait(self._interval):
+            try:
+                extended = self._queue.renew_lease(self._topic, self._message, lease_seconds=self._lease_seconds)
+            except Exception:
+                # A renewal failure must never crash the worker; the claim's
+                # existing lease simply runs down toward normal recovery.
+                self._logger.warning("worker_role_lease_renew_failed", role=self._role)
+                return
+            if not extended:
+                # The claim is no longer ours (recovered/re-owned, or acked).
+                return
+            renewals += 1
 
 
 class WorkerSupervisor:
@@ -196,6 +265,10 @@ class WorkerSupervisor:
             if not self._prepare_integration(spec):
                 continue
             if self._recover(spec):
+                # A fresh start is the canonical post-Redis-restore moment: audit
+                # dispatched outbox rows against the queue before serving.
+                self._reconcile_queue_after_restore(spec)
+                self._states[spec.name].last_queue_reconcile = self._clock()
                 if spec.topic == "audit-anchor":
                     self._set_readiness(spec.name, ready=False, reason="configured_unproven")
                 else:
@@ -227,6 +300,73 @@ class WorkerSupervisor:
             )
             return False
         return True
+
+    def _lease_heartbeat(self, spec: RoleSpec, message: dict[str, Any]) -> Any:
+        """Context manager that renews ``message``'s lease while a handler runs.
+
+        A no-op context when heartbeating is disabled, unsupported by the queue,
+        or the claim carries no owner (e.g. a fake/legacy envelope), so the
+        synchronous processing path is unchanged in those cases.
+        """
+        settings = spec.context.settings
+        interval = float(getattr(settings, "lease_heartbeat_seconds", 0.0))
+        max_renewals = int(getattr(settings, "lease_max_renewals", 0))
+        if (
+            interval <= 0.0
+            or max_renewals <= 0
+            or not callable(getattr(spec.context.queue, "renew_lease", None))
+            or not message.get("owner")
+        ):
+            return contextlib.nullcontext()
+        return _LeaseHeartbeat(
+            spec.context.queue,
+            spec.topic,
+            message,
+            interval=interval,
+            lease_seconds=float(getattr(settings, "effective_lease_seconds", settings.visibility_seconds)),
+            max_renewals=max_renewals,
+            logger=self._logger,
+            role=spec.name,
+        )
+
+    def _reconcile_queue_after_restore(self, spec: RoleSpec) -> None:
+        """Audit this role's dispatched outbox rows vs live queue (KP-AUD-007).
+
+        Opt-in and best-effort: re-enqueues only replay-safe topics, surfaces
+        delivery/reply for human review, and never raises into the poll loop.
+        Skipped for the read-only audit-anchor role, which holds no queue intents.
+        """
+        settings = spec.context.settings
+        if spec.topic == "audit-anchor" or not getattr(settings, "queue_reconcile_enabled", False):
+            return
+        reconcile = getattr(spec.context.audit_store, "reconcile_queue_after_restore", None)
+        if not callable(reconcile):
+            return
+        replay_safe = spec.topic not in QUEUE_REPLAY_REVIEW_ONLY_TOPICS
+        try:
+            report = reconcile(
+                spec.context.queue,
+                topic=spec.topic,
+                replay_safe=replay_safe,
+                window_seconds=int(settings.queue_reconcile_window_hours) * 3600,
+                limit=int(settings.queue_reconcile_limit),
+            )
+        except Exception as exc:
+            self._logger.error(
+                "worker_role_queue_reconcile_failed",
+                role=spec.name,
+                error_code=_exception_code(exc),
+            )
+            return
+        if report.get("replayed") or report.get("review_required"):
+            self._logger.warning(
+                "worker_role_queue_reconciled",
+                role=spec.name,
+                replay_safe=replay_safe,
+                checked=int(report.get("checked", 0)),
+                replayed=int(report.get("replayed", 0)),
+                review_required=int(report.get("review_required", 0)),
+            )
 
     def _reject(self, spec: RoleSpec, message: dict[str, Any], *, max_retries: int | None = None) -> bool:
         try:
@@ -260,6 +400,12 @@ class WorkerSupervisor:
             return False
 
         settings = spec.context.settings
+        if getattr(settings, "queue_reconcile_enabled", False) and (
+            state.last_queue_reconcile == 0.0
+            or now - state.last_queue_reconcile >= settings.queue_reconcile_interval_seconds
+        ):
+            self._reconcile_queue_after_restore(spec)
+            state.last_queue_reconcile = now
         try:
             if (
                 spec.topic == "ingest"
@@ -305,7 +451,11 @@ class WorkerSupervisor:
                 maybe_publish_audit_anchor(spec.context, self._utcnow())
                 state.last_self_publish = now
 
-            message = spec.context.queue.pop(spec.topic, timeout=0)
+            message = spec.context.queue.pop(
+                spec.topic,
+                timeout=0,
+                lease_seconds=getattr(settings, "effective_lease_seconds", settings.visibility_seconds),
+            )
             observe_queue(spec.name, spec.context.queue, spec.topic)
             if message is None:
                 state.polls_since_recovery += 1
@@ -326,7 +476,8 @@ class WorkerSupervisor:
             with job_trace(message):
                 self._logger.info("worker_job_started", role=spec.name)
                 try:
-                    spec.process(spec.context, message)
+                    with self._lease_heartbeat(spec, message):
+                        spec.process(spec.context, message)
                 except SafetyRejectionError:
                     metrics.increment("kp_worker_jobs_total", role=metric_role(spec.name), outcome="rejected")
                     self._logger.warning("worker_role_safety_rejection", role=spec.name)
