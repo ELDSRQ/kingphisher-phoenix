@@ -49,9 +49,12 @@ async def discover_search(
 ) -> dict[str, Any]:
     """Run a web-search discovery and return cited, allow-listed leads.
 
-    Performs the PII-free-query backstop locally (fail closed before any egress)
-    and forwards Authorization to the gateway using the *shared* gateway bearer
-    secret, never the caller's token.
+    Applies the email/``@`` backstop locally (``assert_pii_free_query``, fail
+    closed before any egress) and forwards Authorization to the gateway using the
+    *shared* gateway bearer secret, never the caller's token. Note the backstop
+    only rejects an email address / bare ``@`` — it is NOT general PII detection,
+    so the operator remains responsible for keeping names and other PII out of
+    the query.
     """
     gateway_url = settings.ai_gateway_url.strip()
     if not gateway_url:
@@ -62,7 +65,7 @@ async def discover_search(
     except ValueError:
         raise HTTPException(
             status_code=422,
-            detail="query must contain only public threat terms (no emails or PII)",
+            detail="query must contain only public threat terms and must not include an email address",
         ) from None
 
     headers = {"Content-Type": "application/json"}

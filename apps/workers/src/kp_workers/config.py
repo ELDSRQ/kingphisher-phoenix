@@ -1,3 +1,4 @@
+import math
 import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -196,6 +197,31 @@ class WorkerSettings(BaseSettings):
     max_retries: int = 3
     visibility_seconds: int = 60
     recovery_every_polls: int = 12
+    # --- queue lease / heartbeat (KP-AUD-006) ---
+    # A claimed message is protected from recovery for its lease window. The
+    # effective lease (``effective_lease_seconds``) derives from the enforced
+    # handler deadline so a slow-but-healthy handler is never recovered early:
+    # 0 means "derive from provider_timeout_seconds + margin"; a positive value
+    # pins it explicitly. The supervisor renews the lease every
+    # ``lease_heartbeat_seconds`` while a handler runs, up to
+    # ``lease_max_renewals`` extensions — a wedged handler then stops being
+    # renewed and its lease expires, so recovery still fires. The historical
+    # fixed 60s visibility (shorter than the 180s provider cap) is the bug.
+    lease_seconds: int = Field(default=0, ge=0, le=3600)
+    lease_margin_seconds: int = Field(default=30, ge=0, le=600)
+    lease_heartbeat_seconds: float = Field(default=15.0, ge=0.0, le=600.0)
+    lease_max_renewals: int = Field(default=240, ge=0, le=100_000)
+    # --- queue<->outbox reconciliation after Redis data loss (KP-AUD-007) ---
+    # Opt-in: when enabled, each role audits its own recently-``dispatched``
+    # outbox rows against live queue existence after a restore and safely
+    # re-enqueues only replay-safe topics (never delivery/reply). Disabled by
+    # default because the least-privilege managed read path needs a new
+    # SECURITY DEFINER function + EXECUTE grant (see outbox.reconcile_queue);
+    # the owner/development path works today.
+    queue_reconcile_enabled: bool = Field(default=False)
+    queue_reconcile_interval_seconds: int = Field(default=300, ge=30, le=86400)
+    queue_reconcile_window_hours: int = Field(default=24, ge=1, le=2160)
+    queue_reconcile_limit: int = Field(default=500, ge=1, le=5000)
     retention_interval_seconds: int = 86400
     audit_anchor_interval_seconds: int = Field(
         default=3600,
@@ -450,6 +476,20 @@ class WorkerSettings(BaseSettings):
         if self.runtime_mode in _MANAGED_RUNTIME_MODES:
             self._validate_managed_role_providers()
         return self
+
+    @property
+    def effective_lease_seconds(self) -> int:
+        """Per-role claim lease, derived from the enforced handler deadline.
+
+        When ``lease_seconds`` is unset (0) the lease is the larger of the
+        historical visibility window and the provider timeout plus a margin, so
+        a healthy handler running up to its enforced deadline always holds a
+        live lease and is never recovered mid-flight (KP-AUD-006).
+        """
+        if self.lease_seconds > 0:
+            return self.lease_seconds
+        derived = math.ceil(self.provider_timeout_seconds) + self.lease_margin_seconds
+        return max(self.visibility_seconds, derived)
 
     @property
     def dev_relaxations_allowed(self) -> bool:

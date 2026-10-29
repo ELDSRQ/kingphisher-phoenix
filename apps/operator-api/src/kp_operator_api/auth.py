@@ -329,9 +329,9 @@ class BoundedPyJWKClient(PyJWKClient):
         # Match PyJWKClient: cache only a successful fetch so a transient or
         # hostile refresh cannot erase a still-valid cached key set.
         if self.jwk_set_cache is not None:
-            # PyJWT's runtime fetch_data stores the raw mapping here even
-            # though its public type annotation says PyJWKSet.
-            self.jwk_set_cache.put(jwk_set)  # type: ignore[arg-type]
+            # PyJWT's runtime fetch_data stores the raw mapping here; since
+            # PyJWT 2.15 the public put() annotation accepts dict[str, Any] too.
+            self.jwk_set_cache.put(jwk_set)
         return jwk_set
 
 

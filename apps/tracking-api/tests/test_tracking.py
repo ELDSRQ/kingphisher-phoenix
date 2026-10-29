@@ -637,6 +637,139 @@ def test_click_opens_and_completes_training_end_to_end(monkeypatch: pytest.Monke
     )
 
 
+def _real_training_fake() -> _FakeSession:
+    """A `_FakeSession` wired so a real click creates a training assignment.
+
+    Mirrors the setup in the end-to-end test but stops after the click, so the
+    KP-AUD-014 automation-suspected marking can be asserted against the emitted
+    CLICKED event while still proving the assignment is created.
+    """
+
+    fake = _FakeSession()
+    recipient_assignment = type(
+        "RecipientAssignment",
+        (),
+        {
+            "recipient_assignment_id": _Token.recipient_assignment_id,
+            "recipient_id": uuid.uuid4(),
+            "campaign_id": _Token.campaign_id,
+            "token_id": _Token.token_id,
+        },
+    )()
+    fake.get_results[_Token.recipient_assignment_id] = recipient_assignment
+    fake.get_results[_Token.token_id] = _Token()
+    resource_id = uuid.uuid4()
+    resource = type(
+        "TrainingResource",
+        (),
+        {
+            "training_resource_id": resource_id,
+            "title": "Verify before you act",
+            "content": "Verify the request through a trusted, independent channel.",
+            "version": 3,
+            "requires_completion": True,
+            "approval_state": dm.TemplateApprovalState.APPROVED,
+            "knowledge_question": None,
+            "knowledge_options": None,
+            "knowledge_answer_index": None,
+        },
+    )()
+    campaign = type(
+        "Campaign",
+        (),
+        {
+            "campaign_id": _Token.campaign_id,
+            "pattern_id": uuid.uuid4(),
+            "current_template_id": uuid.uuid4(),
+            "training_resource_id": resource_id,
+            "training_resource_version": resource.version,
+            "training_resource_digest": training_resource_content_digest(resource),
+        },
+    )()
+    campaign.manifest_hash = campaign_content_manifest_hash(campaign)
+    fake.get_results[_Token.campaign_id] = campaign
+    fake.get_results[resource_id] = resource
+    fake.scalar_results = [None]
+    return fake
+
+
+def test_human_click_creates_assignment_and_is_not_marked_automation(monkeypatch: pytest.MonkeyPatch) -> None:
+    # KP-AUD-014: a genuine human click must create the assignment, redirect to
+    # training, and carry no automation marking on the CLICKED event.
+    fake = _real_training_fake()
+    client = _client(monkeypatch, _settings(), fake, real_training=True)
+    human_ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    with client:
+        response = client.get(
+            "/v1/track/click/" + "ab" * 32,
+            headers={"User-Agent": human_ua},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("/v1/training/")
+    # Immediate learner access preserved: the assignment is created in-line.
+    assert any(hasattr(item, "training_assignment_id") for item in fake.added)
+    params = _insert_params(fake.executed[0])
+    assert params["event_type"] == dm.EventType.CLICKED
+    assert params["payload"] == {}
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected_signal"),
+    [
+        ({"User-Agent": "Mozilla/5.0 (compatible; Barracuda Sentinel)"}, "scanner_user_agent"),
+        ({"User-Agent": "python-requests/2.32.0"}, "scanner_user_agent"),
+        ({"Purpose": "prefetch"}, "prefetch_request"),
+        ({"Sec-Purpose": "prefetch;prerender"}, "prefetch_request"),
+        ({"X-Moz": "prefetch"}, "prefetch_request"),
+    ],
+)
+def test_scanner_shaped_click_is_marked_automation_but_still_assigns_training(
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+    expected_signal: str,
+) -> None:
+    # KP-AUD-014: a scanner/prefetch-shaped GET is MARKED (not blocked). The
+    # assignment is still created and the learner is still redirected.
+    fake = _real_training_fake()
+    client = _client(monkeypatch, _settings(), fake, real_training=True)
+    with client:
+        response = client.get(
+            "/v1/track/click/" + "ab" * 32,
+            headers=headers,
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("/v1/training/")
+    # Marking suspected automation must never cost a real learner their lesson.
+    assert any(hasattr(item, "training_assignment_id") for item in fake.added)
+    params = _insert_params(fake.executed[0])
+    assert params["event_type"] == dm.EventType.CLICKED
+    payload = params["payload"]
+    assert payload["automation_suspected"] is True
+    assert expected_signal in payload["automation_signals"]
+
+
+def test_missing_user_agent_click_is_marked_automation_suspected(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A tracked link fetched with no User-Agent at all is machine-shaped. The
+    # TestClient sets a default UA, so send an explicit empty one.
+    fake = _real_training_fake()
+    client = _client(monkeypatch, _settings(), fake, real_training=True)
+    with client:
+        response = client.get(
+            "/v1/track/click/" + "ab" * 32,
+            headers={"User-Agent": ""},
+            follow_redirects=False,
+        )
+    assert response.status_code == 302
+    payload = _insert_params(fake.executed[0])["payload"]
+    assert payload["automation_suspected"] is True
+    assert "missing_user_agent" in payload["automation_signals"]
+
+
 def test_campaign_specific_knowledge_check_renders_and_validates(monkeypatch: pytest.MonkeyPatch) -> None:
     """A lesson with a knowledge check binds its own question and answer.
 

@@ -147,7 +147,7 @@ class _BoundedEventGridJWKClient(PyJWKClient):
         # Cache only a fully read and validated set. A hostile or unavailable
         # rotation endpoint must not erase the last known-good signing keys.
         if self.jwk_set_cache is not None:
-            self.jwk_set_cache.put(jwk_set)  # type: ignore[arg-type]
+            self.jwk_set_cache.put(jwk_set)
         return jwk_set
 
 

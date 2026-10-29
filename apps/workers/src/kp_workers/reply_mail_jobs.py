@@ -227,7 +227,16 @@ def _consume(
                     recipient_assignment_id=assignment.recipient_assignment_id,
                     recipient_id=assignment.recipient_id,
                     campaign_id=assignment.campaign_id,
-                    confidence=dm.Confidence.HIGH,
+                    # KP-AUD-005: the correlation is header-only. The provider
+                    # (providers/reply_mailbox.py) reads only In-Reply-To /
+                    # References, which are forgeable and survive forwarding, so
+                    # a matched reply is "correlated reply evidence," not proof
+                    # that the recipient personally authored a reply. Record it
+                    # at MEDIUM; HIGH is reserved for deliberate, human-only
+                    # actions (e.g. the training knowledge-check in the tracking
+                    # API). Only newly emitted events change — stored history is
+                    # never rewritten.
+                    confidence=dm.Confidence.MEDIUM,
                     occurred_at=received_at,
                     payload={"provider": provider, "receipt_hash": external_hash},
                 )
