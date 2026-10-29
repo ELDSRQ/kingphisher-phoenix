@@ -89,6 +89,86 @@ _QUIZ_ANSWER = "verify_independently"
 _QUIZ_OPTIONS = frozenset({"act_immediately", _QUIZ_ANSWER, "reply_with_credentials"})
 _MAX_QUIZ_BODY_BYTES = 1024
 
+# KP-AUD-014: a CLICKED event is scanner-triggerable. Mail-security gateways and
+# browser link-prefetchers fetch tracked URLs automatically, so a bare CLICKED
+# (recorded at MEDIUM confidence) is not proof a human acted. We derive an
+# "automation-suspected" hint from request characteristics that are ALREADY
+# present on the request (no new data is collected, nothing identifying is
+# stored) and attach it as bounded metadata on the event payload. The hint is
+# advisory only: it never blocks or delays a real learner (see record_click),
+# and HUMAN_INTERACTION_CONFIRMED from the training quiz remains the sole HIGH
+# proof of human authorship.
+#
+# Link-prefetch / preview request markers (header name -> required value token,
+# or None to match any non-empty value).
+_PREFETCH_HEADER_MARKERS: tuple[tuple[str, str | None], ...] = (
+    ("purpose", "prefetch"),
+    ("x-purpose", "preview"),
+    ("x-moz", "prefetch"),
+    ("sec-purpose", "prefetch"),
+)
+# Case-insensitive substrings that identify a mail-security scanner, link
+# unfurler, or generic crawler/automation User-Agent. These are heuristics, not
+# an allow/deny list; a missed scanner simply falls back to MEDIUM-confidence
+# CLICKED without the hint.
+_SCANNER_UA_MARKERS: tuple[str, ...] = (
+    "bot",
+    "spider",
+    "crawler",
+    "slurp",
+    "preview",
+    "scan",
+    "curl",
+    "wget",
+    "python-requests",
+    "httpclient",
+    "go-http-client",
+    "headlesschrome",
+    "phantomjs",
+    "proofpoint",
+    "mimecast",
+    "barracuda",
+    "symantec",
+    "forcepoint",
+    "safelinks",
+    "googleimageproxy",
+    "google-safebrowsing",
+    "facebookexternalhit",
+    "slackbot",
+    "whatsapp",
+    "twitterbot",
+    "linkedinbot",
+)
+_MAX_AUTOMATION_SIGNALS = 8
+
+
+def _automation_suspected_signals(request: Request) -> list[str]:
+    """Bounded, data-minimizing hints that a GET was machine-generated.
+
+    Returns a de-duplicated, length-bounded list of reason codes. An empty list
+    means no automation was suspected (a request that should be treated as a
+    genuine human interaction for reporting). Nothing identifying is retained:
+    only coarse reason codes derived from the User-Agent shape and prefetch
+    headers are returned, never the raw header values.
+    """
+
+    signals: list[str] = []
+    user_agent = (request.headers.get("user-agent") or "").strip()
+    if not user_agent:
+        # A tracked link opened with no User-Agent at all is almost never a
+        # human mail client; it is a fetcher, scanner, or scripted request.
+        signals.append("missing_user_agent")
+    elif any(marker in user_agent.lower() for marker in _SCANNER_UA_MARKERS):
+        signals.append("scanner_user_agent")
+    for header, token in _PREFETCH_HEADER_MARKERS:
+        value = request.headers.get(header)
+        if value is None:
+            continue
+        if token is None or token in value.lower():
+            signals.append("prefetch_request")
+            break
+    return signals[:_MAX_AUTOMATION_SIGNALS]
+
 
 @router.get("/training/awareness", response_class=HTMLResponse)
 def training_awareness() -> HTMLResponse:
@@ -503,6 +583,8 @@ def _record_first_event(
     token: TrackingToken,
     recipient_assignment: RecipientAssignment,
     event_type: dm.EventType,
+    *,
+    payload: dict[str, object] | None = None,
 ) -> None:
     """Insert the token's first OPENED/CLICKED event; duplicates are no-ops.
 
@@ -510,6 +592,10 @@ def _record_first_event(
     ``uq_events_open_click_dedup`` instead of a SELECT-then-INSERT check, so
     concurrent requests cannot create duplicate rows — the first INSERT wins
     and ON CONFLICT DO NOTHING discards the losers.
+
+    ``payload`` carries bounded, non-identifying event metadata (e.g. the
+    KP-AUD-014 automation-suspected classification); it never changes the
+    recorded confidence or the dedup behaviour.
     """
     session.execute(
         pg_insert(TrackingEvent)
@@ -524,7 +610,7 @@ def _record_first_event(
             occurred_at=datetime.now(UTC),
             client_ip=minimize_ip(_client_ip(request)),
             user_agent=minimize_user_agent(request.headers.get("user-agent")),
-            payload={},
+            payload=payload or {},
         )
         .on_conflict_do_nothing()
     )
@@ -567,7 +653,30 @@ def record_click(
     recipient_assignment = _lock_tracking_assignment(session, token)
     if recipient_assignment is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
-    _record_first_event(request, session, token, recipient_assignment, dm.EventType.CLICKED)
+    # KP-AUD-014: mark (never block) a click that looks machine-generated. The
+    # classification is attached to the CLICKED event payload only; the learner
+    # still gets their training assignment and redirect below, exactly as a
+    # genuine click does. A missing/scanner User-Agent or a prefetch header is
+    # evidence that automation — not the recipient — fetched the link.
+    automation_signals = _automation_suspected_signals(request)
+    click_payload: dict[str, object] = (
+        {"automation_suspected": True, "automation_signals": automation_signals} if automation_signals else {}
+    )
+    # W4-02 HOOK (deferred, no schema change this wave): report/metric queries
+    # that treat a CLICKED event as employee non-compliance — e.g.
+    # kp_database.reporting.campaign_funnel's "clicked" count and
+    # kp_database.awareness_ledger — must exclude events whose payload carries
+    # ``automation_suspected`` so scanner/prefetch traffic cannot inflate the
+    # non-compliance rate. This handler only marks the event; the reporting
+    # exclusion itself is W4-02 (schema-backed reporting change).
+    _record_first_event(
+        request,
+        session,
+        token,
+        recipient_assignment,
+        dm.EventType.CLICKED,
+        payload=click_payload,
+    )
     _, raw_training_bearer = _ensure_training_assignment(
         session,
         token,
