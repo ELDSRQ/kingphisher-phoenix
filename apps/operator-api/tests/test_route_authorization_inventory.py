@@ -75,6 +75,10 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "POST /api/v1/training-resources",
             "POST /api/v1/training-resources/{training_resource_id}/submit",
             "POST /api/v1/campaigns/{campaign_id}/training-draft",
+            # W4-01: authoring an after-click training cue-coverage mapping is a
+            # campaign-authoring action; the independent review of it is gated
+            # separately under approve:template below.
+            "POST /api/v1/campaigns/{campaign_id}/cue-coverage",
         ),
     ),
     (
@@ -92,6 +96,9 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/templates/{template_version_id}/preview",
             "GET /api/v1/training-resources",
             "GET /api/v1/training-resources/{training_resource_id}/preview",
+            # W4-01: both authors and reviewers may inspect a campaign's
+            # after-click cue-coverage mappings and the live coverage verdict.
+            "GET /api/v1/campaigns/{campaign_id}/cue-coverage",
         ),
     ),
     (
@@ -99,6 +106,10 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
         _routes(
             "POST /api/v1/campaigns/{campaign_id}/approvals/{approval_type}",
             "GET /api/v1/campaigns/needs-my-decision",
+            # W4-01: recording a documented coverage exception is a risk
+            # acceptance, so it requires one of the campaign approval
+            # authorities (and re-opens the review it affects).
+            "POST /api/v1/campaigns/{campaign_id}/cue-coverage-exceptions",
         ),
     ),
     (
@@ -223,6 +234,9 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "POST /api/v1/templates/{template_version_id}/decision",
             "GET /api/v1/templates/pending",
             "POST /api/v1/training-resources/{training_resource_id}/decision",
+            # W4-01: the independent review of an after-click cue-coverage
+            # mapping is a content-review authority, like approving a lesson.
+            "POST /api/v1/campaigns/{campaign_id}/cue-coverage/{coverage_id}/decision",
             "POST /api/v1/assets/{asset_id}/approve",
             "POST /api/v1/assets/{asset_id}/retire",
         ),

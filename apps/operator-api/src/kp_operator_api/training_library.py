@@ -2,19 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from kp_authorization.rbac import Capability, Principal
+from kp_contracts.cue_ontology import manifest_cue_labels
 from kp_database.audit_store import AuditStore
-from kp_database.models import Campaign, CampaignPattern, TemplateVersion, TrainingResource
+from kp_database.campaign_service import invalidate_campaign_launch_review
+from kp_database.models import (
+    Campaign,
+    CampaignApproval,
+    CampaignCueCoverageException,
+    CampaignPattern,
+    TemplateVersion,
+    TrainingCueCoverage,
+    TrainingResource,
+)
 from kp_database.training_builder import build_knowledge_check_draft
 from kp_domain_models import models as dm
 from kp_telemetry.errors import ConflictError, NotFoundError, PermissionDeniedError, ValidationError_
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_any_capability, require_capability
@@ -26,6 +40,256 @@ _KNOWLEDGE_QUESTION_MAX = 500
 _KNOWLEDGE_OPTION_MAX = 200
 _KNOWLEDGE_OPTIONS_MIN = 2
 _KNOWLEDGE_OPTIONS_MAX = 5
+_CUE_ID_MAX = 128
+_COVERAGE_FIELD_MAX = 500
+_COVERAGE_RATIONALE_MAX = 1_000
+
+
+# --- W4-01 (KP-AUD-015): bind after-click training to simulation cues ---------
+#
+# A campaign's simulation carries a deterministic cue manifest (W3-01). Its
+# "required cues" are the stable, de-duplicated cue-type labels that manifest
+# projects (``manifest_cue_labels``). After-click training covers a required cue
+# when a *reviewed* ``TrainingCueCoverage`` row for the campaign's bound training
+# resource version teaches it, or when the campaign records a documented
+# exception for it. The assessment below is pure and deterministic: it is
+# author-supplied data checked against the deterministic manifest, never an AI
+# inference, so an identical input yields a byte-identical coverage fingerprint.
+
+
+def _coverage_canonical_hash(payload: object) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclass(frozen=True)
+class CueCoverageAssessment:
+    """Deterministic verdict on a campaign's after-click training coverage."""
+
+    required: tuple[str, ...]
+    covered: tuple[str, ...]
+    excepted: tuple[str, ...]
+    missing: tuple[str, ...]
+    coverage_hash: str
+
+    @property
+    def satisfied(self) -> bool:
+        """True when every required cue has reviewed coverage or an exception."""
+
+        return not self.missing
+
+
+def assess_cue_coverage(
+    *,
+    training_resource_id: uuid.UUID,
+    resource_version: int,
+    required_cues: Iterable[str],
+    reviewed_coverage: Iterable[tuple[str, str, str]],
+    exceptions: Iterable[tuple[str, str]],
+) -> CueCoverageAssessment:
+    """Evaluate coverage and fingerprint the exact cues + coverage + exceptions.
+
+    ``required_cues`` are the simulation's required cue identities;
+    ``reviewed_coverage`` are ``(cue_id, lesson_section, quiz_item)`` triples for
+    reviewed coverage of the bound resource version; ``exceptions`` are
+    ``(cue_id, rationale)`` documented waivers for the campaign. A required cue
+    is satisfied when it is covered or excepted. The fingerprint binds the
+    required set, every reviewed coverage triple, and every exception, so a later
+    change to the cues or their coverage recomputes to a different value.
+    """
+
+    required = tuple(sorted({cue for cue in required_cues if cue}))
+    reviewed = sorted({(cue, section, item) for cue, section, item in reviewed_coverage})
+    documented = sorted({(cue, rationale) for cue, rationale in exceptions})
+    covered_cues = {cue for cue, _section, _item in reviewed}
+    excepted_cues = {cue for cue, _rationale in documented}
+    missing = tuple(cue for cue in required if cue not in covered_cues and cue not in excepted_cues)
+    covered = tuple(cue for cue in required if cue in covered_cues)
+    excepted = tuple(cue for cue in required if cue in excepted_cues and cue not in covered_cues)
+    coverage_hash = _coverage_canonical_hash(
+        {
+            "version": 1,
+            "training_resource_id": str(training_resource_id),
+            "resource_version": resource_version,
+            "required": list(required),
+            "reviewed_coverage": [list(row) for row in reviewed],
+            "exceptions": [list(row) for row in documented],
+        }
+    )
+    return CueCoverageAssessment(
+        required=required,
+        covered=covered,
+        excepted=excepted,
+        missing=missing,
+        coverage_hash=coverage_hash,
+    )
+
+
+def required_simulation_cues(template: TemplateVersion | None) -> tuple[str, ...]:
+    """The campaign simulation's required cue identities, deterministically.
+
+    Sourced from the bound template's W3-01 cue manifest. An empty or absent
+    manifest yields no labels; whether that is a genuinely cue-less simulation
+    or a degraded one is decided by :func:`simulation_declares_cues` — unknown
+    content stays unknown rather than inventing a cue.
+    """
+
+    manifest = getattr(template, "cue_manifest", None) or {}
+    return tuple(manifest_cue_labels(manifest))
+
+
+def simulation_declares_cues(template: TemplateVersion | None) -> bool:
+    """True when the template signals it relies on social-engineering cues.
+
+    A template declares cues if it carries any free-text ``warning_cues`` or a
+    non-empty structured manifest ``cues`` list — even when the deterministic
+    manifest resolved no stable labels. This lets the gate fail CLOSED on a
+    degraded manifest (declares cues but produced no labels) instead of waving
+    the campaign through with nothing to cover. A genuinely cue-less simulation
+    (no ``warning_cues`` and no manifest cues) returns False and may pass.
+    """
+
+    warning_cues = getattr(template, "warning_cues", None) or []
+    if any(isinstance(cue, str) and cue.strip() for cue in warning_cues):
+        return True
+    manifest = getattr(template, "cue_manifest", None) or {}
+    if isinstance(manifest, dict):
+        cues = manifest.get("cues")
+        if isinstance(cues, list) and len(cues) > 0:
+            return True
+    return False
+
+
+def enforce_cue_coverage_gate(
+    session: Session,
+    campaign: Campaign,
+    template: TemplateVersion | None,
+    resource: TrainingResource,
+) -> CueCoverageAssessment | None:
+    """Fail closed unless the campaign's simulation cues are covered.
+
+    Single source of truth for the coverage obligation, shared by review,
+    approval, schedule, and send:
+
+    * required cues present  -> returns the coverage assessment (carrying the
+      fingerprint to bind/compare) when every required cue has reviewed coverage
+      or a documented exception, else raises :class:`ConflictError`;
+    * no labels but the simulation declares cues -> raises (degraded manifest
+      must be regenerated before launch);
+    * genuinely cue-less simulation -> returns ``None`` (nothing to cover).
+    """
+
+    if required_simulation_cues(template):
+        return require_cue_coverage(session, campaign, template, resource)
+    if simulation_declares_cues(template):
+        raise ConflictError(
+            "campaign simulation declares social-engineering cues but its deterministic cue manifest "
+            "resolved none; regenerate the simulation's cue manifest so its cues can be covered by "
+            "reviewed training before launch"
+        )
+    return None
+
+
+def cue_coverage_for_campaign(
+    session: Session,
+    campaign: Campaign,
+    template: TemplateVersion | None,
+    resource: TrainingResource,
+) -> CueCoverageAssessment:
+    """Load the live coverage inputs for a campaign and assess them."""
+
+    reviewed_rows = (
+        session.execute(
+            select(TrainingCueCoverage).where(
+                TrainingCueCoverage.training_resource_id == resource.training_resource_id,
+                TrainingCueCoverage.resource_version == resource.version,
+                TrainingCueCoverage.reviewed.is_(True),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    exception_rows = (
+        session.execute(
+            select(CampaignCueCoverageException).where(CampaignCueCoverageException.campaign_id == campaign.campaign_id)
+        )
+        .scalars()
+        .all()
+    )
+    return assess_cue_coverage(
+        training_resource_id=resource.training_resource_id,
+        resource_version=resource.version,
+        required_cues=required_simulation_cues(template),
+        reviewed_coverage=[(row.cue_id, row.lesson_section, row.quiz_item) for row in reviewed_rows],
+        exceptions=[(row.cue_id, row.rationale) for row in exception_rows],
+    )
+
+
+def require_cue_coverage(
+    session: Session,
+    campaign: Campaign,
+    template: TemplateVersion | None,
+    resource: TrainingResource,
+) -> CueCoverageAssessment:
+    """Assess coverage and fail closed when a required cue is uncovered.
+
+    Returns the assessment (carrying the coverage fingerprint) when every
+    required simulation cue has reviewed training coverage or a documented
+    exception; otherwise raises a bounded :class:`ConflictError` naming the
+    uncovered cues so the operator can add coverage or record an exception.
+    """
+
+    assessment = cue_coverage_for_campaign(session, campaign, template, resource)
+    if not assessment.satisfied:
+        raise ConflictError(
+            "campaign cannot be approved: required simulation cues lack reviewed training coverage "
+            f"({', '.join(assessment.missing)}); add reviewed coverage for the bound lesson or record a "
+            "documented exception, then review the campaign again"
+        )
+    return assessment
+
+
+def invalidate_campaigns_for_coverage_change(
+    session: Session,
+    training_resource_id: uuid.UUID,
+    resource_version: int,
+) -> list[uuid.UUID]:
+    """Re-open the review of every campaign bound to a changed coverage version.
+
+    Mirrors the training-resource rebinding path: a campaign whose after-click
+    training coverage changed is reset to DRAFT, its durable launch review is
+    discarded, and its recorded approvals are cleared, so a later approval or
+    launch cannot ride on coverage that no longer holds. Terminal campaigns are
+    left untouched. Returns the affected campaign ids for auditing.
+    """
+
+    affected = (
+        session.execute(
+            select(Campaign).where(
+                Campaign.training_resource_id == training_resource_id,
+                Campaign.training_resource_version == resource_version,
+                Campaign.state.in_(
+                    (
+                        dm.CampaignState.DRAFT,
+                        dm.CampaignState.PENDING_APPROVAL,
+                        dm.CampaignState.APPROVED,
+                    )
+                ),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    changed: list[uuid.UUID] = []
+    for campaign in affected:
+        was_reviewed = campaign.state is not dm.CampaignState.DRAFT
+        campaign.state = dm.CampaignState.DRAFT
+        invalidate_campaign_launch_review(session, campaign.campaign_id)
+        session.execute(delete(CampaignApproval).where(CampaignApproval.campaign_id == campaign.campaign_id))
+        if was_reviewed:
+            changed.append(campaign.campaign_id)
+    return changed
 
 
 class TrainingResourceCreate(BaseModel):
