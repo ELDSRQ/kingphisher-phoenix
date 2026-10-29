@@ -338,6 +338,44 @@ class _HTMLURLParser(HTMLParser):
                 self.references.append((match.group(1).strip(" \t\"'"), "html-meta-refresh"))
 
 
+class _ImageSourceParser(HTMLParser):
+    """Collect the raw ``src`` values of genuine ``<img>`` elements only.
+
+    Tag-aware on purpose (KP-AUD-001): the generic ``src`` attribute is shared
+    by ``<video>``, ``<audio>``, ``<input type=image>``, ``<a>`` and others, so
+    the bare ``src`` origin is NOT an image source. Only an actual ``<img>``
+    element serves a branded inline logo, and only its ``src`` value may be
+    masked out before the external-link scans. ``srcset``/CSS-background logos
+    are deliberately not collected — they fall through and fail closed, which
+    is correct here.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.sources: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._collect(tag, attrs)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._collect(tag, attrs)
+
+    def _collect(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() != "img":
+            return
+        for name, value in attrs:
+            if name.lower() == "src" and value:
+                self.sources.append(value)
+
+
+def _image_src_values(haystack: str) -> list[str]:
+    """Return the raw ``src`` value of every ``<img>`` element, with repeats."""
+    parser = _ImageSourceParser()
+    parser.feed(haystack)
+    parser.close()
+    return parser.sources
+
+
 @dataclass
 class SafetyVerdict:
     allowed: bool
@@ -522,16 +560,27 @@ class SafetyValidator:
         parser.close()
         reasons.extend(parser.issues)
 
-        for host, origin in self._extract_hosts(haystack):
+        # Branded-image allowance (KP-AUD-001), decided PER REFERENCE, not per
+        # host. A genuine <img> source to an image-allow-listed host is a
+        # permitted inline logo, so mask that exact URL out of the haystack
+        # before the external-link scans. Every other occurrence of the same
+        # host — an <a href>, prose text, a bare domain, its registrable parent,
+        # a non-<img> src — survives in ``link_haystack`` and is evaluated under
+        # the normal external-link policy, so it still fails closed. One masking
+        # pass per <img> reference (count-bounded, boundary-anchored) means a URL
+        # reused as a navigable link keeps a surviving copy and is rejected.
+        link_haystack = haystack
+        for src_value in _image_src_values(haystack):
+            parsed_reference = self._host_from_reference(src_value)
+            if parsed_reference and self._image_host_allowed(parsed_reference[0]):
+                src_pattern = re.escape(src_value) + r"(?=[\"'\s<>]|$)"
+                link_haystack = re.subn(src_pattern, " ", link_haystack, count=1)[0]
+
+        for host, origin in self._extract_hosts(link_haystack):
             if host in URL_SHORTENER_HOSTS:
                 reasons.append(f"URL shortener: {host} ({origin})")
             elif _looks_like_ip(host) and not self._allowed_host(host):
                 reasons.append(f"external IP link not on training allowlist: {host} ({origin})")
-            elif self._image_host_allowed(host):
-                # A vetted image/logo host. Safe to permit: the sanitizer has
-                # already stripped every navigable href except the recipient
-                # training placeholder, so this can only be an <img> source.
-                continue
             elif not self._allowed_host(host):
                 reasons.append(f"external link not on training allowlist: {host} ({origin})")
 

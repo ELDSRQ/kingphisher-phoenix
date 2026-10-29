@@ -79,7 +79,9 @@ BEGIN
     'kp_worker_audit_anchor',
     'kp_worker_generation',
     'kp_worker_directory',
-    'kp_worker_mailbox'
+    'kp_worker_mailbox',
+    'kp_worker_reply_mailbox',
+    'kp_worker_curation'
   ] LOOP
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = target) THEN
       EXECUTE format('REVOKE ALL ON TABLE public.awareness_ledger_entries FROM %I', target);
