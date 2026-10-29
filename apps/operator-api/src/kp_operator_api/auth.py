@@ -594,14 +594,51 @@ def _enforce_session_epoch(request: Request, idp: OidcIdP | DevIdP, token: str) 
         raise AuthenticationError("session has been revoked")
 
 
-def get_principal(request: Request) -> Principal:
-    idp: OidcIdP | DevIdP = request.app.state.idp
+def _bearer_or_cookie_token(request: Request) -> str:
     authorization = request.headers.get("Authorization", "")
-    token = (
+    return (
         authorization.removeprefix("Bearer ")
         if authorization.startswith("Bearer ")
         else request.cookies.get("kp_oidc_session", "")
     )
+
+
+def console_session_principal_allow_expired(request: Request) -> Principal | None:
+    """Return the principal of a signature-valid local session, or ``None``.
+
+    Used by logout, which must work for an EXPIRED session yet must not act on an
+    absent, forged, or unsigned one (a persistent epoch bump is a revocation, so
+    an anonymous or cross-site request must not trigger it). Only the local dev
+    IdP is handled: a managed OIDC session carries the identity provider's token,
+    which has no epoch of ours to revoke. Signature, issuer and audience are
+    verified with the dedicated console secret; expiry is deliberately ignored.
+    """
+    idp = request.app.state.idp
+    if not isinstance(idp, DevIdP):
+        return None
+    token = _bearer_or_cookie_token(request)
+    if not token:
+        return None
+    try:
+        claims = jwt.decode(
+            token,
+            idp.dev_secret,
+            algorithms=["HS256"],
+            audience=idp.audience,
+            issuer=idp.issuer,
+            options={"require": ["iss", "aud"], "verify_exp": False},
+        )
+    except jwt.PyJWTError:
+        return None
+    try:
+        return _claims_to_principal(claims)
+    except (AuthenticationError, PermissionDeniedError):
+        return None
+
+
+def get_principal(request: Request) -> Principal:
+    idp: OidcIdP | DevIdP = request.app.state.idp
+    token = _bearer_or_cookie_token(request)
     if not token:
         raise AuthenticationError("missing bearer token")
     principal = idp.verify(token)

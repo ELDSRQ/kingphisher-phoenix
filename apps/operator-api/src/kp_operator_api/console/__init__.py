@@ -22,12 +22,14 @@ pins each of them to the ``kp_operator_api.console`` module identity.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import hashlib
 import hmac
 import json
 import os
 import secrets
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -40,6 +42,7 @@ from kp_database.audit_store import AuditStore
 from kp_database.models import ConsoleSessionEpoch, CredentialRotation
 from kp_telemetry.errors import AuthenticationError, ConflictError
 from pydantic import BaseModel, Field  # noqa: F401  (re-exported base for console models)
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import (
@@ -49,6 +52,7 @@ from kp_operator_api.auth import (
     SessionEpochMarkerError,
     console_run_dir,
     console_session_epoch_floor,
+    console_session_principal_allow_expired,
     require_capability,
     validate_oidc_endpoint,
 )
@@ -131,6 +135,7 @@ from kp_operator_api.console.console_auth import (
 )
 from kp_operator_api.console.env_store import (
     _ALLOWED_KEYS,
+    _MIN_CONSOLE_PASSWORD_LENGTH,
     _SECRET_KEYS,
     CONSOLE_PASSWORD_KEY,
     MANAGED_CONFIG_MESSAGE,
@@ -283,6 +288,7 @@ __all__ = [
     "get_status",
     "put_config",
     "put_onboarding",
+    "reconcile_session_epoch",
     "request_live_gated_rotation",
     "restart_stack",
     "rotate_console_password",
@@ -485,15 +491,36 @@ class CredentialRotationApplyError(RuntimeError):
 
 
 def _atomic_write_private_json(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically write ``payload`` as compact JSON, mode 0600 (tmp + rename)."""
+    """Atomically write ``payload`` as compact JSON, mode 0600 (tmp + rename).
+
+    Mirrors the W1-04 marker writer (``console.ai_providers._atomic_write_private``):
+    a UNIQUE per-write temp name (``mkstemp``) so concurrent writes cannot
+    interleave on a shared ``.tmp`` path, ``fchmod`` to enforce 0600 on the fresh
+    fd, and an fsync of both the file and its parent directory so the rename is
+    durable (N6).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / (path.name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd, raw_tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    tmp = Path(raw_tmp)
+    renamed = False
     try:
-        os.write(fd, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        renamed = True
     finally:
-        os.close(fd)
-    os.replace(tmp, path)
+        if not renamed:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
+    with contextlib.suppress(OSError):
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
 
 def _write_session_epoch_marker(settings: Any, epoch: int) -> None:
@@ -511,13 +538,77 @@ def _verify_session_epoch_marker(settings: Any, epoch: int) -> None:
 
 
 def _bump_session_epoch_row(session: Session) -> int:
-    """Increment the authoritative DB session epoch and return the new value."""
-    row = session.get(ConsoleSessionEpoch, _SESSION_EPOCH_SINGLETON_ID)
+    """Increment the authoritative DB session epoch and return the new value.
+
+    The singleton row is locked ``FOR UPDATE`` (mirroring W1-04's generation
+    bump) so two concurrent logout/rotation bumps cannot both read epoch N and
+    both write N+1, losing a revocation (N7). The row is seeded by migration
+    0049, so the create branch is only for a pre-seed/test session.
+    """
+    row = session.get(ConsoleSessionEpoch, _SESSION_EPOCH_SINGLETON_ID, with_for_update=True)
     if row is None:
         row = ConsoleSessionEpoch(id=_SESSION_EPOCH_SINGLETON_ID, epoch=0)
         session.add(row)
     row.epoch = (row.epoch or 0) + 1
     return row.epoch
+
+
+def reconcile_session_epoch(
+    session: Session,
+    audit: AuditStore,
+    settings: Any,
+    *,
+    best_effort: bool = False,
+) -> None:
+    """Converge the on-disk marker and any stuck rotation toward MORE revocation.
+
+    Two fail-closed convergences, run wherever a DB handle exists (login,
+    rotation) — never in the DB-free auth hot path:
+
+    * N3: if the ``console_password`` rotation is stuck ``rotating`` (a crash
+      between committing the rotation intent and completing the epoch bump left
+      the new password possibly live but old sessions un-revoked), bump the epoch
+      and settle the row. Converging forward can only ADD revocation, so it is
+      safe even if the stuck attempt had not actually changed the password.
+    * N2: if the committed DB epoch is ahead of the marker — e.g. ``data/run``
+      was wiped and the marker read as a fresh 0, silently un-revoking every
+      previously revoked token — rewrite the marker up to the DB epoch. A corrupt
+      marker is treated as behind and rewritten. The marker is never lowered.
+
+    ``best_effort`` swallows database errors (used on the login path, where the
+    database may be transiently unreachable): convergence then simply happens on
+    the next call that can reach the database. It never lowers the floor.
+    """
+    try:
+        rotation = session.get(CredentialRotation, _CONSOLE_PASSWORD_CREDENTIAL)
+        if rotation is not None and rotation.state == "rotating":
+            new_epoch = _bump_session_epoch_row(session)
+            rotation.applied_generation = rotation.generation
+            rotation.state = "idle"
+            audit.record(
+                session=session,
+                actor=CONSOLE_OPERATOR_UUID,
+                action="credential-rotation.reconciled",
+                object_type="credential_rotation",
+                object_id=_CONSOLE_PASSWORD_CREDENTIAL,
+                detail={"generation": rotation.generation, "session_epoch": new_epoch},
+            )
+            session.commit()
+            _write_session_epoch_marker(settings, new_epoch)
+
+        epoch_row = session.get(ConsoleSessionEpoch, _SESSION_EPOCH_SINGLETON_ID)
+        db_epoch = epoch_row.epoch if (epoch_row and epoch_row.epoch) else 0
+        if db_epoch > 0:
+            try:
+                marker = console_session_epoch_floor(settings)
+            except SessionEpochMarkerError:
+                marker = -1  # unreadable/corrupt -> behind; rewrite from the DB
+            if marker < db_epoch:
+                _write_session_epoch_marker(settings, db_epoch)
+    except SQLAlchemyError:
+        if not best_effort:
+            raise
+        session.rollback()
 
 
 def _revoke_console_sessions(
@@ -621,20 +712,48 @@ def request_live_gated_rotation(
     return row.generation
 
 
+def _validate_new_console_password(new_password: str) -> None:
+    """Reject a policy-violating new password BEFORE any rotation state changes.
+
+    Validating here (not inside the apply step) keeps a mere policy rejection
+    from committing a ``rotating`` row and being mislabeled as an apply failure
+    (N4a). ``set_console_password`` re-checks the same policy when it writes, so
+    env_store stays the authoritative writer; this is an early, value-free guard.
+    These three rules mirror ``env_store.set_console_password`` exactly (a shared
+    validator in env_store would remove this duplication but is out of lease).
+    """
+    if len(new_password) < _MIN_CONSOLE_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"console password must be at least {_MIN_CONSOLE_PASSWORD_LENGTH} characters",
+        )
+    if new_password != new_password.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="console password must not start or end with whitespace",
+        )
+    if not any(character.isalpha() for character in new_password) or not any(
+        character.isdigit() for character in new_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="console password must include at least one letter and one digit",
+        )
+
+
 def _apply_console_password_rotation(env_path: Path, new_password: str) -> None:
     """Write + verify the new console password, fail-closed.
 
-    ``set_console_password`` validates the password policy and commits through
-    the atomic, self-verifying, recoverable env path, so a write fault leaves the
-    OLD password durably in place. Any apply fault is raised as
-    :class:`CredentialRotationApplyError`; a policy rejection keeps its original
-    :class:`HTTPException` (422) so the caller can surface it unchanged.
+    ``set_console_password`` commits through the atomic, self-verifying,
+    recoverable env path, so a write fault leaves the OLD password durably in
+    place. Any apply fault — including an OSError or other error not wrapped by
+    env_store — is caught and re-raised as :class:`CredentialRotationApplyError`
+    so the caller always lands in the fail-closed branch (N4b) rather than
+    escaping with the rotation row stuck ``rotating`` and no audit.
     """
     try:
         set_console_password(env_path, new_password)
-    except HTTPException:
-        raise
-    except _AtomicEnvUpdateError as exc:
+    except Exception as exc:  # noqa: BLE001 - any apply fault is fail-closed; detail stays internal
         raise CredentialRotationApplyError("console password rotation could not be applied") from exc
     if not _verify_console_password(env_path, new_password):
         raise CredentialRotationApplyError("console password did not verify after rotation")
@@ -653,8 +772,18 @@ def logout(
     # enough: bump the server-side epoch so a copied/active token is rejected too.
     # Managed OIDC tokens are the identity provider's and carry no epoch of ours,
     # so there is nothing to revoke here and the DB is left untouched.
+    #
+    # The epoch bump is a persistent, audited revocation, so it must not be
+    # triggerable by an anonymous or cross-site POST (forced-logout DoS +
+    # spoofed-actor DB write, N1). Require a signature-valid local session token
+    # from the request (an EXPIRED one still counts, so a normal logout works);
+    # an absent/forged/unsigned token means there is nothing to revoke, so the
+    # cookie is cleared and we return WITHOUT any DB/audit write. The bump is
+    # attributed to the real principal from that token, never a hardcoded UUID.
     if request.app.state.settings.oidc_mode == "dev":
-        _revoke_console_sessions(session, audit, settings, actor=CONSOLE_OPERATOR_UUID, reason="logout")
+        principal = console_session_principal_allow_expired(request)
+        if principal is not None:
+            _revoke_console_sessions(session, audit, settings, actor=principal.principal_id, reason="logout")
     return response
 
 
@@ -693,6 +822,8 @@ def _mint_dev_session(request: Request) -> SessionResponse:
 def create_session(
     body: SessionRequest,
     request: Request,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
 ) -> SessionResponse:
     settings = request.app.state.settings
     if settings.oidc_mode != "dev":
@@ -717,6 +848,11 @@ def create_session(
         throttle.record_failure(client_ip)
         raise AuthenticationError("invalid console password")
     throttle.record_success(client_ip)
+    # Converge the on-disk marker up to the committed DB epoch before minting, so
+    # a wiped run directory or a crash-stuck rotation cannot un-revoke older
+    # sessions (N2/N3). Best-effort: a transiently unreachable database must not
+    # block login; convergence then happens on the next login or rotation.
+    reconcile_session_epoch(session, audit, settings, best_effort=True)
     return _mint_dev_session(request)
 
 
@@ -790,13 +926,32 @@ def rotate_console_password(
             status_code=status.HTTP_428_PRECONDITION_REQUIRED,
             detail="console password is not set; complete first-run setup",
         )
+    # Throttle the current-password check so a stolen session cookie cannot be
+    # used to brute-force the existing password here, reusing the same per-IP
+    # lockout that guards the login path (N5).
+    client_ip = request.client.host if request.client else "unknown"
+    throttle: LoginThrottle = request.app.state.login_throttle
+    if throttle.locked(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="too many failed attempts; try again later"
+        )
     if not _verify_console_password(env_path, body.current_password):
+        throttle.record_failure(client_ip)
         raise AuthenticationError("current console password is incorrect")
+    throttle.record_success(client_ip)
     if body.new_password != body.confirm:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="password and confirmation do not match",
         )
+    # Validate the new password's policy BEFORE touching the rotation state
+    # machine, so a policy rejection is a clean 422 and never a committed
+    # ``rotating`` row mislabeled as an apply failure (N4a).
+    _validate_new_console_password(body.new_password)
+
+    # Converge any prior crash-stuck rotation / behind marker before starting a
+    # new rotation, so an older un-revoked session cannot survive this one (N2/N3).
+    reconcile_session_epoch(session, audit, settings)
 
     # Commit the rotation intent (blocked drift) before the risky side effect.
     generation = _begin_credential_rotation(session, _CONSOLE_PASSWORD_CREDENTIAL)
@@ -812,7 +967,7 @@ def rotate_console_password(
 
     try:
         _apply_console_password_rotation(env_path, body.new_password)
-    except (CredentialRotationApplyError, HTTPException) as exc:
+    except CredentialRotationApplyError as exc:
         _fail_credential_rotation(session, _CONSOLE_PASSWORD_CREDENTIAL)
         audit.record(
             session=session,
@@ -823,27 +978,38 @@ def rotate_console_password(
             detail={"generation": generation, "reason": "apply_failed"},
         )
         session.commit()
-        if isinstance(exc, HTTPException):
-            raise
         raise ConflictError(
             "console password rotation could not be applied; the existing password is unchanged"
         ) from exc
 
     # New secret durable and verified: revoke old sessions and settle the
-    # rotation in one transaction, then publish the epoch to the marker.
-    new_epoch = _bump_session_epoch_row(session)
-    _mark_credential_rotation_applied(session, _CONSOLE_PASSWORD_CREDENTIAL, generation)
-    audit.record(
-        session=session,
-        actor=principal.principal_id,
-        action="credential-rotation.applied",
-        object_type="credential_rotation",
-        object_id=_CONSOLE_PASSWORD_CREDENTIAL,
-        detail={"generation": generation, "session_epoch": new_epoch},
-    )
-    session.commit()
-    _write_session_epoch_marker(settings, new_epoch)
-    _verify_session_epoch_marker(settings, new_epoch)
+    # rotation in one transaction, then publish the epoch to the marker. If this
+    # final step faults AFTER the password changed, the rotation row stays
+    # ``rotating`` (blocked drift) with the epoch un-bumped — the new password is
+    # live but old sessions are briefly still valid. That is converged forward
+    # (epoch bumped, row settled) by reconcile on the next login/rotation, which
+    # can only ADD revocation; here we surface it rather than claim success.
+    try:
+        new_epoch = _bump_session_epoch_row(session)
+        _mark_credential_rotation_applied(session, _CONSOLE_PASSWORD_CREDENTIAL, generation)
+        audit.record(
+            session=session,
+            actor=principal.principal_id,
+            action="credential-rotation.applied",
+            object_type="credential_rotation",
+            object_id=_CONSOLE_PASSWORD_CREDENTIAL,
+            detail={"generation": generation, "session_epoch": new_epoch},
+        )
+        session.commit()
+        _write_session_epoch_marker(settings, new_epoch)
+        _verify_session_epoch_marker(settings, new_epoch)
+    except (SQLAlchemyError, CredentialRotationApplyError) as exc:
+        with contextlib.suppress(SQLAlchemyError):
+            session.rollback()
+        raise ConflictError(
+            "console password was changed but session revocation did not complete; "
+            "it will be reconciled on the next sign-in"
+        ) from exc
     return _mint_dev_session(request)
 
 
