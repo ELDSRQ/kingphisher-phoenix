@@ -1792,3 +1792,71 @@ class ProviderConfigGeneration(Base):
     updated_at = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("now()"), onupdate=sa_text("now()")
     )
+
+
+class ConsoleSessionEpoch(Base):
+    """Monotonic epoch for local console session revocation (W1-07, KP-AUD-019).
+
+    Local dev-mode console sessions are stateless HS256 tokens. Without a
+    server-side revocation signal a logged-out or post-password-rotation token
+    still validates until it expires. This single-row table (``id == 1``,
+    enforced by a check constraint) holds the authoritative, audited epoch. The
+    console stamps the current epoch into every minted token and bumps this
+    epoch on logout and on a successful password rotation.
+
+    The authentication path validates stateless tokens with no database handle
+    (it runs in a request hot path that must stay DB-free for the hermetic test
+    profile and for minimal per-request cost), so the committed epoch is
+    mirrored to a mode-0600 on-disk marker — the same commit-shadow shape W1-04
+    uses for :class:`ProviderConfigGeneration`. Token validation reads that
+    marker as the epoch floor and rejects any token whose stamped epoch is older
+    than the floor. A fresh stack with no bump keeps epoch 0 and enforces
+    nothing, so pre-existing sessions are revoked only once an epoch bump raises
+    the floor above 0.
+    """
+
+    __tablename__ = "console_session_epoch"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_console_session_epoch_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+
+class CredentialRotation(Base):
+    """Per-credential rotation state machine (W1-07, KP-AUD-019).
+
+    One row per rotatable credential (``console_password`` locally; one row per
+    external provider/secret where real rotation is deliberately LIVE-gated and
+    never performed by this service). It mirrors W1-04's committed-generation /
+    reconcile shape: the console bumps ``generation`` and sets ``state`` to
+    ``rotating`` when it begins applying a new secret, and advances
+    ``applied_generation`` to match ONLY after the new secret is written and
+    verified. While ``generation != applied_generation`` the rotation is
+    half-applied — an explicit blocked-drift state — and the OLD working secret
+    is still in place, so a failed application never leaves the credential in a
+    silently inconsistent state.
+
+    ``live_gated`` marks a credential whose real rotation requires an external
+    live action this service must never perform on its own; such a row records a
+    ``pending_live`` intent and nothing is rotated until the live gate is
+    satisfied out of band.
+
+    ``state`` is a human-readable summary of the generation gap; the gap itself
+    is the authoritative drift signal. No secret value is ever stored here.
+    """
+
+    __tablename__ = "credential_rotations"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('idle', 'rotating', 'applied', 'failed', 'pending_live')",
+            name="state",
+        ),
+    )
+
+    credential: Mapped[str] = mapped_column(String(64), primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    applied_generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    state: Mapped[str] = mapped_column(String(16), nullable=False, server_default=sa_text("'idle'"))
+    live_gated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("false"))
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))

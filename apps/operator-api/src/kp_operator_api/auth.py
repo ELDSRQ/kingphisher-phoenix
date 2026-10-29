@@ -12,10 +12,12 @@ existing Keycloak deployments.
 from __future__ import annotations
 
 import ipaddress
+import json
 import socket
 import uuid
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Lock
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -510,6 +512,88 @@ def make_idp(issuer: str, audience: str, *, mode: str, dev_secret: str) -> OidcI
     raise ValueError(f"unsupported OIDC mode: {mode!r}")
 
 
+#: Mode-0600 on-disk shadow of the committed console session epoch
+#: (:class:`kp_database.models.ConsoleSessionEpoch`). The authoritative epoch
+#: lives in the database and is bumped + audited by the console on logout and on
+#: a successful password rotation; it is mirrored here so the DB-free
+#: authentication hot path can read the current revocation floor cheaply. Kept
+#: beside the W1-04 provider-generation marker in the same run directory.
+CONSOLE_SESSION_EPOCH_MARKER = "console-session.epoch"
+
+
+class SessionEpochMarkerError(RuntimeError):
+    """The console session-epoch marker exists but could not be trusted.
+
+    Carries no secret detail. Validation treats this as fail-closed: a present
+    but unreadable/corrupt marker (e.g. tampering) rejects the token rather than
+    silently falling back to 'no revocation'.
+    """
+
+
+def console_run_dir(settings: Any) -> Path:
+    """Runtime state directory the console shares with the auth path.
+
+    Mirrors ``kp_operator_api.console.runtime_status._run_dir`` deliberately
+    rather than importing it: ``console`` imports ``auth`` at module load, so the
+    reverse import would be circular. The derivation is pinned by the test suite.
+    """
+    return Path(getattr(settings, "env_file", "") or ".env").resolve().parent / "data" / "run"
+
+
+def console_session_epoch_floor(settings: Any) -> int:
+    """Return the committed session-epoch floor from the on-disk marker.
+
+    A missing marker means no revocation has ever been recorded (a fresh stack),
+    so the floor is 0 and nothing is revoked. A present but malformed marker is
+    fail-closed: it raises :class:`SessionEpochMarkerError` so the caller rejects
+    the token instead of trusting an attacker-lowered or corrupt floor.
+    """
+    path = console_run_dir(settings) / CONSOLE_SESSION_EPOCH_MARKER
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return 0
+    except OSError as exc:
+        raise SessionEpochMarkerError("session epoch marker could not be read") from exc
+    try:
+        data = json.loads(raw)
+        epoch = data["epoch"]
+    except (ValueError, TypeError, KeyError) as exc:
+        raise SessionEpochMarkerError("session epoch marker is malformed") from exc
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+        raise SessionEpochMarkerError("session epoch marker is malformed")
+    return epoch
+
+
+def _enforce_session_epoch(request: Request, idp: OidcIdP | DevIdP, token: str) -> None:
+    """Reject a revoked local console session (dev HS256 tokens only).
+
+    OIDC access tokens are minted by the external identity provider and carry no
+    epoch of ours, so this applies only to the local ``dev`` IdP. Enforcement is
+    skipped while the floor is 0 (no revocation recorded) so a fresh stack and
+    existing sessions are untouched; once a logout or password rotation raises
+    the floor, any token whose stamped ``epoch`` claim is older than the floor —
+    including a legacy token with no ``epoch`` claim — is rejected.
+    """
+    if not isinstance(idp, DevIdP):
+        return
+    try:
+        floor = console_session_epoch_floor(request.app.state.settings)
+    except SessionEpochMarkerError as exc:
+        raise AuthenticationError("session could not be validated") from exc
+    if floor <= 0:
+        return
+    # The signature/issuer/audience/lifetime were just validated by idp.verify;
+    # read the already-trusted epoch claim without re-verifying the signature.
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except jwt.PyJWTError as exc:
+        raise AuthenticationError("session could not be validated") from exc
+    token_epoch = claims.get("epoch")
+    if not isinstance(token_epoch, int) or isinstance(token_epoch, bool) or token_epoch < floor:
+        raise AuthenticationError("session has been revoked")
+
+
 def get_principal(request: Request) -> Principal:
     idp: OidcIdP | DevIdP = request.app.state.idp
     authorization = request.headers.get("Authorization", "")
@@ -521,6 +605,7 @@ def get_principal(request: Request) -> Principal:
     if not token:
         raise AuthenticationError("missing bearer token")
     principal = idp.verify(token)
+    _enforce_session_epoch(request, idp, token)
     user_limiter = request.app.state.user_limiter
     if not user_limiter.allow(principal.subject_id):
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="rate limit exceeded")

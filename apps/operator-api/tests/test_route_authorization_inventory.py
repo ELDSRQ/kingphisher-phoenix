@@ -301,6 +301,10 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
             "GET /api/v1/console/ai-providers",
             "PUT /api/v1/console/ai-providers/{provider}",
             "POST /api/v1/console/ai-providers/select",
+            # W1-07: authenticated console-password rotation. Requires the same
+            # console-admin capability and re-authenticates with the current
+            # password in the request body before rotating.
+            "POST /api/v1/console/password/rotate",
         ),
     ),
 )
