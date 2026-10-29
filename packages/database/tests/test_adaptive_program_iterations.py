@@ -204,7 +204,11 @@ def _adaptive_source(session, recipients: list[Recipient], *, occurrence_count: 
         configuration_hash=audience_definition_hash(definition),
         preview_hash="p" * 64,
         manifest_hash="m" * 64,
-        frozen_at=now,
+        # Seeded exactly as production freezes: the manifest rows are written
+        # while the audience is UNFROZEN, then frozen_at is set. The 0021
+        # Postgres guard (kp_guard_campaign_manifest_mutation) rejects any
+        # manifest mutation once frozen_at is set, so the order matters.
+        frozen_at=None,
         legacy_requires_configuration=False,
     )
     approval = CampaignApproval(
@@ -231,6 +235,9 @@ def _adaptive_source(session, recipients: list[Recipient], *, occurrence_count: 
                 recipient_hash=hashlib.sha256(str(recipient_id).encode()).hexdigest(),
             )
         )
+    session.flush()
+    # Freeze only after the manifest rows exist, mirroring freeze_campaign_audience.
+    audience.frozen_at = now
     session.flush()
     result = materialize_campaign_program(
         session,
