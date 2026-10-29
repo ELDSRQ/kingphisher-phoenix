@@ -265,6 +265,106 @@ class SourceItem(Base):
     __table_args__ = (UniqueConstraint("source_id", "content_hash", name="uq_source_items_dedup"),)
 
 
+class SourcePolicy(Base):
+    """Governance policy for one current-threat source — feed or mailbox (W3-02).
+
+    Holds the accountable owner, the license the content is used under, the
+    parser that interprets it, a trust tier, a freshness SLA (days), and the
+    enabled switch. A disabled or stale policy fails closed for ingestion. The
+    success/failure counters drive the operator System view's source health.
+    """
+
+    __tablename__ = "source_policies"
+
+    source_policy_id = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_key: Mapped[str] = mapped_column(String(64), unique=True)
+    owner: Mapped[str] = mapped_column(String(255))
+    license: Mapped[str] = mapped_column(String(255))
+    parser: Mapped[str] = mapped_column(String(128))
+    trust: Mapped[dm.SourceTrust] = mapped_column(
+        Enum(dm.SourceTrust, name="source_trust"), default=dm.SourceTrust.UNTRUSTED
+    )
+    freshness: Mapped[int] = mapped_column(Integer, default=7, server_default=sa_text("7"))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_success_at = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    __table_args__ = (
+        CheckConstraint("freshness >= 1 AND freshness <= 3650", name="freshness_bounds"),
+        CheckConstraint("consecutive_failures >= 0", name="failures_nonneg"),
+    )
+
+
+class ThreatArtifact(Base):
+    """A governed current-threat artifact: quarantined original, safe preview (W3-02).
+
+    The hostile original is isolated — only its SHA-256 and byte length are kept
+    (never the raw bytes), like W3-01's hashed-offset evidence. The row is always
+    ``QUARANTINED`` and is never approvable/deliverable; the operator reviews the
+    SAFE preview, which carries the deterministic W3-01 cue manifest. Deduplicated
+    by ``content_hash``.
+    """
+
+    __tablename__ = "threat_artifacts"
+
+    threat_artifact_id = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    source_policy_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("source_policies.source_policy_id", ondelete="SET NULL"), nullable=True
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    title: Mapped[str] = mapped_column(Text)
+    origin: Mapped[dm.ArtifactOrigin] = mapped_column(Enum(dm.ArtifactOrigin, name="artifact_origin"))
+    # SQLAlchemy stores enums by member NAME in this schema (see migration 0039),
+    # so quarantine_state persists as 'QUARANTINED'.
+    quarantine_state: Mapped[dm.QuarantineState] = mapped_column(
+        Enum(dm.QuarantineState, name="quarantine_state"),
+        default=dm.QuarantineState.QUARANTINED,
+    )
+    original_sha256: Mapped[str] = mapped_column(String(64))
+    original_bytes: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+    safe_preview_html: Mapped[str] = mapped_column(Text)
+    safe_preview_text: Mapped[str] = mapped_column(Text)
+    # Deterministic cue + transformation manifest (W3-01), isolated from the
+    # (never-stored) original and carried beside the safe preview.
+    cue_manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sa_text("'{}'"))
+    # Minimized provenance (ArtifactProvenance): hash, observed_at, source,
+    # parser_version, reviewer. Stored as an isolated JSONB object.
+    provenance: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default=sa_text("'{}'"))
+    review_state: Mapped[dm.ArtifactReviewState] = mapped_column(
+        Enum(dm.ArtifactReviewState, name="artifact_review_state"),
+        default=dm.ArtifactReviewState.PENDING,
+    )
+    reviewer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewed_at = mapped_column(DateTime(timezone=True), nullable=True)
+    first_seen_at = mapped_column(DateTime(timezone=True), nullable=False)
+    __table_args__ = (
+        CheckConstraint("original_bytes >= 0", name="bytes_nonneg"),
+        # Invariant mirrored at the schema: a governed original is quarantined.
+        # Enums persist by member NAME, hence 'QUARANTINED'.
+        CheckConstraint("quarantine_state = 'QUARANTINED'", name="original_quarantined"),
+        Index("ix_threat_artifacts_review", "review_state", "first_seen_at"),
+        Index("ix_threat_artifacts_policy", "source_policy_id"),
+    )
+
+
+class ThreatBundleImport(Base):
+    """Replay-protection ledger for verified signed offline curated bundles (W3-02).
+
+    One row per accepted ``bundle_id``; a re-presented bundle id is refused rather
+    than re-applied. ``checksum`` is the SHA-256 of the canonical signed payload
+    verified before import.
+    """
+
+    __tablename__ = "threat_bundle_imports"
+
+    threat_bundle_import_id = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bundle_id: Mapped[str] = mapped_column(String(255), unique=True)
+    checksum: Mapped[str] = mapped_column(String(64))
+    imported_at = mapped_column(DateTime(timezone=True), nullable=False)
+    imported_by: Mapped[str] = mapped_column(String(255))
+    artifact_count: Mapped[int] = mapped_column(Integer, default=0, server_default=sa_text("0"))
+
+
 class AggregationCandidate(Base):
     """A ranked current-campaign candidate from a background aggregation pass (M3).
 
