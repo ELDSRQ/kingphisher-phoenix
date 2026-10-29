@@ -247,6 +247,30 @@ class AuditStore:
     def dispatch_pending_queue(self, queue: Any) -> int:
         return self._dispatcher.dispatch_queue(queue)
 
+    def reconcile_queue_after_restore(
+        self,
+        queue: Any,
+        *,
+        topic: str,
+        replay_safe: bool,
+        window_seconds: int,
+        limit: int = 500,
+    ) -> dict[str, int]:
+        """Reconcile recently-dispatched queue rows against live queue existence.
+
+        KP-AUD-007: recovers queue jobs lost to a Redis data loss after their
+        durable outbox row was already marked ``dispatched``. Re-enqueues only
+        replay-safe topics; delivery/reply are surfaced for human review, never
+        auto re-sent.
+        """
+        return self._dispatcher.reconcile_queue(
+            queue,
+            topic=topic,
+            replay_safe=replay_safe,
+            window_seconds=window_seconds,
+            limit=limit,
+        )
+
     def _record_for_outbox(self, outbox_id: Any) -> AuditRecord | None:
         with self._engine.connect() as connection:
             row = (

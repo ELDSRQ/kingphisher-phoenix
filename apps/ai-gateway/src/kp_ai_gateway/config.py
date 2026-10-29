@@ -83,6 +83,26 @@ class GatewaySettings(BaseSettings):
     #: Per-request timeout to the llama.cpp server, in seconds.
     request_timeout_seconds: float = 120.0
 
+    #: Hard upper bound (bytes) on an upstream model response the gateway will
+    #: buffer before parsing it as JSON (KP-AUD-009). The gateway streams every
+    #: upstream reply and refuses — with a clean 502, before any JSON allocation
+    #: — a body whose declared ``Content-Length`` exceeds this, or whose decoded
+    #: bytes cross it mid-stream. A hostile or broken custom/managed upstream can
+    #: therefore never make the gateway allocate an unbounded buffer. Default
+    #: 5 MiB, matching the worker's ``_MAX_AI_RESPONSE_BYTES``; a schema-shaped
+    #: chat/completions or Responses reply is far smaller. Validated ``>= 1``.
+    max_response_bytes: int = 5 * 1024 * 1024
+
+    #: Maximum number of model-backed requests (``/propose``, ``/extract``,
+    #: ``/aggregate``, ``/discover``) the gateway will process concurrently
+    #: (KP-AUD-010). An in-process ``asyncio.Semaphore`` admits up to this many;
+    #: a request that arrives while the gate is full is rejected immediately with
+    #: a clean 429 (``Retry-After: 1``) rather than piling up unbounded work
+    #: against the single pinned backend. Deterministic/non-model endpoints
+    #: (``/setup-assist``, health probes) are never gated. Default 8; raise it
+    #: for a backend that can serve more parallel generations. Validated ``>= 1``.
+    max_concurrent_model_requests: int = 8
+
     #: Structured-output mode for the backend (see ``ResponseFormatMode``).
     #: ``auto`` (the default) resolves per backend: ``json_schema`` for managed
     #: ``entra``, ``json_object`` for a self-hosted ``none`` upstream — so a fresh
@@ -104,15 +124,21 @@ class GatewaySettings(BaseSettings):
     #: the loss of temperature=0 reproducibility is acceptable.
     send_temperature: bool = True
 
-    #: Upper bound on generated (completion) tokens. ``None`` (the default) sends
-    #: no cap, preserving the historical behaviour. Bounding this is the primary
-    #: reliability lever for the managed path: an unbounded reasoning model can
-    #: run for tens of seconds and blow the worker's request timeout (the Foundry
-    #: ``gpt-oss-120b`` dead-lettering was this). The wire key differs by backend
-    #: (see ``_completion_token_param`` in ``main.py``): Azure reasoning models
-    #: require ``max_completion_tokens`` and reject ``max_tokens``; the local
-    #: llama.cpp server speaks ``max_tokens``. A single value covers both.
-    max_completion_tokens: int | None = None
+    #: Upper bound on generated (completion) tokens. A finite default (2000,
+    #: matching the value every shipped deployment already sets — see
+    #: ``.env.example``/``docker-compose.yml``/``run-gateway.sh``) so an
+    #: unbounded reasoning model can NEVER run the completion for tens of seconds
+    #: and blow the worker's request timeout (the Foundry ``gpt-oss-120b``
+    #: dead-lettering was exactly this). Bounding this is the primary reliability
+    #: lever; a finite default means a resource cap applies even when an operator
+    #: forgets to set the env var. Raise it for workloads that need longer output
+    #: (it stays configurable); ``None`` is still accepted to send no cap, but is
+    #: discouraged — leaving the completion unbounded is the hazard KP-AUD-010
+    #: flagged. The wire key differs by backend (see ``_completion_token_param``
+    #: in ``main.py``): Azure reasoning models require ``max_completion_tokens``
+    #: and reject ``max_tokens``; the local llama.cpp server speaks
+    #: ``max_tokens``. A single value covers both.
+    max_completion_tokens: int | None = 2000
 
     #: Reasoning effort for reasoning-capable models (``minimal``/``low``/
     #: ``medium``/``high``). ``None`` (the default) sends no field, so non-reasoning
@@ -189,12 +215,17 @@ class GatewaySettings(BaseSettings):
     #: analyst model that takes ``none`` sets it explicitly).
     aggregate_reasoning_effort: str | None = None
 
-    #: Optional output-token cap for an ``/aggregate`` call. A ranked candidate
-    #: list plus reasoning needs room, so this is separate from the chat
-    #: ``max_completion_tokens`` and does not inherit it. ``None`` (the default)
-    #: sends no cap. When set it is validated ``>= 1`` and applied as the
-    #: completion-token param (wire key per ``_completion_token_param``).
-    aggregate_max_output_tokens: int | None = None
+    #: Output-token cap for an ``/aggregate`` call. A ranked candidate list plus
+    #: reasoning needs room, so this is separate from the chat
+    #: ``max_completion_tokens`` and does not inherit it. A finite default
+    #: (16000) bounds the background analyst pass so it cannot generate tokens
+    #: (and burn GPU time) without limit, while leaving ample room for a ranked
+    #: list of full ``CampaignRecord`` candidates over a bounded batch. It stays
+    #: configurable (raise it for very large batches); ``None`` still sends no
+    #: cap but is discouraged for the same KP-AUD-010 reason as the chat cap.
+    #: When set it is validated ``>= 1`` and applied as the completion-token
+    #: param (wire key per ``_completion_token_param``).
+    aggregate_max_output_tokens: int | None = 16000
 
     #: Shared secret a caller must present as ``Authorization: Bearer <key>`` on
     #: ``/propose`` and ``/setup-assist``. The generation worker already sends
@@ -317,6 +348,13 @@ class GatewaySettings(BaseSettings):
 
         if self.max_completion_tokens is not None and self.max_completion_tokens < 1:
             raise ValueError("KP_AI_GATEWAY_MAX_COMPLETION_TOKENS must be a positive integer when set")
+        # Resource caps (KP-AUD-010 / KP-AUD-009). Refuse obviously-unsafe values
+        # at construction so a misconfigured deployment fails closed at boot
+        # rather than disabling a protection at request time.
+        if self.max_response_bytes < 1:
+            raise ValueError("KP_AI_GATEWAY_MAX_RESPONSE_BYTES must be a positive integer")
+        if self.max_concurrent_model_requests < 1:
+            raise ValueError("KP_AI_GATEWAY_MAX_CONCURRENT_MODEL_REQUESTS must be a positive integer")
         if self.reasoning_effort is not None and self.reasoning_effort not in _REASONING_EFFORTS:
             raise ValueError(
                 f"KP_AI_GATEWAY_REASONING_EFFORT must be one of {', '.join(sorted(_REASONING_EFFORTS))} when set"
