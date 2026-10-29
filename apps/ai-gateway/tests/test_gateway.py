@@ -7,9 +7,11 @@ bake-off's job).
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from kp_ai_gateway import main as gateway_main
 from kp_contracts.generation import TRAINING_URL_PLACEHOLDER, GenerationResponse
@@ -27,21 +29,73 @@ VALID_REQUEST = {
 }
 
 
-def _stub_llama(monkeypatch, *, content: str) -> list[dict]:
-    """Replace the httpx call to llama.cpp with a canned chat-completion."""
+# --- streaming-stub plumbing (the gateway now reads the upstream reply via
+# ``client.stream(...)`` + ``aiter_bytes()`` under a byte bound, so the stubs
+# model a streamed response, not ``response.json()``). ------------------------
 
-    captured: list[dict] = []
 
-    class _StubResponse:
-        def raise_for_status(self) -> None:
-            return None
+class _StreamResponse:
+    """A minimal async streaming response: ``headers`` + ``raise_for_status`` +
+    ``aiter_bytes`` — the exact subset ``_read_bounded_upstream_json`` touches."""
 
-        def json(self) -> dict:
-            return {"choices": [{"message": {"content": content}}]}
+    def __init__(
+        self,
+        *,
+        body: bytes = b"",
+        headers: dict[str, str] | None = None,
+        status_error: Exception | None = None,
+        aiter_error: Exception | None = None,
+        chunks: list[bytes] | None = None,
+    ) -> None:
+        self._body = body
+        self._status_error = status_error
+        self._aiter_error = aiter_error
+        self._chunks = chunks
+        if headers is not None:
+            self.headers = httpx.Headers(headers)
+        else:
+            self.headers = httpx.Headers({"content-length": str(len(body))})
+
+    def raise_for_status(self) -> None:
+        if self._status_error is not None:
+            raise self._status_error
+
+    async def aiter_bytes(self):
+        if self._aiter_error is not None:
+            raise self._aiter_error
+        for chunk in self._chunks if self._chunks is not None else [self._body]:
+            yield chunk
+
+
+class _StreamCtx:
+    """Async context manager returned by the stub ``client.stream(...)``."""
+
+    def __init__(self, response: _StreamResponse | None, *, enter_error: Exception | None = None) -> None:
+        self._response = response
+        self._enter_error = enter_error
+
+    async def __aenter__(self) -> _StreamResponse:
+        if self._enter_error is not None:
+            raise self._enter_error
+        assert self._response is not None
+        return self._response
+
+    async def __aexit__(self, *a) -> None:
+        return None
+
+
+def _stream_client(on_stream, *, on_init=None):
+    """Build a stub ``httpx.AsyncClient`` whose ``.stream(...)`` calls ``on_stream``.
+
+    ``on_stream`` receives a ``record`` dict (method/url/json/headers/params) and
+    returns a ``_StreamCtx``. ``on_init`` (optional) receives the client's init
+    kwargs so a test can assert on e.g. ``timeout=``.
+    """
 
     class _StubClient:
         def __init__(self, *a, **k) -> None:
-            pass
+            if on_init is not None:
+                on_init(k)
 
         async def __aenter__(self):
             return self
@@ -49,11 +103,28 @@ def _stub_llama(monkeypatch, *, content: str) -> list[dict]:
         async def __aexit__(self, *a) -> None:
             return None
 
-        async def post(self, url: str, json: dict, headers: dict[str, str] | None = None) -> _StubResponse:  # noqa: A002
-            captured.append({"url": url, "json": json, "headers": headers or {}})
-            return _StubResponse()
+        def stream(self, method: str, url: str, *, json=None, headers=None, params=None):  # noqa: A002
+            record = {"method": method, "url": url, "json": json, "headers": headers or {}, "params": params}
+            return on_stream(record)
 
-    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _StubClient)
+    return _StubClient
+
+
+def _chat_body(content: str) -> bytes:
+    return json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
+
+
+def _stub_llama(monkeypatch, *, content: str) -> list[dict]:
+    """Replace the httpx streaming call to llama.cpp with a canned chat-completion."""
+
+    captured: list[dict] = []
+    body = _chat_body(content)
+
+    def on_stream(record: dict) -> _StreamCtx:
+        captured.append(record)
+        return _StreamCtx(_StreamResponse(body=body))
+
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
     return captured
 
 
@@ -247,7 +318,9 @@ def test_settings_default_has_no_generation_bounds(monkeypatch) -> None:
     _clear_gateway_env(monkeypatch)
     settings = GatewaySettings()
     assert settings.reasoning_effort is None
-    assert settings.max_completion_tokens is None
+    # KP-AUD-010: a finite completion cap now applies by default (matching the
+    # value every shipped deployment already sets) so output is never unbounded.
+    assert settings.max_completion_tokens == 2000
     assert settings.send_temperature is True
 
 
@@ -600,27 +673,10 @@ def test_propose_forbids_unknown_top_level_fields(monkeypatch) -> None:
 
 
 def test_propose_502_on_backend_http_error(monkeypatch) -> None:
-    class _RaisingResponse:
-        def raise_for_status(self) -> None:
-            raise httpx.HTTPStatusError("500", request=None, response=None)
+    def on_stream(_record: dict) -> _StreamCtx:
+        return _StreamCtx(_StreamResponse(status_error=httpx.HTTPStatusError("500", request=None, response=None)))
 
-        def json(self) -> dict:
-            return {}
-
-    class _RaisingClient:
-        def __init__(self, *a, **k) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a) -> None:
-            return None
-
-        async def post(self, url: str, json: dict) -> _RaisingResponse:  # noqa: A002
-            return _RaisingResponse()
-
-    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _RaisingClient)
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
     resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
     assert resp.status_code == 502
     # No raw traceback / backend internals leak.
@@ -630,20 +686,10 @@ def test_propose_502_on_backend_http_error(monkeypatch) -> None:
 
 
 def test_propose_502_on_backend_connect_error(monkeypatch) -> None:
-    class _ConnErrClient:
-        def __init__(self, *a, **k) -> None:
-            pass
+    def on_stream(_record: dict) -> _StreamCtx:
+        return _StreamCtx(None, enter_error=httpx.ConnectError("backend down"))
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a) -> None:
-            return None
-
-        async def post(self, url: str, json: dict):  # noqa: A002
-            raise httpx.ConnectError("backend down")
-
-    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _ConnErrClient)
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
     resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
     assert resp.status_code == 502
     assert "backend down" not in json.dumps(resp.json())
@@ -652,29 +698,12 @@ def test_propose_502_on_backend_connect_error(monkeypatch) -> None:
 def test_propose_502_on_malformed_backend_json_shape(monkeypatch) -> None:
     # A 2xx body missing the expected choices shape must not raise a KeyError
     # traceback; it becomes a clean 502.
-    _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    body = json.dumps({"unexpected": "shape"}).encode("utf-8")
 
-    class _BadShapeResponse:
-        def raise_for_status(self) -> None:
-            return None
+    def on_stream(_record: dict) -> _StreamCtx:
+        return _StreamCtx(_StreamResponse(body=body))
 
-        def json(self) -> dict:
-            return {"unexpected": "shape"}
-
-    class _BadShapeClient:
-        def __init__(self, *a, **k) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a) -> None:
-            return None
-
-        async def post(self, url: str, json: dict) -> _BadShapeResponse:  # noqa: A002
-            return _BadShapeResponse()
-
-    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _BadShapeClient)
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
     resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
     assert resp.status_code == 502
 
@@ -1025,29 +1054,13 @@ def test_settings_reject_invalid_extract_reasoning_effort(monkeypatch) -> None:
 
 def _stub_responses(monkeypatch, *, payload: dict) -> dict:
     captured: dict = {}
+    body = json.dumps(payload).encode("utf-8")
 
-    class _Resp:
-        def raise_for_status(self) -> None:
-            return None
+    def on_stream(record: dict) -> _StreamCtx:
+        captured.update(record)
+        return _StreamCtx(_StreamResponse(body=body))
 
-        def json(self) -> dict:
-            return payload
-
-    class _Client:
-        def __init__(self, *a, **k) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a) -> None:
-            return None
-
-        async def post(self, url: str, params: dict | None = None, json: dict | None = None, headers=None):  # noqa: A002
-            captured.update({"url": url, "params": params, "json": json, "headers": headers or {}})
-            return _Resp()
-
-    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
     return captured
 
 
@@ -1143,29 +1156,16 @@ def _stub_aggregate_backend(monkeypatch, *, content: str) -> dict:
     """
 
     captured: dict = {}
+    body = _chat_body(content)
 
-    class _StubResponse:
-        def raise_for_status(self) -> None:
-            return None
+    def on_init(kwargs: dict) -> None:
+        captured["timeout"] = kwargs.get("timeout")
 
-        def json(self) -> dict:
-            return {"choices": [{"message": {"content": content}}]}
+    def on_stream(record: dict) -> _StreamCtx:
+        captured.update(record)
+        return _StreamCtx(_StreamResponse(body=body))
 
-    class _StubClient:
-        def __init__(self, *a, timeout=None, **k) -> None:
-            captured["timeout"] = timeout
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a) -> None:
-            return None
-
-        async def post(self, url: str, json: dict, headers: dict[str, str] | None = None) -> _StubResponse:  # noqa: A002
-            captured.update({"url": url, "json": json, "headers": headers or {}})
-            return _StubResponse()
-
-    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _StubClient)
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream, on_init=on_init))
     return captured
 
 
@@ -1304,20 +1304,10 @@ def test_aggregate_502_on_off_contract_result(monkeypatch) -> None:
 def test_aggregate_502_on_backend_connect_error(monkeypatch) -> None:
     monkeypatch.setattr(gateway_main.settings, "aggregate_model_id", "rtx/analyst")
 
-    class _ConnErrClient:
-        def __init__(self, *a, **k) -> None:
-            pass
+    def on_stream(_record: dict) -> _StreamCtx:
+        return _StreamCtx(None, enter_error=httpx.ConnectError("backend down"))
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a) -> None:
-            return None
-
-        async def post(self, url: str, json: dict, headers=None):  # noqa: A002
-            raise httpx.ConnectError("backend down")
-
-    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _ConnErrClient)
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
     resp = TestClient(gateway_main.app).post("/aggregate", json=_AGG_REQUEST)
     assert resp.status_code == 502
     # The backend URL / internals must never leak in the error body.
@@ -1354,7 +1344,9 @@ def test_settings_default_has_no_aggregate_tier(monkeypatch) -> None:
     assert settings.aggregate_model_id is None
     assert settings.aggregate_base_url is None
     assert settings.aggregate_reasoning_effort is None
-    assert settings.aggregate_max_output_tokens is None
+    # KP-AUD-010: the tier stays off by default (503), but when enabled its
+    # output-token cap is finite by default rather than unbounded.
+    assert settings.aggregate_max_output_tokens == 16000
     assert settings.aggregate_timeout_seconds == 1800.0
 
 
@@ -1511,3 +1503,172 @@ def test_settings_default_provider_state_file(monkeypatch) -> None:
     _clear_gateway_env(monkeypatch)
     monkeypatch.delenv("KP_AI_GATEWAY_PROVIDER_STATE_FILE", raising=False)
     assert GatewaySettings().provider_state_file == "data/run/ai-provider.json"
+
+
+# --- KP-AUD-009: upstream responses are streamed and byte-bounded -----------
+#
+# A custom/managed upstream is untrusted for RESOURCE purposes: the gateway must
+# refuse an oversized reply BEFORE allocating a JSON buffer, with a clean 502
+# ``provider_contract_invalid`` and no provider content in the body.
+
+
+def test_propose_502_provider_contract_invalid_on_oversized_content_length(monkeypatch) -> None:
+    cap = gateway_main.settings.max_response_bytes
+
+    def on_stream(_record: dict) -> _StreamCtx:
+        # A tiny body, but the DECLARED length is over the cap: refused before
+        # the body is read at all.
+        return _StreamCtx(_StreamResponse(body=b"{}", headers={"content-length": str(cap + 1)}))
+
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "provider_contract_invalid"
+
+
+def test_propose_502_on_duplicate_content_length(monkeypatch) -> None:
+    def on_stream(_record: dict) -> _StreamCtx:
+        resp = _StreamResponse(
+            body=_chat_body(_OK_MODEL_OUTPUT),
+            headers=[("content-length", "5"), ("content-length", "6")],
+        )
+        return _StreamCtx(resp)
+
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "provider_contract_invalid"
+
+
+def test_propose_502_on_streamed_body_exceeding_cap_without_buffering_everything(monkeypatch) -> None:
+    # No Content-Length (chunked / "slow" stream): the running total must still
+    # be bounded per chunk, so a body that keeps coming is cut off long before it
+    # is fully buffered. The counter proves the gateway did NOT read it all.
+    monkeypatch.setattr(gateway_main.settings, "max_response_bytes", 64)
+    consumed: list[int] = []
+
+    class _CountingResponse:
+        headers = httpx.Headers({})  # no content-length -> precheck skipped
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            for i in range(10_000):
+                consumed.append(i)
+                yield b"x" * 16
+
+    def on_stream(_record: dict) -> _StreamCtx:
+        return _StreamCtx(_CountingResponse())
+
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "provider_contract_invalid"
+    # Bounded: it stopped a handful of chunks in, nowhere near all 10k.
+    assert len(consumed) < 10
+
+
+def test_extract_502_provider_contract_invalid_on_oversized_content_length(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "extract_model_id", "extract/model")
+    cap = gateway_main.settings.max_response_bytes
+
+    def on_stream(_record: dict) -> _StreamCtx:
+        return _StreamCtx(_StreamResponse(body=b"{}", headers={"content-length": str(cap + 1)}))
+
+    monkeypatch.setattr(gateway_main.httpx, "AsyncClient", _stream_client(on_stream))
+    resp = TestClient(gateway_main.app).post("/extract", json=_EXTRACT_REQUEST)
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "provider_contract_invalid"
+
+
+# --- KP-AUD-011: /propose guards a valid-JSON NON-object (502, not 500) ------
+
+
+@pytest.mark.parametrize("content", ["[]", '"just a string"', "null", "123", "true"])
+def test_propose_502_not_500_on_non_object_json(monkeypatch, content: str) -> None:
+    # Valid JSON that is not an object used to hit ``parsed.get(...)`` ->
+    # AttributeError -> 500. It must now be a clean, bounded 502.
+    _stub_llama(monkeypatch, content=content)
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "model returned unparseable content"
+
+
+# --- KP-AUD-010: in-process concurrency gate (429 past the limit) -----------
+
+
+def test_concurrency_slot_admits_up_to_limit_then_rejects(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main, "_CONCURRENCY_SEMAPHORE", asyncio.Semaphore(2))
+
+    async def scenario() -> None:
+        async with gateway_main._concurrency_slot():
+            async with gateway_main._concurrency_slot():
+                # Two in flight = full; a third is refused immediately.
+                with pytest.raises(gateway_main.GatewayAtCapacity):
+                    async with gateway_main._concurrency_slot():
+                        pass
+            # One released -> a fresh slot is admitted again.
+            async with gateway_main._concurrency_slot():
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_propose_429_when_concurrency_gate_full(monkeypatch) -> None:
+    _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    # A Semaphore(0) is permanently locked -> every model request is at capacity.
+    monkeypatch.setattr(gateway_main, "_CONCURRENCY_SEMAPHORE", asyncio.Semaphore(0))
+    resp = TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST)
+    assert resp.status_code == 429
+    assert resp.json()["detail"] == "gateway at capacity"
+    assert resp.headers.get("Retry-After") == "1"
+
+
+def test_aggregate_429_when_concurrency_gate_full(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_main.settings, "aggregate_model_id", "rtx/analyst")
+    _stub_aggregate_backend(monkeypatch, content=_OK_AGGREGATE)
+    monkeypatch.setattr(gateway_main, "_CONCURRENCY_SEMAPHORE", asyncio.Semaphore(0))
+    resp = TestClient(gateway_main.app).post("/aggregate", json=_AGG_REQUEST)
+    assert resp.status_code == 429
+    assert resp.json()["detail"] == "gateway at capacity"
+
+
+# --- KP-AUD-010: finite default token caps reach the outgoing payload --------
+
+
+def test_propose_sends_finite_default_completion_cap(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    default_cap = GatewaySettings().max_completion_tokens
+    assert default_cap == 2000  # finite, not None (KP-AUD-010)
+    captured = _stub_llama(monkeypatch, content=_OK_MODEL_OUTPUT)
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "none")
+    monkeypatch.setattr(gateway_main.settings, "max_completion_tokens", default_cap)
+    assert TestClient(gateway_main.app).post("/propose", json=VALID_REQUEST).status_code == 200
+    # Local (none) mode uses the OpenAI ``max_tokens`` wire key.
+    assert captured[0]["json"]["max_tokens"] == 2000
+
+
+def test_aggregate_sends_finite_default_output_cap(monkeypatch) -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    _clear_gateway_env(monkeypatch)
+    default_cap = GatewaySettings().aggregate_max_output_tokens
+    assert default_cap == 16000  # finite, not None (KP-AUD-010)
+    monkeypatch.setattr(gateway_main.settings, "aggregate_model_id", "rtx/analyst")
+    monkeypatch.setattr(gateway_main.settings, "upstream_auth_mode", "none")
+    monkeypatch.setattr(gateway_main.settings, "aggregate_max_output_tokens", default_cap)
+    captured = _stub_aggregate_backend(monkeypatch, content=_OK_AGGREGATE)
+    TestClient(gateway_main.app).post("/aggregate", json=_AGG_REQUEST)
+    assert captured["json"]["max_tokens"] == 16000
+
+
+def test_settings_reject_non_positive_resource_caps() -> None:
+    from kp_ai_gateway.config import GatewaySettings
+
+    with pytest.raises(ValueError, match="MAX_RESPONSE_BYTES"):
+        GatewaySettings(max_response_bytes=0)
+    with pytest.raises(ValueError, match="MAX_CONCURRENT_MODEL_REQUESTS"):
+        GatewaySettings(max_concurrent_model_requests=0)
