@@ -240,3 +240,51 @@ def test_operator_ciphertext_prior_key_parser_redacts_malformed_key_material() -
     assert "private/key.pem" not in rendered
     assert caught.value.__cause__ is None
     assert caught.value.__suppress_context__ is True
+
+
+# --- KP-AUD-013: fail-closed remote-image host policy ------------------------
+
+
+def test_image_hosts_curated_default_on_env_file() -> None:
+    # A non-managed (disposable/local) deployment keeps the curated convenience
+    # allow-list by default.
+    hosts = _settings().image_host_set()
+    assert hosts
+    assert "microsoft.com" in hosts
+    assert "*" not in hosts
+
+
+def test_image_hosts_empty_default_under_managed() -> None:
+    # A managed deployment that does not configure the allow-list starts with NO
+    # third-party image hosts, so a rendered MIME carries no remote image.
+    settings = _managed_settings()
+    assert settings.safe_html_image_hosts == ""
+    assert settings.image_host_set() == set()
+
+
+def test_explicit_image_hosts_are_honored_under_managed() -> None:
+    settings = _managed_settings(safe_html_image_hosts="cdn.brand.example")
+    assert settings.image_host_set() == {"cdn.brand.example"}
+
+
+def test_wildcard_image_hosts_rejected_under_managed() -> None:
+    with pytest.raises(ValidationError, match="wildcard is not permitted"):
+        _managed_settings(safe_html_image_hosts="*")
+
+
+def test_wildcard_image_hosts_permitted_on_env_file() -> None:
+    # The wildcard is a dev-only relaxation; it is still honored on the local
+    # (non-managed) stack.
+    assert _settings(safe_html_image_hosts="*").image_host_set() == {"*"}
+
+
+@pytest.mark.parametrize("value", ["*.", "*..", "a.com,*.", " *. "])
+def test_malformed_wildcard_image_hosts_rejected_under_managed(value: str) -> None:
+    # "*." survives a naive strip()/lower() but collapses to "*" (allow-all)
+    # once the sanitizer rstrips the trailing dot; reject it like a bare "*".
+    with pytest.raises(ValidationError, match="wildcard is not permitted"):
+        _managed_settings(safe_html_image_hosts=value)
+
+
+def test_trailing_dot_wildcard_collapses_in_host_set() -> None:
+    assert _settings(safe_html_image_hosts="*.").image_host_set() == {"*"}
