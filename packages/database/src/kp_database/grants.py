@@ -42,6 +42,8 @@ RUNTIME_ROLES: dict[str, str] = {
     "generation": "kp_worker_generation",
     "directory": "kp_worker_directory",
     "mailbox": "kp_worker_mailbox",
+    "reply-mailbox": "kp_worker_reply_mailbox",
+    "curation": "kp_worker_curation",
 }
 
 #: workloads whose passwords are mandatory for a managed bootstrap
@@ -209,6 +211,36 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
         "SELECT, INSERT": ("events", "reported_mail_receipts"),
         "SELECT, INSERT, UPDATE": ("microsoft365_integration_states",),
+    },
+    # Reply-mailbox polls a dedicated reply inbox and records that a recipient
+    # replied to a simulated message. It mirrors `mailbox` but writes
+    # reply_mail_receipts instead of reported_mail_receipts. One difference from
+    # `mailbox`: it must hold UPDATE on recipient_assignments because it takes a
+    # FOR UPDATE row lock on the matched assignment (reply_mail_jobs._correlate,
+    # session.get(..., with_for_update=True)) before writing the idempotent
+    # event — PostgreSQL requires UPDATE on at least one column for
+    # SELECT ... FOR UPDATE, even though no assignment column is mutated.
+    "reply-mailbox": {
+        # Read-only: the token stamped onto the reply event, and the sent
+        # Message-ID -> assignment correlation the reply answers.
+        "SELECT": ("tracking_tokens", "delivery_report_correlations"),
+        # One idempotent MESSAGE_REPLIED event per assignment and one reply
+        # receipt per inbound reply; neither row is ever updated or deleted here.
+        "SELECT, INSERT": ("events", "reply_mail_receipts"),
+        # Matched assignment is locked FOR UPDATE (no column mutated); see note.
+        "SELECT, UPDATE": ("recipient_assignments",),
+        # Integration-state row is created on first run, then locked FOR UPDATE
+        # and its cursor/lease/status advanced on every poll.
+        "SELECT, INSERT, UPDATE": ("microsoft365_integration_states",),
+    },
+    # Curation auto-clones forwarded real phish into DRAFT templates for human
+    # review. The ONLY table it touches is template_versions: it reads to dedupe
+    # by content hash (curation_service.curate_forwarded_message) and inserts the
+    # neutralized DRAFT clone. It never updates or deletes a template — nothing
+    # on this path is auto-approved or auto-sent — and it reaches no other
+    # business table, so SELECT+INSERT on template_versions is its whole surface.
+    "curation": {
+        "SELECT, INSERT": ("template_versions",),
     },
 }
 

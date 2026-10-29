@@ -193,3 +193,108 @@ def test_invalid_topic_or_reference_fails_closed(topic: str) -> None:
     else:
         with pytest.raises(ValidationError_, match="topic"):
             inspect_dead_letter(topic, "job-1", _request(queue), principal=_operator())
+
+
+class _CurateQueue(_Queue):
+    """Serve a single curate dead letter so the admin flow can be exercised."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.item = {
+            "topic": "curate",
+            "reference": "curate-1",
+            "malformed": False,
+            "message": {
+                "id": "curate-1",
+                "retry": 1,
+                "published_at": 30.0,
+                "dead_lettered_at": 40.0,
+                "payload": {
+                    "source_id": "source-1",
+                    "mailbox": "victim@example.com",
+                },
+            },
+        }
+
+    def dead_letter_count(self, topic: str) -> int:
+        return 1 if topic == "curate" and self.available else 0
+
+    def list_dead_letters(self, topic: str, *, offset: int, limit: int) -> list[dict[str, Any]]:
+        if topic == "curate" and self.available and offset == 0 and limit:
+            return [self.item]
+        return []
+
+    def get_dead_letter(self, topic: str, reference: str) -> dict[str, Any] | None:
+        if topic == "curate" and reference == "curate-1" and self.available:
+            return self.item
+        return None
+
+    def replay_dead_letter(self, topic: str, reference: str) -> dict[str, Any] | None:
+        self.events.append("queue")
+        if topic != "curate" or reference != "curate-1" or not self.available:
+            return None
+        self.available = False
+        return {"id": reference, "replay_count": 1}
+
+
+def test_curate_topic_is_listed_detailed_and_replayable() -> None:
+    # KP-AUD-004: curate flows through the same validated admin interface as any
+    # other topic — list, inspect (redacted), and audited replay all accept it.
+    queue = _CurateQueue()
+    audit = _Audit(queue)
+
+    listed = list_dead_letters(_request(queue), topic="curate", offset=0, limit=100, principal=_operator())
+    assert listed["total"] == 1
+    assert listed["items"][0]["topic"] == "curate"
+    assert listed["items"][0]["reference"] == "curate-1"
+    assert listed["items"][0]["replayable"] is True
+
+    detail = inspect_dead_letter("curate", "curate-1", _request(queue), principal=_operator())
+    assert detail["topic"] == "curate"
+    assert detail["payload"]["source_id"] == "source-1"
+    # PII is redacted for curate exactly as for every other topic.
+    assert detail["payload"]["mailbox"] == "[redacted]"
+    assert "victim@example.com" not in repr(detail)
+
+    replayed = replay_dead_letter(
+        "curate",
+        "curate-1",
+        DeadLetterReplay(confirm=True),
+        _request(queue),
+        audit=cast(Any, audit),
+        principal=_operator(),
+    )
+    # Replay only re-enqueues the curate envelope; it carries no approve/send
+    # authority, so DRAFT-only curation semantics are preserved downstream.
+    assert replayed == {"queued": True, "topic": "curate", "reference": "curate-1", "replay_count": 1}
+    # Same authorization + audit-before-mutate contract as other topics.
+    assert queue.events == ["audit", "queue"]
+    assert audit.calls[0]["action"] == "queue.dead-letter.replay.request"
+    assert audit.calls[0]["detail"]["topic"] == "curate"
+    assert "payload" not in audit.calls[0]["detail"]
+
+
+def test_curate_replay_requires_confirmation_like_every_topic() -> None:
+    # No cross-topic privilege: curate honours the same explicit-confirmation
+    # gate and audits nothing until the caller confirms.
+    queue = _CurateQueue()
+    audit = _Audit(queue)
+    with pytest.raises(ValidationError_, match="explicit confirmation"):
+        replay_dead_letter(
+            "curate",
+            "curate-1",
+            DeadLetterReplay(confirm=False),
+            _request(queue),
+            audit=cast(Any, audit),
+            principal=_operator(),
+        )
+    assert queue.events == []
+
+
+def test_curate_still_rejects_unknown_topics() -> None:
+    # Adding curate widens the allowlist by exactly one known topic; arbitrary
+    # or traversal topic names still fail closed.
+    queue = _CurateQueue()
+    for bad in ("curate/../deliver", "curate ", "cur", "unknown"):
+        with pytest.raises(ValidationError_, match="topic"):
+            inspect_dead_letter(bad, "curate-1", _request(queue), principal=_operator())

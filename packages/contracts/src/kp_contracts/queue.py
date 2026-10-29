@@ -132,6 +132,7 @@ DEFAULT_QUEUE_TOPICS = (
     "remind",
     "alert",
     "directory",
+    "curate",
 )
 
 #: Fixed Redis key holding the ISO-8601 UTC time of the last successful audit
