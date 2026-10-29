@@ -98,7 +98,18 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
         # The console manages the reusable image-asset library: upload (INSERT),
         # list/preview (SELECT), approve and apply/supersede (UPDATE). Assets are
         # never hard-deleted (superseded via approval_state), so no DELETE.
-        "SELECT, INSERT, UPDATE": ("campaign_programs", "aggregation_candidates", "template_assets"),
+        # The governed current-threat library (W3-02) registers source policies,
+        # ingests quarantined artifacts + records review verdicts (UPDATE), and
+        # imports signed bundles (INSERT the replay ledger); originals are never
+        # hard-deleted, so no DELETE. Mirrors migration 0047's GRANTs exactly.
+        "SELECT, INSERT, UPDATE": (
+            "campaign_programs",
+            "aggregation_candidates",
+            "template_assets",
+            "source_policies",
+            "threat_artifacts",
+            "threat_bundle_imports",
+        ),
         "SELECT, INSERT": ("campaign_program_occurrences",),
         # The console binds the durable launch review (create/re-create) and
         # reads canary membership; re-review deletes and re-inserts these rows.

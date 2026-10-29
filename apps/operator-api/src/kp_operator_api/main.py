@@ -52,6 +52,7 @@ from kp_operator_api.program_routes import router as program_router
 from kp_operator_api.ratelimit import LoginThrottle, RateLimiter
 from kp_operator_api.routers import router
 from kp_operator_api.security_headers import HSTS_VALUE, OperatorSecurityHeadersMiddleware
+from kp_operator_api.threat_library_routes import router as threat_library_router
 from kp_operator_api.threat_routes import router as threat_router
 from kp_operator_api.training_library import router as training_library_router
 
@@ -762,6 +763,7 @@ def create_app(settings: OperatorApiSettings | None = None) -> FastAPI:
     app.include_router(program_router)
     app.include_router(training_library_router)
     app.include_router(threat_router)
+    app.include_router(threat_library_router)
     app.include_router(console_router)
     app.include_router(health_dashboard_router)
     app.include_router(discovery_router)
