@@ -391,6 +391,8 @@ class CampaignPattern(BaseEntity):
     requested_action: str | None = None
     delivery_method: str | None = None
     warning_cues: list[str] = Field(default_factory=list)
+    #: Deterministic cue + transformation manifest (W3-01); empty when unset.
+    cue_manifest: dict[str, Any] = Field(default_factory=dict)
     actor_type: str | None = None
     sector_targeting: str | None = None
     attack_mapping: dict[str, Any] = Field(default_factory=dict)
@@ -419,6 +421,8 @@ class TemplateVersion(BaseEntity):
     synthetic_sender_display: str | None = None
     learning_objectives: list[str] = Field(default_factory=list)
     warning_cues: list[str] = Field(default_factory=list)
+    #: Deterministic cue + transformation manifest from reconstruction (W3-01).
+    cue_manifest: dict[str, Any] = Field(default_factory=dict)
     training_explanation: str | None = None
     approval_hash: str | None = None
     approval_state: TemplateApprovalState = TemplateApprovalState.DRAFT

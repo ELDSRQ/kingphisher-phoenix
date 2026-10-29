@@ -904,3 +904,39 @@ def test_non_empty_smtp_env_values_still_parse(monkeypatch: pytest.MonkeyPatch) 
     )
     assert settings.smtp_starttls is True
     assert settings.smtp_username == "postbox"
+
+
+def test_effective_lease_seconds_derives_from_provider_timeout_by_default() -> None:
+    # KP-AUD-006: the default lease must cover the enforced handler deadline, not
+    # the historical fixed 60s visibility that is shorter than the 180s provider
+    # cap (the early-recovery bug).
+    settings = WorkerSettings(
+        worker_name="delivery",
+        runtime_mode="development",
+        provider_timeout_seconds=180.0,
+        lease_margin_seconds=30,
+    )
+    assert settings.lease_seconds == 0
+    assert settings.effective_lease_seconds == 210
+    assert settings.effective_lease_seconds > settings.visibility_seconds
+
+
+def test_effective_lease_seconds_never_below_visibility_window() -> None:
+    settings = WorkerSettings(
+        worker_name="generation",
+        runtime_mode="development",
+        provider_timeout_seconds=1.0,
+        visibility_seconds=60,
+        lease_margin_seconds=5,
+    )
+    assert settings.effective_lease_seconds == 60
+
+
+def test_explicit_lease_seconds_pins_the_lease() -> None:
+    settings = WorkerSettings(
+        worker_name="generation",
+        runtime_mode="development",
+        lease_seconds=900,
+        provider_timeout_seconds=180.0,
+    )
+    assert settings.effective_lease_seconds == 900

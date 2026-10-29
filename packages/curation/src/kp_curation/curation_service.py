@@ -21,6 +21,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from kp_contracts.cue_ontology import manifest_cue_labels
 from kp_database.models import TemplateVersion
 from kp_domain_models import models as dm
 from sqlalchemy import select
@@ -110,6 +111,12 @@ def curate_forwarded_message(
         subject=cloned.subject[:_MAX_BODY],
         plain_text=cloned.plain_text[:_MAX_BODY],
         safe_html=cloned.safe_html[:_MAX_BODY],
+        # Deterministic, structured cue + transformation manifest (W3-01). The
+        # full manifest lives in its own column, isolated from the deliverable
+        # content; ``warning_cues`` carries the string-label projection the
+        # existing consumers expect, now sourced from deterministic extraction.
+        warning_cues=manifest_cue_labels(cloned.cue_manifest),
+        cue_manifest=cloned.cue_manifest,
         approval_state=dm.TemplateApprovalState.DRAFT,
     )
     session.add(template)

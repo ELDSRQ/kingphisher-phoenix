@@ -152,19 +152,60 @@ def test_managed_identities_follow_deployments_with_separate_provider_identities
     assert "for_each                     = var.deploy_workloads ? local.worker_roles : toset([])" not in MAIN
 
 
-def test_directory_and_mailbox_use_distinct_explicit_identity_client_ids() -> None:
+def test_graph_identity_roles_use_distinct_explicit_identity_client_ids() -> None:
+    # W1-01 (KP-AUD-002/020): reply-mailbox is now a third Microsoft Graph
+    # managed-identity role alongside directory and mailbox. The client-id env
+    # name is selected through a lookup map keyed by the role, so this contract
+    # still proves every identity role gets its OWN, EXPLICIT, DISTINCT client-id
+    # env var resolved from that role's dedicated provider identity -- never a
+    # shared or implicit id -- and that curation stays WITHOUT any identity.
     worker = MAIN.split('resource "azurerm_container_app" "worker"', maxsplit=1)[1].split(
         'resource "azurerm_role_assignment" "communication_sender"', maxsplit=1
     )[0]
-    assert 'toset(["directory", "mailbox"])' in worker
-    assert '"KP_WORKER_GRAPH_CLIENT_ID"' in worker
-    assert '"KP_WORKER_REPORTED_MAILBOX_CLIENT_ID"' in worker
+
+    # The identity-role set injected with a client-id is exactly these three.
+    assert 'toset(["directory", "mailbox", "reply-mailbox"])' in worker
+
+    # The lookup map pairs each role to a DISTINCT, explicit client-id env var.
+    role_to_client_id_env = {
+        "directory": "KP_WORKER_GRAPH_CLIENT_ID",
+        "mailbox": "KP_WORKER_REPORTED_MAILBOX_CLIENT_ID",
+        "reply-mailbox": "KP_WORKER_REPLY_MAILBOX_CLIENT_ID",
+    }
+    # One env-var name per role, and no two roles share a name.
+    assert len(set(role_to_client_id_env.values())) == len(role_to_client_id_env)
+    # The lookup-map body (terraform fmt aligns the `=`, so match on \s+).
+    client_id_block = worker.split("name = lookup({", maxsplit=1)[1].split("}, env.value)", maxsplit=1)[0]
+    for role, env_name in role_to_client_id_env.items():
+        key = f'"{role}"' if "-" in role else role
+        assert re.search(rf"{re.escape(key)}\s*=\s*{re.escape(chr(34) + env_name + chr(34))}", client_id_block), (
+            role,
+            env_name,
+        )
+        assert f'"{env_name}"' in worker
+
+    # curation is NOT a managed-identity role: it must not appear in the
+    # client-id lookup map (it reuses reported-mail config, never its own id).
+    assert "curation" not in client_id_block
+    # ...and it is excluded from the provider_identity_roles intersection.
+    marker = "provider_identity_roles = setintersection("
+    identity_roles = MAIN[MAIN.index(marker) : MAIN.index(marker) + len(marker) + 160]
+    assert '"curation"' not in identity_roles
+    assert 'toset(["directory", "mailbox", "reply-mailbox"])' in identity_roles
+
+    # The value is resolved from THIS role's own provider identity (keyed by the
+    # role), proving the client-id is per-role and never shared/implicit.
     assert "local.provider_identity_names[env.value]" in worker
+
     assert "KP_WORKER_MICROSOFT_TENANT_ID" in MAIN
     assert "KP_WORKER_GRAPH_GROUP_IDS" in MAIN
     assert "KP_WORKER_REPORTED_MAILBOX_ID" in MAIN
     assert "KP_WORKER_REPORTED_MAILBOX_FOLDER_ID" in MAIN
     assert "KP_WORKER_REPORTED_MAILBOX_PROVIDER" in MAIN
+    # The reply-mailbox Graph env surface mirrors the mailbox one, distinctly.
+    assert "KP_WORKER_REPLY_MAILBOX_ID" in MAIN
+    assert "KP_WORKER_REPLY_MAILBOX_FOLDER_ID" in MAIN
+    assert "KP_WORKER_REPLY_MAILBOX_PROVIDER" in MAIN
 
 
 def test_provider_identities_get_no_key_vault_or_image_pull_access() -> None:

@@ -862,7 +862,7 @@ def test_reply_ingestion_records_one_idempotent_message_replied_event(monkeypatc
                 )
                 assert len(replied) == 1
                 assert replied[0].recipient_assignment_id == assignment_id
-                assert replied[0].confidence == dm.Confidence.HIGH
+                assert replied[0].confidence == dm.Confidence.MEDIUM
                 # Three distinct external messages were consumed; the second
                 # call replays the first external id (durable boundary), so it
                 # creates no extra receipt — one receipt per distinct message.
