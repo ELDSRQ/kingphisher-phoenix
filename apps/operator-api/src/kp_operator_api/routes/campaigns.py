@@ -107,8 +107,8 @@ from kp_operator_api.sending_domains_roe import (
 )
 from kp_operator_api.training_library import (
     cue_coverage_for_campaign,
+    enforce_cue_coverage_gate,
     invalidate_campaigns_for_coverage_change,
-    require_cue_coverage,
     required_simulation_cues,
 )
 
@@ -772,6 +772,33 @@ def submit_campaign(
     return result
 
 
+def _verify_cue_coverage_against_gate(
+    session: Session,
+    campaign: Campaign,
+    template: TemplateVersion | None,
+    resource: TrainingResource,
+    gate: CampaignLaunchGate | None,
+) -> None:
+    """Fail closed when the campaign's cue coverage drifted from its review.
+
+    Shared by approval, schedule, and send so a single rule decides launchability:
+    the live coverage must still satisfy every required cue (or a documented
+    exception) AND match the fingerprint bound at review. A legacy/NULL
+    fingerprint while required cues exist is treated as drift and blocked, so an
+    approval recorded before this gate cannot schedule or send uncovered training.
+    """
+
+    coverage = enforce_cue_coverage_gate(session, campaign, template, resource)
+    if coverage is None:
+        return
+    if (
+        gate is None
+        or gate.cue_coverage_hash is None
+        or not hmac.compare_digest(coverage.coverage_hash, gate.cue_coverage_hash)
+    ):
+        raise ConflictError("campaign training-cue coverage changed after review; review it again")
+
+
 def _record_campaign_review(
     campaign: Campaign, request: Request, session: Session, audit: AuditStore, principal: Principal
 ) -> dict[str, Any]:
@@ -783,10 +810,11 @@ def _record_campaign_review(
     # required simulation cue lacks reviewed after-click training coverage and
     # no documented exception covers it. The coverage fingerprint is bound into
     # the launch gate so a later change to the cues or their coverage is caught
-    # at approval instead of silently riding on a stale review. A simulation
-    # that declares no cues (empty manifest) has nothing to cover.
+    # at approval/send instead of silently riding on a stale review. The gate
+    # fails closed on a degraded manifest; only a genuinely cue-less simulation
+    # returns no obligation.
+    coverage = enforce_cue_coverage_gate(session, campaign, template, training_resource)
     required_cues = required_simulation_cues(template)
-    coverage = require_cue_coverage(session, campaign, template, training_resource) if required_cues else None
     launch_gate = bind_campaign_launch_review(session, campaign, template, submitted_by=_principal_uuid(principal))
     if coverage is not None:
         launch_gate.cue_coverage_hash = coverage.coverage_hash
@@ -1268,18 +1296,13 @@ def approve_campaign(
     if launch_gate is None:
         raise ConflictError("campaign has no durable launch review; review it again")
 
-    # W4-01 (KP-AUD-015): re-run the coverage validator at approval and reject a
-    # decision that would ride on cues/coverage that drifted since review. The
-    # validator fails closed when a required cue lost coverage; the fingerprint
-    # comparison additionally catches any change (added coverage, a new
-    # exception, a changed cue manifest) that the review was not taken against. A
-    # simulation that declares no cues has nothing to cover and nothing to drift.
-    if required_simulation_cues(template):
-        coverage = require_cue_coverage(session, campaign, template, training_resource)
-        if launch_gate.cue_coverage_hash is None or not hmac.compare_digest(
-            coverage.coverage_hash, launch_gate.cue_coverage_hash
-        ):
-            raise ConflictError("campaign training-cue coverage changed after review; review it again")
+    # W4-01 (KP-AUD-015): re-run the coverage gate at approval and reject a
+    # decision that would ride on cues/coverage that drifted since review. Fails
+    # closed when a required cue lost coverage, when the simulation declares cues
+    # the manifest did not resolve, or when the live fingerprint no longer
+    # matches the one bound at review (added coverage, a new exception, a changed
+    # cue manifest, or a legacy NULL hash).
+    _verify_cue_coverage_against_gate(session, campaign, template, training_resource, launch_gate)
 
     principal_id = _principal_uuid(principal)
     if campaign.created_by == principal_id:
@@ -1634,6 +1657,12 @@ def record_cue_coverage_exception(
         dm.CampaignState.APPROVED,
     }:
         raise ConflictError("only a draft or not-yet-launched campaign can record a coverage exception")
+    # The exception may only waive a cue the simulation currently requires; an
+    # exception for a non-required or unknown cue would be dead weight that never
+    # gates anything, so reject it rather than storing a meaningless waiver.
+    template = session.get(TemplateVersion, campaign.current_template_id) if campaign.current_template_id else None
+    if body.cue_id not in required_simulation_cues(template):
+        raise ConflictError("a documented exception may only waive a cue the campaign simulation currently requires")
     existing = session.scalar(
         select(CampaignCueCoverageException).where(
             CampaignCueCoverageException.campaign_id == campaign_id,
@@ -1774,6 +1803,12 @@ def schedule_campaign(
         raise ConflictError(launch_error)
     if gate is None or gate.state != "reviewed":
         raise ConflictError("campaign canary is not in the reviewed state")
+    # W4-01 (KP-AUD-015): re-check training-cue coverage before queuing, so
+    # coverage withdrawn after approval (or a legacy NULL fingerprint) blocks the
+    # canary rather than sending uncovered after-click training.
+    _verify_cue_coverage_against_gate(
+        session, campaign, template, require_bound_training_resource(session, campaign, lock=False), gate
+    )
     chosen_roe = next((roe for roe in covering if roe.roe_id == gate.roe_id), None)
     if chosen_roe is None:
         raise ConflictError("the Rules-of-Engagement bound during review is no longer active")
@@ -2010,7 +2045,7 @@ def send_reviewed_campaign(
     require_program_active_for_schedule(session, campaign_id)
     if _system_safety_state(session, shared_lock=True).emergency_stop_engaged:
         raise ConflictError("the global emergency stop is engaged; sending is disabled")
-    require_bound_training_resource(session, campaign)
+    training_resource = require_bound_training_resource(session, campaign)
     _require_current_frozen_audience(request, session, campaign, audit, principal)
     if request.app.state.settings.approval_policy is ApprovalPolicy.ENFORCE and _missing_campaign_approvals(
         session, campaign
@@ -2024,6 +2059,10 @@ def send_reviewed_campaign(
         raise ConflictError(error)
     if gate is None or gate.state != "reviewed":
         raise ConflictError("this reviewed campaign has already been sent or needs a fresh review")
+    # W4-01 (KP-AUD-015): re-check training-cue coverage before sending, so
+    # coverage withdrawn after approval (or a legacy NULL fingerprint) blocks the
+    # send rather than delivering uncovered after-click training.
+    _verify_cue_coverage_against_gate(session, campaign, template, training_resource, gate)
     now = datetime.now(UTC)
     if campaign.schedule_start is None or campaign.schedule_end is None or campaign.schedule_end <= now:
         raise ConflictError("campaign requires a current delivery window")

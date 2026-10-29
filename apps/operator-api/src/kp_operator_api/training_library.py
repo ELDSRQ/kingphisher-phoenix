@@ -130,12 +130,65 @@ def required_simulation_cues(template: TemplateVersion | None) -> tuple[str, ...
     """The campaign simulation's required cue identities, deterministically.
 
     Sourced from the bound template's W3-01 cue manifest. An empty or absent
-    manifest means the simulation declares no cues, so coverage is vacuously
-    satisfied — unknown content stays unknown rather than inventing a cue.
+    manifest yields no labels; whether that is a genuinely cue-less simulation
+    or a degraded one is decided by :func:`simulation_declares_cues` — unknown
+    content stays unknown rather than inventing a cue.
     """
 
     manifest = getattr(template, "cue_manifest", None) or {}
     return tuple(manifest_cue_labels(manifest))
+
+
+def simulation_declares_cues(template: TemplateVersion | None) -> bool:
+    """True when the template signals it relies on social-engineering cues.
+
+    A template declares cues if it carries any free-text ``warning_cues`` or a
+    non-empty structured manifest ``cues`` list — even when the deterministic
+    manifest resolved no stable labels. This lets the gate fail CLOSED on a
+    degraded manifest (declares cues but produced no labels) instead of waving
+    the campaign through with nothing to cover. A genuinely cue-less simulation
+    (no ``warning_cues`` and no manifest cues) returns False and may pass.
+    """
+
+    warning_cues = getattr(template, "warning_cues", None) or []
+    if any(isinstance(cue, str) and cue.strip() for cue in warning_cues):
+        return True
+    manifest = getattr(template, "cue_manifest", None) or {}
+    if isinstance(manifest, dict):
+        cues = manifest.get("cues")
+        if isinstance(cues, list) and len(cues) > 0:
+            return True
+    return False
+
+
+def enforce_cue_coverage_gate(
+    session: Session,
+    campaign: Campaign,
+    template: TemplateVersion | None,
+    resource: TrainingResource,
+) -> CueCoverageAssessment | None:
+    """Fail closed unless the campaign's simulation cues are covered.
+
+    Single source of truth for the coverage obligation, shared by review,
+    approval, schedule, and send:
+
+    * required cues present  -> returns the coverage assessment (carrying the
+      fingerprint to bind/compare) when every required cue has reviewed coverage
+      or a documented exception, else raises :class:`ConflictError`;
+    * no labels but the simulation declares cues -> raises (degraded manifest
+      must be regenerated before launch);
+    * genuinely cue-less simulation -> returns ``None`` (nothing to cover).
+    """
+
+    if required_simulation_cues(template):
+        return require_cue_coverage(session, campaign, template, resource)
+    if simulation_declares_cues(template):
+        raise ConflictError(
+            "campaign simulation declares social-engineering cues but its deterministic cue manifest "
+            "resolved none; regenerate the simulation's cue manifest so its cues can be covered by "
+            "reviewed training before launch"
+        )
+    return None
 
 
 def cue_coverage_for_campaign(
