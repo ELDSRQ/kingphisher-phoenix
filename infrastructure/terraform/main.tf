@@ -45,6 +45,24 @@ locals {
       KP_WORKER_REPORTED_MAILBOX_FOLDER_ID = trimspace(var.reported_mailbox_folder)
       KP_WORKER_MICROSOFT_TENANT_ID        = trimspace(var.entra_tenant_id)
     }
+    # KP-AUD-002/020: the reply-mailbox worker correlates inbound replies to sent
+    # simulations. Gated on a configured reply-mailbox Graph endpoint; empty
+    # disables it so no kp_worker_reply_mailbox role/secret/identity is created.
+    "reply-mailbox" = trimspace(var.reply_mailbox_endpoint) == "" ? {} : {
+      KP_WORKER_REPLY_MAILBOX_URL       = trimspace(var.reply_mailbox_endpoint)
+      KP_WORKER_REPLY_MAILBOX_PROVIDER  = "microsoft365"
+      KP_WORKER_REPLY_MAILBOX_ID        = trimspace(var.reply_mailbox_address)
+      KP_WORKER_REPLY_MAILBOX_FOLDER_ID = trimspace(var.reply_mailbox_folder)
+      KP_WORKER_MICROSOFT_TENANT_ID     = trimspace(var.entra_tenant_id)
+    }
+    # KP-AUD-002/020: the forwarded-phish curation worker auto-clones reported
+    # mail into DRAFT templates. Gated on a configured curation mailbox address;
+    # empty disables it so no kp_worker_curation role/secret is created.
+    curation = trimspace(var.curation_mailbox_address) == "" ? {} : {
+      KP_WORKER_CURATION_MAILBOX_ADDRESS  = trimspace(var.curation_mailbox_address)
+      KP_WORKER_CURATION_INTERVAL_SECONDS = tostring(var.curation_interval_seconds)
+      KP_WORKER_CURATION_POLL_LIMIT       = tostring(var.curation_poll_limit)
+    }
   }
   provider_worker_roles = toset([
     for role, environment in local.provider_worker_env : role if length(environment) > 0
@@ -59,7 +77,7 @@ locals {
   worker_deployments = toset(keys(local.worker_deployment_roles))
   provider_identity_roles = setintersection(
     local.provider_worker_roles,
-    toset(["directory", "mailbox"]),
+    toset(["directory", "mailbox", "reply-mailbox"]),
   )
   provider_identity_names = {
     for role in local.provider_identity_roles : role => "provider-${role}"
@@ -2019,10 +2037,14 @@ resource "azurerm_container_app" "worker" {
       dynamic "env" {
         for_each = setintersection(
           local.worker_deployment_roles[each.key],
-          toset(["directory", "mailbox"]),
+          toset(["directory", "mailbox", "reply-mailbox"]),
         )
         content {
-          name = env.value == "directory" ? "KP_WORKER_GRAPH_CLIENT_ID" : "KP_WORKER_REPORTED_MAILBOX_CLIENT_ID"
+          name = lookup({
+            directory       = "KP_WORKER_GRAPH_CLIENT_ID"
+            mailbox         = "KP_WORKER_REPORTED_MAILBOX_CLIENT_ID"
+            "reply-mailbox" = "KP_WORKER_REPLY_MAILBOX_CLIENT_ID"
+          }, env.value)
           value = azurerm_user_assigned_identity.workload[
             local.provider_identity_names[env.value]
           ].client_id

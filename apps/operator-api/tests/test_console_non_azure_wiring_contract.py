@@ -7,6 +7,7 @@ from kp_authorization.rbac import Capability
 from kp_operator_api.analytics_routes import router as analytics_router
 from kp_operator_api.console import router as console_router
 from kp_operator_api.console.aggregation_routes import router as aggregation_router
+from kp_operator_api.health_dashboard import router as health_dashboard_router
 from kp_operator_api.program_routes import router as program_router
 from kp_operator_api.routers import router as api_router
 from kp_operator_api.training_library import router as training_library_router
@@ -25,6 +26,7 @@ def _route_inventory() -> set[tuple[str, str]]:
         analytics_router,
         console_router,
         aggregation_router,
+        health_dashboard_router,
         program_router,
         training_library_router,
     ):

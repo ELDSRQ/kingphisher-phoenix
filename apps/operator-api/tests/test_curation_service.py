@@ -93,3 +93,23 @@ def test_curate_populates_cue_manifest_and_label_projection() -> None:
     import json as _json
 
     assert "evil.example" not in _json.dumps(t.cue_manifest)
+
+
+def test_persisted_curation_provenance_has_no_raw_hostile_tag_name() -> None:
+    # The sanitizer provenance is persisted into the template's raw_proposal via
+    # **cloned.provenance; a hostile tag name must not survive into storage.
+    import json as _json
+
+    hostile = "evil.example:login"
+    s = _Session()
+    _curate(
+        s,
+        subject="URGENT: verify your account",
+        html=f'<p>Dear user <{hostile}>verify</{hostile}> <a href="https://evil.example/x">sign in</a></p>',
+    )
+    t = s.added[0]
+    stored = _json.dumps(t.raw_proposal)
+    assert "evil.example" not in stored  # neither the hostile tag name nor the link host
+    sanitizer = t.raw_proposal["sanitizer"]
+    assert hostile not in sanitizer["removed_tags"]
+    assert sanitizer["removed_tags_other"]["name_hashes"]  # recorded by hash only
