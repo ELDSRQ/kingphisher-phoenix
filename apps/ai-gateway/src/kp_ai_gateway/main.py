@@ -29,10 +29,12 @@ approves every draft, so this gateway is subordinate by construction.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
 import secrets
+from collections.abc import AsyncIterator
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Self
@@ -72,6 +74,116 @@ class UpstreamAuthError(Exception):
     the token endpoint's own error text (which can echo the identity or
     endpoint) stays internal. Callers map this to a clean 502.
     """
+
+
+class UpstreamResponseTooLarge(Exception):
+    """The upstream model response exceeded the configured byte bound.
+
+    Deliberately carries no provider content: the body is refused BEFORE it is
+    fully buffered or parsed, so nothing the upstream sent reaches the error
+    message or any log. Callers map this to a clean 502
+    ``provider_contract_invalid`` (KP-AUD-009).
+    """
+
+
+class GatewayAtCapacity(Exception):
+    """The in-process concurrency gate is full (KP-AUD-010).
+
+    Raised by ``_concurrency_slot`` when ``max_concurrent_model_requests`` model
+    requests are already in flight. Callers map it to a clean 429 so a burst
+    cannot pile unbounded work against the single pinned backend.
+    """
+
+
+#: Matches a syntactically valid (non-negative integer) Content-Length value.
+_CONTENT_LENGTH_RE = re.compile(r"[0-9]+")
+
+
+async def _read_bounded_upstream_json(response: httpx.Response, *, max_bytes: int) -> Any:
+    """Stream and JSON-decode an upstream response under a hard byte bound.
+
+    The byte bounds are applied BEFORE any JSON allocation (KP-AUD-009), mirroring
+    the worker's ``_bounded_ai_json`` (``kp_workers.jobs``) adapted to the
+    gateway's async client:
+
+    * a duplicate ``Content-Length`` header, or a malformed/absurdly long one, is
+      refused without reading the body;
+    * a declared ``Content-Length`` over ``max_bytes`` is refused without reading
+      the body;
+    * the running decoded-byte total is checked per chunk, so a chunked/streamed
+      body that omits or lies about its length still cannot grow the buffer past
+      ``max_bytes``.
+
+    On any breach it raises ``UpstreamResponseTooLarge`` carrying no provider
+    content. A body within the bound is decoded with ``json.loads``; invalid JSON
+    raises ``ValueError`` (``json.JSONDecodeError``), which the endpoints already
+    map to a clean 502 exactly as the previous ``response.json()`` did.
+    """
+
+    content_lengths = response.headers.get_list("content-length")
+    if len(content_lengths) > 1:
+        raise UpstreamResponseTooLarge("upstream response has duplicate Content-Length headers")
+    if content_lengths:
+        declared = content_lengths[0].strip()
+        if _CONTENT_LENGTH_RE.fullmatch(declared) is None:
+            raise UpstreamResponseTooLarge("upstream response Content-Length is malformed")
+        if len(declared) > 19 or int(declared) > max_bytes:
+            raise UpstreamResponseTooLarge("upstream response exceeds the maximum size")
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        if len(body) + len(chunk) > max_bytes:
+            raise UpstreamResponseTooLarge("upstream response exceeds the maximum size")
+        body.extend(chunk)
+    return json.loads(body)
+
+
+#: In-process admission gate shared by the four model endpoints (KP-AUD-010).
+#: Created at import; asyncio.Semaphore binds to the running loop lazily, so this
+#: is safe under uvicorn/pytest. Sized from configuration.
+_CONCURRENCY_SEMAPHORE = asyncio.Semaphore(settings.max_concurrent_model_requests)
+
+
+@contextlib.asynccontextmanager
+async def _concurrency_slot() -> AsyncIterator[None]:
+    """Admit one model-backed request, or raise ``GatewayAtCapacity`` if full.
+
+    A non-blocking admission check: a request arriving while
+    ``max_concurrent_model_requests`` are already in flight is refused at once
+    (the caller returns 429) rather than queueing unbounded work behind the
+    single pinned backend. This is correct on the single-threaded event loop —
+    ``locked()`` and the immediately-satisfiable ``acquire()`` never suspend
+    between the check and the decrement, so no two requests can both pass a full
+    gate.
+    """
+
+    if _CONCURRENCY_SEMAPHORE.locked():
+        raise GatewayAtCapacity
+    await _CONCURRENCY_SEMAPHORE.acquire()
+    try:
+        yield
+    finally:
+        _CONCURRENCY_SEMAPHORE.release()
+
+
+def _at_capacity_response() -> JSONResponse:
+    """Clean 429 for a request refused by the concurrency gate (KP-AUD-010)."""
+
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "gateway at capacity"},
+        headers={"Retry-After": "1"},
+    )
+
+
+def _provider_contract_invalid_response() -> JSONResponse:
+    """Clean 502 for an upstream reply that breached the byte bound (KP-AUD-009).
+
+    Carries no provider content — only the stable, non-secret code the worker
+    can act on.
+    """
+
+    return JSONResponse(status_code=502, content={"detail": "provider_contract_invalid"})
 
 
 #: The Entra credential is created once and reused so azure-identity's in-memory
@@ -642,15 +754,24 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
         endpoint = settings.llama_base_url.rstrip("/") + "/chat/completions"
         provider_headers = None
     try:
-        # Outbound auth. For an external provider it is the bearer/none header
-        # built above; for the local/managed upstream it is ``_upstream_headers``
-        # (AI-015 Path D) — an empty mapping in the default local posture.
-        headers = provider_headers if provider_headers is not None else await _upstream_headers()
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            response = await client.post(endpoint, json=payload, headers=headers)
-            response.raise_for_status()
-            wrapper = response.json()
-        content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
+        async with _concurrency_slot():
+            # Outbound auth. For an external provider it is the bearer/none header
+            # built above; for the local/managed upstream it is ``_upstream_headers``
+            # (AI-015 Path D) — an empty mapping in the default local posture.
+            headers = provider_headers if provider_headers is not None else await _upstream_headers()
+            # Stream the reply and bound it BEFORE any JSON allocation (KP-AUD-009):
+            # a custom/managed upstream is untrusted for resource purposes.
+            async with (
+                httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client,
+                client.stream("POST", endpoint, json=payload, headers=headers) as response,
+            ):
+                response.raise_for_status()
+                wrapper = await _read_bounded_upstream_json(response, max_bytes=settings.max_response_bytes)
+            content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
+    except GatewayAtCapacity:
+        return _at_capacity_response()
+    except UpstreamResponseTooLarge:
+        return _provider_contract_invalid_response()
     except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         # A backend outage, non-2xx, non-JSON body, or unexpected response
         # shape must surface as a clean 502 — never a raw traceback that could
@@ -659,6 +780,11 @@ async def propose(body: ProposeRequest) -> dict[str, str] | JSONResponse:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError:
+        return JSONResponse(status_code=502, content={"detail": "model returned unparseable content"})
+    # A valid-JSON non-object (array/string/null/number) must not reach
+    # ``.get(...)`` below (KP-AUD-011): guard it to a clean, bounded 502 instead
+    # of an AttributeError -> 500, matching /extract and /aggregate.
+    if not isinstance(parsed, dict):
         return JSONResponse(status_code=502, content={"detail": "model returned unparseable content"})
     subject = str(parsed.get("subject", ""))[:200]
     plain_text = _ensure_placeholder(str(parsed.get("plain_text", "")), placeholder, html=False)
@@ -720,12 +846,19 @@ async def extract(body: ExtractRequest) -> dict[str, Any] | JSONResponse:
     _apply_generation_bounds(payload, reasoning_effort=settings.extract_reasoning_effort)
     endpoint = settings.llama_base_url.rstrip("/") + "/chat/completions"
     try:
-        headers = await _upstream_headers()
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            response = await client.post(endpoint, json=payload, headers=headers)
-            response.raise_for_status()
-            wrapper = response.json()
-        content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
+        async with _concurrency_slot():
+            headers = await _upstream_headers()
+            async with (
+                httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client,
+                client.stream("POST", endpoint, json=payload, headers=headers) as response,
+            ):
+                response.raise_for_status()
+                wrapper = await _read_bounded_upstream_json(response, max_bytes=settings.max_response_bytes)
+            content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
+    except GatewayAtCapacity:
+        return _at_capacity_response()
+    except UpstreamResponseTooLarge:
+        return _provider_contract_invalid_response()
     except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         return JSONResponse(status_code=502, content={"detail": "extraction backend unavailable"})
     try:
@@ -810,14 +943,23 @@ async def aggregate(body: AggregateRequest) -> dict[str, Any] | JSONResponse:
     base_url = settings.aggregate_base_url or settings.llama_base_url
     endpoint = base_url.rstrip("/") + "/chat/completions"
     try:
-        headers = await _upstream_headers()
-        # The LONG background timeout is the point of this tier: it is not bounded
-        # by the chat-latency request timeout used by /propose and /extract.
-        async with httpx.AsyncClient(timeout=settings.aggregate_timeout_seconds) as client:
-            response = await client.post(endpoint, json=payload, headers=headers)
-            response.raise_for_status()
-            wrapper = response.json()
-        content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
+        async with _concurrency_slot():
+            headers = await _upstream_headers()
+            # The LONG background timeout is the point of this tier: it is not bounded
+            # by the chat-latency request timeout used by /propose and /extract. The
+            # byte bound still applies — a long-running pass may not return an
+            # unbounded body (KP-AUD-009).
+            async with (
+                httpx.AsyncClient(timeout=settings.aggregate_timeout_seconds) as client,
+                client.stream("POST", endpoint, json=payload, headers=headers) as response,
+            ):
+                response.raise_for_status()
+                wrapper = await _read_bounded_upstream_json(response, max_bytes=settings.max_response_bytes)
+            content = _strip_code_fences(wrapper["choices"][0]["message"].get("content") or "")
+    except GatewayAtCapacity:
+        return _at_capacity_response()
+    except UpstreamResponseTooLarge:
+        return _provider_contract_invalid_response()
     except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         return JSONResponse(status_code=502, content={"detail": "aggregation backend unavailable"})
     try:
@@ -891,12 +1033,21 @@ async def discover(body: DiscoverRequest) -> dict[str, Any] | JSONResponse:
         payload["reasoning"] = {"effort": settings.discover_reasoning_effort}
     endpoint = settings.responses_base_url.rstrip("/") + "/responses"
     try:
-        headers = await _upstream_headers()
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
-            response = await client.post(endpoint, params={"api-version": "preview"}, json=payload, headers=headers)
-            response.raise_for_status()
-            wrapper = response.json()
+        async with _concurrency_slot():
+            headers = await _upstream_headers()
+            async with (
+                httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client,
+                client.stream(
+                    "POST", endpoint, params={"api-version": "preview"}, json=payload, headers=headers
+                ) as response,
+            ):
+                response.raise_for_status()
+                wrapper = await _read_bounded_upstream_json(response, max_bytes=settings.max_response_bytes)
         parsed = json.loads(_discover_message_text(wrapper))
+    except GatewayAtCapacity:
+        return _at_capacity_response()
+    except UpstreamResponseTooLarge:
+        return _provider_contract_invalid_response()
     except (UpstreamAuthError, httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         return JSONResponse(status_code=502, content={"detail": "discovery backend unavailable"})
     try:

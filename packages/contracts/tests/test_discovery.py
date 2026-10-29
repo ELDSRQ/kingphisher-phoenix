@@ -72,3 +72,20 @@ def test_sourced_leads_drops_unsourced_and_keeps_only_allowlisted_urls() -> None
 def test_discovery_result_requires_model_id() -> None:
     with pytest.raises(ValueError):
         DiscoveryResult(leads=[], model_id="")
+
+
+def test_pii_free_query_is_only_an_email_backstop_not_general_pii() -> None:
+    # KP-AUD-012 honesty: the guard is an email/"@" backstop, NOT general PII
+    # detection. A query carrying a human name + role (clear PII) passes
+    # UNTOUCHED — this test documents that limitation so no caller relies on it
+    # as if it screened PII. An email address is still rejected.
+    name_and_role = "phishing targeting the CFO Jane Smith in finance 2026"
+    assert assert_pii_free_query(name_and_role) == name_and_role
+    with pytest.raises(DiscoveryQueryError):
+        assert_pii_free_query("report about victim jane.smith@corp.com")
+
+
+def test_pii_free_query_docstring_states_its_narrow_scope() -> None:
+    # The source-of-truth copy must say what the guard does NOT do (KP-AUD-012).
+    doc = (assert_pii_free_query.__doc__ or "").lower()
+    assert "not general pii detection" in doc
