@@ -107,9 +107,13 @@ recipient selection. The server records and rechecks your reviewed roster.
 8. **Monitor:** click **Open dashboard** on that campaign. **Monitor recipients**
    selects that campaign and shows delivery state, observed clicks, confirmed
    interaction, employee reports and training by masked recipient. Use **Refresh
-   recipient results** for fresh data. **Replies are currently unavailable**:
-   reply ingestion has not been built/configured. Employee reports are separate
-   from replies. **Report and exports** opens results and download actions.
+   recipient results** for fresh data. **Replies** show per recipient when a
+   reply mailbox is configured: the `reply-mailbox` worker header-correlates an
+   inbound reply to its sent message and marks that recipient replied. The reply
+   mailbox is a local Mailpit inbox in development and a Microsoft 365 mailbox in
+   managed deployments; with no reply mailbox configured the feature is inactive
+   and the replied column stays empty. Employee reports are separate from
+   replies. **Report and exports** opens results and download actions.
    **Stop this campaign** stops future deliveries and disables its tracking links.
 
 For an unsent campaign created in the earlier workflow, use **Review current
