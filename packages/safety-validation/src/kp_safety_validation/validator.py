@@ -405,13 +405,14 @@ class SafetyValidator:
             allowed = _clean_host(allowed).rstrip(".")
             if not allowed:
                 continue
-            # Exact, subdomain-of-allowed, or the registrable parent of an
-            # allowed host. The parent clause absorbs the bare-host regex, which
-            # extracts e.g. ``brand.com`` out of ``cdn.brand.com/logo.png``; if
-            # the operator trusts ``cdn.brand.com`` for images, treating its
-            # parent as an image host too is the intended, safe reading (links,
-            # not images, are already stripped by the sanitizer).
-            if host == allowed or host.endswith("." + allowed) or allowed.endswith("." + host):
+            # Exact host, or a subdomain of an allow-listed host — nothing wider
+            # (KP-AUD-013). A parent / registrable-domain match is deliberately
+            # NOT accepted: trusting ``cdn.brand.com`` for images must never
+            # silently widen to ``brand.com`` (or any other host under it). The
+            # suffix test is anchored on a leading dot, so it is a true suffix
+            # match and never a substring — ``evilbrand.com`` is not a subdomain
+            # of ``brand.com``.
+            if host == allowed or host.endswith("." + allowed):
                 return True
         return False
 

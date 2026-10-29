@@ -7,8 +7,13 @@ which accept ONLY raster types ``png/jpeg/gif/webp`` (SVG is excluded because it
 can carry script). This module enforces the SAME allow-list at the point bytes
 enter the store, by sniffing magic bytes — so a non-raster payload (SVG, HTML,
 a script with an image extension) is rejected on upload, before it can ever be
-embedded. Dimensions are parsed best-effort for metadata only; they are not a
-security control.
+embedded. Parsed dimensions are also bounded (KP-AUD-013): an asset whose
+declared geometry exceeds the per-side or total-pixel ceiling is rejected, in
+addition to the raw byte ceiling, because declared geometry is independent of
+the compressed byte size (a tiny payload can still declare an enormous canvas —
+a decompression bomb). When a header cannot be parsed the dimensions are 0
+(best-effort, as before) and the bound does not fire; the magic-byte and
+byte-size gates still apply.
 
 No third-party dependency (notably not Pillow): the header formats needed for
 the four permitted raster types are small and stable, and avoiding an image
@@ -31,6 +36,15 @@ ALLOWED_MEDIA_TYPES: frozenset[str] = frozenset({"image/png", "image/jpeg", "ima
 #: callers should pass web-optimized images (≈600px banners).
 MAX_ASSET_BYTES = 512_000
 
+#: Hard ceiling on a stored asset's declared geometry (KP-AUD-013), enforced in
+#: addition to :data:`MAX_ASSET_BYTES`. A real web-optimized banner or logo is
+#: at most a few thousand pixels per side, so a larger declared dimension is a
+#: mistake or a decompression bomb. ``MAX_ASSET_DIMENSION`` bounds either side;
+#: ``MAX_ASSET_PIXELS`` bounds the total area (width * height) so a decoder's
+#: memory is bounded even when neither side alone is extreme.
+MAX_ASSET_DIMENSION = 8192
+MAX_ASSET_PIXELS = 4096 * 4096  # 16,777,216 px (~16.7 megapixels)
+
 
 class ImageAssetError(ValueError):
     """A stable, non-secret reason an uploaded asset is not an accepted raster image."""
@@ -51,10 +65,12 @@ def inspect_raster_image(data: bytes) -> ImageAssetInfo:
     """Validate ``data`` is an accepted raster image and return its facts.
 
     Raises :class:`ImageAssetError` for an empty payload, one over
-    :data:`MAX_ASSET_BYTES`, or anything whose magic bytes are not one of the
-    four permitted raster formats (this is what rejects SVG and non-images).
-    Width/height are best-effort: ``0`` when the header cannot be parsed, which
-    never blocks an otherwise-valid raster.
+    :data:`MAX_ASSET_BYTES`, anything whose magic bytes are not one of the four
+    permitted raster formats (this is what rejects SVG and non-images), or an
+    asset whose parsed dimensions exceed :data:`MAX_ASSET_DIMENSION` per side or
+    :data:`MAX_ASSET_PIXELS` in total. Width/height remain best-effort: ``0``
+    when the header cannot be parsed, which never blocks an otherwise-valid
+    raster (the dimension bound then does not fire).
     """
 
     if not data:
@@ -71,6 +87,19 @@ def inspect_raster_image(data: bytes) -> ImageAssetInfo:
         )
 
     width, height = _dimensions(media_type, data)
+    # Dimension bound (KP-AUD-013), in addition to the byte ceiling above. A
+    # tiny compressed payload can still declare an enormous canvas (a
+    # decompression bomb), so reject oversized declared geometry. Unparsed
+    # headers yield 0 and fall through, preserving the best-effort contract.
+    if width > MAX_ASSET_DIMENSION or height > MAX_ASSET_DIMENSION:
+        raise ImageAssetError(
+            f"image dimensions {width}x{height} exceed the {MAX_ASSET_DIMENSION}px per-side limit "
+            "(use a web-optimized asset)"
+        )
+    if width * height > MAX_ASSET_PIXELS:
+        raise ImageAssetError(
+            f"image has {width * height} pixels; the limit is {MAX_ASSET_PIXELS} pixels (use a web-optimized asset)"
+        )
     return ImageAssetInfo(
         media_type=media_type,
         width=width,
