@@ -19,6 +19,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from kp_contracts.cue_ontology import build_cue_manifest
 from kp_domain_models import models as dm
 
 _LURE_KEYWORDS = {
@@ -297,6 +298,17 @@ def build_pattern_candidate(item: dm.SourceItem, *, as_of: datetime | None = Non
         requested_action="click_link" if "link" in triggers else "none",
         delivery_method="email",
         warning_cues=["urgent-language", "unexpected-sender"] if "urgent" in triggers else ["none"],
+        # Structured, deterministic cue manifest alongside the coarse free-text
+        # cues above (W3-01). A pattern is classified, not reconstructed, so it
+        # has no transformation receipts; known cues are extracted from the
+        # already-neutralized source text (offsets + hashes only), unknown
+        # content stays unknown.
+        cue_manifest=build_cue_manifest(
+            subject=item.title,
+            body=item.sanitized_text,
+            transformations=[],
+            source="pattern_classification",
+        ),
         actor_type=actor_type,
         sector_targeting=sector_targeting,
         attack_mapping={

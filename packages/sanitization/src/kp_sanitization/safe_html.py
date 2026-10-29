@@ -35,6 +35,7 @@ No network, no new dependency: pure Beautiful Soup over the stdlib
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -271,6 +272,183 @@ def _valid_img_src(src: str, allowed_image_hosts: frozenset[str]) -> str | None:
     return None
 
 
+# ``html.parser`` accepts arbitrary element names, so a hostile input such as
+# ``<evil.example:login>`` becomes a "removed tag" whose NAME is attacker text.
+# ``removed_tags`` keeps such names in-memory for the manifest fold, but the
+# ``as_provenance`` summary is PERSISTED (template provenance / audit trail), so
+# it must never carry a raw unknown name. This fixed allow-list of real HTML
+# element names decides which removed-tag names are safe to keep readable; every
+# other name folds into an aggregate count + SHA-256 hashes. (A sibling list in
+# ``kp_contracts.cue_ontology`` guards the manifest surface; keep them aligned.)
+KNOWN_HTML_TAGS: frozenset[str] = frozenset(
+    {
+        "a",
+        "abbr",
+        "acronym",
+        "address",
+        "applet",
+        "area",
+        "article",
+        "aside",
+        "audio",
+        "b",
+        "base",
+        "basefont",
+        "bdi",
+        "bdo",
+        "big",
+        "blockquote",
+        "body",
+        "br",
+        "button",
+        "canvas",
+        "caption",
+        "center",
+        "cite",
+        "code",
+        "col",
+        "colgroup",
+        "data",
+        "datalist",
+        "dd",
+        "del",
+        "details",
+        "dfn",
+        "dialog",
+        "dir",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "embed",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "font",
+        "footer",
+        "form",
+        "frame",
+        "frameset",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "header",
+        "hgroup",
+        "hr",
+        "html",
+        "i",
+        "iframe",
+        "img",
+        "input",
+        "ins",
+        "kbd",
+        "label",
+        "legend",
+        "li",
+        "link",
+        "main",
+        "map",
+        "mark",
+        "marquee",
+        "menu",
+        "meta",
+        "meter",
+        "nav",
+        "noframes",
+        "noscript",
+        "object",
+        "ol",
+        "optgroup",
+        "option",
+        "output",
+        "p",
+        "param",
+        "picture",
+        "pre",
+        "progress",
+        "q",
+        "rp",
+        "rt",
+        "ruby",
+        "s",
+        "samp",
+        "script",
+        "section",
+        "select",
+        "slot",
+        "small",
+        "source",
+        "span",
+        "strike",
+        "strong",
+        "style",
+        "sub",
+        "summary",
+        "sup",
+        "svg",
+        "table",
+        "tbody",
+        "td",
+        "template",
+        "textarea",
+        "tfoot",
+        "th",
+        "thead",
+        "time",
+        "title",
+        "tr",
+        "track",
+        "tt",
+        "u",
+        "ul",
+        "var",
+        "video",
+        "wbr",
+        "xmp",
+    }
+)
+
+#: Cap on how many distinct hostile tag-name hashes the provenance records.
+_MAX_OTHER_TAG_HASHES = 32
+
+
+def _fold_removed_tags(removed_tags: dict[str, int]) -> tuple[dict[str, int], dict[str, object] | None]:
+    """Split a ``removed_tags`` summary into safe-to-persist parts.
+
+    Known HTML tag names stay readable (with their counts); every unknown,
+    attacker-controllable name is folded into a single aggregate — a total count
+    plus the SHA-256 of each distinct name (sorted, bounded) — so no raw hostile
+    name can reach the persisted provenance. Returns ``(known, other)`` where
+    ``other`` is ``None`` when nothing unknown was removed.
+    """
+
+    known: dict[str, int] = {}
+    other_count = 0
+    other_names: list[str] = []
+    for name in sorted(removed_tags):
+        count = removed_tags[name]
+        if count <= 0:
+            continue
+        if name in KNOWN_HTML_TAGS:
+            known[name] = count
+        else:
+            other_count += count
+            other_names.append(name)
+    if not other_count:
+        return known, None
+    other = {
+        "count": other_count,
+        "name_hashes": [
+            hashlib.sha256(name.encode("utf-8")).hexdigest() for name in other_names[:_MAX_OTHER_TAG_HASHES]
+        ],
+    }
+    return known, other
+
+
 @dataclass(frozen=True)
 class SanitizedHtml:
     """The cleaned HTML plus a structured record of what was removed, for audit."""
@@ -285,14 +463,23 @@ class SanitizedHtml:
         return bool(self.removed_tags) or self.neutralized_links > 0 or self.stripped_attributes > 0
 
     def as_provenance(self) -> dict[str, object]:
-        """A compact, JSON-safe summary for the template's audit trail."""
+        """A compact, JSON-safe, PERSISTED summary for the template's audit trail.
 
-        return {
-            "removed_tags": dict(self.removed_tags),
+        Unknown (attacker-controllable) removed-tag names are folded to hashes so
+        a hostile ``<evil.example:login>`` can never land verbatim in the stored
+        template provenance; known HTML tag names stay readable.
+        """
+
+        known, other = _fold_removed_tags(self.removed_tags)
+        provenance: dict[str, object] = {
+            "removed_tags": known,
             "neutralized_links": self.neutralized_links,
             "stripped_attributes": self.stripped_attributes,
             "changed": self.changed,
         }
+        if other is not None:
+            provenance["removed_tags_other"] = other
+        return provenance
 
 
 def sanitize_safe_html(

@@ -503,6 +503,7 @@ def _pattern_preview(pattern: CampaignPattern) -> dict[str, Any]:
         "requested_action": pattern.requested_action,
         "delivery_method": pattern.delivery_method,
         "warning_cues": _json_clone(pattern.warning_cues or [], label="warning cues"),
+        "cue_manifest": _json_clone(pattern.cue_manifest or {}, label="cue manifest"),
         "actor_type": pattern.actor_type,
         "sector_targeting": pattern.sector_targeting,
         "difficulty": _json_clone(difficulty, label="difficulty"),
@@ -548,6 +549,7 @@ def clone_pattern(
         requested_action=source.requested_action,
         delivery_method=source.delivery_method,
         warning_cues=preview["warning_cues"],
+        cue_manifest=preview["cue_manifest"],
         actor_type=source.actor_type,
         sector_targeting=source.sector_targeting,
         attack_mapping={
@@ -603,6 +605,8 @@ def preview_library_template(
         "approval_state": template.approval_state.value,
         "editable_subject": content.subject,
         "editable_plain_text": content.plain_text,
+        "warning_cues": _json_clone(template.warning_cues or [], label="template warning cues"),
+        "cue_manifest": _json_clone(template.cue_manifest or {}, label="template cue manifest"),
         **rendered,
     }
 
@@ -681,6 +685,7 @@ def clone_template(
         synthetic_sender_display=sender_display,
         learning_objectives=_json_clone(source.learning_objectives or [], label="learning objectives"),
         warning_cues=_json_clone(source.warning_cues or [], label="template warning cues"),
+        cue_manifest=_json_clone(source.cue_manifest or {}, label="template cue manifest"),
         training_explanation=source.training_explanation,
         approval_hash=None,
         approval_state=dm.TemplateApprovalState.DRAFT,
