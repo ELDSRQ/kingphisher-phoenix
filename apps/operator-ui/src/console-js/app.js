@@ -1219,6 +1219,7 @@ const NAV = [
   ["aggregation", "Threat aggregation", "more"],
   ["audit", "Audit", "more"],
   ["queues", "Failed jobs", "more"],
+  ["health", "System health", "more"],
   ["privacy", "Privacy", "more"],
   ["modelcontrol", "AI model", "more"],
   ["azure-deployment", "Azure deployment", "more"],
@@ -1246,6 +1247,7 @@ const NAV_CAPABILITIES = Object.freeze({
   training: [CAPABILITY.CREATE_CAMPAIGN, CAPABILITY.APPROVE_TEMPLATE],
   privacy: [CAPABILITY.HANDLE_PRIVACY],
   queues: [CAPABILITY.MANAGE_QUEUE],
+  health: [CAPABILITY.VIEW_AGGREGATE],
   audit: [CAPABILITY.VIEW_AUDIT],
   settings: [CAPABILITY.MANAGE_ROLES],
 });
@@ -9094,6 +9096,93 @@ views.audit = async (root) => {
       ]),
     ])) : [el("tr", {}, [el("td", { class: "empty", colspan: 4, text: "No audit events yet." })])]),
   ])]));
+};
+
+/* ---------- system health ---------- */
+// KP-AUD-002/004/016/024: a mode-aware operator health dashboard. It turns raw
+// technical state (migration head, DB/Redis, each worker, AI routing, RoE,
+// audit witness, TLS, backups) into affected functionality + the next safe
+// action, so the two-person IT team can diagnose routine outages without a
+// developer. Read-only; the backend is RBAC-gated on VIEW_AGGREGATE and never
+// returns a secret or a raw exception.
+const HEALTH_STATE_LABELS = Object.freeze({
+  available: "Available",
+  configured_unverified: "Configured — unverified",
+  unavailable: "Unavailable",
+  production_blocked: "Production-blocked",
+});
+
+function healthStateClass(state) {
+  if (state === "available") return "ok";
+  if (state === "unavailable" || state === "production_blocked") return "down";
+  return "";
+}
+
+function renderHealthItem(item) {
+  const header = el("div", { class: "status-row" }, [
+    el("span", { class: `pill ${healthStateClass(item.state)}`.trim(), text: HEALTH_STATE_LABELS[item.state] || item.state }),
+  ]);
+  if (item.stale) {
+    header.appendChild(el("span", {
+      class: "pill",
+      text: "stale",
+      title: "This reading may be out of date — its source has not refreshed within the expected window.",
+    }));
+  }
+  const children = [
+    el("h3", { text: item.capability }),
+    header,
+    el("p", { text: item.reason }),
+    el("p", { class: "field-help", text: `Next step: ${item.safe_action}` }),
+  ];
+  if (item.evidence_timestamp) {
+    children.push(el("p", { class: "field-help", text: `As of ${item.evidence_timestamp}` }));
+  }
+  // The workflow link is presentation only; the destination view is itself
+  // capability-gated, so an operator who cannot open it simply sees nothing to
+  // click rather than an action the server would refuse.
+  if (item.workflow && item.workflow.startsWith("#")) {
+    const target = item.workflow.slice(1);
+    if (canNavigateTo(target)) {
+      children.push(el("div", { class: "btn-row" }, [
+        el("button", { class: "btn", type: "button", text: "Open the fix for this", onclick: () => navigateTo(target) }),
+      ]));
+    }
+  }
+  return el("div", { class: "card" }, children);
+}
+
+views.health = async (root) => {
+  if (!requireAnyCapability(root, CAPABILITY.VIEW_AGGREGATE)) return;
+  root.appendChild(el("h2", { text: "System health" }));
+  root.appendChild(el("p", {
+    class: "sub",
+    text: "What is working, what is not, and the next safe step for each. This view reads state only — it never changes anything.",
+  }));
+
+  let data;
+  try { data = await api("/console/health"); }
+  catch (e) {
+    root.appendChild(el("div", { class: "card", role: "alert", text: `Could not read system health: ${e.message}` }));
+    return;
+  }
+
+  const overallLabel = HEALTH_STATE_LABELS[data.overall_state] || data.overall_state;
+  const banner = el("div", { class: "notice", role: "status" }, [
+    el("strong", { text: `Overall: ${overallLabel}` }),
+    el("p", {
+      text: data.runtime_control === "azure_control_plane"
+        ? "This deployment runs in Azure; local probes defer to the Azure control plane and read as configured-but-unverified here."
+        : "This deployment runs on local hardware under the supervisor.",
+    }),
+  ]);
+  root.appendChild(banner);
+
+  const grid = el("div", { class: "form-grid" });
+  for (const item of Array.isArray(data.items) ? data.items : []) {
+    grid.appendChild(renderHealthItem(item));
+  }
+  root.appendChild(grid);
 };
 
 /* ---------- AI model control ---------- */
