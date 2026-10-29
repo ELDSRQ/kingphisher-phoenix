@@ -121,6 +121,43 @@ class AssetApprovalState(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class SourceTrust(StrEnum):
+    """Governed trust tier of a current-threat source (W3-02).
+
+    Ascending trust. The tier is governance metadata on a :class:`SourcePolicy`;
+    it never relaxes the hard invariants (originals stay quarantined, previews
+    stay safe) — a ``curated`` source is still ingested through the same
+    sanitizer and quarantine path as an ``untrusted`` one.
+    """
+
+    UNTRUSTED = "untrusted"
+    COMMUNITY = "community"
+    PARTNER = "partner"
+    CURATED = "curated"
+
+
+class ArtifactOrigin(StrEnum):
+    """Where a governed threat artifact was observed (W3-02)."""
+
+    FEED = "feed"
+    MAILBOX = "mailbox"
+    BUNDLE = "bundle"
+
+
+class ArtifactReviewState(StrEnum):
+    """Reviewer-workbench verdict on a threat artifact's SAFE preview (W3-02).
+
+    This verdict governs only the safe preview. The hostile ORIGINAL is always
+    quarantined and is never approvable or deliverable regardless of this value;
+    ``safe_reviewed`` means a human confirmed the *neutralized* preview is sound
+    training material, not that the original was cleared for any use.
+    """
+
+    PENDING = "pending"
+    SAFE_REVIEWED = "safe_reviewed"
+    REJECTED = "rejected"
+
+
 class CampaignState(StrEnum):
     DRAFT = "draft"
     PATTERN_REVIEW = "pattern_review"
@@ -350,6 +387,98 @@ class SourceItem(BaseEntity):
     quarantine_state: QuarantineState = QuarantineState.ACTIVE
     quarantine_reason: str | None = None
     duplicate_of: UUID | None = None
+
+
+class SourcePolicy(BaseEntity):
+    """Governance policy for one current-threat source — feed or mailbox (W3-02).
+
+    Carries the accountable ``owner``, the ``license`` the source's content is
+    used under, the ``parser`` that interprets it, the ``trust`` tier, a
+    ``freshness`` SLA (max age in days before the source is considered stale),
+    and an ``enabled`` switch. A disabled or stale policy fails closed: no
+    artifact may be ingested against it. Freshness/failure health is surfaced to
+    the operator System view so an operator sees current threats without
+    uncontrolled scraping.
+    """
+
+    source_policy_id: UUID = Field(default_factory=uuid4)
+    source_key: str
+    owner: str
+    license: str
+    parser: str
+    trust: SourceTrust = SourceTrust.UNTRUSTED
+    #: Freshness SLA in whole days; a source whose newest success is older than
+    #: this is reported ``stale`` and fails closed for ingestion.
+    freshness: int = Field(default=7, ge=1, le=3650)
+    enabled: bool = False
+    last_success_at: datetime | None = None
+    last_failure_at: datetime | None = None
+    consecutive_failures: int = Field(default=0, ge=0)
+
+
+class ArtifactProvenance(BaseEntity):
+    """Minimized provenance for one governed threat artifact (W3-02).
+
+    Records the content ``hash`` (the deduplication key), when it was
+    ``observed_at``, the ``source`` it came from, the ``parser_version`` that
+    produced its safe preview, and the ``reviewer`` who last signed off on that
+    preview (``None`` until reviewed). It carries no raw hostile content — only
+    the hash and these governance facts — so it is safe to persist and display
+    beside the safe preview.
+    """
+
+    hash: str
+    observed_at: datetime
+    source: str
+    parser_version: str
+    reviewer: str | None = None
+
+
+class ThreatArtifact(BaseEntity):
+    """A governed current-threat artifact: quarantined original, safe preview (W3-02).
+
+    The hostile ORIGINAL is isolated: only its SHA-256 (``original_sha256``) and
+    size (``original_bytes``) are retained — never the raw bytes — exactly like
+    W3-01's hashed-offset evidence spans. ``quarantine_state`` is always
+    ``QUARANTINED`` and the artifact is never approvable or deliverable. What an
+    operator reviews and reuses is the SAFE preview (``safe_preview_html`` /
+    ``safe_preview_text``, produced by the shared sanitizer) carrying the
+    deterministic W3-01 ``cue_manifest``. Deduplicated by ``content_hash``.
+    """
+
+    threat_artifact_id: UUID = Field(default_factory=uuid4)
+    source_policy_id: UUID | None = None
+    content_hash: str
+    title: str
+    origin: ArtifactOrigin
+    #: Invariant: a governed threat artifact's original is always quarantined.
+    quarantine_state: QuarantineState = QuarantineState.QUARANTINED
+    original_sha256: str
+    original_bytes: int = Field(default=0, ge=0)
+    safe_preview_html: str
+    safe_preview_text: str
+    cue_manifest: dict[str, Any] = Field(default_factory=dict)
+    provenance: ArtifactProvenance
+    review_state: ArtifactReviewState = ArtifactReviewState.PENDING
+    reviewer: str | None = None
+    reviewed_at: datetime | None = None
+    first_seen_at: datetime
+
+
+class ThreatBundleImport(BaseEntity):
+    """Record of a verified signed offline curated bundle import (W3-02).
+
+    One row per accepted ``bundle_id`` gives replay protection: a bundle whose id
+    was already imported is refused rather than re-applied. ``checksum`` is the
+    SHA-256 of the canonical signed payload that was verified before import.
+    """
+
+    threat_bundle_import_id: UUID = Field(default_factory=uuid4)
+    bundle_id: str
+    checksum: str
+    imported_at: datetime
+    imported_by: str
+    artifact_count: int = Field(default=0, ge=0)
 
 
 class AggregationCandidate(BaseEntity):

@@ -271,6 +271,14 @@ class OperatorApiSettings(BaseSettings):
     domain_verification_key: str = Field(
         default="", validation_alias=AliasChoices("OPERATOR_API_DOMAIN_VERIFY_KEY", "KP_DOMAIN_VERIFY_KEY")
     )
+    #: Ed25519 public key (hex) that verifies signed offline curated threat
+    #: bundles (W3-02). The matching private key lives only with the offline
+    #: curator; the platform verifies signatures but never signs bundles. A
+    #: bundle whose signature or checksum does not verify is refused whole.
+    threat_bundle_verify_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("OPERATOR_API_THREAT_BUNDLE_VERIFY_KEY", "KP_THREAT_BUNDLE_VERIFY_KEY"),
+    )
     #: Recipients per delivery message; bounds the 1MiB queue payload cap.
     delivery_batch_size: int = Field(default=200, ge=1, le=2000)
 
@@ -499,6 +507,17 @@ class OperatorApiSettings(BaseSettings):
             raise RuntimeError("KP_ROE_SIGNING_KEY must be a hex string") from None
         if len(key) != 32:
             raise RuntimeError("KP_ROE_SIGNING_KEY must be a 256-bit hex key (64 hex chars)")
+        return key
+
+    def require_threat_bundle_verify_key(self) -> bytes:
+        if not self.threat_bundle_verify_key:
+            raise RuntimeError("KP_THREAT_BUNDLE_VERIFY_KEY is required to import signed threat bundles")
+        try:
+            key = bytes.fromhex(self.threat_bundle_verify_key)
+        except ValueError:
+            raise RuntimeError("KP_THREAT_BUNDLE_VERIFY_KEY must be a hex string") from None
+        if len(key) != 32:
+            raise RuntimeError("KP_THREAT_BUNDLE_VERIFY_KEY must be a 256-bit Ed25519 public key (64 hex chars)")
         return key
 
     def require_domain_verification_key(self) -> bytes:
