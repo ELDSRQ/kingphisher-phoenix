@@ -38,6 +38,19 @@ _CIPHERTEXT_KEY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
 _AWARENESS_PSEUDONYM_KEY_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 _MAX_CIPHERTEXT_PRIOR_KEYS = 4
 
+# Curated set of the most-impersonated brands' asset CDNs, used as the image
+# allow-list DEFAULT only on a non-managed (development) worker. A managed or
+# production worker starts with an EMPTY allow-list (no third-party remote
+# images) unless the operator sets KP_WORKER_SAFE_HTML_IMAGE_HOSTS explicitly,
+# so the final rendered MIME carries no remote image by default (KP-AUD-013).
+# Mirrors the operator API's _DEFAULT_DEV_IMAGE_HOSTS; the two must agree.
+_DEFAULT_DEV_IMAGE_HOSTS = (
+    "msauth.net,msftauth.net,office.net,microsoftonline.com,microsoft.com,"
+    "gstatic.com,googleusercontent.com,google.com,akamaihd.net,docusign.com,"
+    "docusign.net,adobe.com,apple.com,cdn-apple.com,media-amazon.com,"
+    "ssl-images-amazon.com,amazon.com,paypalobjects.com,paypal.com,dropboxstatic.com,dropbox.com"
+)
+
 
 class EmailProviderKind(StrEnum):
     """Resolved email transport kind.
@@ -357,17 +370,16 @@ class WorkerSettings(BaseSettings):
     training_base_url: str = "http://127.0.0.1:8001/v1/training/awareness"
     training_domains: str = "example.com,127.0.0.1"
     # Hosts allowed to serve branded <img> logos over https in generated lures
-    # (self-contained data:image logos are always allowed). Comma-separated;
-    # "*" permits any https host. Default is a curated set of the most-
-    # impersonated brands' asset CDNs; the operator extends it (or sets "*")
-    # per deployment. Navigable links are unaffected — the allow-list sanitizer
-    # strips every non-placeholder href before safety validation.
-    safe_html_image_hosts: str = (
-        "msauth.net,msftauth.net,office.net,microsoftonline.com,microsoft.com,"
-        "gstatic.com,googleusercontent.com,google.com,akamaihd.net,docusign.com,"
-        "docusign.net,adobe.com,apple.com,cdn-apple.com,media-amazon.com,"
-        "ssl-images-amazon.com,amazon.com,paypalobjects.com,paypal.com,dropboxstatic.com,dropbox.com"
-    )
+    # (self-contained data:image logos are always allowed). Comma-separated.
+    # "*" permits any https host on a development worker but is REJECTED at
+    # managed/production startup (KP-AUD-013, fail-closed). The curated set below
+    # is a DEVELOPMENT convenience default only: a managed or production worker
+    # that does not configure the allow-list explicitly starts with NO image
+    # hosts (empty), so the final rendered MIME carries no third-party remote
+    # image by default. See validate_image_host_policy. Navigable links are
+    # unaffected — the allow-list sanitizer strips every non-placeholder href
+    # before safety validation.
+    safe_html_image_hosts: str = _DEFAULT_DEV_IMAGE_HOSTS
 
     # --- send-safety policy (T-06); mirrors the operator API ---
     # PLT-002 SAFETY CHANGE: default is ENFORCE (two-person), not SINGLE_ADMIN.
@@ -530,6 +542,30 @@ class WorkerSettings(BaseSettings):
                 "KP_WORKER_APPROVAL_POLICY=single-admin is not permitted here; it requires the development "
                 "runtime explicitly marked with KP_DEV_STACK=1. Use 'enforce' (two-person approval) in "
                 "managed and production runtime modes"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_image_host_policy(self) -> "WorkerSettings":
+        """Fail-closed remote-image policy (KP-AUD-013).
+
+        Defined after ``validate_send_safety_posture`` so the profile presets it
+        applies have already resolved ``runtime_mode``. A managed or production
+        worker that did not configure the allow-list explicitly starts with NO
+        third-party image hosts, so the final rendered MIME carries no remote
+        image by default; the curated dev convenience list stays the default
+        only on a development worker (mirrors how require_awareness_pseudonym_config
+        falls back to a local value only in development). A ``*`` wildcard
+        allow-list is a dev-only relaxation and is refused outright in managed
+        and production modes, never silently honored.
+        """
+        managed = self.runtime_mode in _MANAGED_RUNTIME_MODES
+        if managed and "safe_html_image_hosts" not in self.model_fields_set:
+            self.safe_html_image_hosts = ""
+        if managed and "*" in self.image_host_set():
+            raise ValueError(
+                "KP_WORKER_SAFE_HTML_IMAGE_HOSTS='*' wildcard is not permitted in managed and production "
+                "runtime modes; list explicit https image hosts, or leave it empty to allow no third-party images"
             )
         return self
 

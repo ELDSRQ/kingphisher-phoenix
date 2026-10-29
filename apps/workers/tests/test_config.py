@@ -940,3 +940,57 @@ def test_explicit_lease_seconds_pins_the_lease() -> None:
         provider_timeout_seconds=180.0,
     )
     assert settings.effective_lease_seconds == 900
+
+
+# --- KP-AUD-013: fail-closed remote-image host policy ------------------------
+
+
+def test_image_hosts_curated_default_in_development() -> None:
+    # A development worker keeps the curated convenience allow-list by default.
+    hosts = _settings().image_host_set()
+    assert hosts
+    assert "microsoft.com" in hosts
+    assert "*" not in hosts
+
+
+@pytest.mark.parametrize("runtime_mode", ["managed", "production"])
+def test_image_hosts_empty_default_in_managed_and_production(runtime_mode: str) -> None:
+    # A managed/production worker that does not configure the allow-list starts
+    # with NO third-party image hosts, so the final MIME carries no remote image.
+    settings = _settings(worker_name="ingestion", runtime_mode=runtime_mode)
+    assert settings.safe_html_image_hosts == ""
+    assert settings.image_host_set() == set()
+
+
+@pytest.mark.parametrize("profile", ["local-hardened", "azure"])
+def test_image_hosts_empty_default_under_hardened_profiles(profile: str) -> None:
+    # The empty default is applied after the profile presets resolve the runtime
+    # mode, so a hardened/managed profile also fails closed by default.
+    settings = _settings(worker_name="ingestion", kp_profile=profile)
+    assert settings.image_host_set() == set()
+
+
+@pytest.mark.parametrize("runtime_mode", ["managed", "production"])
+def test_explicit_image_hosts_are_honored_in_managed(runtime_mode: str) -> None:
+    settings = _settings(
+        worker_name="ingestion",
+        runtime_mode=runtime_mode,
+        safe_html_image_hosts="cdn.brand.example",
+    )
+    assert settings.image_host_set() == {"cdn.brand.example"}
+
+
+@pytest.mark.parametrize("runtime_mode", ["managed", "production"])
+def test_wildcard_image_hosts_rejected_in_managed(runtime_mode: str) -> None:
+    with pytest.raises(ValidationError, match="wildcard is not permitted"):
+        _settings(worker_name="ingestion", runtime_mode=runtime_mode, safe_html_image_hosts="*")
+
+
+def test_wildcard_image_hosts_rejected_under_azure_profile() -> None:
+    with pytest.raises(ValidationError, match="wildcard is not permitted"):
+        _settings(worker_name="ingestion", kp_profile="azure", safe_html_image_hosts="*")
+
+
+def test_wildcard_image_hosts_permitted_in_development() -> None:
+    # The wildcard is a dev-only relaxation; it is still honored on a dev worker.
+    assert _settings(safe_html_image_hosts="*").image_host_set() == {"*"}
