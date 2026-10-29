@@ -49,7 +49,6 @@ def _funnel() -> CampaignFunnel:
         training_completed=0,
         clicked_automation_suspected=1,
         reply_correlated=1,
-        suppressed=0,
     )
 
 

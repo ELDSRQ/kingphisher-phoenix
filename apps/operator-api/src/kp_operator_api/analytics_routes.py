@@ -104,20 +104,26 @@ def _bounded_validation_message(exc: ValueError, *, allowed: frozenset[str], fal
 
 
 class CountMetric(BaseModel):
-    """One named aggregate count."""
+    """One named aggregate count. ``value`` is ``null`` when withheld for
+    k-anonymity (a margin that would let a sub-k cohort be recovered)."""
 
     name: str
-    value: int
+    value: int | None
 
 
 class RateMetric(BaseModel):
-    """One rate with enough information to independently verify it."""
+    """One rate with enough information to independently verify it.
+
+    ``suppressed`` marks a rate whose numerator and denominator are withheld
+    (``None``) for k-anonymity, so a sub-k cohort cannot be recovered from it.
+    """
 
     name: str
-    numerator: int
-    denominator: int
+    numerator: int | None
+    denominator: int | None
     denominator_name: str
     value: float | None
+    suppressed: bool = False
 
 
 class EvidenceWindowView(BaseModel):
@@ -154,7 +160,10 @@ class CampaignFunnelView(BaseModel):
     transport: tuple[CountMetric, ...]
     engagement: tuple[CountMetric, ...]
     training: tuple[CountMetric, ...]
-    suppressed: int
+    # A single-campaign funnel is one aggregate, not pseudonymous cohorts, so
+    # k-anonymity cell suppression does not apply here (it lives on the ledger
+    # surfaces). Reported honestly rather than as a vacuous zero.
+    cohort_suppression: Literal["not_applicable"] = "not_applicable"
     rates: tuple[RateMetric, ...]
     semantics: dict[str, str]
     privacy: str
@@ -216,11 +225,12 @@ class LedgerRepeatBucketView(BaseModel):
     """One exposure-count bucket; the top bucket means "at least that many".
 
     ``suppressed`` is true when the cohort was non-empty but below the
-    k-anonymity threshold, in which case ``participants`` is masked to zero.
+    k-anonymity threshold, in which case ``participants`` is ``null`` (withheld,
+    never ``0``).
     """
 
     exposures: int
-    participants: int
+    participants: int | None
     suppressed: bool
 
 
@@ -327,23 +337,14 @@ def _view(report: CampaignFunnel) -> CampaignFunnelView:
         training=tuple(
             CountMetric(name=name, value=getattr(report, name)) for name in ("training_assigned", "training_completed")
         ),
-        suppressed=report.suppressed,
-        rates=tuple(
-            RateMetric(
-                name=name,
-                numerator=rate.numerator,
-                denominator=rate.denominator,
-                denominator_name=rate.denominator_name,
-                value=rate.value,
-            )
-            for name, rate in report.rates
-        ),
+        rates=_rate_view(report.rates),
         semantics={
             "targeted": "frozen campaign assignments",
             "sent": "durable provider attempt claimed",
             "accepted": "provider acknowledged message handoff; acceptance, not human interaction",
             "delivered": "destination MTA handoff; not inbox placement, display, or reading",
             "indeterminate": "unknown transport outcome; neither success nor failure is proven",
+            "opened": "any open, including scanner prefetch; NOT a human-interaction metric",
             "clicked": "distinct accepted assignments with a human click; suspected automation is excluded",
             "clicked_automation_suspected": "distinct accepted assignments whose clicks are all suspected automation "
             "(W1-06 payload.automation_suspected); never counted as human clicks",
@@ -351,7 +352,7 @@ def _view(report: CampaignFunnel) -> CampaignFunnelView:
             "CONFIDENCE, never provider ACCEPTANCE of delivery",
             "engagement": "distinct accepted assignments with retained evidence",
             "training_completed": "completed campaign training assignments",
-            "suppressed": "pseudonymous cohorts withheld for k-anonymity; zero for a single-campaign funnel",
+            "cohort_suppression": "not applicable to a single-campaign aggregate; applied on the ledger surfaces",
         },
         privacy="aggregate counts only; no recipient identifiers or recipient attributes",
     )
@@ -377,13 +378,16 @@ def _count_view(projection: CampaignFunnel | CampaignPortfolio) -> tuple[CountMe
 
 
 def _rate_view(rates: tuple[tuple[str, Rate], ...]) -> tuple[RateMetric, ...]:
+    # A suppressed rate withholds its numerator and denominator (``None``), so a
+    # below-k cohort cannot be recovered from it; its value is already None.
     return tuple(
         RateMetric(
             name=name,
-            numerator=rate.numerator,
-            denominator=rate.denominator,
+            numerator=None if rate.suppressed else rate.numerator,
+            denominator=None if rate.suppressed else rate.denominator,
             denominator_name=rate.denominator_name,
             value=rate.value,
+            suppressed=rate.suppressed,
         )
         for name, rate in rates
     )
@@ -563,7 +567,8 @@ def _ledger_repeats_view(report: LedgerRepeatDistribution) -> LedgerRepeatDistri
             "click, report, confirmed interaction, training started or completed)",
             "repeat_exposure": "share of distinct exposed pseudonyms with two or more exposures",
             "repeat_engagement": "share of distinct engaged pseudonyms engaged in two or more campaigns",
-            "suppressed": "non-empty cohort cells withheld for k-anonymity; their exact counts are masked to zero",
+            "suppressed": "non-empty cohort cells withheld for k-anonymity; participants and any margin or rate "
+            "that would reveal them are null, never zero",
             "corrections": "scanner or bot corrections are not subtracted without normalized correction evidence",
         },
         privacy=(

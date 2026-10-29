@@ -12,6 +12,7 @@ from kp_database.reporting import (
     CampaignReportNotFound,
     EvidenceWindow,
     campaign_funnel,
+    campaign_funnel_count_names,
     campaign_funnel_csv_rows,
     campaign_metric_document,
     metric_definitions,
@@ -299,12 +300,35 @@ def test_suspected_automation_clicks_do_not_inflate_the_human_click_metric(sessi
     assert document["counts"]["clicked_automation_suspected"] == 1
 
 
-def test_metric_definitions_are_versioned_and_digest_is_stable() -> None:
+def test_metric_definitions_are_versioned_and_cover_every_surface() -> None:
     definitions = metric_definitions()
     assert definitions["metric_definitions_version"] == METRIC_DEFINITIONS_VERSION
     assert definitions["export_schema_version"] == EXPORT_SCHEMA_VERSION
     names = {entry["name"] for entry in definitions["campaign_funnel"]}
-    assert {"clicked", "clicked_automation_suspected", "reply_correlated", "indeterminate", "suppressed"} <= names
-    # Digest is deterministic and binds the versioned definitions.
-    assert metric_definitions_digest() == metric_definitions_digest()
-    assert len(metric_definitions_digest()) == 64
+    assert {"clicked", "clicked_automation_suspected", "reply_correlated", "indeterminate"} <= names
+    # The ledger surfaces are registered too, so the version/digest they stamp
+    # truthfully describes their own metrics.
+    ledger_names = {entry["name"] for entry in definitions["awareness_ledger"]}
+    assert {"repeat_exposure", "repeat_engagement", "clicked"} <= ledger_names
+    # The rendered count-name set is DERIVED from the definition table, so a
+    # surface cannot drift from the registered definitions.
+    assert campaign_funnel_count_names() == tuple(
+        entry["name"] for entry in definitions["campaign_funnel"] if entry["kind"] == "count"
+    )
+    # The computation predicates the numbers depend on are part of the record.
+    assert {"human_click", "automation_suspected"} <= set(definitions["computation_predicates"])
+
+
+def test_digest_changes_when_a_definition_or_predicate_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kp_database.reporting as reporting
+
+    baseline = metric_definitions_digest()
+    # Snapshot guard: a change to any definition or predicate must change this
+    # value, which forces bumping METRIC_DEFINITIONS_VERSION alongside it.
+    assert baseline == "ad6cc617399a2653245930bc54220f55914c4ad540b8b22e1f67f60df243821d"
+    assert len(baseline) == 64
+
+    # Changing a computation predicate (not just prose) changes the digest.
+    mutated_predicates = (("human_click", "DIFFERENT RULE"), *reporting._COMPUTATION_PREDICATES[1:])
+    monkeypatch.setattr(reporting, "_COMPUTATION_PREDICATES", mutated_predicates)
+    assert metric_definitions_digest() != baseline

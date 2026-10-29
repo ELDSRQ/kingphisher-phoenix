@@ -78,9 +78,9 @@ def test_projection_is_bounded_pseudonymous_idempotent_and_denominator_complete(
             ),
             _Result(
                 [
-                    (active_assignment, dm.EventType.CLICKED),
-                    (active_assignment, dm.EventType.HUMAN_INTERACTION_CONFIRMED),
-                    (active_assignment, dm.EventType.MESSAGE_REPORTED),
+                    (active_assignment, dm.EventType.CLICKED, {}),
+                    (active_assignment, dm.EventType.HUMAN_INTERACTION_CONFIRMED, {}),
+                    (active_assignment, dm.EventType.MESSAGE_REPORTED, {}),
                 ]
             ),
             _Result([(active_assignment, NOW - timedelta(days=19), NOW - timedelta(days=18))]),
@@ -241,3 +241,71 @@ def test_projection_rejects_unscoped_weak_or_unbounded_inputs_without_database_u
             **(arguments | {"assignment_ids": [uuid.uuid4() for _ in range(MAX_LEDGER_PROJECTION_BATCH + 1)]})  # type: ignore[arg-type]
         )
     assert fake.statements == []
+
+
+def _single_assignment_session(
+    payloads: list[tuple[object, dict[str, object]]],
+) -> tuple[_Session, uuid.UUID]:
+    recipient_id = uuid.uuid4()
+    assignment = uuid.uuid4()
+    campaign = uuid.uuid4()
+    start = NOW - timedelta(days=10)
+    return _Session(
+        [
+            _Result(
+                [
+                    (
+                        assignment,
+                        recipient_id,
+                        campaign,
+                        NOW - timedelta(days=11),
+                        NOW - timedelta(days=10),
+                        NOW - timedelta(days=10),
+                        start,
+                        dm.CampaignState.COMPLETED,
+                    )
+                ]
+            ),
+            _Result([(assignment, event_type, payload) for event_type, payload in payloads]),
+            _Result([]),
+            _Result([]),
+        ]
+    ), assignment
+
+
+def test_scanner_only_click_is_not_human_engagement_in_the_ledger() -> None:
+    fake, assignment = _single_assignment_session([(dm.EventType.CLICKED, {"automation_suspected": True})])
+    project_awareness_ledger_batch(
+        cast(Session, fake),
+        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+        pseudonym_key=b"p" * 32,
+        pseudonym_key_version="v1",
+        assignment_ids=[assignment],
+        projected_at=NOW,
+    )
+    params = _params(fake.statements[-1])
+    # A scanner-only click must NOT register as a human click, so the delivered
+    # assignment has no retained human activity at close.
+    assert params["observed_click_m0"] is False
+    assert params["no_activity_at_close_m0"] is True
+
+
+def test_human_click_wins_over_automation_on_the_same_assignment() -> None:
+    fake, assignment = _single_assignment_session(
+        [
+            (dm.EventType.CLICKED, {"automation_suspected": True}),
+            (dm.EventType.CLICKED, {}),
+        ]
+    )
+    project_awareness_ledger_batch(
+        cast(Session, fake),
+        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+        pseudonym_key=b"p" * 32,
+        pseudonym_key_version="v1",
+        assignment_ids=[assignment],
+        projected_at=NOW,
+    )
+    params = _params(fake.statements[-1])
+    # A genuine human click on the same assignment wins over the scanner click.
+    assert params["observed_click_m0"] is True
+    assert params["no_activity_at_close_m0"] is False

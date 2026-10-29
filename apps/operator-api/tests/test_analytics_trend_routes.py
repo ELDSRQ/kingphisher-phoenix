@@ -166,6 +166,7 @@ def test_trend_json_is_weighted_denominator_explicit_and_pii_free(
         "denominator": 10,
         "denominator_name": "provider_accepted_handoff_exposures",
         "value": 0.2,
+        "suppressed": False,
     }
     assert "never averages rates" in body["semantics"]["portfolio"]
     assert "not inbox placement" in body["semantics"]["delivered"]

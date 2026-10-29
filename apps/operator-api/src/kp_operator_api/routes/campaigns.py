@@ -71,6 +71,7 @@ from kp_database.reporting import (
     campaign_funnel,
     campaign_funnel_csv_rows,
     campaign_metric_document,
+    payload_automation_suspected,
 )
 from kp_domain_models import models as dm
 from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
@@ -2733,6 +2734,37 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
     for event in events:
         event_counts[event.event_type.value] += 1
         confidence_counts[event.confidence.value] += 1
+    # KP-AUD-014: make the legacy click number HONEST and identical to the
+    # analytics funnel so no single export shows two contradictory counts. A
+    # CLICKED event is counted as human only when its payload is not suspected
+    # automation; human wins over a scanner click on the same accepted
+    # assignment (the exact rule campaign_funnel uses). ``opened`` stays raw and
+    # is NOT a human-interaction metric (an open can be a scanner prefetch).
+    accepted_assignment_ids = {
+        assignment.recipient_assignment_id for assignment in assignments if assignment.provider_accepted_at is not None
+    }
+    token_to_assignment = {
+        assignment.token_id: assignment.recipient_assignment_id
+        for assignment in assignments
+        if assignment.token_id is not None
+    }
+    human_click_assignments: set[uuid.UUID] = set()
+    automation_click_assignments: set[uuid.UUID] = set()
+    for event in events:
+        if event.event_type is not dm.EventType.CLICKED:
+            continue
+        resolved = event.recipient_assignment_id or token_to_assignment.get(event.token_id)
+        if resolved is None or resolved not in accepted_assignment_ids:
+            continue
+        if payload_automation_suspected(event.payload):
+            automation_click_assignments.add(resolved)
+        else:
+            human_click_assignments.add(resolved)
+    human_clicked = len(human_click_assignments)
+    clicked_automation_suspected = len(automation_click_assignments - human_click_assignments)
+    # Overwrite the raw CLICKED tally with the honest human count so the legacy
+    # event_counts cannot disagree with the analytics funnel's clicked.
+    event_counts[dm.EventType.CLICKED.value] = human_clicked
     report_time = datetime.now(UTC)
     training_states = {state.value: 0 for state in dm.TrainingState}
     for item in training:
@@ -2789,6 +2821,7 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
         "send_counts": send_counts,
         "failure_reasons": dict(sorted(failure_reasons.items())),
         "event_counts": event_counts,
+        "clicked_automation_suspected": clicked_automation_suspected,
         "confidence_counts": confidence_counts,
         "training": {"total": len(training), **training_states},
         "reported_mail_pipeline": {
@@ -2804,10 +2837,16 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
             "opened": event_counts.get(dm.EventType.OPENED.value, 0) / interaction_denominator
             if interaction_denominator
             else 0.0,
+            # Uses the automation-excluded human click count (event_counts.clicked
+            # was overwritten above), so it agrees with analytics.rate.clicked.
             "clicked": event_counts.get(dm.EventType.CLICKED.value, 0) / interaction_denominator
             if interaction_denominator
             else 0.0,
             "training_completed": completed_training / len(training) if training else 0.0,
+        },
+        "semantics": {
+            "clicked": "human click; suspected automation excluded (matches analytics funnel)",
+            "opened": "any open, including scanner prefetch; NOT a human-interaction metric",
         },
     }
 

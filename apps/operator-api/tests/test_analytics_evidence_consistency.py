@@ -57,7 +57,10 @@ def test_ui_csv_and_zip_report_identical_numbers_for_one_event_set(session: Sess
     cells = _csv_cells(report)
 
     ui_counts = {metric.name: metric.value for group in (ui.transport, ui.engagement, ui.training) for metric in group}
-    ui_counts["suppressed"] = ui.suppressed
+    # A single-campaign funnel has no cohort suppression; it reports that
+    # honestly rather than as a vacuous zero count.
+    assert ui.cohort_suppression == "not_applicable"
+    assert document["cohort_suppression"] == "not_applicable"
 
     for name, value in document["counts"].items():  # type: ignore[union-attr]
         assert ui_counts[name] == value, name
@@ -133,3 +136,84 @@ def test_csv_is_formula_safe(session: Session) -> None:
     projection = output.getvalue()
     cells = [cell.strip() for row in csv.reader(io.StringIO(projection)) for cell in row if cell.strip()]
     assert not any(cell.startswith(("=", "+", "-", "@")) for cell in cells)
+
+
+def test_legacy_report_click_count_equals_the_analytics_click_count(session: Session) -> None:
+    """The legacy report must not contradict the analytics funnel.
+
+    ``_campaign_report`` classifies clicks in memory from the same predicate the
+    funnel uses, so for one 1-human + 1-scanner event set both surfaces report
+    the same human click count (1) and neither credits the scanner click.
+    """
+
+    from datetime import timedelta
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from kp_domain_models import models as dm
+    from kp_operator_api.routes.campaigns import _campaign_report
+
+    # The funnel computed over the real seeded DB: one human click, one scanner.
+    funnel = _funnel(session)
+    assert funnel.clicked == 1 and funnel.clicked_automation_suspected == 1
+
+    human_id, scanner_id = uuid4(), uuid4()
+    human_token, scanner_token = uuid4(), uuid4()
+    assignments = [
+        SimpleNamespace(
+            recipient_assignment_id=human_id,
+            send_state=dm.SendState.DELIVERED,
+            failure_reason=None,
+            provider_accepted_at=NOW - timedelta(hours=4),
+            token_id=human_token,
+        ),
+        SimpleNamespace(
+            recipient_assignment_id=scanner_id,
+            send_state=dm.SendState.ACCEPTED,
+            failure_reason=None,
+            provider_accepted_at=NOW - timedelta(hours=4),
+            token_id=scanner_token,
+        ),
+    ]
+    events = [
+        SimpleNamespace(
+            event_type=dm.EventType.CLICKED,
+            confidence=dm.Confidence.MEDIUM,
+            payload={},
+            recipient_assignment_id=human_id,
+            token_id=human_token,
+        ),
+        SimpleNamespace(
+            event_type=dm.EventType.CLICKED,
+            confidence=dm.Confidence.MEDIUM,
+            payload={"automation_suspected": True},
+            recipient_assignment_id=scanner_id,
+            token_id=scanner_token,
+        ),
+    ]
+
+    class _FakeReportSession:
+        def __init__(self) -> None:
+            self._scalars = [assignments, events, [], []]  # assignments, events, training, correlations
+
+        def scalars(self, _statement: object) -> list[object]:
+            return self._scalars.pop(0)
+
+        def scalar(self, _statement: object) -> object | None:
+            return None
+
+    campaign = SimpleNamespace(
+        campaign_id=CAMPAIGN_ID,
+        title="t",
+        state=dm.CampaignState.COMPLETED,
+        schedule_start=None,
+        schedule_end=None,
+        sender_mailbox="x@y.z",
+        sender_display_name="n",
+    )
+    report = _campaign_report(_FakeReportSession(), campaign)  # type: ignore[arg-type]
+
+    # Single export, no contradiction: the legacy clicked equals the analytics
+    # clicked, and the scanner click is surfaced separately, not as a human.
+    assert report["event_counts"]["clicked"] == funnel.clicked == 1
+    assert report["clicked_automation_suspected"] == funnel.clicked_automation_suspected == 1
