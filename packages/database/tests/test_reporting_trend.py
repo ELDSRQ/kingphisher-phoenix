@@ -45,7 +45,7 @@ def session() -> Iterator[Session]:
         )
         connection.exec_driver_sql(
             "CREATE TABLE events (event_id CHAR(32) PRIMARY KEY, event_type VARCHAR(64) NOT NULL, token_id CHAR(32), "
-            "recipient_assignment_id CHAR(32), occurred_at DATETIME NOT NULL)"
+            "recipient_assignment_id CHAR(32), occurred_at DATETIME NOT NULL, payload TEXT)"
         )
         connection.exec_driver_sql(
             "CREATE TABLE training_assignments (training_assignment_id CHAR(32) PRIMARY KEY, "

@@ -132,6 +132,7 @@ def test_ledger_repeats_buckets_distinct_pseudonyms_by_exposure_and_engagement(
         window_start=date(2026, 1, 1),
         window_end=date(2027, 1, 1),
         generated_at=NOW,
+        cohort_min_size=1,
     )
 
     exposure = _buckets(report, engaged=False)
@@ -172,6 +173,7 @@ def test_ledger_repeats_caps_tail_bucket_and_ignores_out_of_window_rows(session:
         window_start=date(2026, 1, 1),
         window_end=date(2027, 1, 1),
         generated_at=NOW,
+        cohort_min_size=1,
     )
 
     exposure = _buckets(report, engaged=False)
@@ -229,6 +231,7 @@ def test_ledger_repeats_csv_is_formula_safe_and_pseudonym_free(session: Session)
         window_start=date(2026, 1, 1),
         window_end=date(2027, 1, 1),
         generated_at=NOW,
+        cohort_min_size=1,
     )
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
@@ -248,3 +251,75 @@ def test_ledger_repeats_csv_is_formula_safe_and_pseudonym_free(session: Session)
 
 def _cells(projection: str) -> list[str]:
     return [cell.strip() for row in csv.reader(io.StringIO(projection)) for cell in row if cell.strip()]
+
+
+def test_ledger_repeats_suppresses_sub_threshold_cohorts_by_default(session: Session) -> None:
+    # Build a published-size cohort and a sub-threshold one. Five distinct
+    # pseudonyms are exposed exactly once; two distinct pseudonyms are exposed
+    # twice. With the default k-anonymity threshold (5), the once-exposed cell
+    # (5 pseudonyms) is published, but the twice-exposed cell (2 pseudonyms) is
+    # a cohort below k and is suppressed.
+    for index in range(5):
+        _entry(session, pseudonym=f"{index}".rjust(64, "x"), day=date(2026, 1, index + 1))
+    _entry(session, pseudonym="p" * 64, day=date(2026, 2, 1), clicked=True)
+    _entry(session, pseudonym="p" * 64, day=date(2026, 3, 1), clicked=True)
+    _entry(session, pseudonym="q" * 64, day=date(2026, 2, 2), clicked=True)
+    _entry(session, pseudonym="q" * 64, day=date(2026, 3, 2), clicked=True)
+
+    report = ledger_repeat_distribution(
+        session,
+        scope=SINGLE_TENANT_DATABASE_SCOPE,
+        window_start=date(2026, 1, 1),
+        window_end=date(2027, 1, 1),
+        generated_at=NOW,
+    )
+
+    exposure = {bucket.exposures: bucket for bucket in report.exposure_buckets}
+    # Published cohort of five is reported exactly.
+    assert exposure[1].participants == 5 and exposure[1].suppressed is False
+    # Sub-threshold cohort of two is suppressed: its count is WITHHELD (None),
+    # never masked to a 0 a reader could mistake for a true empty cohort.
+    assert exposure[2].participants is None and exposure[2].suppressed is True
+    assert exposure[3].participants == 0 and exposure[3].suppressed is False
+    assert report.suppressed == 2  # the lone sub-k exposure cell and the engaged cell
+    assert report.cohort_min_size == 5
+
+    # Complementary suppression: because a single exposure cell is suppressed,
+    # the series margins are withheld too, so the hidden cohort cannot be
+    # recovered as (unique_exposed - visible cells).
+    assert report.unique_exposed is None
+    assert report.exposures_total is None
+
+    # The repeat rate is fully suppressed (numerator, denominator and value all
+    # withheld) rather than publishing the true numerator that equals the cell.
+    rates = dict(report.rates)
+    assert rates["repeat_exposure"].suppressed is True
+    assert rates["repeat_exposure"].value is None
+    assert report.repeat_exposed is None
+
+    # The CSV never serializes the hidden count: the suppressed cell and the
+    # withheld margins carry the distinct non-numeric marker, not 0.
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows(ledger_repeat_csv_rows(report))
+    projection = output.getvalue()
+    reader_rows = list(csv.reader(io.StringIO(projection)))
+    exposures_two = next(row for row in reader_rows if len(row) > 5 and row[5] == "exposures_2")
+    assert exposures_two[6] == "SUPPRESSED" and exposures_two[8] == "suppressed"
+    unique_exposed_row = next(row for row in reader_rows if len(row) > 5 and row[5] == "unique_exposed")
+    assert unique_exposed_row[6] == "SUPPRESSED"
+    repeat_rate_row = next(row for row in reader_rows if len(row) > 5 and row[5] == "repeat_exposure")
+    assert repeat_rate_row[6] == "SUPPRESSED" and repeat_rate_row[7] == "SUPPRESSED"
+    assert "suppressed_cohorts" in projection
+
+
+def test_ledger_repeats_rejects_non_positive_cohort_min_size(session: Session) -> None:
+    with pytest.raises(ValueError, match="cohort_min_size must be a positive integer"):
+        ledger_repeat_distribution(
+            session,
+            scope=SINGLE_TENANT_DATABASE_SCOPE,
+            window_start=date(2026, 1, 1),
+            window_end=date(2027, 1, 1),
+            generated_at=NOW,
+            cohort_min_size=0,
+        )

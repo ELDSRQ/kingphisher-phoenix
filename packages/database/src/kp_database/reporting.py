@@ -12,6 +12,8 @@ to immutable interaction timestamps and training completion timestamps.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import uuid
 from dataclasses import dataclass
@@ -41,6 +43,45 @@ MAX_LEDGER_TREND_WINDOW: Final = timedelta(days=1_826)
 # the tail bucket means "at least this many exposures". The output is therefore
 # bounded by construction regardless of ledger size.
 MAX_LEDGER_REPEAT_BUCKET: Final = 5
+# k-anonymity: a pseudonymous cohort smaller than this is suppressed (its exact
+# participant count is withheld) rather than published, so a single distinct
+# person cannot be isolated from a frequency cell. Population-level aggregates
+# and rates, which are not small cohorts, remain exact.
+COHORT_MIN_SIZE: Final = 5
+# Distinct non-numeric marker for a withheld (k-anonymity suppressed) cell or
+# margin in CSV exports, so a suppressed cohort is never serialized as ``0``.
+_SUPPRESSED_MARKER: Final = "SUPPRESSED"
+# KP-AUD-003/005/014: version the metric *definitions* (what each numerator and
+# denominator means) separately from the *export schema* (the shape of the
+# serialized surfaces). A consumer records both so it can tell which definition
+# produced a number and whether its reader understands the shape. Bump
+# METRIC_DEFINITIONS_VERSION when a count/denominator meaning changes; bump
+# EXPORT_SCHEMA_VERSION when a serialized surface gains, drops, or renames a
+# field. The digest binds the two (and the computation predicates below) so a
+# tampered or mismatched copy, or a silent predicate change, is visible.
+METRIC_DEFINITIONS_VERSION: Final = "2026-10-30"
+EXPORT_SCHEMA_VERSION: Final = "2"
+# Identifiers for the COMPUTATION rules the numbers depend on. They are folded
+# into the definitions digest so changing a SQL/classification predicate (not
+# just the prose) changes the digest. Bump the relevant string when its rule
+# changes, and bump METRIC_DEFINITIONS_VERSION with it.
+_COMPUTATION_PREDICATES: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "human_click",
+        "accepted assignment with >=1 CLICKED whose payload is not automation-suspected; human wins over automation",
+    ),
+    (
+        "automation_suspected",
+        "payload.automation_suspected truthy OR payload.automation_signals non-empty; "
+        "unparseable/unexpected payload fails closed (treated as automation)",
+    ),
+    ("reply_correlated", "distinct accepted assignments with a header-correlated MESSAGE_REPLIED event"),
+    (
+        "cohort_suppression",
+        "ledger pseudonym cohort < COHORT_MIN_SIZE withheld with complementary suppression; "
+        "no single sub-k cell recoverable from totals or rate numerators",
+    ),
+)
 type CsvCell = str | int | float
 type CsvRow = tuple[CsvCell, ...]
 
@@ -53,6 +94,139 @@ _TERMINAL_TREND_STATES: Final = frozenset(
         dm.CampaignState.STOPPED,
     }
 )
+
+
+# KP-AUD-003/005/014: the registered metric definitions. Each entry states a
+# metric's kind and, for a rate, the exact denominator name so a consumer can
+# reproduce it. This is the single source every surface (UI, CSV, evidence ZIP)
+# cites by version and digest; it never duplicates the values themselves.
+_CAMPAIGN_METRIC_DEFINITIONS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    ("targeted", "count", "", "frozen campaign assignments"),
+    ("sent", "count", "", "durable provider attempt claimed"),
+    ("accepted", "count", "", "provider acknowledged message handoff (acceptance, not human interaction)"),
+    ("delivered", "count", "", "destination MTA handoff; not inbox placement, display, or reading"),
+    ("failed", "count", "", "assignment in a terminal failed send state"),
+    ("indeterminate", "count", "", "unknown transport outcome; neither success nor failure is proven"),
+    ("opened", "count", "", "distinct accepted assignments with an open event"),
+    ("clicked", "count", "", "distinct accepted assignments with a human (automation-excluded) click"),
+    (
+        "clicked_automation_suspected",
+        "count",
+        "",
+        "distinct accepted assignments whose only clicks carry payload.automation_suspected",
+    ),
+    (
+        "reply_correlated",
+        "count",
+        "",
+        "distinct accepted assignments with a header-correlated reply (interaction CONFIDENCE, not acceptance)",
+    ),
+    ("reported", "count", "", "distinct accepted assignments with a reported-mail event"),
+    ("training_assigned", "count", "", "distinct training assignments for the campaign"),
+    ("training_completed", "count", "", "distinct completed training assignments"),
+    ("sent", "rate", "targeted_assignments", "sent / targeted"),
+    ("accepted", "rate", "provider_attempts", "accepted / sent"),
+    ("delivered", "rate", "provider_accepted_handoffs", "delivered / accepted"),
+    ("failed", "rate", "targeted_assignments", "failed / targeted"),
+    ("opened", "rate", "provider_accepted_handoffs", "opened / accepted"),
+    ("clicked", "rate", "provider_accepted_handoffs", "human clicked / accepted"),
+    ("reply_correlated", "rate", "provider_accepted_handoffs", "correlated replies / accepted"),
+    ("reported", "rate", "provider_accepted_handoffs", "reported / accepted"),
+    ("training_completed", "rate", "campaign_training_assignments", "completed / assigned"),
+)
+
+
+# Ledger-surface metric definitions, so the version/digest stamped on the
+# awareness-ledger trend and repeat surfaces truthfully describes their metrics.
+_LEDGER_METRIC_DEFINITIONS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    ("delivered", "count", "", "ledger exposures with a destination MTA handoff"),
+    ("clicked", "count", "", "ledger exposures with a human (automation-excluded) click"),
+    ("no_click", "count", "", "delivered ledger exposures with no human click"),
+    ("confirmed_interaction", "count", "", "ledger exposures with deliberate human-interaction confirmation"),
+    ("reported", "count", "", "ledger exposures with a reported-mail fact"),
+    ("repeat_exposure", "rate", "distinct_exposed_pseudonyms", "distinct pseudonyms with >=2 exposures / exposed"),
+    (
+        "repeat_engagement",
+        "rate",
+        "distinct_engaged_pseudonyms",
+        "distinct pseudonyms engaged in >=2 campaigns / engaged",
+    ),
+)
+
+#: The ordered funnel count names, DERIVED from the definition table so the
+#: rendered surfaces cannot drift from the registered definitions.
+_CAMPAIGN_FUNNEL_COUNT_NAMES: Final[tuple[str, ...]] = tuple(
+    name for name, kind, _denominator, _description in _CAMPAIGN_METRIC_DEFINITIONS if kind == "count"
+)
+
+
+def metric_definitions() -> dict[str, object]:
+    """Return the registered, versioned metric/denominator definitions.
+
+    The returned mapping is the authoritative definition catalogue cited by
+    every export. It contains no campaign data; only the versions, the
+    k-anonymity threshold, the per-metric contract for each surface, and the
+    identifiers of the computation predicates the numbers depend on.
+    """
+
+    return {
+        "metric_definitions_version": METRIC_DEFINITIONS_VERSION,
+        "export_schema_version": EXPORT_SCHEMA_VERSION,
+        "cohort_min_size": COHORT_MIN_SIZE,
+        "campaign_funnel": [
+            {"name": name, "kind": kind, "denominator_name": denominator, "description": description}
+            for name, kind, denominator, description in _CAMPAIGN_METRIC_DEFINITIONS
+        ],
+        "awareness_ledger": [
+            {"name": name, "kind": kind, "denominator_name": denominator, "description": description}
+            for name, kind, denominator, description in _LEDGER_METRIC_DEFINITIONS
+        ],
+        "computation_predicates": {name: rule for name, rule in _COMPUTATION_PREDICATES},
+    }
+
+
+def metric_definitions_digest() -> str:
+    """Return a stable SHA-256 over the registered definitions and predicates.
+
+    An export records this digest so a consumer can prove the numbers it holds
+    were produced against the same definitions and computation rules its reader
+    understands. Because the computation predicate identifiers are part of the
+    hashed input, changing a classification rule (not just its prose) changes
+    the digest.
+    """
+
+    canonical = json.dumps(metric_definitions(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def payload_automation_suspected(payload: object) -> bool:
+    """True when a tracking-event payload should be treated as automation.
+
+    W1-06 marks CLICKED events whose request shape (scanner/empty User-Agent or
+    a prefetch header) shows a machine, not the recipient, fetched the link.
+    This predicate is the single source the funnel and the awareness-ledger
+    projection both use, so their human-interaction signals agree.
+
+    It FAILS CLOSED for a human-interaction integrity property: any truthy
+    ``automation_suspected`` or any non-empty ``automation_signals`` is
+    automation, and an unparseable or unexpected payload shape is treated as
+    automation rather than silently credited to a human. An absent flag (a
+    ``None`` or empty payload — the ordinary genuine-click case) is NOT
+    automation.
+    """
+
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError):
+            return True  # corrupt payload: do not credit a human click
+    if payload is None:
+        return False
+    if not isinstance(payload, dict):
+        return True  # unexpected shape: fail closed
+    if payload.get("automation_suspected"):
+        return True
+    return bool(payload.get("automation_signals"))
 
 
 class CampaignReportNotFound(LookupError):
@@ -101,14 +275,23 @@ class CampaignSelectionWindow:
 
 @dataclass(frozen=True, slots=True)
 class Rate:
-    """One ratio with its denominator made explicit."""
+    """One ratio with its denominator made explicit.
+
+    ``suppressed`` is set when publishing the numerator or denominator would let
+    a reader back out a below-k pseudonymous cohort. A suppressed rate withholds
+    its numerator, denominator and value on every surface (they serialize as
+    ``null``/empty, never ``0``).
+    """
 
     numerator: int
     denominator: int
     denominator_name: str
+    suppressed: bool = False
 
     @property
     def value(self) -> float | None:
+        if self.suppressed:
+            return None
         return self.numerator / self.denominator if self.denominator else None
 
 
@@ -194,17 +377,25 @@ class LedgerRepeatBucket:
 
     ``exposures`` is ``1..MAX_LEDGER_REPEAT_BUCKET``, where the top bucket
     means "at least that many". ``participants`` counts distinct tenant-keyed
-    recipient pseudonyms in that bucket; it is never a person count.
+    recipient pseudonyms in that bucket; it is never a person count. When
+    ``suppressed`` is true the cohort was non-empty but smaller than the
+    k-anonymity threshold, so ``participants`` is ``None`` (withheld with a
+    distinct non-numeric marker, never ``0``, so a naive reader cannot mistake
+    a suppressed cohort for a genuine empty one).
     """
 
     exposures: int
-    participants: int
+    participants: int | None
+    suppressed: bool = False
 
     def __post_init__(self) -> None:
         if type(self.exposures) is not int or not 1 <= self.exposures <= MAX_LEDGER_REPEAT_BUCKET:
             raise ValueError(f"repeat bucket exposures must be between 1 and {MAX_LEDGER_REPEAT_BUCKET}")
-        if type(self.participants) is not int or self.participants < 0:
-            raise ValueError("repeat bucket participants cannot be negative")
+        if self.suppressed:
+            if self.participants is not None:
+                raise ValueError("a suppressed repeat bucket must withhold its participant count (None)")
+        elif type(self.participants) is not int or self.participants < 0:
+            raise ValueError("a published repeat bucket participant count must be a non-negative int")
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +407,12 @@ class LedgerRepeatDistribution:
     exposures with retained human activity (the same activity set as the
     ledger's no-activity-at-close rule). All counts derive from the PII-free
     ledger and are never resolved to identities.
+
+    Fields that could let a reader back out a withheld sub-k cohort are
+    themselves withheld (``None``) under complementary suppression: a series'
+    unique/exposures margins are withheld when a single suppressed cell would be
+    recoverable from them, and a repeat rate is suppressed when its numerator or
+    denominator would reveal a suppressed cell.
     """
 
     generated_at: datetime
@@ -223,29 +420,48 @@ class LedgerRepeatDistribution:
     window_end_exclusive: date
     exposure_buckets: tuple[LedgerRepeatBucket, ...]
     engaged_buckets: tuple[LedgerRepeatBucket, ...]
-    unique_exposed: int
-    exposures_total: int
-    unique_engaged: int
-    engaged_exposures_total: int
+    unique_exposed: int | None
+    exposures_total: int | None
+    unique_engaged: int | None
+    engaged_exposures_total: int | None
     no_activity_at_close: int
+    # Number of non-empty cohort cells withheld for k-anonymity across both
+    # bucket series, and the k used.
+    suppressed: int = 0
+    cohort_min_size: int = COHORT_MIN_SIZE
+    # Population repeat numerators, or ``None`` when publishing them would reveal
+    # a suppressed cell.
+    repeat_exposed: int | None = 0
+    repeat_engaged: int | None = 0
 
     @property
     def rates(self) -> tuple[tuple[str, Rate], ...]:
-        """Repeat rates with explicit distinct-pseudonym denominators."""
+        """Repeat rates with explicit distinct-pseudonym denominators.
 
-        repeated = sum(bucket.participants for bucket in self.exposure_buckets if bucket.exposures >= 2)
-        repeatedly_engaged = sum(bucket.participants for bucket in self.engaged_buckets if bucket.exposures >= 2)
+        A rate is suppressed (numerator, denominator and value all withheld)
+        when either its numerator or its denominator would let a reader recover
+        a below-k cohort.
+        """
+
+        exposure_suppressed = self.repeat_exposed is None or self.unique_exposed is None
+        engagement_suppressed = self.repeat_engaged is None or self.unique_engaged is None
         return (
             (
                 "repeat_exposure",
-                Rate(repeated, self.unique_exposed, "distinct_exposed_pseudonyms"),
+                Rate(
+                    self.repeat_exposed or 0,
+                    self.unique_exposed or 0,
+                    "distinct_exposed_pseudonyms",
+                    suppressed=exposure_suppressed,
+                ),
             ),
             (
                 "repeat_engagement",
                 Rate(
-                    repeatedly_engaged,
-                    self.unique_engaged,
+                    self.repeat_engaged or 0,
+                    self.unique_engaged or 0,
                     "distinct_engaged_pseudonyms",
+                    suppressed=engagement_suppressed,
                 ),
             ),
         )
@@ -269,6 +485,16 @@ class CampaignFunnel:
     reported: int
     training_assigned: int
     training_completed: int
+    # KP-AUD-014/005: ``clicked`` counts only human (automation-excluded) clicks.
+    # These make the excluded automation and the reply-CONFIDENCE signal
+    # explicit instead of folding them into acceptance or the click rate.
+    # Defaults keep the pre-W4-02 constructor callable; the query sets them.
+    clicked_automation_suspected: int = 0
+    reply_correlated: int = 0
+    # A single-campaign funnel is one aggregate, not a set of pseudonymous
+    # cohorts, so k-anonymity cell suppression does not apply here; surfaces
+    # report that honestly as "not applicable" rather than a vacuous zero.
+    # (Cohort suppression lives on the awareness-ledger repeat distribution.)
 
     @property
     def rates(self) -> tuple[tuple[str, Rate], ...]:
@@ -281,6 +507,9 @@ class CampaignFunnel:
             ("failed", Rate(self.failed, self.targeted, "targeted_assignments")),
             ("opened", Rate(self.opened, self.accepted, "provider_accepted_handoffs")),
             ("clicked", Rate(self.clicked, self.accepted, "provider_accepted_handoffs")),
+            # Correlated-reply CONFIDENCE is reported against accepted handoffs
+            # so it is never read as provider ACCEPTANCE of the message.
+            ("reply_correlated", Rate(self.reply_correlated, self.accepted, "provider_accepted_handoffs")),
             ("reported", Rate(self.reported, self.accepted, "provider_accepted_handoffs")),
             (
                 "training_completed",
@@ -433,22 +662,25 @@ def campaign_funnel(
                 distinct(
                     case(
                         (
-                            TrackingEvent.event_type == dm.EventType.CLICKED,
-                            RecipientAssignment.recipient_assignment_id,
-                        )
-                    )
-                )
-            ).label("clicked"),
-            func.count(
-                distinct(
-                    case(
-                        (
                             TrackingEvent.event_type == dm.EventType.MESSAGE_REPORTED,
                             RecipientAssignment.recipient_assignment_id,
                         )
                     )
                 )
             ).label("reported"),
+            # Correlated-reply CONFIDENCE: a header-correlated inbound reply is
+            # a deliberate human action. It is counted separately from provider
+            # ACCEPTANCE so the two are never conflated.
+            func.count(
+                distinct(
+                    case(
+                        (
+                            TrackingEvent.event_type == dm.EventType.MESSAGE_REPLIED,
+                            RecipientAssignment.recipient_assignment_id,
+                        )
+                    )
+                )
+            ).label("reply_correlated"),
         )
         .select_from(TrackingEvent)
         .outerjoin(TrackingToken, TrackingToken.token_id == TrackingEvent.token_id)
@@ -461,6 +693,38 @@ def campaign_funnel(
     event_counts = session.execute(
         _windowed(event_statement, TrackingEvent.occurred_at, evidence_window, report_time)
     ).one()
+
+    # KP-AUD-014: classify CLICKED events per accepted assignment so suspected
+    # automation (W1-06's ``payload.automation_suspected``) cannot inflate the
+    # human-interaction click count. Human clicks win: an assignment with any
+    # genuine click is human; one whose clicks are all automation-suspected is
+    # counted separately and never as a human click. CLICKED is deduplicated to
+    # one row per token upstream, so this scans at most one row per assignment.
+    click_statement = (
+        select(
+            assignment_for_event.label("assignment_id"),
+            TrackingEvent.payload.label("payload"),
+        )
+        .select_from(TrackingEvent)
+        .outerjoin(TrackingToken, TrackingToken.token_id == TrackingEvent.token_id)
+        .join(RecipientAssignment, RecipientAssignment.recipient_assignment_id == assignment_for_event)
+        .where(
+            RecipientAssignment.campaign_id == campaign_id,
+            RecipientAssignment.provider_accepted_at.is_not(None),
+            TrackingEvent.event_type == dm.EventType.CLICKED,
+        )
+    )
+    human_clicked: set[uuid.UUID] = set()
+    automation_clicked: set[uuid.UUID] = set()
+    for assignment_id, payload in session.execute(
+        _windowed(click_statement, TrackingEvent.occurred_at, evidence_window, report_time)
+    ):
+        if payload_automation_suspected(payload):
+            automation_clicked.add(assignment_id)
+        else:
+            human_clicked.add(assignment_id)
+    clicked = len(human_clicked)
+    clicked_automation_suspected = len(automation_clicked - human_clicked)
 
     training_statement = (
         select(func.count(distinct(TrainingAssignment.recipient_assignment_id)).label("assigned"))
@@ -503,10 +767,12 @@ def campaign_funnel(
         failed=int(assignment_counts.failed or 0),
         indeterminate=int(assignment_counts.indeterminate or 0),
         opened=int(event_counts.opened or 0),
-        clicked=int(event_counts.clicked or 0),
+        clicked=clicked,
         reported=int(event_counts.reported or 0),
         training_assigned=int(training_counts.assigned or 0),
         training_completed=completed,
+        clicked_automation_suspected=clicked_automation_suspected,
+        reply_correlated=int(event_counts.reply_correlated or 0),
     )
 
 
@@ -672,6 +938,16 @@ def ledger_trend_csv_rows(report: LedgerTrendReport) -> tuple[CsvRow, ...]:
     return tuple(rows)
 
 
+@dataclass(frozen=True, slots=True)
+class _SuppressedSeries:
+    """One k-anonymity-suppressed bucket series plus its margin/rate flags."""
+
+    buckets: tuple[LedgerRepeatBucket, ...]
+    suppressed: int
+    withhold_margins: bool
+    numerator_withheld: bool
+
+
 def ledger_repeat_distribution(
     session: Session,
     *,
@@ -679,6 +955,7 @@ def ledger_repeat_distribution(
     window_start: date,
     window_end: date,
     generated_at: datetime | None = None,
+    cohort_min_size: int = COHORT_MIN_SIZE,
 ) -> LedgerRepeatDistribution:
     """Return a bounded repeat-exposure distribution from the awareness ledger.
 
@@ -694,6 +971,15 @@ def ledger_repeat_distribution(
     rule (observed open, observed click, reported, confirmed interaction,
     training started, training completed), keeping repeat history consistent
     with the close-disposition definition.
+
+    ``cohort_min_size`` is the k-anonymity threshold: a non-empty cell with
+    fewer than ``k`` distinct pseudonyms is suppressed (``participants`` becomes
+    ``None``, never ``0``). Complementary suppression then withholds any margin
+    or rate that would let the suppressed cell be recovered by subtraction:
+    when a series has exactly one suppressed cell, its unique/exposures margins
+    are withheld; a repeat rate whose numerator counts a suppressed cell, or
+    whose denominator is a withheld margin, is itself suppressed. Pass
+    ``cohort_min_size=1`` to publish every cell.
     """
 
     _require_scope(scope)
@@ -703,6 +989,8 @@ def ledger_repeat_distribution(
         raise ValueError("ledger repeat window start must precede end")
     if window_end - window_start > MAX_LEDGER_TREND_WINDOW:
         raise ValueError("ledger repeat window cannot exceed 1826 days")
+    if type(cohort_min_size) is not int or cohort_min_size < 1:
+        raise ValueError("cohort_min_size must be a positive integer")
     report_time = generated_at or datetime.now(UTC)
     if report_time.tzinfo is None:
         raise ValueError("generated_at must include a timezone")
@@ -759,23 +1047,61 @@ def ledger_repeat_distribution(
             engaged_bucket = min(engaged, MAX_LEDGER_REPEAT_BUCKET)
             engaged_counts[engaged_bucket] = engaged_counts.get(engaged_bucket, 0) + 1
 
-    def _buckets(counts: dict[int, int]) -> tuple[LedgerRepeatBucket, ...]:
-        return tuple(
-            LedgerRepeatBucket(exposures=bucket, participants=counts.get(bucket, 0))
+    def _suppress_series(counts: dict[int, int]) -> _SuppressedSeries:
+        """Apply primary + complementary k-anonymity suppression to one series.
+
+        Returns the published cells plus flags for whether the series margins
+        (unique / exposures totals) and the repeat-rate numerator must be
+        withheld so that no single sub-k cell can be recovered by subtraction.
+        """
+
+        raw = {bucket: counts.get(bucket, 0) for bucket in range(1, MAX_LEDGER_REPEAT_BUCKET + 1)}
+        suppressed_cells = {bucket for bucket, count in raw.items() if 0 < count < cohort_min_size}
+        built = tuple(
+            LedgerRepeatBucket(
+                exposures=bucket,
+                participants=None if bucket in suppressed_cells else raw[bucket],
+                suppressed=bucket in suppressed_cells,
+            )
             for bucket in range(1, MAX_LEDGER_REPEAT_BUCKET + 1)
         )
+        # A single suppressed cell is recoverable from a series margin by
+        # subtraction (margin - visible cells); two or more leave >=2 unknowns.
+        withhold_margins = len(suppressed_cells) == 1
+        # The repeat numerator sums cells with exposures >= 2; if any such cell
+        # is suppressed, publishing the numerator would reveal it.
+        numerator_withheld = any(bucket >= 2 for bucket in suppressed_cells)
+        return _SuppressedSeries(built, len(suppressed_cells), withhold_margins, numerator_withheld)
+
+    exposure_series = _suppress_series(exposure_counts)
+    engaged_series = _suppress_series(engaged_counts)
+
+    # True population numerators (distinct pseudonyms with two or more
+    # exposures / engagements), withheld when a contributing cell is suppressed.
+    repeat_exposed = sum(count for exposures, count in exposure_counts.items() if exposures >= 2)
+    repeat_engaged = sum(count for engagements, count in engaged_counts.items() if engagements >= 2)
+    exposure_denominator_withheld = exposure_series.withhold_margins
+    engaged_denominator_withheld = engaged_series.withhold_margins
 
     return LedgerRepeatDistribution(
         generated_at=report_time,
         window_start_inclusive=window_start,
         window_end_exclusive=window_end,
-        exposure_buckets=_buckets(exposure_counts),
-        engaged_buckets=_buckets(engaged_counts),
-        unique_exposed=unique_exposed,
-        exposures_total=exposures_total,
-        unique_engaged=unique_engaged,
-        engaged_exposures_total=engaged_exposures_total,
+        exposure_buckets=exposure_series.buckets,
+        engaged_buckets=engaged_series.buckets,
+        unique_exposed=None if exposure_denominator_withheld else unique_exposed,
+        exposures_total=None if exposure_denominator_withheld else exposures_total,
+        unique_engaged=None if engaged_denominator_withheld else unique_engaged,
+        engaged_exposures_total=None if engaged_denominator_withheld else engaged_exposures_total,
         no_activity_at_close=no_activity_at_close,
+        suppressed=exposure_series.suppressed + engaged_series.suppressed,
+        cohort_min_size=cohort_min_size,
+        repeat_exposed=(
+            None if (exposure_series.numerator_withheld or exposure_denominator_withheld) else repeat_exposed
+        ),
+        repeat_engaged=(
+            None if (engaged_series.numerator_withheld or engaged_denominator_withheld) else repeat_engaged
+        ),
     )
 
 
@@ -801,19 +1127,40 @@ def ledger_repeat_csv_rows(report: LedgerRepeatDistribution) -> tuple[CsvRow, ..
         report.window_end_exclusive.isoformat(),
         report.generated_at.isoformat(),
     )
+    # A suppressed cell publishes the distinct non-numeric marker in the
+    # numerator column (never 0, which a naive reader would take as a true
+    # empty cohort) and flags "suppressed" in the denominator_name column.
     for bucket in report.exposure_buckets:
-        rows.append((*prefix, "bucket", f"exposures_{bucket.exposures}", bucket.participants, "", "", ""))
+        marker = "suppressed" if bucket.suppressed else ""
+        value = _SUPPRESSED_MARKER if bucket.participants is None else bucket.participants
+        rows.append((*prefix, "bucket", f"exposures_{bucket.exposures}", value, "", marker, ""))
     for bucket in report.engaged_buckets:
-        rows.append((*prefix, "bucket", f"engaged_{bucket.exposures}", bucket.participants, "", "", ""))
-    for name, value in (
+        marker = "suppressed" if bucket.suppressed else ""
+        value = _SUPPRESSED_MARKER if bucket.participants is None else bucket.participants
+        rows.append((*prefix, "bucket", f"engaged_{bucket.exposures}", value, "", marker, ""))
+    for name, maybe_value in (
         ("unique_exposed", report.unique_exposed),
         ("exposures_total", report.exposures_total),
         ("unique_engaged", report.unique_engaged),
         ("engaged_exposures_total", report.engaged_exposures_total),
         ("no_activity_at_close", report.no_activity_at_close),
+        ("suppressed_cohorts", report.suppressed),
+        ("cohort_min_size", report.cohort_min_size),
     ):
-        rows.append((*prefix, "summary", name, int(value), "", "", ""))
+        cell: CsvCell = _SUPPRESSED_MARKER if maybe_value is None else int(maybe_value)
+        rows.append((*prefix, "summary", name, cell, "", "", ""))
+    for name, text_value in (
+        ("metric_definitions_version", METRIC_DEFINITIONS_VERSION),
+        ("export_schema_version", EXPORT_SCHEMA_VERSION),
+        ("metric_definitions_digest", metric_definitions_digest()),
+    ):
+        rows.append((*prefix, "version", name, "", "", "", text_value))
     for name, rate in report.rates:
+        if rate.suppressed:
+            # A suppressed rate withholds numerator, denominator and value with
+            # the non-numeric marker rather than publishing a recoverable count.
+            rows.append((*prefix, "summary", name, _SUPPRESSED_MARKER, _SUPPRESSED_MARKER, rate.denominator_name, ""))
+            continue
         rate_value = rate.value
         if rate_value is not None and not math.isfinite(rate_value):
             raise ValueError("ledger repeat rate is not finite")
@@ -1027,9 +1374,15 @@ def campaign_funnel_csv_rows(report: CampaignFunnel) -> tuple[CsvRow, ...]:
         ("metric", "value"),
         ("campaign_id", str(report.campaign_id)),
         ("generated_at", report.generated_at.isoformat()),
+        ("metric_definitions_version", METRIC_DEFINITIONS_VERSION),
+        ("export_schema_version", EXPORT_SCHEMA_VERSION),
+        ("metric_definitions_digest", metric_definitions_digest()),
+        ("cohort_min_size", COHORT_MIN_SIZE),
         ("semantics.sent", "durable_provider_attempt_claimed"),
-        ("semantics.accepted", "provider_handoff_acknowledged"),
+        ("semantics.accepted", "provider_handoff_acknowledged_not_human_interaction"),
         ("semantics.delivered", "destination_mta_handoff_not_inbox_or_read"),
+        ("semantics.clicked", "human_automation_excluded"),
+        ("semantics.reply_correlated", "human_interaction_confidence_not_provider_acceptance"),
     ]
     if report.evidence_window is None:
         rows.append(("evidence_window", "all_retained_evidence"))
@@ -1040,19 +1393,7 @@ def campaign_funnel_csv_rows(report: CampaignFunnel) -> tuple[CsvRow, ...]:
                 ("evidence_window_end_exclusive", report.evidence_window.end.isoformat()),
             )
         )
-    for name in (
-        "targeted",
-        "sent",
-        "accepted",
-        "delivered",
-        "failed",
-        "indeterminate",
-        "opened",
-        "clicked",
-        "reported",
-        "training_assigned",
-        "training_completed",
-    ):
+    for name in _CAMPAIGN_FUNNEL_COUNT_NAMES:
         rows.append((f"count.{name}", int(getattr(report, name))))
     for name, rate in report.rates:
         value = rate.value
@@ -1067,3 +1408,62 @@ def campaign_funnel_csv_rows(report: CampaignFunnel) -> tuple[CsvRow, ...]:
             )
         )
     return tuple(rows)
+
+
+def campaign_funnel_count_names() -> tuple[str, ...]:
+    """Return the ordered funnel count names every surface must render.
+
+    Derived from the registered definition table (see
+    :data:`_CAMPAIGN_FUNNEL_COUNT_NAMES`) so a surface and the definitions it
+    cites cannot drift apart.
+    """
+
+    return _CAMPAIGN_FUNNEL_COUNT_NAMES
+
+
+def campaign_metric_document(report: CampaignFunnel) -> dict[str, object]:
+    """Return the canonical, versioned, JSON-safe funnel metric document.
+
+    This is the one representation the UI view, the CSV export, and the
+    evidence-ZIP member are all derived from, so the same event set yields the
+    same numbers on every surface. It carries explicit numerator/denominator,
+    the evidence window, the suspected-automation and reply-confidence counts,
+    the unknown (indeterminate) count, and the metric/export versions with the
+    definitions digest. ``cohort_suppression`` is reported as "not_applicable"
+    because a single-campaign funnel is one aggregate, not a set of
+    pseudonymous cohorts (k-anonymity suppression lives on the ledger surfaces).
+    """
+
+    counts = {name: int(getattr(report, name)) for name in _CAMPAIGN_FUNNEL_COUNT_NAMES}
+    rates: list[dict[str, object]] = []
+    for name, rate in report.rates:
+        value = rate.value
+        if value is not None and not math.isfinite(value):
+            raise ValueError("report rate is not finite")
+        rates.append(
+            {
+                "name": name,
+                "numerator": rate.numerator,
+                "denominator": rate.denominator,
+                "denominator_name": rate.denominator_name,
+                "value": value,
+            }
+        )
+    window: dict[str, str] | None = None
+    if report.evidence_window is not None:
+        window = {
+            "start_inclusive": report.evidence_window.start.isoformat(),
+            "end_exclusive": report.evidence_window.end.isoformat(),
+        }
+    return {
+        "metric_definitions_version": METRIC_DEFINITIONS_VERSION,
+        "export_schema_version": EXPORT_SCHEMA_VERSION,
+        "metric_definitions_digest": metric_definitions_digest(),
+        "cohort_min_size": COHORT_MIN_SIZE,
+        "cohort_suppression": "not_applicable",
+        "campaign_id": str(report.campaign_id),
+        "generated_at": report.generated_at.isoformat(),
+        "evidence_window": window,
+        "counts": counts,
+        "rates": rates,
+    }

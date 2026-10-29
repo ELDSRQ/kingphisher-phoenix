@@ -30,7 +30,7 @@ from kp_database.models import (
     TrackingToken,
     TrainingAssignment,
 )
-from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
+from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE, payload_automation_suspected
 
 AWARENESS_LEDGER_RETENTION_DAYS: Final = 1_826
 MAX_LEDGER_PROJECTION_BATCH: Final = 500
@@ -238,9 +238,13 @@ def project_awareness_ledger_batch(
         TrackingEvent.recipient_assignment_id,
         TrackingToken.recipient_assignment_id,
     )
+    # The payload is selected alongside the type so a CLICKED event can be
+    # classified human vs suspected-automation (KP-AUD-014). ``.distinct()`` is
+    # dropped because the payload makes otherwise-identical rows distinct; the
+    # per-assignment aggregation below deduplicates in Python.
     event_rows = list(
         session.execute(
-            select(assignment_for_event, TrackingEvent.event_type)
+            select(assignment_for_event, TrackingEvent.event_type, TrackingEvent.payload)
             .select_from(TrackingEvent)
             .outerjoin(TrackingToken, TrackingToken.token_id == TrackingEvent.token_id)
             .where(
@@ -248,13 +252,19 @@ def project_awareness_ledger_batch(
                 TrackingEvent.event_type.in_(_PROJECTED_EVENT_TYPES),
                 TrackingEvent.occurred_at <= projection_time,
             )
-            .distinct()
         )
     )
     events_by_assignment: dict[uuid.UUID, set[dm.EventType]] = {assignment_id: set() for assignment_id in requested}
-    for assignment_id, event_type in event_rows:
-        if assignment_id in events_by_assignment:
-            events_by_assignment[assignment_id].add(event_type)
+    # Assignments with at least one human (automation-excluded) click. A
+    # scanner-only click never sets this, so it cannot become human engagement
+    # in the ledger (mirrors campaign_funnel's "human wins" rule).
+    human_clicked: set[uuid.UUID] = set()
+    for assignment_id, event_type, payload in event_rows:
+        if assignment_id not in events_by_assignment:
+            continue
+        events_by_assignment[assignment_id].add(event_type)
+        if event_type is dm.EventType.CLICKED and not payload_automation_suspected(payload):
+            human_clicked.add(assignment_id)
 
     training_rows = list(
         session.execute(
@@ -306,8 +316,12 @@ def project_awareness_ledger_batch(
             or training_completed
             or dm.EventType.TRAINING_STARTED in event_types
         )
+        # observed_open is left as any open (exposure/activity signal, not a
+        # human-authorship claim). observed_click is human-only: a CLICKED event
+        # whose payload is suspected automation does not set it, so ledger
+        # engagement / repeat-engagement never counts scanner traffic as human.
         observed_open = dm.EventType.OPENED in event_types
-        observed_click = dm.EventType.CLICKED in event_types
+        observed_click = assignment_id in human_clicked
         reported = dm.EventType.MESSAGE_REPORTED in event_types
         confirmed = dm.EventType.HUMAN_INTERACTION_CONFIRMED in event_types
         human_activity = any(

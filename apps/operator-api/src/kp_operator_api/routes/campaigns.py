@@ -66,6 +66,13 @@ from kp_database.models import (
 )
 from kp_database.outbox import dispatch_after_commit, enqueue_queue
 from kp_database.program_service import require_program_active_for_schedule
+from kp_database.reporting import (
+    SINGLE_TENANT_DATABASE_SCOPE,
+    campaign_funnel,
+    campaign_funnel_csv_rows,
+    campaign_metric_document,
+    payload_automation_suspected,
+)
 from kp_domain_models import models as dm
 from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
 from kp_domain_models.roe import (
@@ -2727,6 +2734,37 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
     for event in events:
         event_counts[event.event_type.value] += 1
         confidence_counts[event.confidence.value] += 1
+    # KP-AUD-014: make the legacy click number HONEST and identical to the
+    # analytics funnel so no single export shows two contradictory counts. A
+    # CLICKED event is counted as human only when its payload is not suspected
+    # automation; human wins over a scanner click on the same accepted
+    # assignment (the exact rule campaign_funnel uses). ``opened`` stays raw and
+    # is NOT a human-interaction metric (an open can be a scanner prefetch).
+    accepted_assignment_ids = {
+        assignment.recipient_assignment_id for assignment in assignments if assignment.provider_accepted_at is not None
+    }
+    token_to_assignment = {
+        assignment.token_id: assignment.recipient_assignment_id
+        for assignment in assignments
+        if assignment.token_id is not None
+    }
+    human_click_assignments: set[uuid.UUID] = set()
+    automation_click_assignments: set[uuid.UUID] = set()
+    for event in events:
+        if event.event_type is not dm.EventType.CLICKED:
+            continue
+        resolved = event.recipient_assignment_id or token_to_assignment.get(event.token_id)
+        if resolved is None or resolved not in accepted_assignment_ids:
+            continue
+        if payload_automation_suspected(event.payload):
+            automation_click_assignments.add(resolved)
+        else:
+            human_click_assignments.add(resolved)
+    human_clicked = len(human_click_assignments)
+    clicked_automation_suspected = len(automation_click_assignments - human_click_assignments)
+    # Overwrite the raw CLICKED tally with the honest human count so the legacy
+    # event_counts cannot disagree with the analytics funnel's clicked.
+    event_counts[dm.EventType.CLICKED.value] = human_clicked
     report_time = datetime.now(UTC)
     training_states = {state.value: 0 for state in dm.TrainingState}
     for item in training:
@@ -2766,6 +2804,11 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
     accepted = send_counts.get(dm.SendState.ACCEPTED.value, 0)
     delivered = send_counts.get(dm.SendState.DELIVERED.value, 0)
     interaction_denominator = accepted + delivered
+    # NOTE (KP-AUD-003/005/014): the authoritative, versioned, automation-aware
+    # analytics funnel is served by ``/analytics/campaigns/{id}/funnel`` and is
+    # embedded into this campaign's ``report.csv`` and ``evidence.zip`` exports.
+    # The legacy fields below are a current snapshot kept for backward
+    # compatibility; consumers needing honest, versioned numbers use the funnel.
     return {
         "campaign_id": str(campaign.campaign_id),
         "title": campaign.title,
@@ -2778,6 +2821,7 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
         "send_counts": send_counts,
         "failure_reasons": dict(sorted(failure_reasons.items())),
         "event_counts": event_counts,
+        "clicked_automation_suspected": clicked_automation_suspected,
         "confidence_counts": confidence_counts,
         "training": {"total": len(training), **training_states},
         "reported_mail_pipeline": {
@@ -2793,10 +2837,16 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
             "opened": event_counts.get(dm.EventType.OPENED.value, 0) / interaction_denominator
             if interaction_denominator
             else 0.0,
+            # Uses the automation-excluded human click count (event_counts.clicked
+            # was overwritten above), so it agrees with analytics.rate.clicked.
             "clicked": event_counts.get(dm.EventType.CLICKED.value, 0) / interaction_denominator
             if interaction_denominator
             else 0.0,
             "training_completed": completed_training / len(training) if training else 0.0,
+        },
+        "semantics": {
+            "clicked": "human click; suspected automation excluded (matches analytics funnel)",
+            "opened": "any open, including scanner prefetch; NOT a human-interaction metric",
         },
     }
 
@@ -3015,7 +3065,8 @@ def campaign_report_csv(
     session: Session = Depends(get_session),
     principal: Principal = Depends(require_capability(Capability.EXPORT_BULK)),
 ) -> Response:
-    report = _campaign_report(session, _get_campaign(session, campaign_id))
+    campaign = _get_campaign(session, campaign_id)
+    report = _campaign_report(session, campaign)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["metric", "value"])
@@ -3029,6 +3080,13 @@ def campaign_report_csv(
         writer.writerow([f"training.{name}", value])
     for name, value in report["rates"].items():
         writer.writerow([f"rates.{name}", value])
+    # Embed the authoritative, versioned analytics funnel under an ``analytics.``
+    # namespace so this CSV, the analytics CSV, and the evidence ZIP carry the
+    # same numbers (automation-excluded clicks, reply CONFIDENCE, unknowns,
+    # suppressed count, and the metric/export versions) from one computation.
+    funnel = campaign_funnel(session, campaign.campaign_id, scope=SINGLE_TENANT_DATABASE_SCOPE)
+    for metric, value in campaign_funnel_csv_rows(funnel)[1:]:
+        writer.writerow([f"analytics.{metric}", value])
     return Response(
         output.getvalue(),
         media_type="text/csv",
@@ -3121,10 +3179,21 @@ def campaign_evidence_bundle(
             "revoked_at": roe.revoked_at,
         }
 
+    # KP-AUD-003/005/014: the authoritative, versioned analytics funnel, from
+    # the SAME canonical computation the analytics UI and CSV render. Shipping
+    # it here means the evidence bundle, the UI, and the CSV cannot disagree on
+    # the numbers; the JSON and CSV members are two serializations of one
+    # document, both carrying the metric/export versions and definitions digest.
+    funnel = campaign_funnel(session, campaign.campaign_id, scope=SINGLE_TENANT_DATABASE_SCOPE)
+    analytics_csv = io.StringIO(newline="")
+    csv.writer(analytics_csv, lineterminator="\n").writerows(campaign_funnel_csv_rows(funnel))
+
     members = {
         "campaign.json": _evidence_json(campaign_doc),
         "approvals.json": _evidence_json(approvals_doc),
         "roe.json": _evidence_json(roe_doc),
+        "analytics-funnel.json": _evidence_json(campaign_metric_document(funnel)),
+        "analytics-funnel.csv": analytics_csv.getvalue().encode("utf-8"),
     }
     manifest_lines = "".join(f"{hashlib.sha256(body).hexdigest()}  {name}\n" for name, body in sorted(members.items()))
     members["manifest.sha256"] = manifest_lines.encode("utf-8")

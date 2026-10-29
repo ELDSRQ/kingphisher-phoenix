@@ -136,7 +136,7 @@ def test_ledger_trend_json_is_bounded_denominator_explicit_and_pseudonym_free(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["schema_version"] == "1"
+    assert body["schema_version"] == "2"
     assert [bucket["month"] for bucket in body["buckets"]] == ["2022-03-01", "2025-07-01"]
     first = body["buckets"][0]
     counts = {metric["name"]: metric["value"] for metric in first["counts"]}

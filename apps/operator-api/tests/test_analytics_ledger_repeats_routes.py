@@ -80,6 +80,9 @@ def _report() -> LedgerRepeatDistribution:
         unique_engaged=14,
         engaged_exposures_total=17,
         no_activity_at_close=3,
+        suppressed=0,
+        repeat_exposed=8,
+        repeat_engaged=4,
     )
 
 
@@ -117,7 +120,7 @@ def test_ledger_repeats_json_is_bounded_denominator_explicit_and_pseudonym_free(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["schema_version"] == "1"
+    assert body["schema_version"] == "2"
     assert [bucket["exposures"] for bucket in body["exposure_buckets"]] == [1, 2, 3, 4, 5]
     assert [bucket["participants"] for bucket in body["exposure_buckets"]] == [12, 4, 2, 1, 1]
     assert [bucket["participants"] for bucket in body["engaged_buckets"]] == [10, 3, 1, 0, 0]
@@ -128,7 +131,10 @@ def test_ledger_repeats_json_is_bounded_denominator_explicit_and_pseudonym_free(
         "unique_engaged": 14,
         "engaged_exposures_total": 17,
         "no_activity_at_close": 3,
+        "suppressed_cohorts": 0,
     }
+    assert body["suppressed"] == 0
+    assert all(bucket["suppressed"] is False for bucket in body["exposure_buckets"])
     rates = {metric["name"]: metric for metric in body["rates"]}
     assert rates["repeat_exposure"]["numerator"] == 8 and rates["repeat_exposure"]["denominator"] == 20
     assert rates["repeat_engagement"]["numerator"] == 4 and rates["repeat_engagement"]["denominator"] == 14

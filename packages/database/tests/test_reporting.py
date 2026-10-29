@@ -6,11 +6,17 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from kp_database.reporting import (
+    EXPORT_SCHEMA_VERSION,
+    METRIC_DEFINITIONS_VERSION,
     SINGLE_TENANT_DATABASE_SCOPE,
     CampaignReportNotFound,
     EvidenceWindow,
     campaign_funnel,
+    campaign_funnel_count_names,
     campaign_funnel_csv_rows,
+    campaign_metric_document,
+    metric_definitions,
+    metric_definitions_digest,
 )
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
@@ -42,7 +48,7 @@ def session() -> Session:
         )
         connection.exec_driver_sql(
             "CREATE TABLE events (event_id CHAR(32) PRIMARY KEY, event_type VARCHAR(64) NOT NULL, token_id CHAR(32), "
-            "recipient_assignment_id CHAR(32), occurred_at DATETIME NOT NULL)"
+            "recipient_assignment_id CHAR(32), occurred_at DATETIME NOT NULL, payload TEXT)"
         )
         connection.exec_driver_sql(
             "CREATE TABLE training_assignments (training_assignment_id CHAR(32) PRIMARY KEY, "
@@ -239,3 +245,90 @@ def test_csv_rows_are_primitive_privacy_safe_and_formula_safe(session: Session) 
     serialized = repr(rows)
     assert "mailbox" not in serialized
     assert "department" not in serialized
+
+
+def _accepted_assignment(
+    session: Session, campaign_id: uuid.UUID, assignment_id: uuid.UUID, token_id: uuid.UUID
+) -> None:
+    session.execute(
+        text(
+            "INSERT INTO recipient_assignments (recipient_assignment_id, campaign_id, send_state, "
+            "delivery_attempt_id, provider_accepted_at, delivery_confirmed_at) "
+            "VALUES (:a, :c, 'ACCEPTED', :attempt, :accepted, NULL)"
+        ),
+        {
+            "a": assignment_id.hex,
+            "c": campaign_id.hex,
+            "attempt": uuid.uuid4().hex,
+            "accepted": NOW - timedelta(hours=4),
+        },
+    )
+    session.execute(
+        text("INSERT INTO tracking_tokens (token_id, recipient_assignment_id) VALUES (:t, :a)"),
+        {"t": token_id.hex, "a": assignment_id.hex},
+    )
+
+
+def _click(session: Session, token_id: uuid.UUID, *, automation: bool) -> None:
+    payload = '{"automation_suspected": true}' if automation else "{}"
+    session.execute(
+        text(
+            "INSERT INTO events (event_id, event_type, token_id, recipient_assignment_id, occurred_at, payload) "
+            "VALUES (:e, 'CLICKED', :t, NULL, :when, :payload)"
+        ),
+        {"e": uuid.uuid4().hex, "t": token_id.hex, "when": NOW - timedelta(hours=1), "payload": payload},
+    )
+
+
+def test_suspected_automation_clicks_do_not_inflate_the_human_click_metric(session: Session) -> None:
+    campaign_id = _id(700)
+    session.execute(text("INSERT INTO campaigns (campaign_id) VALUES (:c)"), {"c": campaign_id.hex})
+    _accepted_assignment(session, campaign_id, _id(711), _id(811))  # genuine human click
+    _accepted_assignment(session, campaign_id, _id(712), _id(812))  # scanner click
+    _click(session, _id(811), automation=False)
+    _click(session, _id(812), automation=True)
+    session.commit()
+
+    report = campaign_funnel(session, campaign_id, scope=SINGLE_TENANT_DATABASE_SCOPE, generated_at=NOW)
+
+    assert report.clicked == 1
+    assert report.clicked_automation_suspected == 1
+    rates = dict(report.rates)
+    assert rates["clicked"].numerator == 1 and rates["clicked"].denominator == 2
+    document = campaign_metric_document(report)
+    assert document["counts"]["clicked"] == 1
+    assert document["counts"]["clicked_automation_suspected"] == 1
+
+
+def test_metric_definitions_are_versioned_and_cover_every_surface() -> None:
+    definitions = metric_definitions()
+    assert definitions["metric_definitions_version"] == METRIC_DEFINITIONS_VERSION
+    assert definitions["export_schema_version"] == EXPORT_SCHEMA_VERSION
+    names = {entry["name"] for entry in definitions["campaign_funnel"]}
+    assert {"clicked", "clicked_automation_suspected", "reply_correlated", "indeterminate"} <= names
+    # The ledger surfaces are registered too, so the version/digest they stamp
+    # truthfully describes their own metrics.
+    ledger_names = {entry["name"] for entry in definitions["awareness_ledger"]}
+    assert {"repeat_exposure", "repeat_engagement", "clicked"} <= ledger_names
+    # The rendered count-name set is DERIVED from the definition table, so a
+    # surface cannot drift from the registered definitions.
+    assert campaign_funnel_count_names() == tuple(
+        entry["name"] for entry in definitions["campaign_funnel"] if entry["kind"] == "count"
+    )
+    # The computation predicates the numbers depend on are part of the record.
+    assert {"human_click", "automation_suspected"} <= set(definitions["computation_predicates"])
+
+
+def test_digest_changes_when_a_definition_or_predicate_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    import kp_database.reporting as reporting
+
+    baseline = metric_definitions_digest()
+    # Snapshot guard: a change to any definition or predicate must change this
+    # value, which forces bumping METRIC_DEFINITIONS_VERSION alongside it.
+    assert baseline == "ad6cc617399a2653245930bc54220f55914c4ad540b8b22e1f67f60df243821d"
+    assert len(baseline) == 64
+
+    # Changing a computation predicate (not just prose) changes the digest.
+    mutated_predicates = (("human_click", "DIFFERENT RULE"), *reporting._COMPUTATION_PREDICATES[1:])
+    monkeypatch.setattr(reporting, "_COMPUTATION_PREDICATES", mutated_predicates)
+    assert metric_definitions_digest() != baseline

@@ -156,7 +156,7 @@ def test_trend_json_is_weighted_denominator_explicit_and_pii_free(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["schema_version"] == "1"
+    assert body["schema_version"] == "2"
     assert [point["campaign_id"] for point in body["points"]] == [str(FIRST_ID), str(SECOND_ID)]
     assert body["portfolio"]["unit"] == "campaign_assignment_exposures"
     clicked = next(rate for rate in body["portfolio"]["rates"] if rate["name"] == "clicked")
@@ -166,6 +166,7 @@ def test_trend_json_is_weighted_denominator_explicit_and_pii_free(
         "denominator": 10,
         "denominator_name": "provider_accepted_handoff_exposures",
         "value": 0.2,
+        "suppressed": False,
     }
     assert "never averages rates" in body["semantics"]["portfolio"]
     assert "not inbox placement" in body["semantics"]["delivered"]

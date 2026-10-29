@@ -122,6 +122,7 @@ def test_json_is_pii_free_and_denominators_are_explicit(client: tuple[TestClient
         "denominator": 2,
         "denominator_name": "campaign_training_assignments",
         "value": 0.0,
+        "suppressed": False,
     }
     serialized = response.text.lower()
     for forbidden in ("mailbox", "department", "display_name", "employee_key", "recipient_id"):
