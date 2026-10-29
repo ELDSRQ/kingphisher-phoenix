@@ -34,6 +34,7 @@ from kp_domain_models import models as dm
 from kp_telemetry.errors import ConflictError, NotFoundError, ValidationError_
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_capability
@@ -116,7 +117,8 @@ class ThreatArtifactPage(_StrictModel):
 
 class ThreatReviewDecision(_StrictModel):
     decision: dm.ArtifactReviewState
-    reviewer: str | None = Field(default=None, max_length=255)
+    # No caller-supplied reviewer: the authenticated principal is recorded, so
+    # provenance cannot be attributed to an arbitrary name by the client.
 
 
 class BundleImportRequest(_StrictModel):
@@ -273,7 +275,7 @@ def review_threat_artifact(
     if artifact is None:
         raise NotFoundError("threat artifact not found")
 
-    reviewer = (body.reviewer or principal.principal_id)[:255]
+    reviewer = str(principal.principal_id)[:255]
     now = _utcnow()
     artifact.review_state = body.decision
     artifact.reviewer = reviewer
@@ -324,11 +326,16 @@ def import_threat_bundle(
     policy = session.scalar(select(SourcePolicy).where(SourcePolicy.source_key == body.source_key).with_for_update())
     if policy is None:
         raise NotFoundError("source policy not found")
-    if not policy.enabled:
-        raise ConflictError("source policy is disabled; bundle import fails closed")
+    now = _utcnow()
+    # Fail closed on the WHOLE import before touching any state: a disabled,
+    # stale, or failed source must not ingest, must not have its health
+    # "healed", and must not burn the bundle_id. (A refused import that recorded
+    # the ledger row or reset the failure counter would defeat the freshness /
+    # failure SLA and let a second import slip through.)
+    if not source_policy_health(policy, as_of=now).admits_ingestion:
+        raise ConflictError("source policy fails closed; bundle import refused")
 
     imported = deduplicated = blocked = 0
-    now = _utcnow()
     for artifact in verified.artifacts:
         result = ingest_threat_artifact(
             session,
@@ -349,9 +356,12 @@ def import_threat_bundle(
         elif result.blocked:
             blocked += 1
 
-    # A verified import is a successful source event: keep the policy fresh.
-    policy.last_success_at = now
-    policy.consecutive_failures = 0
+    # Only a genuinely successful ingest (something created or deduplicated)
+    # counts as a source success. A bundle that produced nothing usable does not
+    # refresh the freshness clock or clear the failure counter.
+    if imported + deduplicated > 0:
+        policy.last_success_at = now
+        policy.consecutive_failures = 0
     session.add(
         ThreatBundleImport(
             threat_bundle_import_id=uuid.uuid4(),
@@ -377,7 +387,14 @@ def import_threat_bundle(
             "artifact_count": len(verified.artifacts),
         },
     )
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # Concurrent import of the same bundle_id: the unique constraint is the
+        # authority. The loser rolls back and reports the replay conflict rather
+        # than surfacing a 500.
+        session.rollback()
+        raise ConflictError("threat bundle has already been imported") from None
     return BundleImportResult(
         bundle_id=verified.bundle_id,
         imported=imported,

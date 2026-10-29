@@ -29,7 +29,10 @@ HMAC = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 CONSOLE_JWT = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 POLICY_ID = uuid.UUID("11111111-1111-4111-8111-1111111111aa")
 DISABLED_POLICY_ID = uuid.UUID("11111111-1111-4111-8111-1111111111bb")
+STALE_POLICY_ID = uuid.UUID("11111111-1111-4111-8111-1111111111cc")
+FAILED_POLICY_ID = uuid.UUID("11111111-1111-4111-8111-1111111111dd")
 ARTIFACT_ID = uuid.UUID("22222222-2222-4222-8222-2222222222aa")
+REVIEWER_SUB = "33333333-3333-4333-8333-333333333333"
 
 _BUNDLE_SEED = bytes(range(1, 33))
 
@@ -67,10 +70,10 @@ def _settings() -> OperatorApiSettings:
     )
 
 
-def _headers(settings: OperatorApiSettings, role: str = "source_curator") -> dict[str, str]:
+def _headers(settings: OperatorApiSettings, role: str = "source_curator", sub: str | None = None) -> dict[str, str]:
     token = jwt.encode(
         {
-            "sub": str(uuid.uuid4()),
+            "sub": sub or str(uuid.uuid4()),
             "iss": settings.oidc_issuer,
             "aud": settings.oidc_audience,
             "exp": 2_000_000_000,
@@ -123,6 +126,30 @@ def _seed(engine: Engine) -> None:
                     enabled=False,
                     last_success_at=now - timedelta(days=100),
                     consecutive_failures=5,
+                ),
+                SourcePolicy(
+                    source_policy_id=STALE_POLICY_ID,
+                    source_key="stale-feed",
+                    owner="threat-intel-team",
+                    license="CC-BY-4.0",
+                    parser="rss/1",
+                    trust=dm.SourceTrust.COMMUNITY,
+                    freshness=7,
+                    enabled=True,
+                    last_success_at=now - timedelta(days=30),
+                    consecutive_failures=0,
+                ),
+                SourcePolicy(
+                    source_policy_id=FAILED_POLICY_ID,
+                    source_key="failed-feed",
+                    owner="threat-intel-team",
+                    license="CC-BY-4.0",
+                    parser="rss/1",
+                    trust=dm.SourceTrust.COMMUNITY,
+                    freshness=30,
+                    enabled=True,
+                    last_success_at=now - timedelta(hours=1),
+                    consecutive_failures=3,
                 ),
                 ThreatArtifact(
                     threat_artifact_id=ARTIFACT_ID,
@@ -225,24 +252,36 @@ def test_detail_returns_safe_preview_and_manifest_never_original(library: Any) -
     assert body["approvable"] is False and body["deliverable"] is False
 
 
-def test_review_records_reviewer_and_keeps_quarantine(library: Any) -> None:
+def test_review_records_authenticated_principal_and_keeps_quarantine(library: Any) -> None:
     client, settings, engine, audit = library
+    response = client.post(
+        f"/api/v1/threat-library/artifacts/{ARTIFACT_ID}/review",
+        headers=_headers(settings, sub=REVIEWER_SUB),
+        json={"decision": "safe_reviewed"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["review_state"] == "safe_reviewed"
+    # The recorded reviewer is the authenticated principal, not a caller value.
+    assert body["reviewer"] == REVIEWER_SUB
+    assert body["provenance"]["reviewer"] == REVIEWER_SUB
+    # The verdict governs the preview only; the original stays quarantined.
+    assert body["quarantine_state"] == "quarantined"
+    with Session(engine) as session:
+        stored = session.get(ThreatArtifact, ARTIFACT_ID)
+        assert stored is not None and stored.quarantine_state == dm.QuarantineState.QUARANTINED
+    assert any(call["action"] == "threat_library.review" for call in audit.calls)
+
+
+def test_review_rejects_caller_supplied_reviewer_field(library: Any) -> None:
+    client, settings, _engine, _audit = library
+    # The strict model forbids extra fields, so a client cannot spoof the reviewer.
     response = client.post(
         f"/api/v1/threat-library/artifacts/{ARTIFACT_ID}/review",
         headers=_headers(settings),
         json={"decision": "safe_reviewed", "reviewer": "alice"},
     )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["review_state"] == "safe_reviewed"
-    assert body["reviewer"] == "alice"
-    # The verdict governs the preview only; the original stays quarantined.
-    assert body["quarantine_state"] == "quarantined"
-    assert body["provenance"]["reviewer"] == "alice"
-    with Session(engine) as session:
-        stored = session.get(ThreatArtifact, ARTIFACT_ID)
-        assert stored is not None and stored.quarantine_state == dm.QuarantineState.QUARANTINED
-    assert any(call["action"] == "threat_library.review" for call in audit.calls)
+    assert response.status_code == 422
 
 
 def test_bundle_import_verifies_quarantines_and_replay_protects(library: Any) -> None:
@@ -291,6 +330,53 @@ def test_bundle_import_under_disabled_policy_fails_closed(library: Any) -> None:
         json={"source_key": "disabled-feed", "bundle": _signed_bundle("bundle-disabled")},
     )
     assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("source_key", "policy_id"),
+    [("stale-feed", STALE_POLICY_ID), ("failed-feed", FAILED_POLICY_ID)],
+)
+def test_bundle_import_fails_closed_without_healing_or_burning_id(
+    library: Any, source_key: str, policy_id: uuid.UUID
+) -> None:
+    client, settings, engine, _audit = library
+    with Session(engine) as session:
+        before = session.get(SourcePolicy, policy_id)
+        assert before is not None
+        before_success = before.last_success_at
+        before_failures = before.consecutive_failures
+
+    bundle = _signed_bundle("bundle-shared-id")
+    refused = client.post(
+        "/api/v1/threat-library/bundles/import",
+        headers=_headers(settings),
+        json={"source_key": source_key, "bundle": bundle},
+    )
+    # A valid, well-signed bundle against a stale/failed source is refused whole.
+    assert refused.status_code == 409
+
+    with Session(engine) as session:
+        after = session.get(SourcePolicy, policy_id)
+        assert after is not None
+        # Health was NOT "healed" by the refused import.
+        assert after.last_success_at == before_success
+        assert after.consecutive_failures == before_failures
+        # No artifact ingested and the bundle_id was NOT burned (ledger empty).
+        ledger = list(
+            session.scalars(select(ThreatBundleImport).where(ThreatBundleImport.bundle_id == "bundle-shared-id"))
+        )
+        assert ledger == []
+        bundle_rows = list(session.scalars(select(ThreatArtifact).where(ThreatArtifact.source_policy_id == policy_id)))
+        assert bundle_rows == []
+
+    # Because the id was not burned, the same bundle still imports under a healthy source.
+    ok = client.post(
+        "/api/v1/threat-library/bundles/import",
+        headers=_headers(settings),
+        json={"source_key": "curated-offline", "bundle": bundle},
+    )
+    assert ok.status_code == 201, ok.text
+    assert ok.json()["imported"] == 1
 
 
 def test_source_health_system_view_flags_stale_and_failed(library: Any) -> None:
