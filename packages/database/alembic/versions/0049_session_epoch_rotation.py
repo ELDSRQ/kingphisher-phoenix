@@ -20,7 +20,7 @@ Additive only: two new tables, each seeded with the singleton/known row needed
 so the console can bump in place without a create race. No existing object is
 altered or dropped.
 
-Revision ID: 0049_session_epoch_credential_rotation
+Revision ID: 0049_session_epoch_rotation
 Revises: 0048_provider_config_generation
 Create Date: 2026-10-29
 """
@@ -30,7 +30,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0049_session_epoch_credential_rotation"
+revision = "0049_session_epoch_rotation"
 down_revision = "0048_provider_config_generation"
 branch_labels = None
 depends_on = None
