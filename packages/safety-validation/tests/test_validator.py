@@ -433,3 +433,40 @@ def test_wildcard_img_does_not_exempt_unrelated_subdomain_href() -> None:
     verdict = v.validate(None, "hi", body, content_checks=False)
     assert not verdict.allowed
     assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+# --- KP-AUD-013: image-host match is exact-or-subdomain, never a parent -------
+
+
+def test_img_on_parent_of_allowlisted_host_is_rejected() -> None:
+    # Allow-listing cdn.brand.com must NOT widen to the registrable parent
+    # brand.com: a logo <img> served from the parent fails closed (an exact-host
+    # or subdomain-of-allowed match only). This is the parent-widening the
+    # pre-KP-AUD-013 clause wrongly accepted.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    verdict = v.validate(None, "logo", '<img src="https://brand.com/logo.png">', content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+def test_img_on_sibling_subdomain_of_allowlisted_host_is_rejected() -> None:
+    # A sibling subdomain (not under the allow-listed host) is not exempt either.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    verdict = v.validate(None, "logo", '<img src="https://evil.brand.com/logo.png">', content_checks=False)
+    assert not verdict.allowed
+
+
+def test_img_on_lookalike_suffix_of_allowlisted_host_is_rejected() -> None:
+    # The suffix match is dot-anchored, so a lookalike that merely ends with the
+    # allow-listed string (not a true subdomain) is rejected.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"brand.com"})
+    verdict = v.validate(None, "logo", '<img src="https://evilbrand.com/logo.png">', content_checks=False)
+    assert not verdict.allowed
+
+
+def test_img_exact_and_subdomain_of_allowlisted_host_still_pass() -> None:
+    # The legitimate cases are unaffected: the exact host and a true subdomain
+    # of an allow-listed host remain accepted (no over-rejection).
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    assert v.validate(None, "logo", '<img src="https://cdn.brand.com/l.png">', content_checks=False).allowed
+    assert v.validate(None, "logo", '<img src="https://assets.cdn.brand.com/l.png">', content_checks=False).allowed
