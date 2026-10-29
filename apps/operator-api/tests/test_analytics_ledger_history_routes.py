@@ -146,7 +146,7 @@ def test_ledger_history_json_is_bounded_pseudonym_free_and_named_only(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["schema_version"] == "1"
+    assert body["schema_version"] == "2"
     assert body["truncated"] is False
     summary = {metric["name"]: metric["value"] for metric in body["summary"]}
     assert summary == {

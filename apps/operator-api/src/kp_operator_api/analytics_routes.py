@@ -18,8 +18,11 @@ from kp_authorization.rbac import Capability, Principal
 from kp_database.awareness_ledger import LedgerRecipientHistory, ledger_recipient_history
 from kp_database.models import Recipient
 from kp_database.reporting import (
+    COHORT_MIN_SIZE,
+    EXPORT_SCHEMA_VERSION,
     MAX_LEDGER_TREND_WINDOW,
     MAX_TREND_CAMPAIGNS,
+    METRIC_DEFINITIONS_VERSION,
     SINGLE_TENANT_DATABASE_SCOPE,
     CampaignFunnel,
     CampaignPortfolio,
@@ -41,6 +44,7 @@ from kp_database.reporting import (
     ledger_repeat_distribution,
     ledger_trend,
     ledger_trend_csv_rows,
+    metric_definitions_digest,
 )
 from kp_domain_models import models as dm
 from kp_telemetry.errors import NotFoundError, ValidationError_
@@ -123,14 +127,34 @@ class EvidenceWindowView(BaseModel):
     transport_snapshot: str
 
 
+class MetricDefinitionsView(BaseModel):
+    """Versioning every surface records so a number's definition is knowable."""
+
+    metric_definitions_version: str
+    export_schema_version: str
+    metric_definitions_digest: str
+    cohort_min_size: int
+
+
+def _metric_definitions_view() -> MetricDefinitionsView:
+    return MetricDefinitionsView(
+        metric_definitions_version=METRIC_DEFINITIONS_VERSION,
+        export_schema_version=EXPORT_SCHEMA_VERSION,
+        metric_definitions_digest=metric_definitions_digest(),
+        cohort_min_size=COHORT_MIN_SIZE,
+    )
+
+
 class CampaignFunnelView(BaseModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
+    definitions: MetricDefinitionsView
     campaign_id: uuid.UUID
     generated_at: datetime
     evidence_window: EvidenceWindowView | None
     transport: tuple[CountMetric, ...]
     engagement: tuple[CountMetric, ...]
     training: tuple[CountMetric, ...]
+    suppressed: int
     rates: tuple[RateMetric, ...]
     semantics: dict[str, str]
     privacy: str
@@ -152,7 +176,8 @@ class CampaignPortfolioView(BaseModel):
 
 
 class CampaignTrendView(BaseModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
+    definitions: MetricDefinitionsView
     generated_at: datetime
     selection_start_inclusive: datetime
     selection_end_exclusive: datetime
@@ -176,7 +201,8 @@ class LedgerTrendPortfolioView(BaseModel):
 
 
 class LedgerTrendView(BaseModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
+    definitions: MetricDefinitionsView
     generated_at: datetime
     window_start_inclusive: date
     window_end_exclusive: date
@@ -187,19 +213,26 @@ class LedgerTrendView(BaseModel):
 
 
 class LedgerRepeatBucketView(BaseModel):
-    """One exposure-count bucket; the top bucket means "at least that many"."""
+    """One exposure-count bucket; the top bucket means "at least that many".
+
+    ``suppressed`` is true when the cohort was non-empty but below the
+    k-anonymity threshold, in which case ``participants`` is masked to zero.
+    """
 
     exposures: int
     participants: int
+    suppressed: bool
 
 
 class LedgerRepeatDistributionView(BaseModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
+    definitions: MetricDefinitionsView
     generated_at: datetime
     window_start_inclusive: date
     window_end_exclusive: date
     exposure_buckets: tuple[LedgerRepeatBucketView, ...]
     engaged_buckets: tuple[LedgerRepeatBucketView, ...]
+    suppressed: int
     summary: tuple[CountMetric, ...]
     rates: tuple[RateMetric, ...]
     semantics: dict[str, str]
@@ -223,7 +256,8 @@ class LedgerRecipientHistoryEntryView(BaseModel):
 
 
 class LedgerRecipientHistoryView(BaseModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["2"] = "2"
+    definitions: MetricDefinitionsView
     generated_at: datetime
     truncated: bool
     summary: tuple[CountMetric, ...]
@@ -269,13 +303,14 @@ def _load_report(
 def _view(report: CampaignFunnel) -> CampaignFunnelView:
     window = report.evidence_window
     return CampaignFunnelView(
+        definitions=_metric_definitions_view(),
         campaign_id=report.campaign_id,
         generated_at=report.generated_at,
         evidence_window=(
             EvidenceWindowView(
                 start_inclusive=window.start,
                 end_exclusive=window.end,
-                applies_to=("opened", "clicked", "reported", "training_completed"),
+                applies_to=("opened", "clicked", "reply_correlated", "reported", "training_completed"),
                 transport_snapshot="current assignment state; not limited by the evidence window",
             )
             if window is not None
@@ -286,11 +321,13 @@ def _view(report: CampaignFunnel) -> CampaignFunnelView:
             for name in ("targeted", "sent", "accepted", "delivered", "failed", "indeterminate")
         ),
         engagement=tuple(
-            CountMetric(name=name, value=getattr(report, name)) for name in ("opened", "clicked", "reported")
+            CountMetric(name=name, value=getattr(report, name))
+            for name in ("opened", "clicked", "clicked_automation_suspected", "reply_correlated", "reported")
         ),
         training=tuple(
             CountMetric(name=name, value=getattr(report, name)) for name in ("training_assigned", "training_completed")
         ),
+        suppressed=report.suppressed,
         rates=tuple(
             RateMetric(
                 name=name,
@@ -304,10 +341,17 @@ def _view(report: CampaignFunnel) -> CampaignFunnelView:
         semantics={
             "targeted": "frozen campaign assignments",
             "sent": "durable provider attempt claimed",
-            "accepted": "provider acknowledged message handoff",
+            "accepted": "provider acknowledged message handoff; acceptance, not human interaction",
             "delivered": "destination MTA handoff; not inbox placement, display, or reading",
+            "indeterminate": "unknown transport outcome; neither success nor failure is proven",
+            "clicked": "distinct accepted assignments with a human click; suspected automation is excluded",
+            "clicked_automation_suspected": "distinct accepted assignments whose clicks are all suspected automation "
+            "(W1-06 payload.automation_suspected); never counted as human clicks",
+            "reply_correlated": "distinct accepted assignments with a header-correlated reply; human-interaction "
+            "CONFIDENCE, never provider ACCEPTANCE of delivery",
             "engagement": "distinct accepted assignments with retained evidence",
             "training_completed": "completed campaign training assignments",
+            "suppressed": "pseudonymous cohorts withheld for k-anonymity; zero for a single-campaign funnel",
         },
         privacy="aggregate counts only; no recipient identifiers or recipient attributes",
     )
@@ -347,6 +391,7 @@ def _rate_view(rates: tuple[tuple[str, Rate], ...]) -> tuple[RateMetric, ...]:
 
 def _trend_view(report: CampaignTrendReport) -> CampaignTrendView:
     return CampaignTrendView(
+        definitions=_metric_definitions_view(),
         generated_at=report.generated_at,
         selection_start_inclusive=report.selection_window.start,
         selection_end_exclusive=report.selection_window.end,
@@ -423,6 +468,7 @@ def _ledger_count_view(projection: LedgerTrendBucket | LedgerTrendPortfolio) -> 
 
 def _ledger_trend_view(report: LedgerTrendReport) -> LedgerTrendView:
     return LedgerTrendView(
+        definitions=_metric_definitions_view(),
         generated_at=report.generated_at,
         window_start_inclusive=report.window_start_inclusive,
         window_end_exclusive=report.window_end_exclusive,
@@ -482,22 +528,29 @@ def _load_ledger_trend(
 
 
 def _ledger_repeat_bucket_view(bucket: LedgerRepeatBucket) -> LedgerRepeatBucketView:
-    return LedgerRepeatBucketView(exposures=bucket.exposures, participants=bucket.participants)
+    return LedgerRepeatBucketView(
+        exposures=bucket.exposures,
+        participants=bucket.participants,
+        suppressed=bucket.suppressed,
+    )
 
 
 def _ledger_repeats_view(report: LedgerRepeatDistribution) -> LedgerRepeatDistributionView:
     return LedgerRepeatDistributionView(
+        definitions=_metric_definitions_view(),
         generated_at=report.generated_at,
         window_start_inclusive=report.window_start_inclusive,
         window_end_exclusive=report.window_end_exclusive,
         exposure_buckets=tuple(_ledger_repeat_bucket_view(bucket) for bucket in report.exposure_buckets),
         engaged_buckets=tuple(_ledger_repeat_bucket_view(bucket) for bucket in report.engaged_buckets),
+        suppressed=report.suppressed,
         summary=(
             CountMetric(name="unique_exposed", value=report.unique_exposed),
             CountMetric(name="exposures_total", value=report.exposures_total),
             CountMetric(name="unique_engaged", value=report.unique_engaged),
             CountMetric(name="engaged_exposures_total", value=report.engaged_exposures_total),
             CountMetric(name="no_activity_at_close", value=report.no_activity_at_close),
+            CountMetric(name="suppressed_cohorts", value=report.suppressed),
         ),
         rates=_rate_view(report.rates),
         semantics={
@@ -510,6 +563,7 @@ def _ledger_repeats_view(report: LedgerRepeatDistribution) -> LedgerRepeatDistri
             "click, report, confirmed interaction, training started or completed)",
             "repeat_exposure": "share of distinct exposed pseudonyms with two or more exposures",
             "repeat_engagement": "share of distinct engaged pseudonyms engaged in two or more campaigns",
+            "suppressed": "non-empty cohort cells withheld for k-anonymity; their exact counts are masked to zero",
             "corrections": "scanner or bot corrections are not subtracted without normalized correction evidence",
         },
         privacy=(
@@ -551,6 +605,7 @@ def _ledger_recipient_history_view(
     history: LedgerRecipientHistory,
 ) -> LedgerRecipientHistoryView:
     return LedgerRecipientHistoryView(
+        definitions=_metric_definitions_view(),
         generated_at=history.generated_at,
         truncated=history.truncated,
         summary=(

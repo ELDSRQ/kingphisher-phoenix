@@ -66,6 +66,12 @@ from kp_database.models import (
 )
 from kp_database.outbox import dispatch_after_commit, enqueue_queue
 from kp_database.program_service import require_program_active_for_schedule
+from kp_database.reporting import (
+    SINGLE_TENANT_DATABASE_SCOPE,
+    campaign_funnel,
+    campaign_funnel_csv_rows,
+    campaign_metric_document,
+)
 from kp_domain_models import models as dm
 from kp_domain_models.policy import ApprovalPolicy, is_recipient_allowed
 from kp_domain_models.roe import (
@@ -2766,6 +2772,11 @@ def _campaign_report(session: Session, campaign: Campaign) -> dict[str, Any]:
     accepted = send_counts.get(dm.SendState.ACCEPTED.value, 0)
     delivered = send_counts.get(dm.SendState.DELIVERED.value, 0)
     interaction_denominator = accepted + delivered
+    # NOTE (KP-AUD-003/005/014): the authoritative, versioned, automation-aware
+    # analytics funnel is served by ``/analytics/campaigns/{id}/funnel`` and is
+    # embedded into this campaign's ``report.csv`` and ``evidence.zip`` exports.
+    # The legacy fields below are a current snapshot kept for backward
+    # compatibility; consumers needing honest, versioned numbers use the funnel.
     return {
         "campaign_id": str(campaign.campaign_id),
         "title": campaign.title,
@@ -3015,7 +3026,8 @@ def campaign_report_csv(
     session: Session = Depends(get_session),
     principal: Principal = Depends(require_capability(Capability.EXPORT_BULK)),
 ) -> Response:
-    report = _campaign_report(session, _get_campaign(session, campaign_id))
+    campaign = _get_campaign(session, campaign_id)
+    report = _campaign_report(session, campaign)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["metric", "value"])
@@ -3029,6 +3041,13 @@ def campaign_report_csv(
         writer.writerow([f"training.{name}", value])
     for name, value in report["rates"].items():
         writer.writerow([f"rates.{name}", value])
+    # Embed the authoritative, versioned analytics funnel under an ``analytics.``
+    # namespace so this CSV, the analytics CSV, and the evidence ZIP carry the
+    # same numbers (automation-excluded clicks, reply CONFIDENCE, unknowns,
+    # suppressed count, and the metric/export versions) from one computation.
+    funnel = campaign_funnel(session, campaign.campaign_id, scope=SINGLE_TENANT_DATABASE_SCOPE)
+    for metric, value in campaign_funnel_csv_rows(funnel)[1:]:
+        writer.writerow([f"analytics.{metric}", value])
     return Response(
         output.getvalue(),
         media_type="text/csv",
@@ -3121,10 +3140,21 @@ def campaign_evidence_bundle(
             "revoked_at": roe.revoked_at,
         }
 
+    # KP-AUD-003/005/014: the authoritative, versioned analytics funnel, from
+    # the SAME canonical computation the analytics UI and CSV render. Shipping
+    # it here means the evidence bundle, the UI, and the CSV cannot disagree on
+    # the numbers; the JSON and CSV members are two serializations of one
+    # document, both carrying the metric/export versions and definitions digest.
+    funnel = campaign_funnel(session, campaign.campaign_id, scope=SINGLE_TENANT_DATABASE_SCOPE)
+    analytics_csv = io.StringIO(newline="")
+    csv.writer(analytics_csv, lineterminator="\n").writerows(campaign_funnel_csv_rows(funnel))
+
     members = {
         "campaign.json": _evidence_json(campaign_doc),
         "approvals.json": _evidence_json(approvals_doc),
         "roe.json": _evidence_json(roe_doc),
+        "analytics-funnel.json": _evidence_json(campaign_metric_document(funnel)),
+        "analytics-funnel.csv": analytics_csv.getvalue().encode("utf-8"),
     }
     manifest_lines = "".join(f"{hashlib.sha256(body).hexdigest()}  {name}\n" for name, body in sorted(members.items()))
     members["manifest.sha256"] = manifest_lines.encode("utf-8")
