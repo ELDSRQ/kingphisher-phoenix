@@ -605,10 +605,17 @@ def reconcile_session_epoch(
                 marker = -1  # unreadable/corrupt -> behind; rewrite from the DB
             if marker < db_epoch:
                 _write_session_epoch_marker(settings, db_epoch)
-    except SQLAlchemyError:
+    except Exception:  # noqa: BLE001 - best-effort reconcile must never block login
         if not best_effort:
             raise
-        session.rollback()
+        # On the login path reconcile is best-effort: a database that is
+        # unreachable OR forbidden (e.g. the deliberately DB-free console smoke)
+        # must not break sign-in. Convergence then happens on the next login or
+        # rotation that can reach the database. Roll back defensively in case a
+        # partial unit of work is open; ignore a rollback that itself cannot
+        # reach the database.
+        with contextlib.suppress(Exception):
+            session.rollback()
 
 
 def _revoke_console_sessions(

@@ -529,6 +529,33 @@ def test_reconcile_is_best_effort_on_db_error(env_file: Path) -> None:
     assert session.rollbacks == 1
 
 
+def test_reconcile_is_best_effort_on_non_sqlalchemy_error(env_file: Path) -> None:
+    # The console browser smoke runs login against a DB-forbidding fixture that
+    # raises a plain RuntimeError on any connection attempt — NOT a
+    # SQLAlchemyError. Best-effort reconcile on the login path must swallow that
+    # too, or sign-in 500s. Regression guard for the create_session smoke break.
+    settings = _settings(env_file)
+
+    class _ForbidDbSession:
+        def __init__(self) -> None:
+            self.rollbacks = 0
+
+        def get(self, *args: object, **kwargs: object) -> Any:
+            raise RuntimeError("smoke fixture forbids database connections")
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+    session = _ForbidDbSession()
+    # Must NOT raise; convergence simply defers to a login/rotation that can reach the DB.
+    reconcile_session_epoch(session, _FakeAudit(), settings, best_effort=True)  # type: ignore[arg-type]
+    assert session.rollbacks == 1
+
+    # When NOT best-effort (the rotation path), the same failure must still propagate.
+    with pytest.raises(RuntimeError):
+        reconcile_session_epoch(_ForbidDbSession(), _FakeAudit(), settings)  # type: ignore[arg-type]
+
+
 # --- N3: post-apply commit fault leaves a reconcilable stuck rotation --------
 
 
