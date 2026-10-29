@@ -314,3 +314,122 @@ def test_image_allowlist_does_not_permit_javascript_or_shortener() -> None:
     v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"*"})
     assert not v.validate(None, "x", '<a href="javascript:alert(1)">go</a>', content_checks=False).allowed
     assert not v.validate(None, "x", "See https://bit.ly/x", content_checks=False).allowed
+
+
+# --- KP-AUD-001: image-host exemption is scoped to <img> sources -------------
+
+
+def test_image_allowlisted_host_as_plaintext_url_is_rejected() -> None:
+    # A plain-text URL is navigable prose, never an image load. It must NOT
+    # inherit the image-host allowance even when its host (or the host's
+    # registrable parent) is image-allow-listed; the pre-fix validator keyed
+    # the exemption on host alone and wrongly accepted this.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    verdict = v.validate(None, "Visit https://cdn.brand.com/promo for details", None, content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+def test_image_allowlisted_host_as_anchor_href_is_rejected() -> None:
+    # An <a href> to an image-allow-listed host is a navigable link, not an
+    # image source, and must fail closed.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    verdict = v.validate(None, "Click", '<a href="https://cdn.brand.com/promo">click</a>', content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+def test_image_allowlisted_host_wildcard_as_anchor_href_is_rejected() -> None:
+    # Even the "*" wildcard image allowance must not cover a navigable href.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"*"})
+    assert not v.validate(
+        None, "Click", '<a href="https://anything.example/go">click</a>', content_checks=False
+    ).allowed
+
+
+def test_genuine_img_src_to_allowlisted_host_still_passes() -> None:
+    # A real inline <img> logo from an allow-listed host remains accepted.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    verdict = v.validate(None, "logo", '<img src="https://cdn.brand.com/logo.png">', content_checks=False)
+    assert verdict.allowed, verdict.reasons
+
+
+def test_wildcard_img_src_still_passes() -> None:
+    # The wildcard image allowance still covers a genuine <img> source.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"*"})
+    assert v.validate(None, "logo", '<img src="https://anything.example/l.png">', content_checks=False).allowed
+
+
+# --- KP-AUD-001 revision: per-reference masking, not per-host ----------------
+# A genuine <img> logo must not launder OTHER uses of the same host (or its
+# registrable parent) in the same message. Each of these is the ordinary shape
+# of reconstructed phishing (brand logo from the brand CDN + a body link to the
+# brand domain) and must be REJECTED.
+
+
+def test_img_plus_anchor_href_same_host_is_rejected() -> None:
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    body = '<img src="https://cdn.brand.com/l.png"><a href="https://cdn.brand.com/phish">go</a>'
+    verdict = v.validate(None, "hi", body, content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+def test_img_plus_parent_domain_href_is_rejected() -> None:
+    # The logo is on cdn.brand.com; the navigable link is on the registrable
+    # parent brand.com. Exact-host masking must not widen to the parent.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    body = '<img src="https://cdn.brand.com/l.png"><a href="https://brand.com/phish">go</a>'
+    verdict = v.validate(None, "hi", body, content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+def test_img_plus_plaintext_same_host_is_rejected() -> None:
+    # The exact KP-AUD-001 case: logo image + prose link to the same host.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    verdict = v.validate(None, "hi", '<img src="https://cdn.brand.com/l.png">', content_checks=False)
+    assert verdict.allowed  # lone logo is fine
+    verdict2 = v.validate(
+        None, "go https://cdn.brand.com/phish", '<img src="https://cdn.brand.com/l.png">', content_checks=False
+    )
+    assert not verdict2.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict2.reasons)
+
+
+def test_wildcard_img_plus_parent_href_is_rejected() -> None:
+    # With '*', a logo on a.evil.example must not exempt a navigable href to
+    # evil.example (its parent) or any other unrelated host used in a link.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"*"})
+    body = '<img src="https://a.evil.example/l.png"><a href="https://evil.example/x">go</a>'
+    verdict = v.validate(None, "hi", body, content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+def test_anchor_with_bogus_src_attribute_is_rejected() -> None:
+    # A single-tag bypass: an <a> carries both an href and a decoy src. The src
+    # on a non-<img> tag is NOT an image source and must not be masked.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    body = '<a href="https://cdn.brand.com/p" src="https://cdn.brand.com/l.png">go</a>'
+    verdict = v.validate(None, "hi", body, content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+def test_video_src_to_image_host_is_rejected() -> None:
+    # <video src> is not an image load; the image allowance must not cover it.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"cdn.brand.com"})
+    verdict = v.validate(None, "hi", '<video src="https://cdn.brand.com/v.mp4"></video>', content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
+
+
+def test_wildcard_img_does_not_exempt_unrelated_subdomain_href() -> None:
+    # Logo host logo.cdn.example must not exempt a navigable href to a sibling
+    # subdomain api.cdn.example used elsewhere in the message.
+    v = SafetyValidator(training_domains=TRAINING, allowed_image_hosts={"*"})
+    body = '<img src="https://logo.cdn.example/l.png"><a href="https://api.cdn.example/x">go</a>'
+    verdict = v.validate(None, "hi", body, content_checks=False)
+    assert not verdict.allowed
+    assert any("external link not on training allowlist" in reason for reason in verdict.reasons)
