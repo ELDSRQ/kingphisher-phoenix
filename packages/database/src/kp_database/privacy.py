@@ -12,6 +12,7 @@ import hashlib
 import ipaddress
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, select
@@ -86,11 +87,11 @@ def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: dat
         Recipient,
         RecipientAssignment,
         RecipientExclusion,
-        ReportedMailReceipt,
         TrackingEvent,
         TrackingToken,
         TrainingAssignment,
     )
+    from kp_database.personal_data import ASSIGNMENT_LINKED_RECEIPT_MODELS
 
     recipient = session.get(Recipient, recipient_id)
     if recipient is None or recipient.deleted_at is not None:
@@ -109,9 +110,14 @@ def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: dat
         )
         if token_ids:
             session.execute(delete(TrackingEvent).where(TrackingEvent.token_id.in_(token_ids)))
-        session.execute(
-            delete(ReportedMailReceipt).where(ReportedMailReceipt.recipient_assignment_id.in_(assignment_ids))
-        )
+        # Explicitly delete both assignment-linked mail receipts for this
+        # subject before the assignments go, rather than relying on the FK
+        # ``ondelete="SET NULL"`` (which would leave orphaned reply/reported
+        # receipts carrying the subject's encrypted external message id). Reply
+        # receipts previously escaped erasure entirely (KP-AUD-003).
+        for receipt_model in ASSIGNMENT_LINKED_RECEIPT_MODELS:
+            model: Any = receipt_model
+            session.execute(delete(model).where(model.recipient_assignment_id.in_(assignment_ids)))
         session.execute(delete(TrackingToken).where(TrackingToken.recipient_assignment_id.in_(assignment_ids)))
     session.execute(delete(TrackingEvent).where(TrackingEvent.recipient_id == recipient_id))
     session.execute(delete(TrainingAssignment).where(TrainingAssignment.recipient_id == recipient_id))

@@ -3,24 +3,29 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from kp_authorization.rbac import Capability, Principal
 from kp_database.audit_store import AuditStore
+from kp_database.awareness_ledger import LedgerRecipientHistoryEntry, ledger_recipient_history
 from kp_database.models import (
     PrivacyNotice,
     PrivacyRequest,
     Recipient,
     TrackingEvent,
 )
+from kp_database.personal_data import exported_store_names
 from kp_database.privacy import (
     VERIFIED_PRIVACY_STATES,
     PrivacyRequestStatus,
     erase_recipient_data,
     hash_mailbox,
 )
+from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
 from kp_domain_models import models as dm
 from kp_telemetry.errors import (
     ConflictError,
@@ -251,6 +256,145 @@ def _bounded_privacy_export_rows(session: Session, statement: Any, *, label: str
     return rows
 
 
+@dataclass
+class _PrivacyExportData:
+    """Collected, subject-scoped rows for one DSR access export.
+
+    One field per exported personal-data store (see
+    :mod:`kp_database.personal_data`). ``awareness_ledger`` holds already-
+    pseudonymized ledger facts resolved via :func:`ledger_recipient_history`,
+    never recipient attributes.
+    """
+
+    recipients: Sequence[Recipient] = field(default_factory=list)
+    assignments: Sequence[Any] = field(default_factory=list)
+    events: Sequence[Any] = field(default_factory=list)
+    training: Sequence[Any] = field(default_factory=list)
+    exclusions: Sequence[Any] = field(default_factory=list)
+    reported_receipts: Sequence[Any] = field(default_factory=list)
+    reply_receipts: Sequence[Any] = field(default_factory=list)
+    awareness_ledger: Sequence[LedgerRecipientHistoryEntry] = field(default_factory=list)
+
+
+def _serialize_receipt(row: Any) -> dict[str, Any]:
+    """Minimized view of one mail receipt for the subject's own export.
+
+    The encrypted external message id, its hash, provider scope, and evidence
+    blob are operational/replay-boundary fields, not subject-facing content, so
+    only the assignment linkage, disposition, and timestamp are disclosed.
+    """
+
+    return {
+        "recipient_assignment_id": (str(row.recipient_assignment_id) if row.recipient_assignment_id else None),
+        "disposition": row.disposition,
+        "received_at": row.received_at,
+    }
+
+
+def _serialize_ledger_entry(entry: LedgerRecipientHistoryEntry) -> dict[str, Any]:
+    return {
+        "campaign_id": str(entry.campaign_id),
+        "campaign_date": entry.campaign_date,
+        "campaign_date_basis": entry.campaign_date_basis,
+        "delivered": entry.delivered,
+        "observed_open": entry.observed_open,
+        "observed_click": entry.observed_click,
+        "confirmed_interaction": entry.confirmed_interaction,
+        "reported": entry.reported,
+        "training_started": entry.training_started,
+        "training_completed": entry.training_completed,
+        "no_activity_at_close": entry.no_activity_at_close,
+    }
+
+
+def build_privacy_export_payload(
+    *,
+    privacy_request_id: str,
+    request_type: str,
+    data: _PrivacyExportData,
+) -> dict[str, Any]:
+    """Assemble the DSR access-export response from collected rows.
+
+    Pure and database-free so the registry/export coverage invariant can be
+    asserted hermetically: the returned dict carries one section per exported
+    personal-data store registered in :mod:`kp_database.personal_data`.
+    """
+
+    payload: dict[str, Any] = {
+        "privacy_request_id": privacy_request_id,
+        "request_type": request_type,
+        "records": [
+            {
+                "recipient_id": str(r.recipient_id),
+                "mailbox": r.mailbox,
+                "employee_key": r.employee_key,
+                "display_name": r.display_name,
+                "department": r.department,
+                "is_test_account": r.is_test_account,
+            }
+            for r in data.recipients
+        ],
+        "assignments": [
+            {
+                "recipient_assignment_id": str(row.recipient_assignment_id),
+                "recipient_id": str(row.recipient_id),
+                "campaign_id": str(row.campaign_id),
+                "send_state": row.send_state.value,
+                "created_at": row.created_at,
+            }
+            for row in data.assignments
+        ],
+        "events": [
+            {
+                "event_id": str(row.event_id),
+                "recipient_id": str(row.recipient_id) if row.recipient_id else None,
+                "campaign_id": str(row.campaign_id) if row.campaign_id else None,
+                "event_type": row.event_type.value,
+                "confidence": row.confidence.value,
+                "occurred_at": row.occurred_at,
+                "payload": row.payload,
+            }
+            for row in data.events
+        ],
+        "training_assignments": [
+            {
+                "training_assignment_id": str(row.training_assignment_id),
+                "recipient_id": str(row.recipient_id),
+                "campaign_id": str(row.campaign_id) if row.campaign_id else None,
+                "status": row.status.value,
+                "assigned_at": row.assigned_at,
+                "completed_at": row.completed_at,
+            }
+            for row in data.training
+        ],
+        "exclusions": [
+            {
+                "recipient_exclusion_id": str(row.recipient_exclusion_id),
+                "recipient_id": str(row.recipient_id),
+                "exclusion_type": row.exclusion_type.value,
+                "campaign_id": str(row.campaign_id) if row.campaign_id else None,
+                "reason": row.reason,
+                "created_by": str(row.created_by) if row.created_by else None,
+                "created_at": row.created_at,
+                "expires_at": row.expires_at,
+                "revoked_at": row.revoked_at,
+                "revoked_by": str(row.revoked_by) if row.revoked_by else None,
+                "revoke_reason": row.revoke_reason,
+            }
+            for row in data.exclusions
+        ],
+        "reported_receipts": [_serialize_receipt(row) for row in data.reported_receipts],
+        "reply_receipts": [_serialize_receipt(row) for row in data.reply_receipts],
+        "awareness_ledger": [_serialize_ledger_entry(entry) for entry in data.awareness_ledger],
+    }
+    # Fail closed if a newly registered exported store was not wired into this
+    # payload (the coverage invariant behind KP-AUD-003). The hermetic test
+    # catches this first; this assertion keeps production honest with -O off.
+    missing = exported_store_names() - payload.keys()
+    assert not missing, f"privacy export is missing registered personal-data stores: {sorted(missing)}"
+    return payload
+
+
 @router.post("/privacy/requests/{request_id}/export")
 def export_privacy_request(
     request_id: uuid.UUID,
@@ -271,7 +415,14 @@ def export_privacy_request(
         request,
         max_rows=_PRIVACY_EXPORT_RECORD_LIMIT,
     )
-    from kp_database.models import RecipientAssignment, RecipientExclusion, TrackingToken, TrainingAssignment
+    from kp_database.models import (
+        RecipientAssignment,
+        RecipientExclusion,
+        ReplyMailReceipt,
+        ReportedMailReceipt,
+        TrackingToken,
+        TrainingAssignment,
+    )
 
     recipient_ids = [recipient.recipient_id for recipient in recipients]
     assignments = (
@@ -323,6 +474,41 @@ def export_privacy_request(
         if recipient_ids
         else []
     )
+    # Reply and reported receipts link to the subject only through their
+    # assignments; before KP-AUD-003 neither appeared in the export.
+    reported_receipts = (
+        _bounded_privacy_export_rows(
+            session,
+            select(ReportedMailReceipt).where(ReportedMailReceipt.recipient_assignment_id.in_(assignment_ids)),
+            label="reported mail receipts",
+        )
+        if assignment_ids
+        else []
+    )
+    reply_receipts = (
+        _bounded_privacy_export_rows(
+            session,
+            select(ReplyMailReceipt).where(ReplyMailReceipt.recipient_assignment_id.in_(assignment_ids)),
+            label="reply mail receipts",
+        )
+        if assignment_ids
+        else []
+    )
+    # The awareness ledger holds no recipient/assignment foreign key; it is
+    # resolved through the governed pseudonym key and returns only PII-free
+    # campaign-level outcomes (never a recipient attribute or the pseudonym).
+    awareness_ledger: list[LedgerRecipientHistoryEntry] = []
+    if recipients:
+        pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()
+        for recipient in recipients:
+            history = ledger_recipient_history(
+                session,
+                tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+                recipient_id=recipient.recipient_id,
+                pseudonym_key=pseudonym_key,
+                pseudonym_key_version=pseudonym_key_version,
+            )
+            awareness_ledger.extend(history.entries)
     request.exported_at = datetime.now(UTC)
     audit.record(
         session=session,
@@ -336,6 +522,9 @@ def export_privacy_request(
             "events": len(events),
             "training_assignments": len(training),
             "exclusions": len(exclusions),
+            "reported_receipts": len(reported_receipts),
+            "reply_receipts": len(reply_receipts),
+            "awareness_ledger": len(awareness_ledger),
         },
     )
     session.commit()
@@ -345,70 +534,20 @@ def export_privacy_request(
     response.headers["Cache-Control"] = "private, no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
-    return {
-        "privacy_request_id": str(request.privacy_request_id),
-        "request_type": request.request_type.value,
-        "records": [
-            {
-                "recipient_id": str(r.recipient_id),
-                "mailbox": r.mailbox,
-                "employee_key": r.employee_key,
-                "display_name": r.display_name,
-                "department": r.department,
-                "is_test_account": r.is_test_account,
-            }
-            for r in recipients
-        ],
-        "assignments": [
-            {
-                "recipient_assignment_id": str(row.recipient_assignment_id),
-                "recipient_id": str(row.recipient_id),
-                "campaign_id": str(row.campaign_id),
-                "send_state": row.send_state.value,
-                "created_at": row.created_at,
-            }
-            for row in assignments
-        ],
-        "events": [
-            {
-                "event_id": str(row.event_id),
-                "recipient_id": str(row.recipient_id) if row.recipient_id else None,
-                "campaign_id": str(row.campaign_id) if row.campaign_id else None,
-                "event_type": row.event_type.value,
-                "confidence": row.confidence.value,
-                "occurred_at": row.occurred_at,
-                "payload": row.payload,
-            }
-            for row in events
-        ],
-        "training_assignments": [
-            {
-                "training_assignment_id": str(row.training_assignment_id),
-                "recipient_id": str(row.recipient_id),
-                "campaign_id": str(row.campaign_id) if row.campaign_id else None,
-                "status": row.status.value,
-                "assigned_at": row.assigned_at,
-                "completed_at": row.completed_at,
-            }
-            for row in training
-        ],
-        "exclusions": [
-            {
-                "recipient_exclusion_id": str(row.recipient_exclusion_id),
-                "recipient_id": str(row.recipient_id),
-                "exclusion_type": row.exclusion_type.value,
-                "campaign_id": str(row.campaign_id) if row.campaign_id else None,
-                "reason": row.reason,
-                "created_by": str(row.created_by) if row.created_by else None,
-                "created_at": row.created_at,
-                "expires_at": row.expires_at,
-                "revoked_at": row.revoked_at,
-                "revoked_by": str(row.revoked_by) if row.revoked_by else None,
-                "revoke_reason": row.revoke_reason,
-            }
-            for row in exclusions
-        ],
-    }
+    return build_privacy_export_payload(
+        privacy_request_id=str(request.privacy_request_id),
+        request_type=request.request_type.value,
+        data=_PrivacyExportData(
+            recipients=recipients,
+            assignments=assignments,
+            events=events,
+            training=training,
+            exclusions=exclusions,
+            reported_receipts=reported_receipts,
+            reply_receipts=reply_receipts,
+            awareness_ledger=awareness_ledger,
+        ),
+    )
 
 
 @router.post("/privacy/requests/{request_id}/fulfill")

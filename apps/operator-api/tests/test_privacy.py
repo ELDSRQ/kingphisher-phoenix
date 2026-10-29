@@ -15,14 +15,21 @@ import pytest
 from fastapi.testclient import TestClient
 from kp_database.base import Base
 from kp_database.models import (
+    Campaign,
+    CampaignPattern,
     CipherText,
     Microsoft365IntegrationState,
     PrivacyNotice,
     Recipient,
+    RecipientAssignment,
+    ReplyMailReceipt,
+    ReportedMailReceipt,
     RetentionPolicy,
 )
+from kp_database.personal_data import exported_store_names
 from kp_database.privacy import hash_mailbox
 from kp_database.session import create_db_engine, make_session_factory
+from kp_domain_models import models as dm
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import create_app
 from sqlalchemy import create_engine
@@ -390,3 +397,117 @@ def test_correction_updates_supported_fields(client: TestClient) -> None:
         assert recipient.department == "Legal"
     finally:
         session.close()
+
+
+def _seed_assignment_with_receipts(recipient_id: str) -> str:
+    """Attach one campaign assignment plus a reply and reported receipt to a
+    seeded recipient. Returns the assignment id."""
+    from uuid import UUID
+
+    session = _session()
+    try:
+        pattern = CampaignPattern(
+            campaign_pattern_id=uuid4(),
+            lure_category=dm.LureCategory.INVOICE,
+            confidence=dm.Confidence.HIGH,
+        )
+        session.add(pattern)
+        session.flush()
+        campaign = Campaign(
+            campaign_id=uuid4(),
+            pattern_id=pattern.campaign_pattern_id,
+            title="Export Drill",
+            state=dm.CampaignState.COMPLETED,
+            sender_mailbox="drills@example.com",
+            training_domain="training.local",
+            timezone="UTC",
+            max_recipients=10,
+            created_by=uuid4(),
+            expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        session.add(campaign)
+        session.flush()
+        assignment = RecipientAssignment(
+            recipient_assignment_id=uuid4(),
+            campaign_id=campaign.campaign_id,
+            recipient_id=UUID(recipient_id),
+            send_state=dm.SendState.DELIVERED,
+            idempotency_key=f"export-assign-{uuid4()}",
+            created_at=datetime.now(UTC),
+        )
+        session.add(assignment)
+        session.flush()
+        session.add(
+            ReportedMailReceipt(
+                reported_mail_receipt_id=uuid4(),
+                provider="microsoft365",
+                scope_hash="1" * 64,
+                external_id="reported-secret",
+                external_id_hash="a" * 64,
+                recipient_assignment_id=assignment.recipient_assignment_id,
+                disposition="reported",
+                evidence={},
+                received_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            ReplyMailReceipt(
+                reply_mail_receipt_id=uuid4(),
+                provider="microsoft365",
+                scope_hash="2" * 64,
+                external_id="reply-secret",
+                external_id_hash="b" * 64,
+                recipient_assignment_id=assignment.recipient_assignment_id,
+                disposition="replied",
+                evidence={},
+                received_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+        return str(assignment.recipient_assignment_id)
+    finally:
+        session.close()
+
+
+@requires_db
+def test_export_covers_every_registered_personal_data_store(client: TestClient) -> None:
+    mailbox = "export.coverage@example.com"
+    recipient_id = _seed_recipient(mailbox)
+    assignment_id = _seed_assignment_with_receipts(recipient_id)
+
+    submit = client.post(
+        "/api/v1/privacy/requests",
+        headers=PRIVACY_HEADERS,
+        json={"request_type": "access_export", "requester_mailbox": mailbox},
+    )
+    assert submit.status_code == 201, submit.text
+    request_id = submit.json()["privacy_request_id"]
+
+    verify = client.post(
+        f"/api/v1/privacy/requests/{request_id}/verify",
+        headers=PRIVACY_HEADERS,
+        json={"method": "authenticated_hr_record", "evidence_ref": "case-export"},
+    )
+    assert verify.status_code == 200, verify.text
+
+    export = client.post(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
+    assert export.status_code == 200, export.text
+    body = export.json()
+
+    # Every store the registry flags for export is present in the payload.
+    assert exported_store_names() <= set(body.keys())
+
+    # The reply and reported receipts linked to the subject's assignment are
+    # disclosed (minimized: linkage, disposition, timestamp only) and carry no
+    # encrypted external id / hash.
+    assert len(body["reported_receipts"]) == 1
+    assert len(body["reply_receipts"]) == 1
+    for receipt in body["reported_receipts"] + body["reply_receipts"]:
+        assert receipt["recipient_assignment_id"] == assignment_id
+        assert set(receipt.keys()) == {"recipient_assignment_id", "disposition", "received_at"}
+    assert body["reported_receipts"][0]["disposition"] == "reported"
+    assert body["reply_receipts"][0]["disposition"] == "replied"
+
+    # The awareness-ledger section exists (PII-free; empty here, no projection).
+    assert "awareness_ledger" in body
+    assert isinstance(body["awareness_ledger"], list)

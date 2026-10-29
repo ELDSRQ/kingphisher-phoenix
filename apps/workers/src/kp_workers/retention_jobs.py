@@ -25,15 +25,17 @@ from kp_database.models import (
     Campaign,
     Microsoft365IntegrationState,
     RecipientAssignment,
+    ReplyMailReceipt,
     ReportedMailReceipt,
     RetentionAction,
     RetentionPolicy,
     TrackingEvent,
     TrackingToken,
 )
+from kp_database.personal_data import ASSIGNMENT_LINKED_RECEIPT_MODELS
 from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
 from kp_domain_models import models as dm
-from sqlalchemy import and_, delete, select
+from sqlalchemy import and_, delete, inspect, select
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -45,6 +47,23 @@ from kp_workers.jobs import (
     RetentionPolicyConfigurationError,
     WorkerContext,
 )
+
+
+def _purge_aged_receipts(session: Session, model: Any, cutoff: datetime, limit: int) -> int:
+    """Delete one bounded batch of mail receipts older than ``cutoff``.
+
+    Shared by the reply- and reported-receipt purges (KP-AUD-003) so the two
+    assignment-linked receipt tables age out identically. The ordered,
+    id-selected delete mirrors the original reported-receipt batch so a single
+    run never exceeds ``limit`` rows per table.
+    """
+    pk = inspect(model).primary_key[0]
+    receipt_ids = list(
+        session.scalars(select(pk).where(model.received_at < cutoff).order_by(model.received_at, pk).limit(limit))
+    )
+    if not receipt_ids:
+        return 0
+    return cast(CursorResult[Any], session.execute(delete(model).where(pk.in_(receipt_ids)))).rowcount or 0
 
 
 def _resolve_retention_policy(session: Session, policy_id: object) -> tuple[RetentionPolicy | None, int]:
@@ -145,25 +164,18 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
         events_deleted = (
             cast(CursorResult[Any], session.execute(delete(TrackingEvent).where(event_filter))).rowcount or 0
         )
-        receipt_ids = list(
-            session.scalars(
-                select(ReportedMailReceipt.reported_mail_receipt_id)
-                .where(ReportedMailReceipt.received_at < cutoff)
-                .order_by(ReportedMailReceipt.received_at, ReportedMailReceipt.reported_mail_receipt_id)
-                .limit(_RETENTION_BATCH_SIZE)
-            )
-        )
-        receipts_deleted = 0
-        if receipt_ids:
-            receipts_deleted = (
-                cast(
-                    CursorResult[Any],
-                    session.execute(
-                        delete(ReportedMailReceipt).where(ReportedMailReceipt.reported_mail_receipt_id.in_(receipt_ids))
-                    ),
-                ).rowcount
-                or 0
-            )
+        # Both assignment-linked mail-receipt tables age out purely by time: a
+        # reported/replied message is personal data whether or not its
+        # assignment was in this batch, so the purge is driven by received_at,
+        # not by assignment_ids. Iterating the shared registry tuple keeps reply
+        # and reported receipts from diverging again (KP-AUD-003).
+        receipts_deleted_by_table = {
+            cast(Any, model).__tablename__: _purge_aged_receipts(session, model, cutoff, _RETENTION_BATCH_SIZE)
+            for model in ASSIGNMENT_LINKED_RECEIPT_MODELS
+        }
+        reported_receipts_deleted = receipts_deleted_by_table[ReportedMailReceipt.__tablename__]
+        reply_receipts_deleted = receipts_deleted_by_table[ReplyMailReceipt.__tablename__]
+        receipts_deleted = reported_receipts_deleted + reply_receipts_deleted
         expired_previews = list(
             session.scalars(
                 select(Microsoft365IntegrationState)
@@ -252,7 +264,8 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
                 "assignments_deleted": assignments_deleted,
                 "tokens_deleted": tokens_deleted,
                 "events_deleted": events_deleted,
-                "reported_receipts_deleted": receipts_deleted,
+                "reported_receipts_deleted": reported_receipts_deleted,
+                "reply_receipts_deleted": reply_receipts_deleted,
                 "directory_previews_expired": len(expired_previews),
                 "retention_days": retention_days,
                 "campaigns_completed": lifecycle["completed"],
