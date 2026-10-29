@@ -22,7 +22,7 @@ class FakeQueue:
         self.pop_order: list[str] = []
         self.reject_error: Exception | None = None
 
-    def pop(self, topic: str, *, timeout: int) -> dict[str, Any] | None:
+    def pop(self, topic: str, *, timeout: int, lease_seconds: float | None = None) -> dict[str, Any] | None:
         assert timeout == 0
         self.pop_order.append(topic)
         return self.messages[topic].pop(0) if self.messages[topic] else None
@@ -85,6 +85,13 @@ class FakeLogger:
 def _spec(name: str, topic: str, queue: FakeQueue, process: Any, *, audit_fail: bool = False) -> RoleSpec:
     settings = SimpleNamespace(
         visibility_seconds=60,
+        effective_lease_seconds=180,
+        lease_heartbeat_seconds=15.0,
+        lease_max_renewals=240,
+        queue_reconcile_enabled=False,
+        queue_reconcile_interval_seconds=300,
+        queue_reconcile_window_hours=24,
+        queue_reconcile_limit=500,
         max_retries=3,
         recovery_every_polls=2,
         retention_interval_seconds=3600,
@@ -603,3 +610,105 @@ def test_main_closes_prior_contexts_and_queue_when_later_role_startup_fails(
 
     assert queue_arguments == ["redis://localhost:6379/0"]
     assert closed == ["first-context", "queue"]
+
+
+class _RenewRecordingQueue(FakeQueue):
+    """FakeQueue that supports lease renewal and records the renewals (AUD-006)."""
+
+    def __init__(self, messages: dict[str, list[dict[str, Any]]] | None = None) -> None:
+        super().__init__(messages)
+        self.renew_calls: list[tuple[str, float]] = []
+        self.renewed = __import__("threading").Event()
+
+    def renew_lease(self, topic: str, message: dict[str, Any], *, lease_seconds: float) -> bool:
+        self.renew_calls.append((topic, lease_seconds))
+        self.renewed.set()
+        return True
+
+
+def test_lease_heartbeat_renews_an_in_flight_claim() -> None:
+    message = {"id": "d1", "payload": {}, "_raw": "d1", "owner": "owner-a"}
+    queue = _RenewRecordingQueue({"deliver": [message]})
+
+    def process(_ctx: object, _message: dict[str, Any]) -> None:
+        # Block until the heartbeat thread has renewed the lease at least once.
+        assert queue.renewed.wait(5.0)
+
+    spec = _spec("delivery", "deliver", queue, process)
+    spec.context.settings.lease_heartbeat_seconds = 0.01
+    spec.context.settings.lease_max_renewals = 5
+    spec.context.settings.effective_lease_seconds = 123
+    supervisor = WorkerSupervisor({"delivery": spec}, logger=FakeLogger())
+
+    assert supervisor.run_cycle() is True
+    assert queue.renew_calls
+    assert queue.renew_calls[0] == ("deliver", 123)
+    # The claim is still acked normally once the handler finishes.
+    assert queue.acked == [("deliver", "d1")]
+
+
+def test_lease_heartbeat_is_skipped_without_a_claim_owner() -> None:
+    message = {"id": "d1", "payload": {}, "_raw": "d1"}  # no owner
+    queue = _RenewRecordingQueue({"deliver": [message]})
+    spec = _spec("delivery", "deliver", queue, lambda _ctx, _m: None)
+    spec.context.settings.lease_heartbeat_seconds = 0.01
+    supervisor = WorkerSupervisor({"delivery": spec}, logger=FakeLogger())
+
+    assert supervisor.run_cycle() is True
+    assert queue.renew_calls == []
+
+
+class _ReconcileRecordingAuditStore(FakeAuditStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[dict[str, Any]] = []
+
+    def reconcile_queue_after_restore(
+        self, queue: Any, *, topic: str, replay_safe: bool, window_seconds: int, limit: int
+    ) -> dict[str, int]:
+        self.calls.append(
+            {"topic": topic, "replay_safe": replay_safe, "window_seconds": window_seconds, "limit": limit}
+        )
+        return {"checked": 0, "replayed": 0, "review_required": 0, "present": 0}
+
+
+def test_queue_reconcile_runs_at_startup_and_marks_delivery_review_only() -> None:
+    queue = FakeQueue()
+    store = _ReconcileRecordingAuditStore()
+    spec = _spec("delivery", "deliver", queue, lambda _ctx, _m: None)
+    spec.context.audit_store = store
+    spec.context.settings.queue_reconcile_enabled = True
+    supervisor = WorkerSupervisor({"delivery": spec}, logger=FakeLogger())
+
+    supervisor.initialize()
+
+    assert len(store.calls) == 1
+    assert store.calls[0]["replay_safe"] is False  # delivery is never auto-replayed
+    assert store.calls[0]["window_seconds"] == 24 * 3600
+    assert store.calls[0]["limit"] == 500
+
+
+def test_queue_reconcile_marks_internal_topics_replay_safe() -> None:
+    queue = FakeQueue()
+    store = _ReconcileRecordingAuditStore()
+    spec = _spec("reminder", "remind", queue, lambda _ctx, _m: None)
+    spec.context.audit_store = store
+    spec.context.settings.queue_reconcile_enabled = True
+    supervisor = WorkerSupervisor({"reminder": spec}, logger=FakeLogger())
+
+    supervisor.initialize()
+
+    assert len(store.calls) == 1
+    assert store.calls[0]["replay_safe"] is True
+
+
+def test_queue_reconcile_is_disabled_by_default() -> None:
+    queue = FakeQueue()
+    store = _ReconcileRecordingAuditStore()
+    spec = _spec("reminder", "remind", queue, lambda _ctx, _m: None)
+    spec.context.audit_store = store
+    supervisor = WorkerSupervisor({"reminder": spec}, logger=FakeLogger())
+
+    supervisor.initialize()
+
+    assert store.calls == []

@@ -4,13 +4,30 @@ Every published job carries an idempotency key so retried delivery never
 duplicates work (consumers commit by idempotency key before mutating).
 
 Semantics:
-- ``pop`` atomically moves and timestamps a message in the topic's
-  ``:processing`` list, so a crash between claim and completion cannot lose it.
-- ``ack`` removes a successfully processed message from ``:processing``.
+- ``pop`` atomically moves a message into the topic's ``:processing`` list and
+  stamps it with an *owner* token, a monotonic *fencing* token, and a
+  *lease_deadline*, so a crash between claim and completion cannot lose it and a
+  slow-but-healthy handler cannot be recovered out from under its owner.
+- ``renew_lease`` extends the ``lease_deadline`` of an in-flight claim, but only
+  for the current owner (a heartbeat issued by the supervisor while a handler
+  runs). A stale owner's renewal is refused.
+- ``ack`` removes a successfully processed message from ``:processing``. Because
+  it matches the exact claimed envelope (which embeds the owner), an ack issued
+  by a stale owner removes nothing — it is fenced.
 - ``reject`` returns a failed message to the queue with an incremented retry
   counter; messages that exhaust their retries land on ``kp:queue:dlq:<topic>``.
-- ``recover_stale`` re-queues messages left in ``:processing`` past a
-  visibility window (crashed workers), preserving the retry budget.
+  It is fenced by the same exact-envelope match as ``ack``.
+- ``recover_stale`` re-queues ONLY genuinely-expired claims (``lease_deadline``
+  in the past), so a concurrent recovery pass or a slow healthy handler can no
+  longer trigger duplicate delivery. Crashed workers are still recovered once
+  their lease expires, preserving the retry budget.
+
+KP-AUD-006: the owner token plus the monotonic fencing token make every
+``ack``/``reject``/``renew_lease`` reject a stale owner. Recovery assigns a new
+owner and a higher fencing token on the next claim, so a resumed zombie handler
+can never complete or re-queue a message that now belongs to another worker.
+This Redis-side fence is independent of — and does not weaken — the PostgreSQL
+assignment-claim fence and INDETERMINATE reconciliation.
 """
 
 from __future__ import annotations
@@ -57,7 +74,14 @@ while true do
         and type(message['retry']) == 'number'
         and type(message['payload']) == 'table'
     then
-        message['started_at'] = tonumber(ARGV[1])
+        -- Stamp a fresh owner, a monotonic fencing token, and a lease deadline
+        -- so recovery can tell a live claim from an expired one and so a stale
+        -- owner's ack/reject/renew is fenced out (KP-AUD-006).
+        local now = tonumber(ARGV[1])
+        message['started_at'] = now
+        message['owner'] = ARGV[2]
+        message['fence'] = redis.call('INCR', KEYS[4])
+        message['lease_deadline'] = now + tonumber(ARGV[3])
         local encoded, claimed = pcall(cjson.encode, message)
         if encoded then
             redis.call('LPUSH', KEYS[2], claimed)
@@ -68,6 +92,28 @@ while true do
     -- Invalid queue data must not poison the topic or silently disappear.
     redis.call('RPUSH', KEYS[3], raw)
 end
+"""
+
+_RENEW_LEASE_SCRIPT = """-- kp_queue_renew_lease_v1
+-- Extend a claim's lease, fenced to the presenting owner. A renewal from a
+-- stale owner (the claim was already recovered and re-owned) finds no match
+-- and is refused, so a zombie handler cannot keep a message it no longer owns.
+local items = redis.call('LRANGE', KEYS[1], 0, -1)
+for _, raw in ipairs(items) do
+    local ok, message = pcall(cjson.decode, raw)
+    if ok
+        and type(message) == 'table'
+        and message['id'] == ARGV[1]
+        and message['owner'] == ARGV[2]
+    then
+        message['lease_deadline'] = tonumber(ARGV[3])
+        local encoded = cjson.encode(message)
+        redis.call('LREM', KEYS[1], 1, raw)
+        redis.call('LPUSH', KEYS[1], encoded)
+        return encoded
+    end
+end
+return nil
 """
 
 _MOVE_IF_PRESENT_SCRIPT = """-- kp_queue_move_if_present_v1
@@ -119,6 +165,22 @@ return nil
 _POLL_INTERVAL_SECONDS = 0.05
 _MAX_DLQ_SCAN = 10_000
 
+#: Fallback visibility lease applied to a claim when a caller does not pass an
+#: explicit ``lease_seconds``. The supervisor derives a per-role lease from the
+#: role's enforced handler deadline (``WorkerSettings.effective_lease_seconds``)
+#: and passes it to ``pop``; this constant only covers direct/ad-hoc callers.
+DEFAULT_LEASE_SECONDS = 60
+
+#: Topics whose jobs perform an externally-visible send whose provider
+#: acceptance is unknown after a Redis data loss. A queue<->outbox reconciliation
+#: (KP-AUD-007) must NEVER auto re-enqueue these — doing so could re-send an
+#: employee a duplicate simulated-phishing email. They are surfaced for human
+#: review instead. Every other topic (reminder/alert and internal maintenance
+#: roles) is safe to re-enqueue because its handler is idempotent by
+#: idempotency key / training token. The consuming worker, which knows its own
+#: topic, decides ``replay_safe`` and passes it to the reconciler.
+QUEUE_REPLAY_REVIEW_ONLY_TOPICS = frozenset({"deliver", "reply-mailbox"})
+
 # Fixed operational topics prevent an API caller from turning a topic name into
 # an arbitrary Redis key. Keep this aligned with the worker role registry.
 DEFAULT_QUEUE_TOPICS = (
@@ -142,10 +204,18 @@ AUDIT_ANCHOR_HEARTBEAT_KEY = "kp:audit:last_successful_anchor_at"
 
 
 class JobQueue:
-    def __init__(self, redis_url: str, *, prefix: str = "kp:queue:", max_message_bytes: int = 1_000_000) -> None:
+    def __init__(
+        self,
+        redis_url: str,
+        *,
+        prefix: str = "kp:queue:",
+        max_message_bytes: int = 1_000_000,
+        default_lease_seconds: int = DEFAULT_LEASE_SECONDS,
+    ) -> None:
         self._client = redis.Redis.from_url(redis_url, decode_responses=True)
         self._prefix = prefix
         self._max_message_bytes = max_message_bytes
+        self._default_lease_seconds = default_lease_seconds
 
     def _topic(self, topic: str) -> str:
         # Every atomic transition touches multiple keys.  Azure Managed Redis
@@ -162,6 +232,11 @@ class JobQueue:
 
     def _delayed(self, topic: str) -> str:
         return self._topic(topic) + ":delayed"
+
+    def _fence(self, topic: str) -> str:
+        # Monotonic per-topic counter backing each claim's fencing token. Shares
+        # the topic hash tag so the claim script's INCR never crosses a slot.
+        return self._topic(topic) + ":fence"
 
     def _published(self, topic: str, idempotency_key: str) -> str:
         digest = uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key).hex
@@ -222,19 +297,38 @@ class JobQueue:
             100,
         )
 
-    def pop(self, topic: str, *, timeout: int = 5) -> dict[str, Any] | None:
+    def pop(
+        self,
+        topic: str,
+        *,
+        timeout: int = 5,
+        owner: str | None = None,
+        lease_seconds: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Claim the next ready message, stamping an owner + fencing token + lease.
+
+        ``lease_seconds`` is the window the claim is protected from recovery; the
+        supervisor passes the role's enforced handler deadline so a slow but
+        healthy handler is never recovered early. ``owner`` defaults to a fresh
+        UUID per claim and is what fences a stale handler out of ack/reject/renew.
+        """
         wait_seconds = max(0, timeout)
         deadline = time.monotonic() + wait_seconds
+        owner_token = owner or str(uuid.uuid4())
+        lease = self._default_lease_seconds if lease_seconds is None else lease_seconds
         while True:
             try:
                 self._promote_due(topic)
                 raw = self._client.eval(
                     _CLAIM_SCRIPT,
-                    3,
+                    4,
                     self._topic(topic),
                     self._processing(topic),
                     self._dlq(topic),
+                    self._fence(topic),
                     time.time(),
+                    owner_token,
+                    lease,
                 )
             except redis.TimeoutError:
                 # A client-side Redis deadline while idle is a normal poll.
@@ -249,6 +343,35 @@ class JobQueue:
                 return None
             time.sleep(min(_POLL_INTERVAL_SECONDS, remaining))
 
+    def renew_lease(self, topic: str, message: dict[str, Any], *, lease_seconds: float) -> bool:
+        """Extend an in-flight claim's lease for its current owner only.
+
+        Returns ``True`` when the lease was extended. Returns ``False`` when the
+        claim is no longer owned by this caller (already recovered/re-owned, or
+        acked), which is the fence that stops a zombie handler from holding a
+        message another worker now owns. On success the passed ``message`` dict
+        is updated in place so a subsequent ``ack``/``reject`` matches.
+        """
+        job_id = message.get("id")
+        owner = message.get("owner")
+        if not isinstance(job_id, str) or not isinstance(owner, str):
+            return False
+        new_deadline = time.time() + float(lease_seconds)
+        raw = self._client.eval(
+            _RENEW_LEASE_SCRIPT,
+            1,
+            self._processing(topic),
+            job_id,
+            owner,
+            new_deadline,
+        )
+        if raw is None:
+            return False
+        raw_str = self._as_str(cast(bytes | str, raw))
+        message["_raw"] = raw_str
+        message["lease_deadline"] = new_deadline
+        return True
+
     def ack(self, topic: str, message: dict[str, Any]) -> None:
         raw = message.get("_raw")
         if raw is not None:
@@ -262,7 +385,10 @@ class JobQueue:
         queued_message = {key: value for key, value in message.items() if key != "_raw"}
         retries = int(queued_message.get("retry", 0)) + 1
         queued_message["retry"] = retries
-        queued_message.pop("started_at", None)
+        # Drop per-claim lease state so the next claim re-stamps a fresh owner,
+        # fencing token and lease deadline.
+        for lease_field in ("started_at", "owner", "fence", "lease_deadline"):
+            queued_message.pop(lease_field, None)
         destination = self._topic(topic) if retries < max_retries else self._dlq(topic)
         if retries >= max_retries:
             queued_message["dead_lettered_at"] = time.time()
@@ -279,11 +405,50 @@ class JobQueue:
             # timestamp must be included in the atomically inserted value.
             logger.error("message %s exhausted %d retries; moving to DLQ", message.get("id"), max_retries)
 
-    def recover_stale(self, topic: str, *, visibility_seconds: int = 60, max_retries: int = 3) -> int:
-        """Re-queue messages in :processing that exceed the visibility window.
+    @staticmethod
+    def _claim_expired(message: dict[str, Any], *, now: float, visibility_seconds: int) -> bool:
+        """Whether a processing claim's lease has genuinely expired.
 
-        Handles a worker that died between pop and ack. Returns the number of
-        messages recovered.
+        Authoritative signal is ``lease_deadline``. ``started_at`` + visibility is
+        only a fallback for pre-upgrade envelopes with no lease. A missing or
+        unparseable timestamp fails safe to expired (an un-leasable claim must be
+        recoverable), while a live lease short-circuits recovery.
+        """
+        deadline = message.get("lease_deadline")
+        if deadline is not None:
+            try:
+                return now > float(deadline)
+            except (TypeError, ValueError):
+                return True
+        started = message.get("started_at")
+        try:
+            return started is None or now - float(started) > visibility_seconds
+        except (TypeError, ValueError):
+            return True
+
+    def job_published(self, topic: str, idempotency_key: str) -> bool:
+        """Whether Redis still holds the publish marker for an idempotency key.
+
+        The ``:published:`` dedup key is written at publish with a bounded TTL and
+        survives acknowledgement, so its presence means Redis has not lost its
+        memory of this job (it is either still queued or was consumed). Its
+        absence after a durable outbox row was marked ``dispatched`` means Redis
+        lost the job (data loss) — the exact signal the KP-AUD-007 reconciliation
+        acts on. This performs no claim and mutates nothing.
+        """
+        return bool(self._client.exists(self._published(topic, idempotency_key)))
+
+    def recover_stale(self, topic: str, *, visibility_seconds: int = 60, max_retries: int = 3) -> int:
+        """Re-queue ONLY genuinely-expired claims left in :processing.
+
+        A claim is expired when its ``lease_deadline`` (stamped at ``pop`` and
+        extended by ``renew_lease`` heartbeats) is in the past. A slow but
+        healthy handler whose lease is being renewed is therefore never
+        recovered, which is what closes the KP-AUD-006 early-recovery /
+        double-processing gap. ``visibility_seconds`` is only a backward-compat
+        fallback for pre-upgrade envelopes that carry ``started_at`` but no
+        ``lease_deadline``. Handles a worker that died between pop and ack.
+        Returns the number of messages recovered.
         """
         now = time.time()
         recovered = 0
@@ -305,16 +470,12 @@ class JobQueue:
                     raw_str,
                 )
                 continue
-            started = message.get("started_at")
-            try:
-                stale = started is None or now - float(started) > visibility_seconds
-            except (TypeError, ValueError):
-                stale = True
-            if not stale:
+            if not self._claim_expired(message, now=now, visibility_seconds=visibility_seconds):
                 continue
             retries = int(message.get("retry", 0)) + 1
             message["retry"] = retries
-            message.pop("started_at", None)
+            for lease_field in ("started_at", "owner", "fence", "lease_deadline"):
+                message.pop(lease_field, None)
             destination = self._topic(topic) if retries < max_retries else self._dlq(topic)
             if retries >= max_retries:
                 message["dead_lettered_at"] = now

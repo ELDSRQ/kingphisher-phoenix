@@ -4,10 +4,16 @@ The discovery stage is the one place the platform reaches the *public web* (via
 the Foundry Responses API ``web_search`` tool / Grounding with Bing). Two rules
 shape this module, both enforced in code, not just convention:
 
-* **No PII ever leaves in a query.** A discovery query may contain only public
-  threat-research terms — never a recipient name/email, internal result, or any
-  other PII (Microsoft documents that web-search data can flow outside the Azure
-  compliance/geographic boundary). ``assert_pii_free_query`` is the guard.
+* **No recipient email leaves in a query.** A discovery query may contain only
+  public threat-research terms — never a recipient name/email, internal result,
+  or any other PII (Microsoft documents that web-search data can flow outside the
+  Azure compliance/geographic boundary). ``assert_pii_free_query`` is the guard,
+  but it is only an **email/``@`` backstop, NOT general PII detection**: it
+  rejects a query containing an email address (or a bare ``@``) and nothing more.
+  It does not detect names, phone numbers, addresses, or any other PII. Building
+  queries from public threat terms only remains the caller's responsibility; this
+  guard just stops the single most obvious recipient identifier from crossing the
+  boundary.
 * **No source, no campaign.** Every lead must cite at least one URL on the
   approved threat-intelligence allow-list; leads that cannot be sourced are
   dropped. ``citation_is_allowlisted`` is the guard.
@@ -59,8 +65,10 @@ DEFAULT_ALLOWED_CITATION_DOMAINS: frozenset[str] = frozenset(
     }
 )
 
-# A query that looks like it carries PII (an email address, or an explicit
-# name+role/department targeting phrase) must never be sent to the public web.
+# Email backstop only: a query containing an email address must never be sent to
+# the public web. This matches an email specifically; the ``@`` check in
+# ``assert_pii_free_query`` is the broader (still email-shaped) guard. Neither
+# this nor that check detects names, roles, or any other PII.
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 
@@ -69,12 +77,16 @@ class DiscoveryQueryError(ValueError):
 
 
 def assert_pii_free_query(query: str) -> str:
-    """Return ``query`` if it is safe for public web search, else raise.
+    """Return ``query`` if it passes the email/``@`` backstop, else raise.
 
-    Conservative and fail-closed: rejects anything containing an ``@`` email, to
-    keep recipient identifiers out of a boundary-crossing search. The caller is
-    expected to build queries from public threat terms only; this is the
-    backstop, enforced in code (spec §10).
+    This is an **email/``@`` backstop, NOT general PII detection.** It is
+    conservative and fail-closed, but narrow: it rejects a query that contains an
+    ``@`` (so any email address, and the bare ``@`` symbol) and enforces the
+    length bound — nothing else. It does **not** detect recipient names, phone
+    numbers, postal addresses, employee IDs, or any other PII, and must not be
+    relied on as if it did. The caller is expected to build queries from public
+    threat terms only; this guard just stops the single most obvious recipient
+    identifier (an email address) from crossing the boundary (spec §10).
     """
 
     stripped = query.strip()
@@ -83,7 +95,7 @@ def assert_pii_free_query(query: str) -> str:
     if len(stripped) > MAX_DISCOVERY_QUERY_CHARS:
         raise DiscoveryQueryError("discovery query exceeds the maximum length")
     if "@" in stripped or _EMAIL_RE.search(stripped):
-        raise DiscoveryQueryError("discovery query must not contain an email address or PII")
+        raise DiscoveryQueryError("discovery query must not contain an email address or '@'")
     return stripped
 
 
