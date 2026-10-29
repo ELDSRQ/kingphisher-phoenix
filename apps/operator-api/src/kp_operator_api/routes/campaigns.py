@@ -26,7 +26,6 @@ from kp_database.audit_store import AuditStore
 from kp_database.awareness_ledger import AWARENESS_LEDGER_TERMINAL_CAMPAIGN_STATES
 from kp_database.campaign_service import (
     MAX_AUDIENCE_RECIPIENTS,
-    AudienceDefinition,
     AudiencePreview,
     _masked_mailbox,
     audience_definition,
@@ -94,6 +93,12 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from kp_operator_api.audience_policy import (
+    audience_definition_body as _audience_definition_body,
+)
+from kp_operator_api.audience_policy import (
+    audience_preview_payload as _audience_preview_payload,
+)
 from kp_operator_api.auth import require_any_capability, require_capability
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
@@ -277,18 +282,6 @@ class ApprovalSubmit(BaseModel):
         return normalized or None
 
 
-def _audience_definition_body(body: CampaignAudienceUpdate) -> AudienceDefinition:
-    return AudienceDefinition(
-        group_ids=tuple(body.group_ids),
-        departments=tuple(body.departments),
-        statuses=tuple(body.statuses),
-        include_recipient_ids=tuple(body.include_recipient_ids),
-        exclude_recipient_ids=tuple(body.exclude_recipient_ids),
-        sample_size=body.sample_size,
-        sample_seed=body.sample_seed,
-    )
-
-
 def _audience_preview_for_request(
     request: Request,
     session: Session,
@@ -313,42 +306,6 @@ def _audience_preview_for_request(
             if campaign.delivery_mode != "reviewed_direct" or campaign.roe_id is None or roe.roe_id == campaign.roe_id
         ],
     )
-
-
-def _audience_preview_payload(
-    preview: AudiencePreview, *, test_account_ids: set[uuid.UUID] | None = None
-) -> dict[str, Any]:
-    return {
-        "campaign_id": str(preview.campaign_id),
-        "audience_version": preview.audience_version,
-        "configuration_hash": preview.configuration_hash,
-        "preview_hash": preview.preview_hash,
-        "selected_count": preview.selected_count,
-        "included_count": len(preview.included),
-        "excluded_count": sum(preview.excluded_counts.values()),
-        "excluded_counts": preview.excluded_counts,
-        "sample_size": preview.sample_size,
-        "sample_seed": preview.sample_seed,
-        "roe_id": str(preview.roe_id) if preview.roe_id else None,
-        "over_limit": preview.over_limit,
-        "test_account_count": len(test_account_ids) if test_account_ids is not None else None,
-        "diff": {
-            "added": preview.added_count,
-            "removed": preview.removed_count,
-            "unchanged": preview.unchanged_count,
-        },
-        "recipients": [
-            {
-                "recipient_id": str(item.recipient_id),
-                "recipient_hash": item.recipient_hash,
-                "mailbox": item.masked_mailbox,
-                "department": item.department,
-                "status": item.status.value,
-                **({"is_test_account": item.recipient_id in test_account_ids} if test_account_ids is not None else {}),
-            }
-            for item in preview.included
-        ],
-    }
 
 
 def _require_current_frozen_audience(
