@@ -695,6 +695,10 @@ class CampaignLaunchGate(Base):
             name="ck_campaign_launch_evidence_hash",
         ),
         CheckConstraint(
+            "cue_coverage_hash IS NULL OR length(cue_coverage_hash) = 64",
+            name="ck_campaign_launch_cue_coverage_hash",
+        ),
+        CheckConstraint(
             "state NOT IN ('canary_queued', 'canary_succeeded', 'full_published') OR "
             "(canary_queued_at IS NOT NULL AND canary_expires_at IS NOT NULL)",
             name="ck_campaign_launch_queued_evidence",
@@ -744,7 +748,48 @@ class CampaignLaunchGate(Base):
     canary_evidence_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     canary_succeeded_at = mapped_column(DateTime(timezone=True), nullable=True)
     full_published_at = mapped_column(DateTime(timezone=True), nullable=True)
+    #: W4-01 (KP-AUD-015): fingerprint of the campaign's required simulation
+    #: cues and their reviewed after-click training coverage (plus any recorded
+    #: coverage exceptions) at the moment this review was bound. A later change
+    #: to the cues or their coverage recomputes to a different value, so the
+    #: approval gate rejects a decision taken against the stale coverage. Legacy
+    #: gates written before this column keep NULL and must be reviewed again.
+    cue_coverage_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+
+
+class CampaignCueCoverageException(Base):
+    """A documented waiver for one required simulation cue that lacks coverage.
+
+    W4-01 (KP-AUD-015): a campaign cannot be approved while a required cue of
+    its simulation lacks reviewed after-click training coverage. An operator may
+    instead record an explicit, rationale-bearing exception for a specific cue;
+    the coverage validator then treats that cue as satisfied. The exception is
+    bounded, audited, and folds into the launch gate's coverage fingerprint, so
+    recording or removing one re-opens the review rather than silently changing
+    an approved launch.
+    """
+
+    __tablename__ = "campaign_cue_coverage_exceptions"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "cue_id", name="uq_campaign_cue_coverage_exception_cue"),
+        CheckConstraint("char_length(btrim(cue_id)) BETWEEN 1 AND 128", name="ck_campaign_cue_exception_cue_id"),
+        CheckConstraint(
+            "char_length(btrim(rationale)) BETWEEN 1 AND 1000",
+            name="ck_campaign_cue_exception_rationale",
+        ),
+    )
+
+    exception_id = _pk()
+    campaign_id = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaigns.campaign_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    cue_id: Mapped[str] = mapped_column(String(128))
+    rationale: Mapped[str] = mapped_column(Text)
+    recorded_by = mapped_column(UUID(as_uuid=True), nullable=True)
+    recorded_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
 
 
 class CampaignCanaryRecipient(Base):
@@ -1449,6 +1494,66 @@ class TrainingResource(Base):
     reviewed_by = mapped_column(UUID(as_uuid=True), nullable=True)
     reviewed_at = mapped_column(DateTime(timezone=True), nullable=True)
     review_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TrainingCueCoverage(Base):
+    """Maps one reviewed training-resource version to a simulation cue it teaches.
+
+    W4-01 (KP-AUD-015): after-click training must demonstrably teach the cues a
+    campaign's simulation relies on. Each row binds a training resource *version*
+    to a single cue (``cue_id``) and records exactly where the lesson teaches it:
+    the ``lesson_section`` the operator pointed to and the ``quiz_item`` that
+    checks it. Coverage is drafted by a campaign author and only counts toward
+    the approval gate once an independent reviewer marks it reviewed, mirroring
+    the training-resource review flow. The mapping is deterministic: it is
+    author-supplied data checked against the deterministic cue manifest, never an
+    AI inference.
+    """
+
+    __tablename__ = "training_cue_coverage"
+    __table_args__ = (
+        UniqueConstraint(
+            "training_resource_id",
+            "resource_version",
+            "cue_id",
+            name="uq_training_cue_coverage_cue",
+        ),
+        CheckConstraint("resource_version > 0", name="ck_training_cue_coverage_version_positive"),
+        CheckConstraint("char_length(btrim(cue_id)) BETWEEN 1 AND 128", name="ck_training_cue_coverage_cue_id"),
+        CheckConstraint(
+            "char_length(btrim(lesson_section)) BETWEEN 1 AND 500",
+            name="ck_training_cue_coverage_lesson_section",
+        ),
+        CheckConstraint(
+            "char_length(btrim(quiz_item)) BETWEEN 1 AND 500",
+            name="ck_training_cue_coverage_quiz_item",
+        ),
+        # A reviewed row must name its independent reviewer and the review time;
+        # an unreviewed row carries neither. This keeps "reviewed coverage" an
+        # all-or-nothing, auditable state the validator can trust.
+        CheckConstraint(
+            "(reviewed IS FALSE AND reviewed_by IS NULL AND reviewed_at IS NULL) OR "
+            "(reviewed IS TRUE AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)",
+            name="ck_training_cue_coverage_review_all_or_nothing",
+        ),
+        Index("ix_training_cue_coverage_resource", "training_resource_id", "resource_version"),
+    )
+
+    coverage_id = _pk()
+    training_resource_id = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("training_resources.training_resource_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    resource_version: Mapped[int] = mapped_column(Integer)
+    cue_id: Mapped[str] = mapped_column(String(128))
+    lesson_section: Mapped[str] = mapped_column(String(500))
+    quiz_item: Mapped[str] = mapped_column(String(500))
+    reviewed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa_text("false"))
+    created_by = mapped_column(UUID(as_uuid=True), nullable=True)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
+    reviewed_by = mapped_column(UUID(as_uuid=True), nullable=True)
+    reviewed_at = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TrainingAssignment(Base):

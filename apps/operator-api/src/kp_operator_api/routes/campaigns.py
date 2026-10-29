@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import io
 import json
 import threading
@@ -49,6 +50,7 @@ from kp_database.models import (
     CampaignApproval,
     CampaignAudience,
     CampaignCanaryRecipient,
+    CampaignCueCoverageException,
     CampaignLaunchGate,
     CampaignPattern,
     DeliveryReportCorrelation,
@@ -59,6 +61,7 @@ from kp_database.models import (
     TemplateVersion,
     TrackingEvent,
     TrainingAssignment,
+    TrainingCueCoverage,
     TrainingResource,
 )
 from kp_database.outbox import dispatch_after_commit, enqueue_queue
@@ -101,6 +104,12 @@ from kp_operator_api.sending_domains_roe import (
     _GUI_COLLECTION_MAX_LIMIT,
     _GUI_COLLECTION_MAX_OFFSET,
     _roe_signing_key,
+)
+from kp_operator_api.training_library import (
+    cue_coverage_for_campaign,
+    invalidate_campaigns_for_coverage_change,
+    require_cue_coverage,
+    required_simulation_cues,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -770,7 +779,17 @@ def _record_campaign_review(
     template = session.get(TemplateVersion, campaign.current_template_id, with_for_update=True)
     if template is None:
         raise ConflictError("campaign requires an approved template before review")
+    # W4-01 (KP-AUD-015): a campaign cannot be reviewed toward launch while a
+    # required simulation cue lacks reviewed after-click training coverage and
+    # no documented exception covers it. The coverage fingerprint is bound into
+    # the launch gate so a later change to the cues or their coverage is caught
+    # at approval instead of silently riding on a stale review. A simulation
+    # that declares no cues (empty manifest) has nothing to cover.
+    required_cues = required_simulation_cues(template)
+    coverage = require_cue_coverage(session, campaign, template, training_resource) if required_cues else None
     launch_gate = bind_campaign_launch_review(session, campaign, template, submitted_by=_principal_uuid(principal))
+    if coverage is not None:
+        launch_gate.cue_coverage_hash = coverage.coverage_hash
     campaign.state = (
         dm.CampaignState.PENDING_APPROVAL
         if request.app.state.settings.approval_policy is ApprovalPolicy.ENFORCE
@@ -789,12 +808,15 @@ def _record_campaign_review(
             "training_resource_digest": campaign.training_resource_digest,
             "launch_manifest_hash": launch_gate.review_manifest_hash,
             "canary_manifest_hash": launch_gate.canary_manifest_hash,
+            "cue_coverage_hash": launch_gate.cue_coverage_hash,
+            "required_cues": list(required_cues),
         },
     )
     return {
         "campaign_id": str(campaign.campaign_id),
         "state": campaign.state.value,
         "launch_manifest_hash": launch_gate.review_manifest_hash,
+        "cue_coverage_hash": launch_gate.cue_coverage_hash,
     }
 
 
@@ -1246,6 +1268,19 @@ def approve_campaign(
     if launch_gate is None:
         raise ConflictError("campaign has no durable launch review; review it again")
 
+    # W4-01 (KP-AUD-015): re-run the coverage validator at approval and reject a
+    # decision that would ride on cues/coverage that drifted since review. The
+    # validator fails closed when a required cue lost coverage; the fingerprint
+    # comparison additionally catches any change (added coverage, a new
+    # exception, a changed cue manifest) that the review was not taken against. A
+    # simulation that declares no cues has nothing to cover and nothing to drift.
+    if required_simulation_cues(template):
+        coverage = require_cue_coverage(session, campaign, template, training_resource)
+        if launch_gate.cue_coverage_hash is None or not hmac.compare_digest(
+            coverage.coverage_hash, launch_gate.cue_coverage_hash
+        ):
+            raise ConflictError("campaign training-cue coverage changed after review; review it again")
+
     principal_id = _principal_uuid(principal)
     if campaign.created_by == principal_id:
         raise PermissionDeniedError("self-approval of your own campaign is prohibited")
@@ -1328,10 +1363,315 @@ def approve_campaign(
             "training_resource_version": campaign.training_resource_version,
             "training_resource_digest": campaign.training_resource_digest,
             "launch_manifest_hash": launch_gate.review_manifest_hash,
+            "cue_coverage_hash": launch_gate.cue_coverage_hash,
         },
     )
     session.commit()
     return {"campaign_id": str(campaign.campaign_id), "state": campaign.state.value}
+
+
+class CueCoverageCreate(BaseModel):
+    """Author-supplied mapping of one simulation cue to where a lesson teaches it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cue_id: str = Field(min_length=1, max_length=128)
+    lesson_section: str = Field(min_length=1, max_length=500)
+    quiz_item: str = Field(min_length=1, max_length=500)
+
+    @field_validator("cue_id", "lesson_section", "quiz_item")
+    @classmethod
+    def _single_line(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or "\x00" in normalized or "\r" in normalized or "\n" in normalized:
+            raise ValueError("value must be bounded single-line text")
+        return normalized
+
+
+class CueCoverageDecision(BaseModel):
+    """Independent reviewer's verdict on a drafted coverage mapping."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["reviewed", "rejected"]
+
+
+def _campaign_bound_resource(session: Session, campaign: Campaign) -> TrainingResource:
+    """Return the campaign's bound training lesson or fail closed.
+
+    Coverage is authored for the exact lesson version the campaign uses, so a
+    campaign without a bound lesson cannot yet have cue coverage authored.
+    """
+
+    if campaign.training_resource_id is None or campaign.training_resource_version is None:
+        raise ConflictError("bind an approved training lesson before authoring cue coverage")
+    resource = session.get(TrainingResource, campaign.training_resource_id)
+    if resource is None:
+        raise NotFoundError("campaign's training lesson is unavailable")
+    return resource
+
+
+def _coverage_summary(coverage: TrainingCueCoverage) -> dict[str, Any]:
+    return {
+        "coverage_id": str(coverage.coverage_id),
+        "training_resource_id": str(coverage.training_resource_id),
+        "resource_version": coverage.resource_version,
+        "cue_id": coverage.cue_id,
+        "lesson_section": coverage.lesson_section,
+        "quiz_item": coverage.quiz_item,
+        "reviewed": coverage.reviewed,
+        "created_at": coverage.created_at,
+        "reviewed_at": coverage.reviewed_at,
+    }
+
+
+@router.get("/campaigns/{campaign_id}/cue-coverage")
+def list_campaign_cue_coverage(
+    campaign_id: uuid.UUID,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_any_capability(Capability.CREATE_CAMPAIGN, Capability.APPROVE_TEMPLATE)),
+) -> dict[str, Any]:
+    """List the cue-coverage mappings for the campaign's bound lesson version.
+
+    Also reports the simulation's required cues and the live coverage verdict so
+    an operator sees exactly which cues still lack reviewed coverage before
+    submitting the campaign for approval.
+    """
+
+    del principal
+    campaign = _get_campaign(session, campaign_id)
+    resource = _campaign_bound_resource(session, campaign)
+    template = session.get(TemplateVersion, campaign.current_template_id) if campaign.current_template_id else None
+    rows = (
+        session.execute(
+            select(TrainingCueCoverage)
+            .where(
+                TrainingCueCoverage.training_resource_id == resource.training_resource_id,
+                TrainingCueCoverage.resource_version == resource.version,
+            )
+            .order_by(TrainingCueCoverage.cue_id, TrainingCueCoverage.coverage_id)
+        )
+        .scalars()
+        .all()
+    )
+    assessment = cue_coverage_for_campaign(session, campaign, template, resource)
+    return {
+        "campaign_id": str(campaign_id),
+        "required_cues": list(assessment.required),
+        "missing_cues": list(assessment.missing),
+        "satisfied": assessment.satisfied,
+        "coverage": [_coverage_summary(row) for row in rows],
+    }
+
+
+@router.post("/campaigns/{campaign_id}/cue-coverage", status_code=status.HTTP_201_CREATED)
+def create_campaign_cue_coverage(
+    campaign_id: uuid.UUID,
+    body: CueCoverageCreate,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, Any]:
+    """Draft one cue-coverage mapping for the campaign's bound lesson version.
+
+    Deterministic and author-supplied: it records which lesson section and quiz
+    item teach a named cue. It is created unreviewed and only counts toward the
+    approval gate once an independent reviewer marks it reviewed.
+    """
+
+    campaign = session.scalar(select(Campaign).where(Campaign.campaign_id == campaign_id).with_for_update())
+    if campaign is None:
+        raise NotFoundError("campaign not found")
+    resource = _campaign_bound_resource(session, campaign)
+    existing = session.scalar(
+        select(TrainingCueCoverage).where(
+            TrainingCueCoverage.training_resource_id == resource.training_resource_id,
+            TrainingCueCoverage.resource_version == resource.version,
+            TrainingCueCoverage.cue_id == body.cue_id,
+        )
+    )
+    if existing is not None:
+        raise ConflictError("this cue already has a coverage mapping for the lesson version")
+    coverage = TrainingCueCoverage(
+        coverage_id=uuid.uuid4(),
+        training_resource_id=resource.training_resource_id,
+        resource_version=resource.version,
+        cue_id=body.cue_id,
+        lesson_section=body.lesson_section,
+        quiz_item=body.quiz_item,
+        reviewed=False,
+        created_by=_principal_uuid(principal),
+        created_at=datetime.now(UTC),
+    )
+    session.add(coverage)
+    # A new unreviewed draft cannot change an already-reviewed coverage set, so
+    # no bound campaign review is re-opened here; it becomes effective only once
+    # an independent reviewer marks it reviewed below.
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="campaign.cue_coverage.create",
+        object_type="training_cue_coverage",
+        object_id=str(coverage.coverage_id),
+        detail={
+            "campaign_id": str(campaign_id),
+            "training_resource_id": str(resource.training_resource_id),
+            "resource_version": resource.version,
+            "cue_id": coverage.cue_id,
+        },
+    )
+    session.commit()
+    return _coverage_summary(coverage)
+
+
+@router.post("/campaigns/{campaign_id}/cue-coverage/{coverage_id}/decision")
+def decide_campaign_cue_coverage(
+    campaign_id: uuid.UUID,
+    coverage_id: uuid.UUID,
+    body: CueCoverageDecision,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.APPROVE_TEMPLATE)),
+) -> dict[str, Any]:
+    """Independently review a drafted coverage mapping, or withdraw its review.
+
+    Mirrors the training-resource review flow: the reviewer must differ from the
+    author. Marking a mapping reviewed makes it count toward the approval gate;
+    rejecting an already-reviewed mapping withdraws it. Either transition changes
+    the coverage of every campaign bound to this lesson version, so their reviews
+    are re-opened and a prior approval cannot survive the change.
+    """
+
+    campaign = _get_campaign(session, campaign_id)
+    resource = _campaign_bound_resource(session, campaign)
+    coverage = session.get(TrainingCueCoverage, coverage_id, with_for_update=True)
+    if (
+        coverage is None
+        or coverage.training_resource_id != resource.training_resource_id
+        or coverage.resource_version != resource.version
+    ):
+        raise NotFoundError("cue coverage mapping not found for this campaign's lesson")
+    reviewer_id = _principal_uuid(principal)
+    if coverage.created_by is not None and coverage.created_by == reviewer_id:
+        raise PermissionDeniedError("coverage authors cannot review their own coverage mapping")
+    want_reviewed = body.decision == "reviewed"
+    if want_reviewed and coverage.reviewed:
+        raise ConflictError("coverage mapping is already reviewed")
+    if not want_reviewed and not coverage.reviewed:
+        raise ConflictError("coverage mapping is not reviewed")
+    coverage.reviewed = want_reviewed
+    coverage.reviewed_by = reviewer_id if want_reviewed else None
+    coverage.reviewed_at = datetime.now(UTC) if want_reviewed else None
+    reopened = invalidate_campaigns_for_coverage_change(
+        session, coverage.training_resource_id, coverage.resource_version
+    )
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action=f"campaign.cue_coverage.{body.decision}",
+        object_type="training_cue_coverage",
+        object_id=str(coverage.coverage_id),
+        detail={
+            "training_resource_id": str(coverage.training_resource_id),
+            "resource_version": coverage.resource_version,
+            "cue_id": coverage.cue_id,
+            "campaigns_review_reopened": [str(affected) for affected in reopened],
+        },
+    )
+    session.commit()
+    return _coverage_summary(coverage)
+
+
+class CueCoverageExceptionRequest(BaseModel):
+    """A documented waiver for one required cue that lacks training coverage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cue_id: str = Field(min_length=1, max_length=128)
+    rationale: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("cue_id")
+    @classmethod
+    def _normalize_cue_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or "\x00" in normalized or "\r" in normalized or "\n" in normalized:
+            raise ValueError("cue_id must be bounded single-line text")
+        return normalized
+
+    @field_validator("rationale")
+    @classmethod
+    def _normalize_rationale(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or "\x00" in normalized:
+            raise ValueError("a documented rationale is required")
+        return normalized
+
+
+@router.post("/campaigns/{campaign_id}/cue-coverage-exceptions", status_code=status.HTTP_201_CREATED)
+def record_cue_coverage_exception(
+    campaign_id: uuid.UUID,
+    body: CueCoverageExceptionRequest,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_any_capability(Capability.APPROVE_SECURITY, Capability.APPROVE_PRIVACY)),
+) -> dict[str, Any]:
+    """Record a documented exception permitting a required cue to lack coverage.
+
+    W4-01 (KP-AUD-015): when after-click training cannot (yet) cover a required
+    simulation cue, an approver may accept the gap explicitly, with a rationale,
+    instead of sending training that omits it. Recording the exception changes
+    the campaign's coverage, so its launch review is re-opened: the exception
+    only takes effect through a fresh review and a two-person approval, never by
+    silently unblocking an already-approved launch.
+    """
+
+    campaign = session.scalar(select(Campaign).where(Campaign.campaign_id == campaign_id).with_for_update())
+    if campaign is None:
+        raise NotFoundError("campaign not found")
+    if campaign.state not in {
+        dm.CampaignState.DRAFT,
+        dm.CampaignState.PENDING_APPROVAL,
+        dm.CampaignState.APPROVED,
+    }:
+        raise ConflictError("only a draft or not-yet-launched campaign can record a coverage exception")
+    existing = session.scalar(
+        select(CampaignCueCoverageException).where(
+            CampaignCueCoverageException.campaign_id == campaign_id,
+            CampaignCueCoverageException.cue_id == body.cue_id,
+        )
+    )
+    if existing is not None:
+        raise ConflictError("a documented exception already exists for this cue")
+    exception = CampaignCueCoverageException(
+        exception_id=uuid.uuid4(),
+        campaign_id=campaign_id,
+        cue_id=body.cue_id,
+        rationale=body.rationale,
+        recorded_by=_principal_uuid(principal),
+        recorded_at=datetime.now(UTC),
+    )
+    session.add(exception)
+    # Re-open the review: the exception must be captured by a fresh launch
+    # manifest + coverage fingerprint before it can permit an approval.
+    was_reviewed = campaign.state is not dm.CampaignState.DRAFT
+    campaign.state = dm.CampaignState.DRAFT
+    invalidate_campaign_launch_review(session, campaign_id)
+    session.execute(delete(CampaignApproval).where(CampaignApproval.campaign_id == campaign_id))
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="campaign.cue_coverage_exception.record",
+        object_type="campaign",
+        object_id=str(campaign_id),
+        detail={"cue_id": body.cue_id, "rationale": body.rationale, "review_reopened": was_reviewed},
+    )
+    session.commit()
+    return {
+        "campaign_id": str(campaign_id),
+        "exception_id": str(exception.exception_id),
+        "cue_id": body.cue_id,
+        "review_reopened": was_reviewed,
+    }
 
 
 @router.post("/campaigns/{campaign_id}/schedule", status_code=status.HTTP_200_OK)
