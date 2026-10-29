@@ -15,7 +15,11 @@ from kp_database.personal_data import (
     PERSONAL_DATA_STORES,
     exported_store_names,
 )
-from kp_operator_api.routes.privacy import _PrivacyExportData, build_privacy_export_payload
+from kp_operator_api.routes.privacy import (
+    LEDGER_UNAVAILABLE_PSEUDONYM_CONFIG,
+    _PrivacyExportData,
+    build_privacy_export_payload,
+)
 
 
 def test_every_exported_store_appears_in_export_payload() -> None:
@@ -33,6 +37,45 @@ def test_every_exported_store_appears_in_export_payload() -> None:
     for required in ("reply_receipts", "reported_receipts", "awareness_ledger"):
         assert required in exported_store_names()
         assert required in payload
+
+
+def test_awareness_ledger_section_is_an_object_with_availability_and_truncation() -> None:
+    # Default (no data): available, not truncated, no entries, no reason.
+    payload = build_privacy_export_payload(
+        privacy_request_id="00000000-0000-0000-0000-000000000000",
+        request_type="access_export",
+        data=_PrivacyExportData(),
+    )
+    ledger = payload["awareness_ledger"]
+    assert ledger == {"available": True, "truncated": False, "unavailable_reason": None, "entries": []}
+
+
+def test_awareness_ledger_marks_unavailable_without_crashing_the_export() -> None:
+    # Fail-closed path: the pseudonym key could not be resolved. The whole
+    # export still assembles; only the ledger section is flagged unavailable.
+    payload = build_privacy_export_payload(
+        privacy_request_id="00000000-0000-0000-0000-000000000000",
+        request_type="access_export",
+        data=_PrivacyExportData(
+            awareness_ledger_available=False,
+            awareness_ledger_unavailable_reason=LEDGER_UNAVAILABLE_PSEUDONYM_CONFIG,
+        ),
+    )
+    ledger = payload["awareness_ledger"]
+    assert ledger["available"] is False
+    assert ledger["unavailable_reason"] == LEDGER_UNAVAILABLE_PSEUDONYM_CONFIG
+    assert ledger["entries"] == []
+    # The coverage invariant still holds: every exported store is present.
+    assert exported_store_names() <= payload.keys()
+
+
+def test_awareness_ledger_surfaces_truncation() -> None:
+    payload = build_privacy_export_payload(
+        privacy_request_id="00000000-0000-0000-0000-000000000000",
+        request_type="access_export",
+        data=_PrivacyExportData(awareness_ledger_truncated=True),
+    )
+    assert payload["awareness_ledger"]["truncated"] is True
 
 
 def test_registry_is_internally_consistent() -> None:

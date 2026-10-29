@@ -256,14 +256,26 @@ def _bounded_privacy_export_rows(session: Session, statement: Any, *, label: str
     return rows
 
 
+#: Marker reason when the governed awareness-ledger pseudonym key is unset or
+#: malformed (managed mode). The export stays 200 and fails closed: the ledger
+#: section is flagged unavailable rather than crashing the whole DSR export.
+LEDGER_UNAVAILABLE_PSEUDONYM_CONFIG = "ledger_pseudonym_key_unavailable"
+
+
 @dataclass
 class _PrivacyExportData:
     """Collected, subject-scoped rows for one DSR access export.
 
     One field per exported personal-data store (see
-    :mod:`kp_database.personal_data`). ``awareness_ledger`` holds already-
-    pseudonymized ledger facts resolved via :func:`ledger_recipient_history`,
-    never recipient attributes.
+    :mod:`kp_database.personal_data`). ``awareness_ledger`` holds the subject's
+    own pseudonymous ledger outcomes resolved via :func:`ledger_recipient_history`;
+    it carries no recipient attribute and never the raw pseudonym. The ledger is
+    pseudonymous, not anonymous (see the registry note in
+    :mod:`kp_database.personal_data`).
+
+    ``awareness_ledger_available`` is False when the governed pseudonym key could
+    not be resolved; ``awareness_ledger_truncated`` is True when any recipient's
+    history hit the per-recipient cap so the disclosed entries are incomplete.
     """
 
     recipients: Sequence[Recipient] = field(default_factory=list)
@@ -274,6 +286,9 @@ class _PrivacyExportData:
     reported_receipts: Sequence[Any] = field(default_factory=list)
     reply_receipts: Sequence[Any] = field(default_factory=list)
     awareness_ledger: Sequence[LedgerRecipientHistoryEntry] = field(default_factory=list)
+    awareness_ledger_available: bool = True
+    awareness_ledger_truncated: bool = False
+    awareness_ledger_unavailable_reason: str | None = None
 
 
 def _serialize_receipt(row: Any) -> dict[str, Any]:
@@ -385,7 +400,16 @@ def build_privacy_export_payload(
         ],
         "reported_receipts": [_serialize_receipt(row) for row in data.reported_receipts],
         "reply_receipts": [_serialize_receipt(row) for row in data.reply_receipts],
-        "awareness_ledger": [_serialize_ledger_entry(entry) for entry in data.awareness_ledger],
+        # Object (not a bare list) so the export can distinguish "no ledger
+        # entries" from "ledger could not be resolved" and can flag truncation
+        # instead of silently under-disclosing. ``entries`` carries only the
+        # subject's pseudonymous outcomes, never the raw pseudonym.
+        "awareness_ledger": {
+            "available": data.awareness_ledger_available,
+            "truncated": data.awareness_ledger_truncated,
+            "unavailable_reason": data.awareness_ledger_unavailable_reason,
+            "entries": [_serialize_ledger_entry(entry) for entry in data.awareness_ledger],
+        },
     }
     # Fail closed if a newly registered exported store was not wired into this
     # payload (the coverage invariant behind KP-AUD-003). The hermetic test
@@ -495,20 +519,36 @@ def export_privacy_request(
         else []
     )
     # The awareness ledger holds no recipient/assignment foreign key; it is
-    # resolved through the governed pseudonym key and returns only PII-free
-    # campaign-level outcomes (never a recipient attribute or the pseudonym).
+    # resolved through the governed pseudonym key and returns only the subject's
+    # pseudonymous campaign-level outcomes (never a recipient attribute or the
+    # raw pseudonym). The ledger is pseudonymous, not anonymous.
     awareness_ledger: list[LedgerRecipientHistoryEntry] = []
+    awareness_ledger_available = True
+    awareness_ledger_truncated = False
+    awareness_ledger_unavailable_reason: str | None = None
     if recipients:
-        pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()
-        for recipient in recipients:
-            history = ledger_recipient_history(
-                session,
-                tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
-                recipient_id=recipient.recipient_id,
-                pseudonym_key=pseudonym_key,
-                pseudonym_key_version=pseudonym_key_version,
-            )
-            awareness_ledger.extend(history.entries)
+        try:
+            # Managed mode raises here when the pseudonym key is unset or
+            # malformed. Fail closed on just the ledger section rather than
+            # 500-ing the whole DSR access export: the subject still receives
+            # every other store, and the ledger section is flagged unavailable.
+            pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()
+        except RuntimeError:
+            awareness_ledger_available = False
+            awareness_ledger_unavailable_reason = LEDGER_UNAVAILABLE_PSEUDONYM_CONFIG
+        else:
+            for recipient in recipients:
+                history = ledger_recipient_history(
+                    session,
+                    tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+                    recipient_id=recipient.recipient_id,
+                    pseudonym_key=pseudonym_key,
+                    pseudonym_key_version=pseudonym_key_version,
+                )
+                awareness_ledger.extend(history.entries)
+                # Surface under-disclosure: if any recipient's history hit the
+                # per-recipient cap, the disclosed entries are incomplete.
+                awareness_ledger_truncated = awareness_ledger_truncated or history.truncated
     request.exported_at = datetime.now(UTC)
     audit.record(
         session=session,
@@ -525,6 +565,8 @@ def export_privacy_request(
             "reported_receipts": len(reported_receipts),
             "reply_receipts": len(reply_receipts),
             "awareness_ledger": len(awareness_ledger),
+            "awareness_ledger_available": awareness_ledger_available,
+            "awareness_ledger_truncated": awareness_ledger_truncated,
         },
     )
     session.commit()
@@ -546,6 +588,9 @@ def export_privacy_request(
             reported_receipts=reported_receipts,
             reply_receipts=reply_receipts,
             awareness_ledger=awareness_ledger,
+            awareness_ledger_available=awareness_ledger_available,
+            awareness_ledger_truncated=awareness_ledger_truncated,
+            awareness_ledger_unavailable_reason=awareness_ledger_unavailable_reason,
         ),
     )
 

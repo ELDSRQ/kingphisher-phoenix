@@ -3,8 +3,11 @@
 These belong to the explicit ``make test-postgres`` profile and require its
 migrated disposable database and roles. Reply receipts previously escaped
 ``erase_recipient_data`` entirely, leaving orphaned rows carrying the subject's
-encrypted external message id; the awareness ledger is PII-free and pseudonymous
-and is intentionally retained through erasure.
+encrypted external message id. The awareness ledger is PSEUDONYMOUS (not
+anonymous): its recipient_pseudonym is HMAC(key, recipient_id) and the erased
+recipient keeps a tombstone row with its recipient_id, so a holder of the
+pseudonym key can relink surviving rows — it is retained through erasure as an
+accepted-risk retention decision, not because it is anonymous.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from kp_database.base import Base
@@ -88,10 +91,20 @@ def _test_session() -> Iterator[Session]:
         engine.dispose()
 
 
-def _seed_subject_with_receipts() -> tuple[str, str]:
+def _unique_hex() -> str:
+    return (uuid4().hex + uuid4().hex)[:64]
+
+
+def _seed_subject_with_receipts(tag: str) -> tuple[str, str, str, str]:
     """Seed a recipient with one assignment, a reply + reported receipt, and a
-    retained pseudonymous awareness-ledger entry. Returns (recipient_id,
-    assignment_id)."""
+    retained pseudonymous awareness-ledger entry.
+
+    Returns ``(recipient_id, assignment_id, reply_external_id_hash,
+    reported_external_id_hash)``. All provider/scope/external-id hashes are
+    unique per subject so two subjects can coexist (uq_reply/reported_external).
+    """
+    reply_hash = _unique_hex()
+    reported_hash = _unique_hex()
     with _test_session() as session:
         pattern = CampaignPattern(
             campaign_pattern_id=uuid4(),
@@ -103,7 +116,7 @@ def _seed_subject_with_receipts() -> tuple[str, str]:
         campaign = Campaign(
             campaign_id=uuid4(),
             pattern_id=pattern.campaign_pattern_id,
-            title="Erasure Drill",
+            title=f"Erasure Drill {tag}",
             state=dm.CampaignState.COMPLETED,
             sender_mailbox="drills@example.com",
             training_domain="training.local",
@@ -115,10 +128,10 @@ def _seed_subject_with_receipts() -> tuple[str, str]:
         session.add(campaign)
         recipient = Recipient(
             recipient_id=uuid4(),
-            employee_key=f"erase-{uuid4()}",
-            mailbox=f"erase-{uuid4()}@example.com",
+            employee_key=f"erase-{tag}-{uuid4()}",
+            mailbox=f"erase-{tag}-{uuid4()}@example.com",
             # A unique 64-char hex digest per row (uq_recipients_mailbox_sha256_active).
-            mailbox_sha256=(uuid4().hex + uuid4().hex)[:64],
+            mailbox_sha256=_unique_hex(),
             display_name="Erase Subject",
         )
         session.add(recipient)
@@ -128,7 +141,7 @@ def _seed_subject_with_receipts() -> tuple[str, str]:
             campaign_id=campaign.campaign_id,
             recipient_id=recipient.recipient_id,
             send_state=dm.SendState.DELIVERED,
-            idempotency_key=f"erase-assign-{uuid4()}",
+            idempotency_key=f"erase-assign-{tag}-{uuid4()}",
             created_at=datetime.now(UTC),
         )
         session.add(assignment)
@@ -137,9 +150,9 @@ def _seed_subject_with_receipts() -> tuple[str, str]:
             ReportedMailReceipt(
                 reported_mail_receipt_id=uuid4(),
                 provider="microsoft365",
-                scope_hash="1" * 64,
-                external_id="reported-secret",
-                external_id_hash="2" * 64,
+                scope_hash=_unique_hex(),
+                external_id=f"reported-secret-{tag}",
+                external_id_hash=reported_hash,
                 recipient_assignment_id=assignment.recipient_assignment_id,
                 disposition="reported",
                 evidence={},
@@ -150,9 +163,9 @@ def _seed_subject_with_receipts() -> tuple[str, str]:
             ReplyMailReceipt(
                 reply_mail_receipt_id=uuid4(),
                 provider="microsoft365",
-                scope_hash="3" * 64,
-                external_id="reply-secret",
-                external_id_hash="4" * 64,
+                scope_hash=_unique_hex(),
+                external_id=f"reply-secret-{tag}",
+                external_id_hash=reply_hash,
                 recipient_assignment_id=assignment.recipient_assignment_id,
                 disposition="replied",
                 evidence={},
@@ -165,8 +178,8 @@ def _seed_subject_with_receipts() -> tuple[str, str]:
                 awareness_ledger_entry_id=uuid4(),
                 tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
                 pseudonym_key_version="synthetic-local-v1",
-                recipient_pseudonym="a" * 64,
-                assignment_exposure_pseudonym="b" * 64,
+                recipient_pseudonym=_unique_hex(),
+                assignment_exposure_pseudonym=_unique_hex(),
                 campaign_id=campaign.campaign_id,
                 campaign_date=campaign_date,
                 campaign_date_basis="scheduled_start",
@@ -188,70 +201,93 @@ def _seed_subject_with_receipts() -> tuple[str, str]:
             )
         )
         session.commit()
-        return str(recipient.recipient_id), str(assignment.recipient_assignment_id)
+        return (
+            str(recipient.recipient_id),
+            str(assignment.recipient_assignment_id),
+            reply_hash,
+            reported_hash,
+        )
+
+
+def _receipt_counts(session: Session, assignment_uuid: UUID) -> tuple[int, int]:
+    reply = (
+        session.scalar(
+            select(func.count())
+            .select_from(ReplyMailReceipt)
+            .where(ReplyMailReceipt.recipient_assignment_id == assignment_uuid)
+        )
+        or 0
+    )
+    reported = (
+        session.scalar(
+            select(func.count())
+            .select_from(ReportedMailReceipt)
+            .where(ReportedMailReceipt.recipient_assignment_id == assignment_uuid)
+        )
+        or 0
+    )
+    return reply, reported
 
 
 @requires_db
-def test_erasure_deletes_reply_and_reported_receipts() -> None:
-    import uuid as _uuid
-
-    recipient_id, assignment_id = _seed_subject_with_receipts()
-    assignment_uuid = _uuid.UUID(assignment_id)
+def test_erasure_deletes_subject_receipts_and_spares_other_subjects() -> None:
+    # Subject under erasure, and a bystander whose data must be untouched.
+    recipient_id, assignment_id, reply_hash, reported_hash = _seed_subject_with_receipts("subject")
+    other_id, other_assignment_id, other_reply_hash, other_reported_hash = _seed_subject_with_receipts("bystander")
+    assignment_uuid = UUID(assignment_id)
+    other_assignment_uuid = UUID(other_assignment_id)
 
     with _test_session() as session:
-        assert (
-            session.scalar(
-                select(func.count())
-                .select_from(ReplyMailReceipt)
-                .where(ReplyMailReceipt.recipient_assignment_id == assignment_uuid)
-            )
-            == 1
-        )
-        assert (
-            session.scalar(
-                select(func.count())
-                .select_from(ReportedMailReceipt)
-                .where(ReportedMailReceipt.recipient_assignment_id == assignment_uuid)
-            )
-            == 1
-        )
+        assert _receipt_counts(session, assignment_uuid) == (1, 1)
+        assert _receipt_counts(session, other_assignment_uuid) == (1, 1)
         ledger_before = session.scalar(select(func.count()).select_from(AwarenessLedgerEntry)) or 0
 
     with _test_session() as session:
-        erased = erase_recipient_data(session, _uuid.UUID(recipient_id), erased_at=datetime.now(UTC))
+        erased = erase_recipient_data(session, UUID(recipient_id), erased_at=datetime.now(UTC))
         session.commit()
         assert erased is True
 
     with _test_session() as session:
-        # Both receipt tables for this subject's assignment are empty, and the
-        # assignment itself is gone (so no SET NULL orphan can remain).
+        # The erased subject's receipts are gone and the assignment removed, so
+        # no SET NULL orphan can remain for either receipt table.
+        assert _receipt_counts(session, assignment_uuid) == (0, 0)
+        assert session.get(RecipientAssignment, assignment_uuid) is None
+        for model, erased_hash in (
+            (ReplyMailReceipt, reply_hash),
+            (ReportedMailReceipt, reported_hash),
+        ):
+            assert (
+                session.scalar(select(func.count()).select_from(model).where(model.external_id_hash == erased_hash))
+                == 0
+            )
+
+        # Over-deletion guard: the bystander subject keeps BOTH receipts and its
+        # assignment. Erasure is strictly scoped to the subject's assignments.
+        assert _receipt_counts(session, other_assignment_uuid) == (1, 1)
+        assert session.get(RecipientAssignment, other_assignment_uuid) is not None
         assert (
             session.scalar(
                 select(func.count())
                 .select_from(ReplyMailReceipt)
-                .where(ReplyMailReceipt.recipient_assignment_id == assignment_uuid)
+                .where(ReplyMailReceipt.external_id_hash == other_reply_hash)
             )
-            == 0
+            == 1
         )
         assert (
             session.scalar(
                 select(func.count())
                 .select_from(ReportedMailReceipt)
-                .where(ReportedMailReceipt.recipient_assignment_id == assignment_uuid)
+                .where(ReportedMailReceipt.external_id_hash == other_reported_hash)
             )
-            == 0
+            == 1
         )
-        assert session.get(RecipientAssignment, assignment_uuid) is None
-        # No orphaned receipt (SET NULL) left anywhere from this assignment.
-        assert (
-            session.scalar(
-                select(func.count()).select_from(ReplyMailReceipt).where(ReplyMailReceipt.external_id_hash == "4" * 64)
-            )
-            == 0
-        )
-        # The pseudonymous awareness ledger is intentionally retained.
+        other = session.get(Recipient, UUID(other_id))
+        assert other is not None and other.deleted_at is None
+
+        # The pseudonymous awareness ledger is RETAINED through erasure (an
+        # accepted-risk retention decision; it is relinkable, not anonymous).
         ledger_after = session.scalar(select(func.count()).select_from(AwarenessLedgerEntry)) or 0
         assert ledger_after == ledger_before
 
-        recipient = session.get(Recipient, _uuid.UUID(recipient_id))
+        recipient = session.get(Recipient, UUID(recipient_id))
         assert recipient is not None and recipient.deleted_at is not None
