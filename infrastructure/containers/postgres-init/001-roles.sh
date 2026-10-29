@@ -88,6 +88,13 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kp_worker_retention') THEN
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.awareness_ledger_entries TO kp_worker_retention;
   END IF;
+  -- Right-to-erasure (KP-AUD-003): the operator console gets DELETE ONLY so it
+  -- can purge a data subject's keyed pseudonymous rows on erasure. It still has
+  -- no SELECT/INSERT/UPDATE here, so it can never read or project the five-year
+  -- outcomes; the table remains retention-managed for every other purpose.
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kp_operator') THEN
+    GRANT DELETE ON TABLE public.awareness_ledger_entries TO kp_operator;
+  END IF;
 END
 \$\$;
 EOSQL

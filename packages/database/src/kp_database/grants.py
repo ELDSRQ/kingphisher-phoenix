@@ -111,6 +111,13 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
         # active). INSERT and DELETE remain delivery-worker-only; provider
         # evidence is never created or removed by the console.
         "SELECT, UPDATE": ("recipient_delivery_suppressions",),
+        # Right-to-erasure (KP-AUD-003) must reach the awareness ledger, which is
+        # otherwise retention-managed. The operator console gets DELETE ONLY
+        # here (never SELECT/INSERT/UPDATE): it can purge a data subject's keyed
+        # pseudonymous rows on erasure but can never read, project, or amend the
+        # five-year outcomes. Every other non-retention workload keeps zero
+        # access to this table.
+        "DELETE": ("awareness_ledger_entries",),
     },
     "tracking": {
         "SELECT": ("tracking_tokens", "training_resources", "campaigns"),
