@@ -583,6 +583,15 @@ class CampaignProgram(Base):
             "configuration_hash ~ '^[0-9a-f]{64}$'",
             name="configuration_hash_hex",
         ),
+        # W4-03: a program either eagerly materializes its full fixed timeline
+        # ('fixed_schedule', the original behavior) or lets a worker materialize
+        # the next DRAFT iteration over time, adapting to the prior iteration's
+        # results ('adaptive'). Neither mode ever sends; every iteration is a
+        # DRAFT that must clear the normal approval + RoE + schedule gates.
+        CheckConstraint(
+            "generation_mode IN ('fixed_schedule', 'adaptive')",
+            name="ck_campaign_program_generation_mode",
+        ),
     )
 
     campaign_program_id = _pk()
@@ -600,6 +609,12 @@ class CampaignProgram(Base):
     cadence_days: Mapped[int] = mapped_column(Integer)
     occurrence_count: Mapped[int] = mapped_column(Integer)
     configuration_hash: Mapped[str] = mapped_column(String(64))
+    #: 'fixed_schedule' (default, backfills existing rows) preserves the eager
+    #: whole-timeline materialization. 'adaptive' defers every iteration past
+    #: the source to worker-driven, cue-adaptive DRAFT generation.
+    generation_mode: Mapped[str] = mapped_column(
+        String(32), default="fixed_schedule", server_default=sa_text("'fixed_schedule'")
+    )
     created_by = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
     updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
@@ -644,6 +659,61 @@ class CampaignProgramOccurrence(Base):
     )
     schedule_start = mapped_column(DateTime(timezone=True), nullable=False)
     schedule_end = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CampaignProgramAdaptation(Base):
+    """Why one adaptive-program iteration adapted, recorded deterministically.
+
+    W4-03: each adaptive iteration past the source records the prior iteration's
+    signals that drove it, the exact draft changes made (difficulty step and the
+    rationale), and the enrollment decision (who was excluded and why). The
+    unique ``(campaign_program_id, iteration_number)`` is the idempotency key: a
+    worker restart or a duplicate queue delivery can never materialize or re-adapt
+    the same iteration twice. This row is explanation only; it never advances a
+    campaign past DRAFT.
+    """
+
+    __tablename__ = "campaign_program_adaptations"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_program_id",
+            "iteration_number",
+            name="uq_campaign_program_adaptation_iteration",
+        ),
+        CheckConstraint(
+            "iteration_number > 1",
+            name="ck_campaign_program_adaptation_iteration_min",
+        ),
+    )
+
+    campaign_program_adaptation_id = _pk()
+    campaign_program_id = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "campaign_programs.campaign_program_id",
+            name="fk_program_adaptations_program",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    #: The occurrence number this adaptation produced (always > 1; the source
+    #: iteration is human-made and never adapted).
+    iteration_number: Mapped[int] = mapped_column(Integer)
+    #: The DRAFT campaign this adaptation materialized.
+    iteration_campaign_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="RESTRICT"), nullable=False
+    )
+    #: The prior, completed iteration's campaign whose signals drove the change.
+    basis_campaign_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.campaign_id", ondelete="RESTRICT"), nullable=False
+    )
+    #: Prior-iteration aggregate signals read (accepted/clicked/reported/...).
+    signals: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    #: The concrete, deterministic draft changes plus their drivers.
+    changes: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    #: Enrollment outcome counts, including scanner-only and opt-out exclusions.
+    enrollment: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=sa_text("now()"))
 
 
 class CampaignApproval(Base):

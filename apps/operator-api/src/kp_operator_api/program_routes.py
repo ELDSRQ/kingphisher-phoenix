@@ -35,6 +35,10 @@ class ProgramCreate(BaseModel):
     source_campaign_id: uuid.UUID
     cadence_days: Literal[7, 14, 28, 84]
     occurrence_count: int = Field(ge=2, le=12)
+    # W4-03: 'fixed_schedule' (default) eagerly materializes the whole reviewed
+    # timeline. 'adaptive' defers every iteration past the source to
+    # worker-driven, cue-adaptive DRAFT generation. Neither mode ever sends.
+    generation_mode: Literal["fixed_schedule", "adaptive"] = "fixed_schedule"
 
 
 class ProgramStateChange(BaseModel):
@@ -79,6 +83,7 @@ def _program_payload(
         "version": program.version,
         "cadence_days": program.cadence_days,
         "occurrence_count": program.occurrence_count,
+        "generation_mode": program.generation_mode,
         "complete": campaign_program_is_complete(session, program.campaign_program_id),
         "created_at": _utc_instant(program.created_at),
         "updated_at": _utc_instant(program.updated_at),
@@ -104,6 +109,7 @@ def create_program(
         source_campaign_id=body.source_campaign_id,
         cadence_days=body.cadence_days,
         occurrence_count=body.occurrence_count,
+        generation_mode=body.generation_mode,
         created_by=uuid.UUID(principal.principal_id) if principal.principal_id != "anonymous" else None,
     )
     audit.record(
@@ -116,6 +122,7 @@ def create_program(
             "source_campaign_id": str(body.source_campaign_id),
             "cadence_days": body.cadence_days,
             "occurrence_count": body.occurrence_count,
+            "generation_mode": body.generation_mode,
             "created": result.created,
         },
     )
