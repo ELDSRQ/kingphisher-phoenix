@@ -95,25 +95,58 @@ def test_manifest_never_embeds_the_raw_source_text() -> None:
     assert manifest["provenance"]["body_sha256"] == hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-def test_transformation_receipt_requires_a_known_policy_reason() -> None:
+def test_transformation_receipt_rejects_out_of_vocabulary_fields() -> None:
     receipt = transformation_receipt(
         "anchor_href", "replaced", "payload_link_removed", count=3, evidence_hashes=("a" * 64,)
     )
     assert receipt["policy_reason"] in POLICY_REASONS
     assert receipt["count"] == 3
     assert receipt["evidence_hashes"] == ["a" * 64]
+    assert "detail" not in receipt  # the free-text detail surface is gone entirely
+    # Every free-text surface is constrained: a caller cannot smuggle attacker
+    # text through component, action, or policy_reason.
     with pytest.raises(ValueError):
         transformation_receipt("anchor_href", "replaced", "because_i_said_so")
+    with pytest.raises(ValueError):
+        transformation_receipt("tag:evil.example:login", "removed", "disallowed_tag_removed")
+    with pytest.raises(ValueError):
+        transformation_receipt("anchor_href", "exfiltrated", "payload_link_removed")
 
 
 def test_receipts_from_removed_tags_are_sorted_and_policy_mapped() -> None:
     receipts = receipts_from_removed_tags({"script": 2, "form": 1, "img": 3, "zero": 0})
     components = [receipt["component"] for receipt in receipts]
-    assert components == ["tag:form", "tag:img", "tag:script"]  # sorted, zero-count dropped
+    # "zero" is a non-HTML name with count 0: dropped. Known tags stay named.
+    assert components == ["tag:form", "tag:img", "tag:script"]  # sorted
     reasons = {receipt["component"]: receipt["policy_reason"] for receipt in receipts}
     assert reasons["tag:script"] == "active_content_removed"
     assert reasons["tag:form"] == "credential_form_removed"
     assert reasons["tag:img"] == "disallowed_image_removed"
+
+
+def test_hostile_tag_names_fold_into_tag_other_with_hashes_only() -> None:
+    # html.parser accepts arbitrary tag names; an attacker-crafted one must NOT
+    # reach the manifest verbatim — it folds into a single ``tag:other`` receipt
+    # whose names appear only as SHA-256 hashes.
+    hostile = "evil.example:login"
+    receipts = receipts_from_removed_tags({"div": 1, hostile: 2, "http:": 1})
+    components = {receipt["component"] for receipt in receipts}
+    assert components == {"tag:div", "tag:other"}
+    other = next(receipt for receipt in receipts if receipt["component"] == "tag:other")
+    assert other["count"] == 3  # 2 + 1 hostile occurrences folded
+    assert hostile not in json.dumps(receipts)
+    assert "http:" not in json.dumps(other)
+    assert hashlib.sha256(hostile.encode()).hexdigest() in other["evidence_hashes"]
+
+
+def test_manifest_flags_truncation_when_a_bound_is_hit() -> None:
+    # More than MAX_SPANS_PER_CUE matches of one rule -> evidence is a bounded
+    # sample and the manifest says so rather than dropping the overflow silently.
+    body = " ".join(["click here"] * (MAX_SPANS_PER_CUE + 3))
+    manifest = build_cue_manifest(subject="s", body=body, transformations=[], source="reconstruction")
+    link_cue = next(cue for cue in manifest["cues"] if cue["cue_type"] == "link_lure")
+    assert len(link_cue["evidence_spans"]) == MAX_SPANS_PER_CUE
+    assert manifest["truncated"] is True
 
 
 def test_cue_manifest_is_byte_identical_across_runs_snapshot() -> None:
@@ -137,6 +170,7 @@ def test_cue_manifest_is_byte_identical_across_runs_snapshot() -> None:
         "ontology_version": "cue-ontology/1",
         "extractor_version": "deterministic-cue-extractor/1",
         "source": "reconstruction",
+        "truncated": False,
         "cues": [
             {
                 "cue_id": "cue:credential_request:1",

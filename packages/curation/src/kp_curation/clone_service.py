@@ -166,7 +166,6 @@ def clone_real_message(
                 "payload_link_removed",
                 count=rewritten_links,
                 evidence_hashes=tuple(original_href_hashes),
-                detail={"replacement": "training_placeholder"},
             )
         )
     if bare_urls_neutralized:

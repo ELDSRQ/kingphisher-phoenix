@@ -8,23 +8,38 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from datetime import UTC, date, datetime, timedelta
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from kp_database.awareness_ledger import (
+    LOCAL_AWARENESS_PSEUDONYM_KEY,
+    LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
+    recipient_pseudonym,
+)
 from kp_database.base import Base
 from kp_database.models import (
+    AwarenessLedgerEntry,
+    Campaign,
+    CampaignPattern,
     CipherText,
     Microsoft365IntegrationState,
     PrivacyNotice,
     Recipient,
+    RecipientAssignment,
+    ReplyMailReceipt,
+    ReportedMailReceipt,
     RetentionPolicy,
 )
+from kp_database.personal_data import exported_store_names
 from kp_database.privacy import hash_mailbox
+from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
 from kp_database.session import create_db_engine, make_session_factory
+from kp_domain_models import models as dm
 from kp_operator_api.config import OperatorApiSettings
 from kp_operator_api.main import create_app
+from kp_operator_api.routes.privacy import LEDGER_UNAVAILABLE_PSEUDONYM_CONFIG
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
 
@@ -390,3 +405,229 @@ def test_correction_updates_supported_fields(client: TestClient) -> None:
         assert recipient.department == "Legal"
     finally:
         session.close()
+
+
+def _seed_ledger_entry(recipient_uuid: UUID) -> UUID:
+    """Project one pseudonymous awareness-ledger row for ``recipient_uuid``.
+
+    The pseudonym is computed with the SAME non-managed LOCAL key the export
+    resolves via ``require_awareness_pseudonym_config``, so the export relinks
+    exactly this subject's row (the ledger is pseudonymous, not anonymous).
+    Returns the row's ``campaign_id`` so the caller can identify it.
+    """
+    key = bytes.fromhex(LOCAL_AWARENESS_PSEUDONYM_KEY)
+    campaign_id = uuid4()
+    campaign_date = date(2025, 3, 1)
+    session = _session()
+    try:
+        session.add(
+            AwarenessLedgerEntry(
+                awareness_ledger_entry_id=uuid4(),
+                tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+                pseudonym_key_version=LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
+                recipient_pseudonym=recipient_pseudonym(
+                    tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+                    recipient_id=recipient_uuid,
+                    key=key,
+                ),
+                assignment_exposure_pseudonym=(uuid4().hex + uuid4().hex)[:64],
+                campaign_id=campaign_id,
+                campaign_date=campaign_date,
+                campaign_date_basis="scheduled_start",
+                targeted=True,
+                accepted=True,
+                delivered=True,
+                observed_open=True,
+                observed_click=False,
+                reported=False,
+                confirmed_interaction=False,
+                training_assigned=False,
+                training_started=False,
+                training_completed=False,
+                training_passed=False,
+                campaign_closed=True,
+                no_activity_at_close=False,
+                projected_at=datetime.now(UTC),
+                retain_until=campaign_date + timedelta(days=1826),
+            )
+        )
+        session.commit()
+        return campaign_id
+    finally:
+        session.close()
+
+
+def _seed_assignment_with_receipts(recipient_id: str) -> str:
+    """Attach one campaign assignment plus a reply and reported receipt to a
+    seeded recipient. Returns the assignment id."""
+    session = _session()
+    try:
+        pattern = CampaignPattern(
+            campaign_pattern_id=uuid4(),
+            lure_category=dm.LureCategory.INVOICE,
+            confidence=dm.Confidence.HIGH,
+        )
+        session.add(pattern)
+        session.flush()
+        campaign = Campaign(
+            campaign_id=uuid4(),
+            pattern_id=pattern.campaign_pattern_id,
+            title="Export Drill",
+            state=dm.CampaignState.COMPLETED,
+            sender_mailbox="drills@example.com",
+            training_domain="training.local",
+            timezone="UTC",
+            max_recipients=10,
+            created_by=uuid4(),
+            expires_at=datetime.now(UTC) + timedelta(days=14),
+        )
+        session.add(campaign)
+        session.flush()
+        assignment = RecipientAssignment(
+            recipient_assignment_id=uuid4(),
+            campaign_id=campaign.campaign_id,
+            recipient_id=UUID(recipient_id),
+            send_state=dm.SendState.DELIVERED,
+            idempotency_key=f"export-assign-{uuid4()}",
+            created_at=datetime.now(UTC),
+        )
+        session.add(assignment)
+        session.flush()
+        session.add(
+            ReportedMailReceipt(
+                reported_mail_receipt_id=uuid4(),
+                provider="microsoft365",
+                scope_hash="1" * 64,
+                external_id="reported-secret",
+                external_id_hash=uuid4().hex + uuid4().hex,
+                recipient_assignment_id=assignment.recipient_assignment_id,
+                disposition="reported",
+                evidence={},
+                received_at=datetime.now(UTC),
+            )
+        )
+        session.add(
+            ReplyMailReceipt(
+                reply_mail_receipt_id=uuid4(),
+                provider="microsoft365",
+                scope_hash="2" * 64,
+                external_id="reply-secret",
+                external_id_hash=uuid4().hex + uuid4().hex,
+                recipient_assignment_id=assignment.recipient_assignment_id,
+                disposition="replied",
+                evidence={},
+                received_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+        return str(assignment.recipient_assignment_id)
+    finally:
+        session.close()
+
+
+@requires_db
+def test_export_covers_every_registered_personal_data_store(client: TestClient) -> None:
+    mailbox = "export.coverage@example.com"
+    recipient_id = _seed_recipient(mailbox)
+    assignment_id = _seed_assignment_with_receipts(recipient_id)
+    # The subject's own pseudonymous ledger row, plus an UNRELATED subject's row
+    # (a random recipient id, no Recipient tombstone needed — the ledger has no
+    # FK) that export must NOT disclose.
+    subject_campaign_id = _seed_ledger_entry(UUID(recipient_id))
+    other_campaign_id = _seed_ledger_entry(uuid4())
+
+    submit = client.post(
+        "/api/v1/privacy/requests",
+        headers=PRIVACY_HEADERS,
+        json={"request_type": "access_export", "requester_mailbox": mailbox},
+    )
+    assert submit.status_code == 201, submit.text
+    request_id = submit.json()["privacy_request_id"]
+
+    verify = client.post(
+        f"/api/v1/privacy/requests/{request_id}/verify",
+        headers=PRIVACY_HEADERS,
+        json={"method": "authenticated_hr_record", "evidence_ref": "case-export"},
+    )
+    assert verify.status_code == 200, verify.text
+
+    export = client.post(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
+    assert export.status_code == 200, export.text
+    body = export.json()
+
+    # Every store the registry flags for export is present in the payload.
+    assert exported_store_names() <= set(body.keys())
+
+    # The reply and reported receipts linked to the subject's assignment are
+    # disclosed (minimized: linkage, disposition, timestamp only) and carry no
+    # encrypted external id / hash.
+    assert len(body["reported_receipts"]) == 1
+    assert len(body["reply_receipts"]) == 1
+    for receipt in body["reported_receipts"] + body["reply_receipts"]:
+        assert receipt["recipient_assignment_id"] == assignment_id
+        assert set(receipt.keys()) == {"recipient_assignment_id", "disposition", "received_at"}
+    assert body["reported_receipts"][0]["disposition"] == "reported"
+    assert body["reply_receipts"][0]["disposition"] == "replied"
+
+    # The awareness-ledger section is available, not truncated, and discloses
+    # exactly the subject's own pseudonymous row.
+    ledger = body["awareness_ledger"]
+    assert ledger["available"] is True
+    assert ledger["truncated"] is False
+    assert ledger["unavailable_reason"] is None
+    ledger_campaign_ids = {entry["campaign_id"] for entry in ledger["entries"]}
+    assert str(subject_campaign_id) in ledger_campaign_ids
+    # Another subject's ledger row is scoped out.
+    assert str(other_campaign_id) not in ledger_campaign_ids
+
+    # The disclosed ledger entries carry only pseudonymous outcomes — never the
+    # raw recipient/assignment pseudonym (the ledger is pseudonymous, and the
+    # export must not leak the relinkable pseudonym itself).
+    for entry in ledger["entries"]:
+        assert "recipient_pseudonym" not in entry
+        assert "assignment_exposure_pseudonym" not in entry
+    assert "recipient_pseudonym" not in export.text
+    assert "assignment_exposure_pseudonym" not in export.text
+
+
+@requires_db
+def test_export_fails_closed_when_ledger_pseudonym_key_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mailbox = "export.nokey@example.com"
+    recipient_id = _seed_recipient(mailbox)
+    _seed_assignment_with_receipts(recipient_id)
+    _seed_ledger_entry(UUID(recipient_id))
+
+    def _raise_config(_self: OperatorApiSettings) -> tuple[bytes, str]:
+        # Mirrors the managed-mode RuntimeError when the pseudonym key is unset
+        # or malformed.
+        raise RuntimeError("awareness pseudonym key is unavailable")
+
+    monkeypatch.setattr(OperatorApiSettings, "require_awareness_pseudonym_config", _raise_config)
+
+    submit = client.post(
+        "/api/v1/privacy/requests",
+        headers=PRIVACY_HEADERS,
+        json={"request_type": "access_export", "requester_mailbox": mailbox},
+    )
+    assert submit.status_code == 201, submit.text
+    request_id = submit.json()["privacy_request_id"]
+    verify = client.post(
+        f"/api/v1/privacy/requests/{request_id}/verify",
+        headers=PRIVACY_HEADERS,
+        json={"method": "authenticated_hr_record", "evidence_ref": "case-nokey"},
+    )
+    assert verify.status_code == 200, verify.text
+
+    export = client.post(f"/api/v1/privacy/requests/{request_id}/export", headers=PRIVACY_HEADERS)
+    # The whole DSR export must NOT 500 just because the ledger key is missing.
+    assert export.status_code == 200, export.text
+    body = export.json()
+    ledger = body["awareness_ledger"]
+    assert ledger["available"] is False
+    assert ledger["unavailable_reason"] == LEDGER_UNAVAILABLE_PSEUDONYM_CONFIG
+    assert ledger["entries"] == []
+    # Every other store is still disclosed despite the ledger config failure.
+    assert len(body["reply_receipts"]) == 1
+    assert len(body["reported_receipts"]) == 1

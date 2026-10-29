@@ -12,6 +12,7 @@ import hashlib
 import ipaddress
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import delete, select
@@ -73,24 +74,39 @@ def hash_mailbox(mailbox: str, salt: bytes) -> str:
     return hashlib.sha256(salt + inner).hexdigest()
 
 
-def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: datetime) -> bool:
+def erase_recipient_data(
+    session: Session,
+    recipient_id: UUID,
+    *,
+    erased_at: datetime,
+    pseudonym_key: bytes,
+    pseudonym_key_version: str,
+) -> bool:
     """Erase a recipient and all directly linked behavioral data.
 
     The recipient row is retained as an anonymous tombstone so historic
     aggregate/audit references remain structurally valid.  The random mailbox
     digest prevents later linkage or dictionary recovery.
+
+    ``pseudonym_key`` / ``pseudonym_key_version`` are the active governed
+    awareness-ledger key. Because the ledger pseudonym is keyed (re-identifiable
+    while the key exists), right-to-erasure must also purge the subject's ledger
+    rows; see :func:`kp_database.awareness_ledger.purge_recipient_awareness_ledger`.
+    The caller fails closed (cannot resolve the key -> raises) before invoking
+    this function, so erasure never silently leaves re-identifiable rows behind.
     """
+    from kp_database.awareness_ledger import purge_recipient_awareness_ledger
     from kp_database.models import (
         AudienceGroupMember,
         Microsoft365IntegrationState,
         Recipient,
         RecipientAssignment,
         RecipientExclusion,
-        ReportedMailReceipt,
         TrackingEvent,
         TrackingToken,
         TrainingAssignment,
     )
+    from kp_database.personal_data import ASSIGNMENT_LINKED_RECEIPT_MODELS
 
     recipient = session.get(Recipient, recipient_id)
     if recipient is None or recipient.deleted_at is not None:
@@ -109,14 +125,32 @@ def erase_recipient_data(session: Session, recipient_id: UUID, *, erased_at: dat
         )
         if token_ids:
             session.execute(delete(TrackingEvent).where(TrackingEvent.token_id.in_(token_ids)))
-        session.execute(
-            delete(ReportedMailReceipt).where(ReportedMailReceipt.recipient_assignment_id.in_(assignment_ids))
-        )
+        # Explicitly delete both assignment-linked mail receipts for this
+        # subject before the assignments go, rather than relying on the FK
+        # ``ondelete="SET NULL"`` (which would leave orphaned reply/reported
+        # receipts carrying the subject's encrypted external message id). Reply
+        # receipts previously escaped erasure entirely (KP-AUD-003).
+        for receipt_model in ASSIGNMENT_LINKED_RECEIPT_MODELS:
+            model: Any = receipt_model
+            session.execute(delete(model).where(model.recipient_assignment_id.in_(assignment_ids)))
         session.execute(delete(TrackingToken).where(TrackingToken.recipient_assignment_id.in_(assignment_ids)))
     session.execute(delete(TrackingEvent).where(TrackingEvent.recipient_id == recipient_id))
     session.execute(delete(TrainingAssignment).where(TrainingAssignment.recipient_id == recipient_id))
     session.execute(delete(RecipientExclusion).where(RecipientExclusion.recipient_id == recipient_id))
     session.execute(delete(AudienceGroupMember).where(AudienceGroupMember.recipient_id == recipient_id))
+    # Right-to-erasure must reach the keyed-pseudonym awareness ledger: while the
+    # governed key exists the subject's rows are re-identifiable personal data
+    # (KP-AUD-003, erasure Option A). The ledger carries no recipient FK, so the
+    # pseudonym is recomputed from the active key and the matching rows deleted.
+    from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
+
+    purge_recipient_awareness_ledger(
+        session,
+        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+        recipient_id=recipient_id,
+        pseudonym_key=pseudonym_key,
+        pseudonym_key_version=pseudonym_key_version,
+    )
     pending_states = list(
         session.scalars(
             select(Microsoft365IntegrationState)

@@ -18,12 +18,37 @@ from typing import Any
 
 import pytest
 import redis
-from kp_contracts.queue import AUDIT_ANCHOR_HEARTBEAT_KEY, JobQueue
+from kp_contracts.queue import AUDIT_ANCHOR_HEARTBEAT_KEY, DEFAULT_QUEUE_TOPICS, JobQueue
 
 
 def _key(topic: str, suffix: str = "") -> str:
     """Mirror the public queue namespace while asserting Redis hash tags."""
     return f"kp:queue:{{{topic}}}{suffix}"
+
+
+def test_default_queue_topics_cover_every_worker_consumed_queue() -> None:
+    # KP-AUD-004: the admin DLQ allowlist must list every topic a worker role
+    # consumes, or that queue's dead letters are invisible/undetailed/unreplayable
+    # through the operator console. Mirror the worker role registry
+    # (apps/workers/src/kp_workers/__main__.py WORKERS) without importing the
+    # worker application into the contracts package.
+    worker_consumed_topics = {
+        "audit-anchor",
+        "ingest",
+        "generate",
+        "deliver",
+        "retention",
+        "mailbox",
+        "reply-mailbox",
+        "remind",
+        "alert",
+        "directory",
+        "curate",
+    }
+    assert "curate" in DEFAULT_QUEUE_TOPICS
+    assert worker_consumed_topics <= set(DEFAULT_QUEUE_TOPICS)
+    # No duplicates crept in while extending the fixed allowlist.
+    assert len(DEFAULT_QUEUE_TOPICS) == len(set(DEFAULT_QUEUE_TOPICS))
 
 
 class _MemoryClient:
@@ -36,6 +61,14 @@ class _MemoryClient:
         self.eval_calls: list[str] = []
         self.before_move: Callable[[str, str, str], None] | None = None
         self.strings: dict[str, str] = {}
+        self.counters: dict[str, int] = {}
+
+    def incr(self, key: str) -> int:
+        self.counters[key] = self.counters.get(key, 0) + 1
+        return self.counters[key]
+
+    def exists(self, key: str) -> int:
+        return 1 if (key in self.strings or key in self.lists or key in self.sorted_sets) else 0
 
     def rpush(self, key: str, value: str) -> int:
         self.lists.setdefault(key, []).append(value)
@@ -81,7 +114,7 @@ class _MemoryClient:
             return len(due)
 
         if "kp_queue_claim_v1" in marker:
-            ready, processing, dlq, started_at = map(str, values)
+            ready, processing, dlq, fence_key, started_at, owner, lease = map(str, values)
             ready_values = self.lists.get(ready, [])
             while ready_values:
                 raw = ready_values.pop(0)
@@ -96,11 +129,32 @@ class _MemoryClient:
                     and isinstance(message.get("retry"), int | float)
                     and isinstance(message.get("payload"), dict)
                 ):
-                    message["started_at"] = float(started_at)
+                    now = float(started_at)
+                    message["started_at"] = now
+                    message["owner"] = owner
+                    message["fence"] = self.incr(fence_key)
+                    message["lease_deadline"] = now + float(lease)
                     claimed = json.dumps(message, separators=(",", ":"))
                     self.lpush(processing, claimed)
                     return claimed
                 self.rpush(dlq, raw)
+            return None
+
+        if "kp_queue_renew_lease_v1" in marker:
+            processing, job_id, owner, new_deadline = map(str, values)
+            for raw in list(self.lists.get(processing, [])):
+                try:
+                    message = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(message, dict):
+                    continue
+                if message.get("id") == job_id and message.get("owner") == owner:
+                    message["lease_deadline"] = float(new_deadline)
+                    encoded = json.dumps(message, separators=(",", ":"))
+                    self.lrem(processing, 1, raw)
+                    self.lpush(processing, encoded)
+                    return encoded
             return None
 
         if "kp_queue_move_if_present_v1" in marker:
@@ -370,12 +424,12 @@ def test_recover_stale_requeues_crashed_claim(queue: JobQueue) -> None:
     queue.publish("generation", {"pattern_id": "p1"})
     message = queue.pop("generation", timeout=1)
     assert message is not None
-    # simulate a crash: the claim stays in :processing with an old started_at
+    # simulate a crash: the claim stays in :processing with an expired lease
     message["started_at"] = 0.0
+    message["lease_deadline"] = 0.0
+    message.pop("_raw", None)
     client = queue._client  # type: ignore[attr-defined]
-    old_raw = message["_raw"]
-    client.lrem(_key("generation", ":processing"), 0, old_raw)
-    client.rpush(_key("generation", ":processing"), json.dumps(message))
+    client.lists[_key("generation", ":processing")] = [json.dumps(message)]
 
     recovered = queue.recover_stale("generation", visibility_seconds=60)
     assert recovered == 1
@@ -398,10 +452,11 @@ def test_recover_stale_moves_exhausted_claim_to_dlq(queue: JobQueue) -> None:
     message = queue.pop("generation", timeout=1)
     assert message is not None
     message["started_at"] = 0.0
+    message["lease_deadline"] = 0.0
     message["retry"] = 2
+    message.pop("_raw", None)
     client = queue._client  # type: ignore[attr-defined]
-    client.lrem(_key("generation", ":processing"), 0, message["_raw"])
-    client.rpush(_key("generation", ":processing"), json.dumps(message))
+    client.lists[_key("generation", ":processing")] = [json.dumps(message)]
 
     assert queue.recover_stale("generation", visibility_seconds=60, max_retries=3) == 1
     assert client.lists.get(_key("generation"), []) == []
@@ -413,6 +468,10 @@ def test_recover_stale_does_not_duplicate_a_concurrently_acked_claim(queue: JobQ
     message = queue.pop("generation", timeout=0)
     assert message is not None
     client = queue._client  # type: ignore[attr-defined]
+    # Force the lease expired so recovery attempts the atomic move.
+    message["lease_deadline"] = 0.0
+    message.pop("_raw", None)
+    client.lists[_key("generation", ":processing")] = [json.dumps(message)]
 
     def ack_immediately_before_recovery(source: str, destination: str, raw: str) -> None:
         del destination
@@ -422,6 +481,102 @@ def test_recover_stale_does_not_duplicate_a_concurrently_acked_claim(queue: JobQ
     assert queue.recover_stale("generation", visibility_seconds=-1) == 0
     assert client.lists.get(_key("generation"), []) == []
     assert client.lists.get(_key("generation", ":processing"), []) == []
+
+
+def test_claim_stamps_owner_fencing_token_and_lease(queue: JobQueue) -> None:
+    queue.publish("deliver", {"n": 1})
+    message = queue.pop("deliver", timeout=0, owner="owner-a", lease_seconds=120)
+    assert message is not None
+    assert message["owner"] == "owner-a"
+    assert message["fence"] == 1
+    assert message["lease_deadline"] == message["started_at"] + 120
+    # A second claim takes a strictly higher fencing token.
+    queue.publish("deliver", {"n": 2})
+    second = queue.pop("deliver", timeout=0, owner="owner-b")
+    assert second is not None
+    assert second["fence"] == 2
+
+
+def test_default_owner_is_a_fresh_uuid_per_claim(queue: JobQueue) -> None:
+    queue.publish("deliver", {"n": 1})
+    queue.publish("deliver", {"n": 2})
+    first = queue.pop("deliver", timeout=0)
+    second = queue.pop("deliver", timeout=0)
+    assert first is not None and second is not None
+    assert first["owner"] and second["owner"]
+    assert first["owner"] != second["owner"]
+
+
+def test_renew_lease_extends_only_for_the_current_owner(queue: JobQueue) -> None:
+    queue.publish("generation", {"pattern_id": "p1"})
+    message = queue.pop("generation", timeout=0, owner="owner-a", lease_seconds=30)
+    assert message is not None
+    original_deadline = message["lease_deadline"]
+    original_raw = message["_raw"]
+
+    assert queue.renew_lease("generation", message, lease_seconds=300) is True
+    assert message["lease_deadline"] > original_deadline
+    # The stored envelope was rewritten, so ack still matches the live claim.
+    assert message["_raw"] != original_raw
+    client = queue._client  # type: ignore[attr-defined]
+    stored = json.loads(client.lists[_key("generation", ":processing")][0])
+    assert stored["lease_deadline"] == message["lease_deadline"]
+
+    # A renewal presenting a stale owner is refused (fencing).
+    stale = dict(message)
+    stale["owner"] = "owner-zombie"
+    assert queue.renew_lease("generation", stale, lease_seconds=999) is False
+
+
+def test_recovery_reassigns_owner_and_fences_out_the_zombie(queue: JobQueue) -> None:
+    queue.publish("generation", {"pattern_id": "p1"})
+    zombie = queue.pop("generation", timeout=0, owner="owner-a", lease_seconds=30)
+    assert zombie is not None
+    client = queue._client  # type: ignore[attr-defined]
+
+    # Force the lease expired and recover it (as a crashed worker would be).
+    expired = {key: value for key, value in zombie.items() if key != "_raw"}
+    expired["lease_deadline"] = 0.0
+    client.lists[_key("generation", ":processing")] = [json.dumps(expired)]
+    assert queue.recover_stale("generation") == 1
+
+    # A different worker re-claims it: new owner, strictly higher fencing token.
+    fresh = queue.pop("generation", timeout=0, owner="owner-b", lease_seconds=30)
+    assert fresh is not None
+    assert fresh["owner"] == "owner-b"
+    assert fresh["fence"] > zombie["fence"]
+
+    # The resumed zombie's ack/reject/renew are fenced: they target the old
+    # envelope, which no longer exists, so they are no-ops and cannot complete
+    # or re-queue a message another worker now owns.
+    queue.ack("generation", zombie)
+    assert len(client.lists[_key("generation", ":processing")]) == 1
+    assert queue.renew_lease("generation", zombie, lease_seconds=999) is False
+    queue.reject("generation", zombie)
+    assert len(client.lists[_key("generation", ":processing")]) == 1
+    assert client.lists.get(_key("generation"), []) == []
+
+
+def test_recover_stale_leaves_a_live_lease_even_past_visibility(queue: JobQueue) -> None:
+    # A slow-but-healthy handler: visibility elapsed, but the lease is live.
+    queue.publish("generation", {"pattern_id": "p1"})
+    message = queue.pop("generation", timeout=0, lease_seconds=3600)
+    assert message is not None
+    assert queue.recover_stale("generation", visibility_seconds=-1) == 0
+    client = queue._client  # type: ignore[attr-defined]
+    assert len(client.lists.get(_key("generation", ":processing"), [])) == 1
+
+
+def test_job_published_tracks_dedup_marker_presence(queue: JobQueue) -> None:
+    assert queue.job_published("deliver", "k-absent") is False
+    queue.publish("deliver", {"n": 1}, idempotency_key="k-present")
+    assert queue.job_published("deliver", "k-present") is True
+    # The marker survives consumption, so a reconciliation treats an acked job
+    # as still "known" to Redis rather than lost.
+    message = queue.pop("deliver", timeout=0)
+    assert message is not None
+    queue.ack("deliver", message)
+    assert queue.job_published("deliver", "k-present") is True
 
 
 def test_malformed_ready_message_is_preserved_in_dlq(queue: JobQueue) -> None:
@@ -495,6 +650,7 @@ def test_live_redis_atomic_queue_lifecycle() -> None:
             queue._processing(topic),
             queue._dlq(topic),
             queue._delayed(topic),
+            queue._fence(topic),
         )
     ]
     published_keys: list[str] = []
@@ -522,9 +678,12 @@ def test_live_redis_atomic_queue_lifecycle() -> None:
 
         recovery_id = queue.publish("recovery", {"n": 3})
         published_keys.append(queue._published("recovery", f"recovery-{recovery_id}"))
-        crashed = queue.pop("recovery", timeout=1)
+        # A negative lease makes the claim's lease_deadline immediately past, so
+        # recovery treats it as a crashed/expired owner.
+        crashed = queue.pop("recovery", timeout=1, lease_seconds=-1)
         assert crashed is not None
-        assert queue.recover_stale("recovery", visibility_seconds=-1) == 1
+        assert crashed["owner"]
+        assert queue.recover_stale("recovery") == 1
         recovered = queue.pop("recovery", timeout=1)
         assert recovered is not None
         assert recovered["retry"] == 1

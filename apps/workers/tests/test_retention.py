@@ -24,6 +24,8 @@ from kp_database.models import (
     CipherText,
     Recipient,
     RecipientAssignment,
+    ReplyMailReceipt,
+    ReportedMailReceipt,
     RetentionAction,
     RetentionPolicy,
 )
@@ -421,3 +423,87 @@ def test_reconcile_campaign_lifecycle_closes_elapsed_windows() -> None:
         session.commit()
         assert active.state == dm.CampaignState.COMPLETED
         assert scheduled.state == dm.CampaignState.EXPIRED
+
+
+def _seed_aged_and_recent_receipts() -> None:
+    """Seed one aged and one recent reply AND reported receipt.
+
+    The aged rows (older than the 365-day default) must be purged; the recent
+    rows must survive. Receipts age out purely by ``received_at`` and need no
+    assignment, so this exercises the reply-receipt purge in isolation
+    (KP-AUD-003).
+    """
+    now = datetime.now(UTC)
+    with _test_session() as session:
+        session.add_all(
+            [
+                ReportedMailReceipt(
+                    reported_mail_receipt_id=uuid4(),
+                    provider="microsoft365",
+                    scope_hash="1" * 64,
+                    external_id="reported-aged",
+                    external_id_hash="a1" * 32,
+                    disposition="reported",
+                    evidence={},
+                    received_at=now - timedelta(days=800),
+                ),
+                ReportedMailReceipt(
+                    reported_mail_receipt_id=uuid4(),
+                    provider="microsoft365",
+                    scope_hash="2" * 64,
+                    external_id="reported-recent",
+                    external_id_hash="a2" * 32,
+                    disposition="reported",
+                    evidence={},
+                    received_at=now - timedelta(days=1),
+                ),
+                ReplyMailReceipt(
+                    reply_mail_receipt_id=uuid4(),
+                    provider="microsoft365",
+                    scope_hash="3" * 64,
+                    external_id="reply-aged",
+                    external_id_hash="b1" * 32,
+                    disposition="replied",
+                    evidence={},
+                    received_at=now - timedelta(days=800),
+                ),
+                ReplyMailReceipt(
+                    reply_mail_receipt_id=uuid4(),
+                    provider="microsoft365",
+                    scope_hash="4" * 64,
+                    external_id="reply-recent",
+                    external_id_hash="b2" * 32,
+                    disposition="replied",
+                    evidence={},
+                    received_at=now - timedelta(days=1),
+                ),
+            ]
+        )
+        session.commit()
+
+
+def _receipt_hashes() -> tuple[set[str], set[str]]:
+    with _test_session() as session:
+        reported = set(session.scalars(select(ReportedMailReceipt.external_id_hash)))
+        replied = set(session.scalars(select(ReplyMailReceipt.external_id_hash)))
+    return reported, replied
+
+
+@requires_db
+def test_retention_purges_aged_reply_and_reported_receipts() -> None:
+    _seed_aged_and_recent_receipts()
+
+    reported_before, replied_before = _receipt_hashes()
+    assert {"a1" * 32, "a2" * 32} <= reported_before
+    assert {"b1" * 32, "b2" * 32} <= replied_before
+
+    queue = StubQueue()
+    with _make_ctx(queue) as ctx:
+        process_retention(ctx, {"payload": {}, "idempotency_key": f"receipts-{uuid4()}"})
+
+    reported_after, replied_after = _receipt_hashes()
+    # Aged rows purged in both tables; recent rows preserved.
+    assert "a1" * 32 not in reported_after
+    assert "a2" * 32 in reported_after
+    assert "b1" * 32 not in replied_after
+    assert "b2" * 32 in replied_after
