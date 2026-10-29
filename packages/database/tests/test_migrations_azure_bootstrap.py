@@ -279,16 +279,22 @@ def test_runtime_grant_map_excludes_audit_tables_and_schema_ownership() -> None:
         assert all("ALL" not in privileges for privileges in grant_map), workload
 
 
-def test_awareness_ledger_grants_are_retention_only_and_survive_privilege_reset() -> None:
+def test_awareness_ledger_grants_are_retention_managed_with_operator_erasure_delete() -> None:
     script = _load_script()
 
+    # Retention fully manages the ledger (project / expire / amend / delete).
     assert _table_privileges(script, "retention", "awareness_ledger_entries") == {
         "SELECT",
         "INSERT",
         "UPDATE",
         "DELETE",
     }
-    for workload in script.TABLE_GRANTS.keys() - {"retention"}:
+    # Right-to-erasure (KP-AUD-003): the operator may ONLY DELETE here (purge a
+    # data subject's keyed pseudonymous rows on erasure). It can never read,
+    # project, or amend the five-year outcomes.
+    assert _table_privileges(script, "operator", "awareness_ledger_entries") == {"DELETE"}
+    # Every other non-retention workload keeps zero access to the table.
+    for workload in script.TABLE_GRANTS.keys() - {"retention", "operator"}:
         assert _table_privileges(script, workload, "awareness_ledger_entries") == set(), workload
 
     local_init = POSTGRES_INIT_PATH.read_text(encoding="utf-8")
@@ -297,6 +303,7 @@ def test_awareness_ledger_grants_are_retention_only_and_survive_privilege_reset(
         "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.awareness_ledger_entries "
         "TO kp_worker_retention" in local_init
     )
+    assert "GRANT DELETE ON TABLE public.awareness_ledger_entries TO kp_operator" in local_init
     for role in ("worker", "kp_operator", "kp_tracking", "kp_worker_delivery"):
         assert f"'{role}'" in local_init
 

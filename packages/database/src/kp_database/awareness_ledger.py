@@ -14,11 +14,12 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Final
+from typing import Any, Final, cast
 
 from kp_domain_models import models as dm
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from kp_database.models import (
@@ -108,6 +109,62 @@ def _validate_pseudonym_inputs(*, tenant_scope: str, key: bytes, key_version: st
 def _assignment_exposure_pseudonym(*, tenant_scope: str, assignment_id: uuid.UUID, key: bytes) -> str:
     message = b"kingphisher-awareness-ledger-exposure\0" + tenant_scope.encode("ascii") + b"\0" + assignment_id.bytes
     return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def purge_recipient_awareness_ledger(
+    session: Session,
+    *,
+    tenant_scope: str,
+    recipient_id: uuid.UUID,
+    pseudonym_key: bytes,
+    pseudonym_key_version: str,
+) -> int:
+    """Delete the subject's awareness-ledger rows under the active governed key.
+
+    Right-to-erasure policy (Option A). The ledger stores a *keyed* HMAC
+    pseudonym, not an anonymous value: while the key exists the subject's rows
+    remain re-identifiable by recomputation and therefore stay personal data
+    that an Article 17 erasure must reach. We recompute the subject's pseudonym
+    with the active key and delete every matching row for the active key
+    version.
+
+    Scope and limits, by construction:
+
+    * The pseudonym is a function of ``(key, tenant_scope, recipient_id)``, so a
+      row written under a *different* key version carries a different pseudonym
+      value and is not matched here. Rows written under a rotated-out key whose
+      material has been destroyed are already irreversibly anonymous (Recital
+      26) and are intentionally — and necessarily — out of scope. If retired key
+      material is deliberately retained (escrow), those rows remain
+      re-identifiable and the governed rotation process must repeat this erasure
+      once per retained version; this function covers the single active version
+      it is given.
+    * Deleting by ``recipient_pseudonym`` removes every campaign/exposure row for
+      the subject regardless of ``assignment_exposure_pseudonym``.
+
+    Returns the number of ledger rows deleted. A future retention-hold construct
+    (W5-04 / ``LEGAL_HOLD``) must be consulted by the caller before erasure; no
+    such hold exists in the schema today, so there is nothing to check here yet.
+    """
+
+    _validate_pseudonym_inputs(
+        tenant_scope=tenant_scope,
+        key=pseudonym_key,
+        key_version=pseudonym_key_version,
+        as_of=datetime.now(UTC),
+    )
+    pseudonym = recipient_pseudonym(tenant_scope=tenant_scope, recipient_id=recipient_id, key=pseudonym_key)
+    result = cast(
+        "CursorResult[Any]",
+        session.execute(
+            delete(AwarenessLedgerEntry).where(
+                AwarenessLedgerEntry.tenant_scope == tenant_scope,
+                AwarenessLedgerEntry.recipient_pseudonym == pseudonym,
+                AwarenessLedgerEntry.pseudonym_key_version == pseudonym_key_version,
+            )
+        ),
+    )
+    return int(result.rowcount or 0)
 
 
 def project_awareness_ledger_batch(
