@@ -20,6 +20,11 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from kp_database.awareness_ledger import (
+    LOCAL_AWARENESS_PSEUDONYM_KEY,
+    LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
+    recipient_pseudonym,
+)
 from kp_database.base import Base
 from kp_database.models import (
     AwarenessLedgerEntry,
@@ -30,11 +35,6 @@ from kp_database.models import (
     RecipientAssignment,
     ReplyMailReceipt,
     ReportedMailReceipt,
-)
-from kp_database.awareness_ledger import (
-    LOCAL_AWARENESS_PSEUDONYM_KEY,
-    LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
-    recipient_pseudonym,
 )
 from kp_database.privacy import erase_recipient_data
 from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
