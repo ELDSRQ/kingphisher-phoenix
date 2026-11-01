@@ -33,6 +33,33 @@ class RoleSpec:
 
 
 @dataclass
+class _HandlerOutcome:
+    """The result of running one role handler, read after its thread joins.
+
+    ``exception`` is the first-party/third-party failure the handler raised, or
+    ``None`` on success. Only populated by the handler thread, only read once the
+    thread has joined (a memory barrier), so no lock is needed.
+    """
+
+    exception: Exception | None = None
+
+
+@dataclass
+class _PendingHandler:
+    """A handler that overran its per-role deadline and is still running.
+
+    The supervisor stops waiting on it so sibling roles keep being polled
+    (KP-AUD-024: no head-of-line blocking), but it must still be finalized
+    (ack/reject) once its thread finishes, and no new claim is taken for the
+    role until then — bounding each role to one in-flight handler.
+    """
+
+    thread: threading.Thread
+    message: dict[str, Any]
+    outcome: _HandlerOutcome
+
+
+@dataclass
 class _RoleState:
     polls_since_recovery: int = 0
     last_self_publish: float = 0.0
@@ -45,6 +72,7 @@ class _RoleState:
     proven_live: bool = False
     last_readiness_log: float = 0.0
     last_queue_reconcile: float = 0.0
+    pending_handler: _PendingHandler | None = None
 
 
 def _exception_code(exc: Exception) -> str:
@@ -385,8 +413,135 @@ class WorkerSupervisor:
             return False
         return True
 
+    def _run_handler(self, spec: RoleSpec, message: dict[str, Any], outcome: _HandlerOutcome) -> None:
+        """Run one claimed message's handler, capturing its outcome.
+
+        Runs in a dedicated thread so the supervisor can bound how long it waits
+        (``_run_handler_with_deadline``). The lease is heartbeated for the whole
+        run, so a slow-but-healthy handler is never recovered mid-flight, and the
+        trace context is bound here (inside the thread) so handler logs still
+        carry it. Any failure is captured for the main thread to classify exactly
+        as the synchronous path did — the handler thread itself never rejects.
+        """
+        try:
+            with job_trace(message):
+                self._logger.info("worker_job_started", role=spec.name)
+                with self._lease_heartbeat(spec, message):
+                    spec.process(spec.context, message)
+        except Exception as exc:  # noqa: BLE001 - classified by _finalize_handler
+            outcome.exception = exc
+
+    def _run_handler_with_deadline(self, spec: RoleSpec, message: dict[str, Any]) -> bool:
+        """Process one message under the role's per-role deadline (KP-AUD-024).
+
+        The handler runs in its own thread; the supervisor waits at most the
+        role's ``effective_handler_deadline_seconds``. A handler that finishes in
+        time is finalized immediately (ack/reject) exactly as before. One that
+        overruns is left running — its lease is still heartbeated — while the
+        supervisor records a bounded failure, marks the role not-ready, and
+        returns so sibling roles keep being polled; it is finalized on a later
+        cycle (``_resolve_pending_handler``). A deadline breach is handled like
+        the existing failure path, never as a crash. A deadline of 0 (tests /
+        unset) means wait indefinitely, preserving the synchronous behavior.
+        """
+        state = self._states[spec.name]
+        outcome = _HandlerOutcome()
+        thread = threading.Thread(
+            target=self._run_handler,
+            args=(spec, message, outcome),
+            name=f"kp-handler-{spec.name}",
+            daemon=True,
+        )
+        thread.start()
+        deadline = float(getattr(spec.context.settings, "effective_handler_deadline_seconds", 0.0) or 0.0)
+        thread.join(deadline if deadline > 0 else None)
+        if thread.is_alive():
+            state.pending_handler = _PendingHandler(thread=thread, message=message, outcome=outcome)
+            self._record_failure(spec.name, "handler_deadline_exceeded")
+            self._logger.error("worker_role_handler_deadline_exceeded", role=spec.name)
+            return True
+        return self._finalize_handler(spec, message, outcome)
+
+    def _resolve_pending_handler(self, spec: RoleSpec) -> bool:
+        """Finalize (or keep waiting on) a handler that overran its deadline."""
+        state = self._states[spec.name]
+        pending = state.pending_handler
+        assert pending is not None
+        pending.thread.join(0)
+        if pending.thread.is_alive():
+            # Still running past its deadline; keep the role isolated and claim
+            # no new work for it. Other roles are unaffected.
+            self._set_readiness(spec.name, ready=False, reason="handler_deadline_exceeded")
+            return False
+        state.pending_handler = None
+        return self._finalize_handler(spec, pending.message, pending.outcome)
+
+    def _finalize_handler(self, spec: RoleSpec, message: dict[str, Any], outcome: _HandlerOutcome) -> bool:
+        """Apply the ack/reject/readiness outcome of a completed handler.
+
+        Identical classification to the former inline synchronous path: success
+        acks and marks the role ready; a safety rejection rejects and stays
+        ready; any other failure rejects (immediately to the DLQ when the handler
+        marked it non-retryable), drops readiness, and logs only bounded,
+        first-party-safe diagnostics.
+        """
+        state = self._states[spec.name]
+        exc = outcome.exception
+        if exc is None:
+            spec.context.queue.ack(spec.topic, message)
+            metrics.increment("kp_worker_jobs_total", role=metric_role(spec.name), outcome="success")
+            self._logger.info("worker_job_completed", role=spec.name)
+            state.consecutive_errors = 0
+            state.next_attempt_at = 0.0
+            state.proven_live = state.proven_live or spec.topic == "audit-anchor"
+            reason = "live" if spec.topic == "audit-anchor" else "polling"
+            self._set_readiness(spec.name, ready=True, reason=reason)
+            return True
+        if isinstance(exc, SafetyRejectionError):
+            metrics.increment("kp_worker_jobs_total", role=metric_role(spec.name), outcome="rejected")
+            self._logger.warning("worker_role_safety_rejection", role=spec.name)
+            if not self._reject(spec, message):
+                return True
+            state.consecutive_errors = 0
+            state.next_attempt_at = 0.0
+            self._set_readiness(spec.name, ready=True, reason="polling")
+            return True
+        # A handler may mark an error non-retryable (retryable=False) when
+        # retrying cannot possibly succeed — e.g. an immutable audit-anchor key
+        # already holds different content, or a published anchor no longer
+        # matches the chain (AUD-003). Route those straight to the dead-letter
+        # queue and drop readiness rather than retrying an unwinnable job.
+        non_retryable = getattr(exc, "retryable", True) is False
+        metrics.increment(
+            "kp_worker_jobs_total",
+            role=metric_role(spec.name),
+            outcome="permanent_failure" if non_retryable else "error",
+        )
+        rejected = self._reject(spec, message, max_retries=1 if non_retryable else None)
+        if rejected and not non_retryable:
+            self._record_failure(spec.name, "processing_failed")
+        if non_retryable:
+            self._set_readiness(spec.name, ready=False, reason="integrity_failure")
+        log = self._logger.critical if non_retryable else self._logger.error
+        log(
+            "worker_role_processing_failed",
+            role=spec.name,
+            error_code=_exception_code(exc),
+            error_type=_error_type(exc),
+            error_detail=_error_detail(exc),
+            retryable=not non_retryable,
+        )
+        return True
+
     def _poll_role(self, spec: RoleSpec) -> bool:
         state = self._states[spec.name]
+        # A handler that overran its deadline on an earlier cycle is still
+        # running in its own thread. Resolve it before anything else and take no
+        # new work for this role until it finishes (one in-flight handler per
+        # role). Checked before the backoff gate so completion is noticed
+        # promptly; sibling roles kept running meanwhile (KP-AUD-024).
+        if state.pending_handler is not None:
+            return self._resolve_pending_handler(spec)
         now = self._clock()
         if now < state.next_attempt_at:
             return False
@@ -480,58 +635,7 @@ class WorkerSupervisor:
                     self._set_readiness(spec.name, ready=True, reason=reason)
                 return False
 
-            with job_trace(message):
-                self._logger.info("worker_job_started", role=spec.name)
-                try:
-                    with self._lease_heartbeat(spec, message):
-                        spec.process(spec.context, message)
-                except SafetyRejectionError:
-                    metrics.increment("kp_worker_jobs_total", role=metric_role(spec.name), outcome="rejected")
-                    self._logger.warning("worker_role_safety_rejection", role=spec.name)
-                    if not self._reject(spec, message):
-                        return True
-                    state.consecutive_errors = 0
-                    state.next_attempt_at = 0.0
-                    self._set_readiness(spec.name, ready=True, reason="polling")
-                    return True
-                except Exception as exc:
-                    # A handler may mark an error non-retryable (retryable=False)
-                    # when retrying cannot possibly succeed — e.g. an immutable
-                    # audit-anchor key already holds different content, or a
-                    # published anchor no longer matches the chain (AUD-003).
-                    # Route those straight to the dead-letter queue and drop
-                    # readiness rather than retrying an unwinnable job.
-                    non_retryable = getattr(exc, "retryable", True) is False
-                    metrics.increment(
-                        "kp_worker_jobs_total",
-                        role=metric_role(spec.name),
-                        outcome="permanent_failure" if non_retryable else "error",
-                    )
-                    rejected = self._reject(spec, message, max_retries=1 if non_retryable else None)
-                    if rejected and not non_retryable:
-                        self._record_failure(spec.name, "processing_failed")
-                    if non_retryable:
-                        self._set_readiness(spec.name, ready=False, reason="integrity_failure")
-                    log = self._logger.critical if non_retryable else self._logger.error
-                    log(
-                        "worker_role_processing_failed",
-                        role=spec.name,
-                        error_code=_exception_code(exc),
-                        error_type=_error_type(exc),
-                        error_detail=_error_detail(exc),
-                        retryable=not non_retryable,
-                    )
-                    return True
-
-                spec.context.queue.ack(spec.topic, message)
-                metrics.increment("kp_worker_jobs_total", role=metric_role(spec.name), outcome="success")
-                self._logger.info("worker_job_completed", role=spec.name)
-                state.consecutive_errors = 0
-                state.next_attempt_at = 0.0
-                state.proven_live = state.proven_live or spec.topic == "audit-anchor"
-                reason = "live" if spec.topic == "audit-anchor" else "polling"
-                self._set_readiness(spec.name, ready=True, reason=reason)
-                return True
+            return self._run_handler_with_deadline(spec, message)
         except Exception as exc:
             self._record_failure(spec.name, "queue_unavailable")
             self._logger.error(

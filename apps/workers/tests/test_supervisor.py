@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from collections import defaultdict
 from types import SimpleNamespace
 from typing import Any
@@ -86,6 +88,7 @@ def _spec(name: str, topic: str, queue: FakeQueue, process: Any, *, audit_fail: 
     settings = SimpleNamespace(
         visibility_seconds=60,
         effective_lease_seconds=180,
+        effective_handler_deadline_seconds=180.0,
         lease_heartbeat_seconds=15.0,
         lease_max_renewals=240,
         queue_reconcile_enabled=False,
@@ -645,6 +648,61 @@ def test_lease_heartbeat_renews_an_in_flight_claim() -> None:
     assert queue.renew_calls[0] == ("deliver", 123)
     # The claim is still acked normally once the handler finishes.
     assert queue.acked == [("deliver", "d1")]
+
+
+def test_handler_deadline_isolates_a_slow_role_without_starving_siblings() -> None:
+    # KP-AUD-024 per-role deadline: a handler that overruns its deadline must not
+    # delay unrelated roles, must be isolated like the existing failure path (no
+    # crash, role marked not-ready), and must still be finalized once it finishes.
+    release = threading.Event()
+    slow_started = threading.Event()
+
+    def slow(_ctx: object, _message: dict[str, Any]) -> None:
+        slow_started.set()
+        assert release.wait(5.0)
+
+    processed: list[str] = []
+    queue = FakeQueue({"generate": [_message("s1")], "deliver": [_message("g1"), _message("g2")]})
+    slow_spec = _spec("generation", "generate", queue, slow)
+    slow_spec.context.settings.effective_handler_deadline_seconds = 0.05
+    good_spec = _spec("delivery", "deliver", queue, lambda _ctx, message: processed.append(message["id"]))
+    supervisor = WorkerSupervisor({"generation": slow_spec, "delivery": good_spec}, logger=FakeLogger())
+
+    # Cycle 1: the slow handler overruns its 0.05s deadline and is isolated; the
+    # sibling delivery role still processes its first message.
+    assert supervisor.run_cycle() is True
+    assert slow_started.wait(5.0)
+    assert processed == ["g1"]
+    assert supervisor.readiness()["generation"] == {"ready": False, "reason": "handler_deadline_exceeded"}
+    assert supervisor.readiness()["delivery"]["ready"] is True
+
+    # Cycle 2: the slow handler is still running, so its role claims no new work
+    # (one in-flight handler per role), while the sibling keeps draining.
+    assert supervisor.run_cycle() is True
+    assert processed == ["g1", "g2"]
+    assert queue.pop_order.count("generate") == 1
+    assert queue.acked == [("deliver", "g1"), ("deliver", "g2")]
+
+    # Release the slow handler; a later cycle finalizes it (ack) and restores it.
+    release.set()
+    deadline = time.monotonic() + 5.0
+    while ("generate", "s1") not in queue.acked and time.monotonic() < deadline:
+        supervisor.run_cycle()
+        time.sleep(0.01)
+    assert ("generate", "s1") in queue.acked
+    assert supervisor.readiness()["generation"] == {"ready": True, "reason": "polling"}
+
+
+def test_handler_within_its_deadline_is_finalized_normally() -> None:
+    # A handler that finishes inside its deadline acks exactly as before.
+    queue = FakeQueue({"deliver": [_message("d1")]})
+    spec = _spec("delivery", "deliver", queue, lambda _ctx, _m: None)
+    spec.context.settings.effective_handler_deadline_seconds = 5.0
+    supervisor = WorkerSupervisor({"delivery": spec}, logger=FakeLogger())
+
+    assert supervisor.run_cycle() is True
+    assert queue.acked == [("deliver", "d1")]
+    assert supervisor.readiness()["delivery"] == {"ready": True, "reason": "polling"}
 
 
 def test_lease_heartbeat_is_skipped_without_a_claim_owner() -> None:

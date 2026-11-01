@@ -1010,3 +1010,60 @@ def test_trailing_dot_wildcard_collapses_in_host_set() -> None:
     # Dev still honors it, but the normalized set now shows the collapsed "*"
     # form the sanitizer actually applies (so the managed check can see it).
     assert _settings(safe_html_image_hosts="*.").image_host_set() == {"*"}
+
+
+# --- bounded overload budgets (KP-AUD-024) ---
+
+
+def test_overload_budgets_have_safe_opinionated_defaults() -> None:
+    settings = _settings(runtime_mode="development")
+    assert settings.queue_ready_depth_budget == 10_000
+    assert settings.queue_critical_ready_depth_budget is None
+    assert settings.queue_oldest_ready_age_budget_seconds == 900.0
+    assert settings.queue_handler_deadline_seconds == 0.0
+
+
+@pytest.mark.parametrize("runtime_mode", ["managed", "production"])
+def test_valid_managed_overload_budgets_are_accepted(runtime_mode: str) -> None:
+    settings = _settings(
+        worker_name="ingestion",
+        runtime_mode=runtime_mode,
+        queue_ready_depth_budget=5_000,
+        queue_handler_deadline_seconds=120.0,
+        provider_timeout_seconds=90.0,
+    )
+    assert settings.queue_ready_depth_budget == 5_000
+    assert settings.queue_handler_deadline_seconds == 120.0
+
+
+@pytest.mark.parametrize("runtime_mode", ["managed", "production"])
+def test_managed_refuses_disabling_producer_backpressure(runtime_mode: str) -> None:
+    # 0 (unbounded) disables backpressure; refused in managed/production.
+    with pytest.raises(ValidationError, match="disables producer backpressure"):
+        _settings(worker_name="ingestion", runtime_mode=runtime_mode, queue_ready_depth_budget=0)
+
+
+def test_development_allows_disabling_producer_backpressure() -> None:
+    # The unbounded relaxation remains available on a disposable dev stack.
+    settings = _settings(runtime_mode="development", queue_ready_depth_budget=0)
+    assert settings.queue_ready_depth_budget == 0
+
+
+@pytest.mark.parametrize("runtime_mode", ["managed", "production"])
+def test_managed_refuses_handler_deadline_below_provider_timeout(runtime_mode: str) -> None:
+    with pytest.raises(ValidationError, match="at least KP_WORKER_PROVIDER_TIMEOUT_SECONDS"):
+        _settings(
+            worker_name="ingestion",
+            runtime_mode=runtime_mode,
+            provider_timeout_seconds=60.0,
+            queue_handler_deadline_seconds=5.0,
+        )
+
+
+def test_effective_handler_deadline_derives_from_provider_timeout_and_margin() -> None:
+    # 0 derives: ceil(provider_timeout) + lease_margin.
+    settings = _settings(runtime_mode="development", provider_timeout_seconds=60.0, lease_margin_seconds=30)
+    assert settings.effective_handler_deadline_seconds == 90.0
+    # A positive value pins it explicitly.
+    pinned = _settings(runtime_mode="development", queue_handler_deadline_seconds=45.0)
+    assert pinned.effective_handler_deadline_seconds == 45.0

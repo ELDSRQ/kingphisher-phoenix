@@ -181,6 +181,51 @@ DEFAULT_LEASE_SECONDS = 60
 #: topic, decides ``replay_safe`` and passes it to the reconciler.
 QUEUE_REPLAY_REVIEW_ONLY_TOPICS = frozenset({"deliver", "reply-mailbox"})
 
+#: Default per-topic READY-depth budget for NON-critical topics (KP-AUD-024
+#: producer backpressure). When a topic's ready list already holds this many
+#: messages, ``publish`` fails fast with ``QueueOverflowError`` instead of
+#: growing the queue without bound. Deliberately generous and opinionated: it
+#: exists to stop a runaway producer, not to pace normal load, and adds no
+#: autoscaling or new infrastructure (the audit's explicit scope caution).
+#: Override per deployment via the ``ready_depth_budget`` constructor argument;
+#: ``None`` disables the budget (unbounded) and is a development-only relaxation.
+DEFAULT_READY_DEPTH_BUDGET = 10_000
+
+#: Default age (seconds) at which a topic's oldest ready job is REPORTED
+#: unhealthy by ``queue_stats`` so the existing health surface can alert. Age is
+#: observable, never enforced — nothing is shed because a job is old; only depth
+#: applies backpressure. Mirrors the operator health dashboard's warn threshold.
+DEFAULT_OLDEST_READY_AGE_BUDGET_SECONDS = 15 * 60.0
+
+#: Topics whose work must never be shed by producer backpressure (KP-AUD-024
+#: critical-role isolation): a flooded non-critical topic (``generate`` /
+#: ``ingest`` / ...) can never fail-fast a retention, delivery, or audit-anchor
+#: publish. These carry their own budget (``critical_ready_depth_budget``,
+#: unbounded by default), so retention/delivery/audit work is isolated from a
+#: non-critical flood. Keep this set explicit and aligned with the audit finding.
+CRITICAL_QUEUE_TOPICS = frozenset({"deliver", "retention", "audit-anchor"})
+
+
+class QueueOverflowError(RuntimeError):
+    """Producer backpressure: a topic's ready depth is at/over its budget.
+
+    Raised by ``publish`` so a runaway producer fails fast — its durable outbox
+    row stays pending and is retried later (``TransactionalOutbox`` catches this
+    and re-schedules the row) — instead of growing the ready list without bound.
+    Never raised for a critical topic, whose work must not be shed. Lives in the
+    queue module (which already raises plain errors for a rejected publish)
+    rather than ``kp_telemetry`` so ``kp_contracts`` gains no new dependency.
+    """
+
+    def __init__(self, topic: str, *, depth: int, budget: int) -> None:
+        self.topic = topic
+        self.depth = depth
+        self.budget = budget
+        super().__init__(
+            f"queue topic {topic!r} is at capacity: ready depth {depth} >= budget {budget}; publish refused"
+        )
+
+
 # Fixed operational topics prevent an API caller from turning a topic name into
 # an arbitrary Redis key. Keep this aligned with the worker role registry.
 DEFAULT_QUEUE_TOPICS = (
@@ -211,11 +256,23 @@ class JobQueue:
         prefix: str = "kp:queue:",
         max_message_bytes: int = 1_000_000,
         default_lease_seconds: int = DEFAULT_LEASE_SECONDS,
+        ready_depth_budget: int | None = DEFAULT_READY_DEPTH_BUDGET,
+        critical_ready_depth_budget: int | None = None,
+        oldest_ready_age_budget_seconds: float | None = DEFAULT_OLDEST_READY_AGE_BUDGET_SECONDS,
+        critical_topics: frozenset[str] = CRITICAL_QUEUE_TOPICS,
     ) -> None:
         self._client = redis.Redis.from_url(redis_url, decode_responses=True)
         self._prefix = prefix
         self._max_message_bytes = max_message_bytes
         self._default_lease_seconds = default_lease_seconds
+        # KP-AUD-024 bounded overload budgets. ``None`` means unbounded (no
+        # backpressure); critical topics default to unbounded so a non-critical
+        # flood can never shed their work. These are opinionated application
+        # defaults, overridable by the caller / managed config.
+        self._ready_depth_budget = ready_depth_budget
+        self._critical_ready_depth_budget = critical_ready_depth_budget
+        self._oldest_ready_age_budget_seconds = oldest_ready_age_budget_seconds
+        self._critical_topics = critical_topics
 
     def _topic(self, topic: str) -> str:
         # Every atomic transition touches multiple keys.  Azure Managed Redis
@@ -242,6 +299,18 @@ class JobQueue:
         digest = uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key).hex
         return self._topic(topic) + ":published:" + digest
 
+    def _depth_budget(self, topic: str) -> int | None:
+        """Resolve a topic's READY-depth budget (``None`` = unbounded).
+
+        Critical topics (delivery / retention / audit-anchor) use their own
+        budget — unbounded by default — so a flooded non-critical topic can
+        never fail-fast their work (KP-AUD-024 critical-role isolation). Every
+        other topic uses the shared non-critical budget.
+        """
+        if topic in self._critical_topics:
+            return self._critical_ready_depth_budget
+        return self._ready_depth_budget
+
     def _as_str(self, value: bytes | str) -> str:
         if isinstance(value, str):
             return value
@@ -267,6 +336,17 @@ class JobQueue:
         if len(encoded.encode("utf-8")) > self._max_message_bytes:
             raise ValueError("queue message exceeds maximum size")
         delayed = available_at is not None and available_at > time.time()
+        # KP-AUD-024 producer backpressure: refuse an immediate enqueue when the
+        # topic's ready list is already at/over its depth budget, instead of
+        # growing it without bound. Read the depth cheaply with LLEN (no scan).
+        # Delayed publishes target the scheduled ZSET, not the ready list, so
+        # they do not add to ready depth and are not subject to this check; the
+        # per-pop promotion LIMIT already bounds how fast they become ready.
+        budget = None if delayed else self._depth_budget(topic)
+        if budget is not None:
+            ready_depth = int(self._client.llen(self._topic(topic)))
+            if ready_depth >= budget:
+                raise QueueOverflowError(topic, depth=ready_depth, budget=budget)
         published_id = self._client.eval(
             _PUBLISH_ONCE_SCRIPT,
             2,
@@ -565,8 +645,16 @@ class JobQueue:
         message = json.loads(self._as_str(cast(bytes | str, raw)))
         return cast(dict[str, Any], message)
 
-    def queue_stats(self, topic: str) -> dict[str, int | float | None]:
-        """Return non-sensitive queue counts and oldest-ready age."""
+    def queue_stats(self, topic: str) -> dict[str, int | float | bool | None]:
+        """Return non-sensitive queue counts, oldest-ready age, and budget health.
+
+        Beyond the raw counts and oldest-ready age, the stats carry each topic's
+        depth and age budgets and whether it is currently over either of them
+        (KP-AUD-024 actionable health). A topic with ``healthy`` false is
+        over-budget and alertable through the existing health/readiness surface
+        that already consumes this contract — no new UI is introduced. Budgets
+        are reported as ``None`` when unbounded (e.g. a critical topic's depth).
+        """
         ready = int(self._client.llen(self._topic(topic)))
         processing = int(self._client.llen(self._processing(topic)))
         delayed = int(self._client.zcard(self._delayed(topic)))
@@ -580,12 +668,22 @@ class JobQueue:
                 oldest_age = max(0.0, time.time() - published_at)
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 oldest_age = None
+        depth_budget = self._depth_budget(topic)
+        age_budget = self._oldest_ready_age_budget_seconds
+        over_depth_budget = depth_budget is not None and ready >= depth_budget
+        over_age_budget = age_budget is not None and oldest_age is not None and oldest_age > age_budget
         return {
             "ready": ready,
             "processing": processing,
             "delayed": delayed,
             "dead_letter": dead_letter,
             "oldest_ready_age_seconds": oldest_age,
+            "ready_depth_budget": depth_budget,
+            "oldest_ready_age_budget_seconds": age_budget,
+            "critical": topic in self._critical_topics,
+            "over_depth_budget": over_depth_budget,
+            "over_age_budget": over_age_budget,
+            "healthy": not (over_depth_budget or over_age_budget),
         }
 
     def record_audit_anchor_heartbeat(self, when: datetime) -> None:
