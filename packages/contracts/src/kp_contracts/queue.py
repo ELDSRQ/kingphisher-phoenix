@@ -342,8 +342,19 @@ class JobQueue:
         # Delayed publishes target the scheduled ZSET, not the ready list, so
         # they do not add to ready depth and are not subject to this check; the
         # per-pop promotion LIMIT already bounds how fast they become ready.
+        # (N7: the operator API builds its own JobQueue on these safe defaults
+        # and only ever publishes to the critical/unbounded "deliver" topic, so
+        # it never fails fast and needs no explicit budget wiring.)
         budget = None if delayed else self._depth_budget(topic)
-        if budget is not None:
+        # N5: only a genuinely NEW job can grow the ready list. An idempotent
+        # re-publish whose dedup marker already exists (e.g. an outbox retry of a
+        # job that is already enqueued) adds no depth — the dedup script below
+        # returns its existing id — so it must NOT be failed fast, otherwise the
+        # outbox would re-try it every cycle while depth stays high. Skip the
+        # backpressure check when the marker is present. The LLEN/push gap is
+        # accepted: minor over-admission under concurrent producers is fine for
+        # backpressure.
+        if budget is not None and not self._client.exists(self._published(topic, message["idempotency_key"])):
             ready_depth = int(self._client.llen(self._topic(topic)))
             if ready_depth >= budget:
                 raise QueueOverflowError(topic, depth=ready_depth, budget=budget)

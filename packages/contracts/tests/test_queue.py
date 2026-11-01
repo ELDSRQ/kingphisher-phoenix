@@ -748,6 +748,37 @@ def test_unbounded_budget_never_applies_backpressure() -> None:
     assert client.llen(_key("generate")) == 50
 
 
+def test_already_published_idempotent_republish_is_not_failed_fast_at_budget() -> None:
+    # N5: an idempotent re-publish of an already-enqueued job (its dedup marker is
+    # present) adds no ready depth, so it must return the existing id instead of
+    # being refused — otherwise an outbox retry would be rejected every cycle
+    # while depth stays high.
+    queue = _budgeted_queue(ready_depth_budget=1)
+    first = queue.publish("generate", {"n": 1}, idempotency_key="k-dupe")
+    # The topic is now at budget; a NEW job is refused...
+    with pytest.raises(QueueOverflowError):
+        queue.publish("generate", {"n": 2}, idempotency_key="k-new")
+    # ...but re-publishing the SAME key is accepted and returns the existing id.
+    again = queue.publish("generate", {"n": 1}, idempotency_key="k-dupe")
+    assert again == first
+    client = queue._client  # type: ignore[attr-defined]
+    assert client.llen(_key("generate")) == 1
+
+
+def test_queue_overflow_error_is_an_exception_subclass() -> None:
+    # A producer's generic ``except Exception`` (e.g. the transactional outbox
+    # dispatcher) must catch backpressure so it marks the row failed-and-kept and
+    # retries later, rather than letting it escape.
+    queue = _budgeted_queue(ready_depth_budget=1)
+    queue.publish("generate", {"n": 1})
+    caught: Exception | None = None
+    try:
+        queue.publish("generate", {"n": 2})
+    except Exception as exc:  # noqa: BLE001 - exactly the outbox's catch
+        caught = exc
+    assert isinstance(caught, QueueOverflowError)
+
+
 def test_delayed_message_is_not_visible_until_due(queue: JobQueue, monkeypatch: pytest.MonkeyPatch) -> None:
     now = time.time()
     monkeypatch.setattr("kp_contracts.queue.time.time", lambda: now)
