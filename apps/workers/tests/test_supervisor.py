@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from collections import defaultdict
 from types import SimpleNamespace
 from typing import Any
@@ -86,6 +88,7 @@ def _spec(name: str, topic: str, queue: FakeQueue, process: Any, *, audit_fail: 
     settings = SimpleNamespace(
         visibility_seconds=60,
         effective_lease_seconds=180,
+        effective_handler_deadline_seconds=180.0,
         lease_heartbeat_seconds=15.0,
         lease_max_renewals=240,
         queue_reconcile_enabled=False,
@@ -575,7 +578,8 @@ def test_main_closes_prior_contexts_and_queue_when_later_role_startup_fails(
     queue_arguments: list[str] = []
 
     class FakeJobQueue:
-        def __init__(self, redis_url: str) -> None:
+        def __init__(self, redis_url: str, **_budgets: Any) -> None:
+            # The entrypoint now passes the KP-AUD-024 overload budgets too.
             queue_arguments.append(redis_url)
 
         def close(self) -> None:
@@ -597,6 +601,11 @@ def test_main_closes_prior_contexts_and_queue_when_later_role_startup_fails(
         lambda **_kwargs: SimpleNamespace(
             log_level="INFO",
             redis_url="redis://localhost:6379/0",
+            # The queue is now built with the KP-AUD-024 overload budgets read
+            # from the base settings, so the fake must carry them too.
+            queue_ready_depth_budget=10_000,
+            queue_critical_ready_depth_budget=None,
+            queue_oldest_ready_age_budget_seconds=900.0,
         ),
     )
     monkeypatch.setattr(worker_main, "configure_logging", lambda **_kwargs: None)
@@ -645,6 +654,109 @@ def test_lease_heartbeat_renews_an_in_flight_claim() -> None:
     assert queue.renew_calls[0] == ("deliver", 123)
     # The claim is still acked normally once the handler finishes.
     assert queue.acked == [("deliver", "d1")]
+
+
+def test_handler_deadline_isolates_a_slow_role_without_starving_siblings() -> None:
+    # KP-AUD-024 per-role deadline: a handler that overruns its deadline must not
+    # delay unrelated roles, must be isolated like the existing failure path (no
+    # crash, role marked not-ready), and must still be finalized once it finishes.
+    release = threading.Event()
+    slow_started = threading.Event()
+
+    def slow(_ctx: object, _message: dict[str, Any]) -> None:
+        slow_started.set()
+        assert release.wait(5.0)
+
+    processed: list[str] = []
+    queue = FakeQueue({"generate": [_message("s1")], "deliver": [_message("g1"), _message("g2")]})
+    slow_spec = _spec("generation", "generate", queue, slow)
+    slow_spec.context.settings.effective_handler_deadline_seconds = 0.05
+    good_spec = _spec("delivery", "deliver", queue, lambda _ctx, message: processed.append(message["id"]))
+    supervisor = WorkerSupervisor({"generation": slow_spec, "delivery": good_spec}, logger=FakeLogger())
+
+    # Cycle 1: the slow handler overruns its 0.05s deadline and is isolated; the
+    # sibling delivery role still processes its first message.
+    assert supervisor.run_cycle() is True
+    assert slow_started.wait(5.0)
+    assert processed == ["g1"]
+    assert supervisor.readiness()["generation"] == {"ready": False, "reason": "handler_deadline_exceeded"}
+    assert supervisor.readiness()["delivery"]["ready"] is True
+
+    # Cycle 2: the slow handler is still running, so its role claims no new work
+    # (one in-flight handler per role), while the sibling keeps draining.
+    assert supervisor.run_cycle() is True
+    assert processed == ["g1", "g2"]
+    assert queue.pop_order.count("generate") == 1
+    assert queue.acked == [("deliver", "g1"), ("deliver", "g2")]
+
+    # Release the slow handler; a later cycle finalizes it (ack) and restores it.
+    release.set()
+    deadline = time.monotonic() + 5.0
+    while ("generate", "s1") not in queue.acked and time.monotonic() < deadline:
+        supervisor.run_cycle()
+        time.sleep(0.01)
+    assert ("generate", "s1") in queue.acked
+    assert supervisor.readiness()["generation"] == {"ready": True, "reason": "polling"}
+
+    # N8(a): the overrun message is acked EXACTLY once (not zero, not twice) and
+    # never rejected — a few extra resolve cycles must not re-finalize it.
+    for _ in range(5):
+        supervisor.run_cycle()
+    assert queue.acked.count(("generate", "s1")) == 1
+    assert ("generate", "s1") not in queue.rejected
+
+
+def test_handler_within_its_deadline_is_finalized_normally() -> None:
+    # A handler that finishes inside its deadline acks exactly as before.
+    queue = FakeQueue({"deliver": [_message("d1")]})
+    spec = _spec("delivery", "deliver", queue, lambda _ctx, _m: None)
+    spec.context.settings.effective_handler_deadline_seconds = 5.0
+    supervisor = WorkerSupervisor({"delivery": spec}, logger=FakeLogger())
+
+    assert supervisor.run_cycle() is True
+    assert queue.acked == [("deliver", "d1")]
+    assert supervisor.readiness()["delivery"] == {"ready": True, "reason": "polling"}
+
+
+@pytest.mark.parametrize("raiser", [SystemExit, GeneratorExit, lambda: KeyboardInterrupt()])
+def test_base_exception_in_handler_is_never_acked_and_is_recovered(raiser: Any) -> None:
+    # B1 (fail-closed, message-loss defect): a BaseException that is not an
+    # Exception (SystemExit from a library sys.exit, GeneratorExit, a cancellation)
+    # kills the handler thread WITHOUT a normal completion. The message must be
+    # rejected (so its lease recovers it), NEVER acked as a phantom success.
+    processed: list[str] = []
+
+    def explode(_ctx: object, _message: dict[str, Any]) -> None:
+        raise raiser()
+
+    queue = FakeQueue({"generate": [_message("x1")], "deliver": [_message("g1")]})
+    bad = _spec("generation", "generate", queue, explode)
+    good = _spec("delivery", "deliver", queue, lambda _ctx, message: processed.append(message["id"]))
+    supervisor = WorkerSupervisor({"generation": bad, "delivery": good}, logger=FakeLogger())
+
+    assert supervisor.run_cycle() is True
+
+    # The unverified handler's message was rejected, never acked (fail-closed).
+    assert ("generate", "x1") in queue.rejected
+    assert ("generate", "x1") not in queue.acked
+    # The sibling role is completely unaffected.
+    assert processed == ["g1"]
+    assert queue.acked == [("deliver", "g1")]
+
+
+def test_handler_that_ends_without_completing_is_not_acked() -> None:
+    # Defense in depth for the ``completed`` guard: even if an outcome somehow
+    # carried no exception but the handler did not verifiably finish, finalize
+    # must reject, not ack.
+    queue = FakeQueue({"deliver": [_message("d1")]})
+    spec = _spec("delivery", "deliver", queue, lambda _ctx, _m: None)
+    supervisor = WorkerSupervisor({"delivery": spec}, logger=FakeLogger())
+    from kp_workers.supervisor import _HandlerOutcome
+
+    # An outcome that never recorded completion (no exception either).
+    assert supervisor._finalize_handler(spec, _message("d1"), _HandlerOutcome()) is True
+    assert queue.rejected == [("deliver", "d1")]
+    assert queue.acked == []
 
 
 def test_lease_heartbeat_is_skipped_without_a_claim_owner() -> None:

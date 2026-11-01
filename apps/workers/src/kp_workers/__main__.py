@@ -140,7 +140,16 @@ def main() -> None:
     configure_logging(level=base_settings.log_level)
     roles = _enabled_roles(args.name)
     with ExitStack() as resources:
-        queue = JobQueue(base_settings.redis_url)
+        # Wire the overload budgets from settings so managed deployments can
+        # override the safe defaults (KP-AUD-024). A 0 depth budget is the
+        # dev-only "unbounded" sentinel (managed config refuses it), mapped to
+        # the queue's ``None`` = unbounded.
+        queue = JobQueue(
+            base_settings.redis_url,
+            ready_depth_budget=base_settings.queue_ready_depth_budget or None,
+            critical_ready_depth_budget=base_settings.queue_critical_ready_depth_budget,
+            oldest_ready_age_budget_seconds=base_settings.queue_oldest_ready_age_budget_seconds,
+        )
         resources.callback(queue.close)
         role_specs: dict[str, RoleSpec] = {}
         for role in roles:

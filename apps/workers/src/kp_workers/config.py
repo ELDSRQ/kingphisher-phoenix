@@ -235,6 +235,28 @@ class WorkerSettings(BaseSettings):
     queue_reconcile_interval_seconds: int = Field(default=300, ge=30, le=86400)
     queue_reconcile_window_hours: int = Field(default=24, ge=1, le=2160)
     queue_reconcile_limit: int = Field(default=500, ge=1, le=5000)
+    # --- bounded overload budgets (KP-AUD-024) ---
+    # Small, opinionated producer backpressure + per-role handler deadlines. The
+    # audit's explicit scope caution ("do NOT add enterprise scaling machinery
+    # before measurement") is honored: no autoscaling, no new queue backend.
+    # ``queue_ready_depth_budget`` caps the READY depth of each NON-critical
+    # topic — ``JobQueue.publish`` fails fast with QueueOverflowError at/over it
+    # so a runaway producer cannot grow the queue without bound. 0 disables the
+    # budget (unbounded); that relaxation is refused in managed/production
+    # (fail-closed) by ``validate_overload_budgets``. Critical topics
+    # (delivery/retention/audit-anchor) are never shed:
+    # ``queue_critical_ready_depth_budget`` is their own budget, unbounded
+    # (``None``) by default. ``queue_oldest_ready_age_budget_seconds`` is the age
+    # at which a topic is reported unhealthy by the existing health surface
+    # (observable, never enforced). ``queue_handler_deadline_seconds`` bounds how
+    # long one role's handler may run before the supervisor stops waiting and
+    # isolates it like the existing per-role failure path, so a long provider
+    # call cannot delay unrelated roles; 0 derives it from
+    # ``provider_timeout_seconds`` + ``lease_margin_seconds``.
+    queue_ready_depth_budget: int = Field(default=10_000, ge=0, le=1_000_000)
+    queue_critical_ready_depth_budget: int | None = Field(default=None, ge=1, le=10_000_000)
+    queue_oldest_ready_age_budget_seconds: float = Field(default=900.0, ge=1.0, le=86400.0)
+    queue_handler_deadline_seconds: float = Field(default=0.0, ge=0.0, le=600.0)
     retention_interval_seconds: int = 86400
     audit_anchor_interval_seconds: int = Field(
         default=3600,
@@ -504,6 +526,22 @@ class WorkerSettings(BaseSettings):
         return max(self.visibility_seconds, derived)
 
     @property
+    def effective_handler_deadline_seconds(self) -> float:
+        """Per-role handler time budget (KP-AUD-024).
+
+        The supervisor stops waiting on a role's handler past this bound and
+        isolates it (like the existing failure path) so a long provider call in
+        one role cannot indefinitely delay the supervisor's other roles. 0 (the
+        default) derives the deadline from the enforced provider timeout plus the
+        lease margin, so a healthy handler running up to its provider cap is
+        never falsely isolated while a wedged one cannot stall siblings past that
+        bound. A positive value pins it explicitly.
+        """
+        if self.queue_handler_deadline_seconds > 0:
+            return self.queue_handler_deadline_seconds
+        return float(math.ceil(self.provider_timeout_seconds) + self.lease_margin_seconds)
+
+    @property
     def dev_relaxations_allowed(self) -> bool:
         """True only for an explicitly-marked disposable development worker.
 
@@ -567,6 +605,34 @@ class WorkerSettings(BaseSettings):
                 "KP_WORKER_SAFE_HTML_IMAGE_HOSTS '*' wildcard is not permitted in managed and production "
                 "runtime modes (including malformed forms such as '*.' that collapse to allow-all); list "
                 "explicit https image hosts, or leave it empty to allow no third-party images"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_overload_budgets(self) -> "WorkerSettings":
+        """Refuse unsafe production overload settings (KP-AUD-024, fail-closed).
+
+        Defined after ``validate_image_host_policy`` so the profile presets have
+        already resolved ``runtime_mode``. Mirrors the managed-vs-dev pattern of
+        the image-host and send-safety guards: a managed or production worker may
+        not disable producer backpressure (a 0 ready-depth budget, i.e.
+        unbounded), and may not pin a handler deadline shorter than the provider
+        timeout it must accommodate — that would spuriously isolate every healthy
+        long-running handler. Development keeps both relaxations for load
+        experiments on a disposable stack.
+        """
+        if self.runtime_mode not in _MANAGED_RUNTIME_MODES:
+            return self
+        if self.queue_ready_depth_budget == 0:
+            raise ValueError(
+                "KP_WORKER_QUEUE_READY_DEPTH_BUDGET=0 (unbounded) disables producer backpressure and is not "
+                "permitted in managed and production runtime modes; set a positive per-topic ready-depth budget"
+            )
+        if 0 < self.queue_handler_deadline_seconds < self.provider_timeout_seconds:
+            raise ValueError(
+                "KP_WORKER_QUEUE_HANDLER_DEADLINE_SECONDS must be at least KP_WORKER_PROVIDER_TIMEOUT_SECONDS "
+                "in managed and production runtime modes, or 0 to derive it; a shorter deadline would isolate "
+                "every healthy long-running handler"
             )
         return self
 

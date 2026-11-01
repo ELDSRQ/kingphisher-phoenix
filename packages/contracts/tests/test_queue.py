@@ -18,7 +18,13 @@ from typing import Any
 
 import pytest
 import redis
-from kp_contracts.queue import AUDIT_ANCHOR_HEARTBEAT_KEY, DEFAULT_QUEUE_TOPICS, JobQueue
+from kp_contracts.queue import (
+    AUDIT_ANCHOR_HEARTBEAT_KEY,
+    CRITICAL_QUEUE_TOPICS,
+    DEFAULT_QUEUE_TOPICS,
+    JobQueue,
+    QueueOverflowError,
+)
 
 
 def _key(topic: str, suffix: str = "") -> str:
@@ -49,6 +55,14 @@ def test_default_queue_topics_cover_every_worker_consumed_queue() -> None:
     assert worker_consumed_topics <= set(DEFAULT_QUEUE_TOPICS)
     # No duplicates crept in while extending the fixed allowlist.
     assert len(DEFAULT_QUEUE_TOPICS) == len(set(DEFAULT_QUEUE_TOPICS))
+
+
+def test_critical_queue_topics_are_the_audit_named_set() -> None:
+    # KP-AUD-024: the critical set that is isolated from non-critical
+    # backpressure must be exactly retention, delivery, and audit-anchor.
+    expected = frozenset({"deliver", "retention", "audit-anchor"})
+    assert expected == CRITICAL_QUEUE_TOPICS
+    assert set(DEFAULT_QUEUE_TOPICS) >= CRITICAL_QUEUE_TOPICS
 
 
 class _MemoryClient:
@@ -398,12 +412,21 @@ def test_queue_stats_are_non_sensitive_and_report_oldest_age(queue: JobQueue, mo
     monkeypatch.setattr("kp_contracts.queue.time.time", lambda: 100.0)
     queue.publish("deliver", {"secret": "never-in-stats"})
     monkeypatch.setattr("kp_contracts.queue.time.time", lambda: 125.0)
+    # "deliver" is a critical topic, so its depth budget is unbounded (None) and
+    # it is never over the depth budget; the age budget still applies and is not
+    # breached at 25s. The stats carry the budget/health fields (KP-AUD-024).
     assert queue.queue_stats("deliver") == {
         "ready": 1,
         "processing": 0,
         "delayed": 0,
         "dead_letter": 0,
         "oldest_ready_age_seconds": 25.0,
+        "ready_depth_budget": None,
+        "oldest_ready_age_budget_seconds": 900.0,
+        "critical": True,
+        "over_depth_budget": False,
+        "over_age_budget": False,
+        "healthy": True,
     }
 
 
@@ -619,6 +642,141 @@ def test_publish_rejects_oversized_message() -> None:
     queue._client = _MemoryClient()
     with pytest.raises(ValueError, match="maximum size"):
         queue.publish("deliver", {"value": "x" * 500})
+
+
+def _budgeted_queue(**budgets: Any) -> JobQueue:
+    q = JobQueue("redis://localhost:6379/0", **budgets)
+    q._client = _MemoryClient()  # type: ignore[assignment]
+    return q
+
+
+def test_publish_fails_fast_with_typed_error_at_the_ready_depth_budget() -> None:
+    # KP-AUD-024 producer backpressure: a non-critical topic at/over its ready
+    # depth budget refuses further publishes with the typed QueueOverflowError
+    # instead of growing the queue without bound.
+    queue = _budgeted_queue(ready_depth_budget=2)
+    queue.publish("generate", {"n": 1})
+    queue.publish("generate", {"n": 2})
+
+    with pytest.raises(QueueOverflowError) as excinfo:
+        queue.publish("generate", {"n": 3})
+    assert excinfo.value.topic == "generate"
+    assert excinfo.value.depth == 2
+    assert excinfo.value.budget == 2
+
+    # Nothing was enqueued by the refused publish; the ready list stays at budget.
+    client = queue._client  # type: ignore[attr-defined]
+    assert client.llen(_key("generate")) == 2
+
+
+def test_backpressure_does_not_shed_critical_topics_when_noncritical_is_flooded() -> None:
+    # KP-AUD-024 critical-role isolation: a flooded non-critical topic must never
+    # fail-fast a retention/delivery/audit-anchor publish. Critical topics carry
+    # their own (unbounded-by-default) budget.
+    queue = _budgeted_queue(ready_depth_budget=1)
+    queue.publish("generate", {"n": 1})  # non-critical now at budget
+    with pytest.raises(QueueOverflowError):
+        queue.publish("generate", {"n": 2})
+
+    # Every critical topic still accepts work no matter how flooded "generate" is.
+    for critical_topic in ("deliver", "retention", "audit-anchor"):
+        for index in range(5):
+            assert queue.publish(critical_topic, {"n": index})
+    client = queue._client  # type: ignore[attr-defined]
+    assert client.llen(_key("deliver")) == 5
+    assert client.llen(_key("retention")) == 5
+    assert client.llen(_key("audit-anchor")) == 5
+
+
+def test_critical_topic_budget_is_enforced_when_configured() -> None:
+    # Critical isolation is "unbounded by default", but an operator can still set
+    # a (higher) explicit critical budget; backpressure then applies to it too.
+    queue = _budgeted_queue(ready_depth_budget=1, critical_ready_depth_budget=2)
+    queue.publish("deliver", {"n": 1})
+    queue.publish("deliver", {"n": 2})
+    with pytest.raises(QueueOverflowError):
+        queue.publish("deliver", {"n": 3})
+
+
+def test_delayed_publish_bypasses_ready_depth_backpressure() -> None:
+    # A delayed publish targets the scheduled set, not the ready list, so it is
+    # not refused by a saturated ready list (it adds no ready depth yet).
+    queue = _budgeted_queue(ready_depth_budget=1)
+    queue.publish("generate", {"n": 1})  # ready list now at budget
+    delayed_id = queue.publish("generate", {"n": 2}, available_at=time.time() + 3600)
+    assert delayed_id
+    client = queue._client  # type: ignore[attr-defined]
+    assert client.llen(_key("generate")) == 1
+    assert client.zcard(_key("generate", ":delayed")) == 1
+
+
+def test_queue_stats_report_over_depth_and_over_age_budget_as_unhealthy(monkeypatch: pytest.MonkeyPatch) -> None:
+    # KP-AUD-024 actionable health: a topic over its depth OR age budget is
+    # reported unhealthy through the existing stats surface.
+    queue = _budgeted_queue(ready_depth_budget=2, oldest_ready_age_budget_seconds=30.0)
+    monkeypatch.setattr("kp_contracts.queue.time.time", lambda: 100.0)
+    queue.publish("generate", {"n": 1})
+    queue.publish("generate", {"n": 2})
+
+    # At depth budget and oldest job aged past the age budget -> both breached.
+    monkeypatch.setattr("kp_contracts.queue.time.time", lambda: 140.0)
+    stats = queue.queue_stats("generate")
+    assert stats["ready_depth_budget"] == 2
+    assert stats["oldest_ready_age_budget_seconds"] == 30.0
+    assert stats["critical"] is False
+    assert stats["over_depth_budget"] is True
+    assert stats["over_age_budget"] is True
+    assert stats["healthy"] is False
+
+
+def test_queue_stats_healthy_when_within_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    queue = _budgeted_queue(ready_depth_budget=10, oldest_ready_age_budget_seconds=300.0)
+    monkeypatch.setattr("kp_contracts.queue.time.time", lambda: 100.0)
+    queue.publish("generate", {"n": 1})
+    monkeypatch.setattr("kp_contracts.queue.time.time", lambda: 110.0)
+    stats = queue.queue_stats("generate")
+    assert stats["over_depth_budget"] is False
+    assert stats["over_age_budget"] is False
+    assert stats["healthy"] is True
+
+
+def test_unbounded_budget_never_applies_backpressure() -> None:
+    queue = _budgeted_queue(ready_depth_budget=None)
+    for index in range(50):
+        assert queue.publish("generate", {"n": index})
+    client = queue._client  # type: ignore[attr-defined]
+    assert client.llen(_key("generate")) == 50
+
+
+def test_already_published_idempotent_republish_is_not_failed_fast_at_budget() -> None:
+    # N5: an idempotent re-publish of an already-enqueued job (its dedup marker is
+    # present) adds no ready depth, so it must return the existing id instead of
+    # being refused — otherwise an outbox retry would be rejected every cycle
+    # while depth stays high.
+    queue = _budgeted_queue(ready_depth_budget=1)
+    first = queue.publish("generate", {"n": 1}, idempotency_key="k-dupe")
+    # The topic is now at budget; a NEW job is refused...
+    with pytest.raises(QueueOverflowError):
+        queue.publish("generate", {"n": 2}, idempotency_key="k-new")
+    # ...but re-publishing the SAME key is accepted and returns the existing id.
+    again = queue.publish("generate", {"n": 1}, idempotency_key="k-dupe")
+    assert again == first
+    client = queue._client  # type: ignore[attr-defined]
+    assert client.llen(_key("generate")) == 1
+
+
+def test_queue_overflow_error_is_an_exception_subclass() -> None:
+    # A producer's generic ``except Exception`` (e.g. the transactional outbox
+    # dispatcher) must catch backpressure so it marks the row failed-and-kept and
+    # retries later, rather than letting it escape.
+    queue = _budgeted_queue(ready_depth_budget=1)
+    queue.publish("generate", {"n": 1})
+    caught: Exception | None = None
+    try:
+        queue.publish("generate", {"n": 2})
+    except Exception as exc:  # noqa: BLE001 - exactly the outbox's catch
+        caught = exc
+    assert isinstance(caught, QueueOverflowError)
 
 
 def test_delayed_message_is_not_visible_until_due(queue: JobQueue, monkeypatch: pytest.MonkeyPatch) -> None:
