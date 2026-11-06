@@ -217,7 +217,11 @@ class Source(Base):
     source_type: Mapped[dm.SourceType] = mapped_column(Enum(dm.SourceType, name="source_type"))
     base_domain: Mapped[str] = mapped_column(String(255))
     fetch_path: Mapped[str] = mapped_column(String(1024), default="/")
-    license_state_id = mapped_column(UUID(as_uuid=True), ForeignKey("source_terms.source_terms_id"), nullable=True)
+    # Terms point back to their source; add this nullable reverse link separately
+    # so schema sorting and autogenerate can resolve that dependency cycle.
+    license_state_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("source_terms.source_terms_id", use_alter=True), nullable=True
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     last_success_at = mapped_column(DateTime(timezone=True), nullable=True)
     last_attempt_at = mapped_column(DateTime(timezone=True), nullable=True)

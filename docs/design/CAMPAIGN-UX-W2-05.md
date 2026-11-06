@@ -82,11 +82,16 @@ PLAYWRIGHT_SKIP_BROWSER_GC=1 npm run test:console-smoke
 
 ## Acceptance still open
 
-W2-05's code portion is implemented; acceptance remains open. Two human
-operators must independently complete the journey on the intended staging
-build, including recovering from validation errors and reviewing the exact
+W2-05's code portion is implemented; acceptance remains open. For current
+on-prem readiness, use the existing [D6 script](../D6-HUMAN-ACCEPTANCE-SCRIPT.md):
+one human driver who did not build the software completes the journey unaided,
+including recovering from validation errors and reviewing the exact
 authorization, recipients, message and training before approval. Record the
-build identity, operator observations, blockers and disposition.
+build identity, operator observations, blockers and disposition. The original
+handoff's two independent usability trials are a stronger pilot criterion;
+they do not require two production identities or change the configured campaign
+approval policy. A second trial adds evidence about usability across people;
+neither WCAG nor the single-operator deployment requires a second approver.
 
 Manual WCAG review must cover keyboard order and focus visibility, screen-reader
 labels/error announcements, preview-frame entry/exit, zoom/reflow, contrast and
