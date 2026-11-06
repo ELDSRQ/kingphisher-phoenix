@@ -71,6 +71,7 @@ from kp_database.models import (
     Recipient,
     RecipientAssignment,
     RecipientDeliverySuppression,
+    RecipientExclusion,
     RetentionPolicy,
     RulesOfEngagement,
     SourceItem,
@@ -1098,13 +1099,19 @@ def _launch_delivery_gate_reason(
     if phase not in {"canary", "full", "reviewed_direct"}:
         return None, "delivery_phase_missing"
     gate = session.get(CampaignLaunchGate, campaign.campaign_id, with_for_update=True, populate_existing=True)
-    audience = session.get(CampaignAudience, campaign.campaign_id)
-    template = session.get(TemplateVersion, campaign.current_template_id) if campaign.current_template_id else None
+    audience = session.get(CampaignAudience, campaign.campaign_id, populate_existing=True)
+    template = (
+        session.get(TemplateVersion, campaign.current_template_id, populate_existing=True)
+        if campaign.current_template_id
+        else None
+    )
     error = campaign_launch_gate_error(campaign, audience, template, gate)
     if error is not None or gate is None:
         return gate, "launch_manifest_drift"
     training_resource = (
-        session.get(TrainingResource, campaign.training_resource_id) if campaign.training_resource_id else None
+        session.get(TrainingResource, campaign.training_resource_id, populate_existing=True)
+        if campaign.training_resource_id
+        else None
     )
     if training_binding_error(campaign, training_resource) is not None:
         return gate, "training_manifest_drift"
@@ -1960,7 +1967,12 @@ def _gate_delivery_recipient(
         select(TrackingToken).where(TrackingToken.recipient_assignment_id == assignment.recipient_assignment_id)
     )
     recipient = session.get(Recipient, assignment.recipient_id)
-    if token is None or recipient is None or recipient.status != dm.RecipientStatus.ACTIVE:
+    if (
+        token is None
+        or recipient is None
+        or recipient.status != dm.RecipientStatus.ACTIVE
+        or recipient.deleted_at is not None
+    ):
         assignment.send_state = dm.SendState.FAILED
         assignment.failure_reason = "recipient_unavailable"
         return _RecipientGateResult(failed=1)
@@ -2031,6 +2043,126 @@ def _record_delivery_stop(
     session.commit()
 
 
+def _delivery_recipient_is_excluded(session: Session, recipient_id: uuid.UUID, campaign_id: uuid.UUID) -> bool:
+    """Read at most one matching live exclusion, using only predicate columns."""
+    return (
+        session.scalar(
+            select(RecipientExclusion.recipient_id)
+            .where(
+                RecipientExclusion.recipient_id == recipient_id,
+                RecipientExclusion.revoked_at.is_(None),
+                RecipientExclusion.expires_at.is_(None) | (RecipientExclusion.expires_at > datetime.now(UTC)),
+                (RecipientExclusion.campaign_id == campaign_id) | RecipientExclusion.campaign_id.is_(None),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
+def _lock_delivery_recipient(
+    session: Session,
+    assignment: RecipientAssignment,
+    plan: _DeliveryPlan,
+    *,
+    campaign_id: uuid.UUID,
+) -> tuple[Recipient | None, str | None]:
+    """Order recipient changes against the final provider side effect.
+
+    Exclusion/deletion holds the recipient's exclusive lock. Acquire its shared
+    lock before the campaign lock, after all claim/correlation commits, and keep
+    it through the provider result commit. A committed exclusion wins before
+    the send; one arriving later cannot confirm until this attempt resolves.
+    """
+    recipient = session.get(Recipient, assignment.recipient_id, with_for_update={"read": True}, populate_existing=True)
+    if recipient is None or recipient.status != dm.RecipientStatus.ACTIVE or recipient.deleted_at is not None:
+        return None, "recipient_unavailable"
+    if _delivery_recipient_is_excluded(session, recipient.recipient_id, campaign_id):
+        return None, "recipient_excluded"
+    if not plan.unrestricted and not is_recipient_allowed(recipient.mailbox or "", plan.allowlist):
+        return None, "domain_not_allowed"
+    if not recipient_domain_roe_covered(recipient.mailbox or "", plan.roe_targets):
+        return None, "target_domain_not_roe_covered"
+    return recipient, None
+
+
+def _live_delivery_authorization_reason(
+    session: Session,
+    campaign: Campaign,
+    recipient: Recipient,
+    payload: dict[str, Any],
+    settings: WorkerSettings,
+) -> str | None:
+    """Refresh mutable authority after claim commits, without repeating DNS.
+
+    Caller holds Recipient then Campaign shared locks. Training/RoE shared
+    locks remain held until the provider result commits, ordering supersession
+    or revocation before this send or after its durable outcome.
+    """
+    template = (
+        session.get(TemplateVersion, campaign.current_template_id, populate_existing=True)
+        if campaign.current_template_id
+        else None
+    )
+    if template is None or template.approval_state != dm.TemplateApprovalState.APPROVED:
+        return "template_not_approved"
+    if payload.get("template_hash") != campaign.manifest_hash:
+        return "launch_manifest_drift"
+    if settings.approval_policy is ApprovalPolicy.ENFORCE:
+        approvals = session.scalars(
+            select(CampaignApproval)
+            .where(
+                CampaignApproval.campaign_id == campaign.campaign_id,
+                CampaignApproval.decision == dm.ApprovalDecision.APPROVED,
+                CampaignApproval.launch_manifest_hash == payload.get("launch_manifest_hash"),
+            )
+            .execution_options(populate_existing=True)
+        ).all()
+        approval_reason = _two_person_approval_reason(approvals)
+        if approval_reason is not None:
+            return approval_reason
+    training = (
+        session.get(
+            TrainingResource, campaign.training_resource_id, with_for_update={"read": True}, populate_existing=True
+        )
+        if campaign.training_resource_id
+        else None
+    )
+    if training_binding_error(campaign, training) is not None:
+        return "training_manifest_drift"
+    roe = (
+        session.get(RulesOfEngagement, campaign.roe_id, with_for_update={"read": True}, populate_existing=True)
+        if campaign.roe_id
+        else None
+    )
+    if roe is None:
+        return "no_roe"
+    try:
+        signing_key = settings.require_roe_signing_key()
+    except RuntimeError:
+        return "roe_key_unconfigured"
+    if not verify_roe_signature(
+        roe.terms_hash,
+        roe.signer,
+        roe.signed_at,
+        roe.signature,
+        authorizing_party=roe.authorizing_party,
+        target_domains=roe.target_domains or [],
+        window_start=roe.window_start,
+        window_end=roe.window_end,
+        signature_version=roe.signature_version,
+        signing_key=signing_key,
+    ):
+        return "roe_signature_invalid"
+    if not roe_active_at(
+        revoked_at=roe.revoked_at, window_start=roe.window_start, window_end=roe.window_end, when=datetime.now(UTC)
+    ):
+        return "roe_not_active"
+    if not recipient_domain_roe_covered(recipient.mailbox or "", frozenset(roe.target_domains or [])):
+        return "target_domain_not_roe_covered"
+    return None
+
+
 def _deliver_assignments(
     ctx: WorkerContext,
     session: Session,
@@ -2056,21 +2188,21 @@ def _deliver_assignments(
     indeterminate = 0
     stop_observed = False
     locked_campaign: Campaign | None = campaign
-    # Exclusions are enforced at publish, but an operator may exclude a
-    # recipient after the batch was queued. Re-read the active set here so a
-    # freshly excluded recipient still QUEUED is never contacted.
-    excluded_ids = _excluded_recipient_ids(session, campaign.campaign_id)
     sender = _make_batch_sender(ctx) if assignment_ids else None
     # One held SMTP/ACS connection for the whole batch (ARCH-1).
     with sender if sender is not None else nullcontext():
         for assignment_id in assignment_ids:
+            candidate = session.get(RecipientAssignment, uuid.UUID(assignment_id))
+            excluded = candidate is not None and _delivery_recipient_is_excluded(
+                session, candidate.recipient_id, campaign.campaign_id
+            )
             gated = _gate_delivery_recipient(
                 session,
                 payload,
                 plan,
                 assignment_id,
                 campaign_id=campaign.campaign_id,
-                excluded_ids=excluded_ids,
+                excluded_ids={candidate.recipient_id} if candidate is not None and excluded else set(),
             )
             blocked += gated.blocked
             failed += gated.failed
@@ -2112,6 +2244,21 @@ def _deliver_assignments(
                     type(exc).__name__[:128],
                 )
                 continue
+            # Claim/correlation commits released earlier recipient reads. A
+            # fresh recipient shared lock must precede campaign locking to
+            # match exclusion/deletion's recipient-first ordering.
+            locked_recipient, recipient_reason = _lock_delivery_recipient(
+                session, assignment, plan, campaign_id=campaign.campaign_id
+            )
+            if recipient_reason is not None:
+                _record_delivery_stop(
+                    ctx, session, assignment, recipient_reason, campaign_id=campaign_id, assignment_id=assignment_id
+                )
+                blocked += 1
+                continue
+            if locked_recipient is None:
+                raise RuntimeError("delivery recipient lock returned no recipient")
+            recipient = locked_recipient
             # The assignment claim and correlation commits deliberately
             # precede the provider call. Re-acquire the campaign lock and
             # re-check its state after those commits so a scoped stop
@@ -2170,6 +2317,20 @@ def _deliver_assignments(
                 stop_observed = True
                 # Once the singleton is engaged, no later assignment in
                 # this batch can be eligible. Avoid even claiming them.
+                break
+            # Last: launch/safety locks may have waited past the signed RoE
+            # window. Acquire the authority locks and check time only after
+            # every other blocking gate; no query follows that final clock
+            # check before the provider path.
+            authority_reason = _live_delivery_authorization_reason(
+                session, locked_campaign, recipient, payload, ctx.settings
+            )
+            if authority_reason is not None:
+                _record_delivery_stop(
+                    ctx, session, assignment, authority_reason, campaign_id=campaign_id, assignment_id=assignment_id
+                )
+                blocked += 1
+                stop_observed = True
                 break
             try:
                 receipt = _send_email(

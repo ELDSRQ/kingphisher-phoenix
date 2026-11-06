@@ -262,9 +262,15 @@ def _run(
         return None, scripted_reasons.pop(0)
 
     monkeypatch.setattr("kp_workers.jobs._launch_delivery_gate_reason", launch_gate)
+    # This suite isolates the initial signed RoE/recipient gates. Live mutable
+    # authority refresh/locking has dedicated same-session and role race tests.
+    monkeypatch.setattr("kp_workers.jobs._live_delivery_authorization_reason", lambda *_: None)
     monkeypatch.setattr("kp_workers.jobs._refresh_canary_evidence", lambda *_args, **_kwargs: None)
     excluded_ids = frozenset(excluded or set())
     monkeypatch.setattr("kp_workers.jobs._excluded_recipient_ids", lambda *_args, **_kwargs: excluded_ids)
+    monkeypatch.setattr(
+        "kp_workers.jobs._delivery_recipient_is_excluded", lambda _s, recipient_id, _c: recipient_id in excluded_ids
+    )
 
     def claim(_session: Any, assignment: RecipientAssignment, _campaign_id: uuid.UUID, *, claimed_at: datetime) -> Any:
         if assignment.send_state != dm.SendState.QUEUED or assignment.delivery_attempt_id is not None:

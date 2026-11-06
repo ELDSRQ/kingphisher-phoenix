@@ -433,9 +433,9 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "complete",
-      "owner": "none",
-      "next_action": null
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Repair the proven training completion/open stale-snapshot race, verify immutable evidence under real concurrent logins, then run exact-source CI and qualification."
     },
     {
       "id": "W4-03",
@@ -1020,6 +1020,51 @@
       "status": "in_progress",
       "title": "Actual clean Linux installation, repair, baseline upgrade and reboot qualification",
       "resolution": "Reviewed bounded new-VM scope; private coordinator implementation in progress. Separate sequential task-owned Docker daemons preserve both installation datasets while retaining frozen Compose identity. No Azure VM resources created yet."
+    },
+    {
+      "id": "REG-017",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Serialize each final provider boundary with recipient exclusion and erasure changes",
+      "resolution": "Delivery cached exclusion membership once per batch and omitted the promised post-claim check. Refresh per-recipient membership and lock the recipient before the final campaign/provider boundary, using a minimal row-lock grant in migration 0059. Prove both exclusion/delivery orders and changes during an earlier batch send or claim-to-provider gap with synthetic concurrency tests."
+    },
+    {
+      "id": "REG-018",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Refresh and serialize live launch, training, approval and signed RoE authorization at every provider boundary",
+      "resolution": "Worker sessions retain cached rows after commit. The batch plan validated RoE and approvals once, while later launch checks could reuse stale audience/template/training rows. Refresh final authorization per assignment, hold minimal RoE/training shared locks through the provider result, and prove committed revocation or supersession blocks later sends without repeating SPF/DNS work."
+    },
+    {
+      "id": "REG-019",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Permit tracking's campaign/training row locks without mutable content or campaign authority",
+      "resolution": "Native smoke v5 achieved three SMTP sink acceptances and a successful report, then its actual training click returned 503. Tracking's campaign and selected-lesson row locks lack required column UPDATE privileges. Add only identity-column lock grants and prove the real click, training page, knowledge completion and replay behavior under the actual tracking login."
+    },
+    {
+      "id": "REG-020",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Avoid tracking/provider assignment deadlocks and refresh bearer authorization after lock waits",
+      "resolution": "Tracking held assignment locks before exclusive campaign/lesson locks, while delivery held shared campaign/lesson locks through its provider result and then updated that assignment. Use compatible shared reads in campaign-before-assignment order and refresh token authorization after waits. Prove click progress during a provider boundary and serialization with campaign recall using actual role logins."
+    },
+    {
+      "id": "REG-021",
+      "parent": "W4-02",
+      "priority": "P1",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Refresh training child state after its parent lock before idempotent completion or page-open updates",
+      "resolution": "A joined SELECT can retain a training-row snapshot taken before waiting for the parent assignment lock. Refresh the child and its authorization after acquiring that lock so concurrent completion/open requests cannot overwrite the first completion timestamp or regress its state. Prove exact event and timestamp idempotency with actual concurrent role logins."
     }
   ],
   "evidence": {
@@ -1046,6 +1091,11 @@
     "wave2_tools": "wave2-tools-focused.xml: all 80 isolated full-stack, Linux dependency and preserved-upgrade tooling tests passed. No normal service or database was changed by this suite.",
     "auth_concurrency": "auth-races-before-semantic.xml: four genuine semantic failures before the repair. auth-races-final.xml: 157 tests passed. Expanded runtime-feature-role-effects.xml: ten actual-login PostgreSQL effects passed, including stale cached counters and concurrent absent-row initialization. Independent reviewer approved the frozen source; all credentials used were synthetic.",
     "native_smoke_v3_staging": "Source extraction refused git archive tar.umask permissions before dependency/service startup. Partial archive/source/log preserved. Canonical Git executable modes and exclusive remote artifact publication were independently reviewed before v4.",
-    "native_smoke_v4": "Fresh native resources, source commit 2fb40216d33cb4cb3e2a0231a13c701e43754f60. SEND succeeded; delivery failed on missing recipient_exclusions selector access and exhausted retries. The 600-second drain refused qualification, all owned application processes quiesced, and all data/resources/evidence were preserved."
+    "native_smoke_v4": "Fresh native resources, source commit 2fb40216d33cb4cb3e2a0231a13c701e43754f60. SEND succeeded; delivery failed on missing recipient_exclusions selector access and exhausted retries. The 600-second drain refused qualification, all owned application processes quiesced, and all data/resources/evidence were preserved.",
+    "native_smoke_v5": "Fresh native resources, source b477dde257a171c19904878877deb57530c22130. All three synthetic messages reached SMTP sink acceptance, assignments became ACCEPTED, and report returned 200. Actual tracking click returned 503 at the training row-lock boundary. The run failed honestly at 18 seconds, quiesced every owned source process and preserved all resources/evidence. This does not qualify live authorization races or confirmed recipient delivery.",
+    "wave2_hermetic_baseline": "wave2-hermetic-v1.log: 4316 passed, 192 integration tests deselected, no skips in 267.23 seconds. Baseline includes committed auth/upgrade/qualifier and 0058 repairs; later worker boundary and 0059/0060 changes require final exact-source CI. make lint passed 703 files and make typecheck passed 222 sources.",
+    "authority_lock_roles": "tracking-authority-role-effects-v1.xml: five actual-login effects passed in 39.740 seconds. Both tracking undergrants reproduce atomic 503 failures before the new grants; complete click/training/quiz/replay then passes with exact idempotent events. Delivery RoE/lesson shared locks work while mutable content/authorization fields remain denied. Migration 0060 is committed at d77aacaee912a1cf9138f5ef8da67bf9a8524fe6.",
+    "recipient_provider_fences": "delivery-recipient-races-v3.xml: six actual-role effects passed in 44.968 seconds. Real exclusion endpoint and production claim/correlation/send loop prove both lock orders, claim-gap/mid-batch changes and status/deletion refresh. Synthetic provider receipt callbacks only; no external mail.",
+    "live_provider_authority": "delivery-live-authority-races-v1.xml: eight actual-role effects passed in 51.437 seconds, including signed positive authority, stale cached changes and both RoE/lesson mutation lock orders. Independent 56 focused tests passed with zero skips; final timing checks follow blocking launch/safety gates. Worker source independently approved and no actual credentials or normal runtime were changed."
   }
 }
