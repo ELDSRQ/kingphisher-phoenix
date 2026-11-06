@@ -144,9 +144,8 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "tracking": {
         "SELECT": ("tracking_tokens", "training_resources", "campaigns"),
-        # The first training assignment locks the campaign row and persists
-        # its immutable resource binding. The separate column grant below is
-        # the only campaign field tracking may change.
+        # First-click training resolution locks its exact campaign/lesson.
+        # Column UPDATE below permits locks without business-field writes.
         "SELECT, UPDATE": ("recipient_assignments",),
         "SELECT, INSERT": ("events",),
         "SELECT, INSERT, UPDATE": ("training_assignments",),
@@ -293,13 +292,20 @@ WORKLOAD_COLUMN_GRANTS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
     "delivery": {
         # The final pre-provider Recipient FOR SHARE serializes an operator's
         # exclusion with an in-flight send. No mailbox/status writes needed.
-        "UPDATE": {"recipients": ("recipient_id",)},
+        "UPDATE": {
+            "recipients": ("recipient_id",),
+            "rules_of_engagement": ("roe_id",),
+            "training_resources": ("training_resource_id",),
+        },
         "SELECT": {
             "campaign_audience_manifest": ("campaign_id", "recipient_id", "audience_version"),
             # Recheck live exclusions after publication, without disclosing
             # encrypted reasons or the identities who set/revoked them.
             "recipient_exclusions": ("recipient_id", "revoked_at", "expires_at", "campaign_id"),
         },
+    },
+    "tracking": {
+        "UPDATE": {"campaigns": ("campaign_id",), "training_resources": ("training_resource_id",)},
     },
     "mailbox": {"UPDATE": {"recipient_assignments": ("recipient_assignment_id",)}},
     "operator": {

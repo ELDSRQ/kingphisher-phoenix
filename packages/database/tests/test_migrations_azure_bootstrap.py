@@ -423,6 +423,16 @@ def test_campaign_and_microsoft365_roles_have_only_their_runtime_permissions() -
     assert _column_privileges(script, "delivery", "recipients", "recipient_id") == {"UPDATE"}
     for column in ("mailbox", "status", "display_name", "department"):
         assert _column_privileges(script, "delivery", "recipients", column) == set()
+    for table, identity in (("rules_of_engagement", "roe_id"), ("training_resources", "training_resource_id")):
+        assert _table_privileges(script, "delivery", table) == {"SELECT"}
+        assert _column_privileges(script, "delivery", table, identity) == {"UPDATE"}
+    assert _column_privileges(script, "tracking", "campaigns", "campaign_id") == {"UPDATE"}
+    assert _column_privileges(script, "tracking", "training_resources", "training_resource_id") == {"UPDATE"}
+    for workload in ("tracking", "delivery"):
+        for column in ("content", "version", "approval_state", "requires_completion"):
+            assert _column_privileges(script, workload, "training_resources", column) == set()
+    for column in ("revoked_at", "target_domains", "signature", "window_end"):
+        assert _column_privileges(script, "delivery", "rules_of_engagement", column) == set()
     assert _column_privileges(script, "tracking", "campaigns", "training_resource_id") == set()
     for column in ("title", "state", "schedule_start", "schedule_end", "max_recipients"):
         assert _column_privileges(script, "tracking", "campaigns", column) == set()
