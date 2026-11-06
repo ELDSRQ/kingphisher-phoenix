@@ -994,7 +994,16 @@
       "owner": "agent",
       "status": "in_progress",
       "title": "Serialize credential and provider changes across processes; preserve monotonic revocation and configuration generations",
-      "resolution": "Prove reversed completion races, then protect durable markers and complete change operations with private process locks. Refresh locked database state before incrementing. Test with synthetic credentials only; preserve actual development credentials."
+      "resolution": "Four before-fix failures reproduced. Monotonic durable markers, complete credential/provider operation locks and refreshed conflict-safe counters are implemented and independently reviewed. 157 focused tests and ten actual-login PostgreSQL effects passed. Await integrated CI and current-source qualification; actual development credentials remain unchanged."
+    },
+    {
+      "id": "REG-014",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Delivery must read active recipient exclusion selectors without exclusion mutation or private rationale access",
+      "resolution": "Native smoke v4 SEND succeeded, then delivery exhausted retries. A read-only query under its actual login confirmed SQLSTATE 42501 on recipient_exclusions. Add migration 0058 and the four required selector columns; prove current/global/expired/revoked filtering and denial boundaries before another fresh smoke."
     }
   ],
   "evidence": {
@@ -1018,6 +1027,9 @@
     "native_smoke_v1": "Failedbeforebootstrap:internalDockerbridgepublishedportsnull;all3nativecontainers/runs/evidencepreserved;qualifierguard/connectivityrepairindependentlyreviewed35tests.",
     "native_smoke_v2": "Signed RoE, import, confirmation and both logical approvals passed against managed logins. SEND failed because joined FOR SHARE required unintended occurrence UPDATE. Four actual-login tests now prove the narrow lock fix and both pause/schedule concurrency orders. v2 processes quiesced; all data/evidence preserved.",
     "runtime_feature_roles": "runtime-feature-role-effects.xml: six actual-login PostgreSQL effects passed in 40.012 seconds. Provider/session metadata, independent cue review and exceptions, bounded old reply-receipt purge, exact delivery roster reads, unrelated-role denial and additive migration without login changes are covered.",
-    "wave2_tools": "wave2-tools-focused.xml: all 80 isolated full-stack, Linux dependency and preserved-upgrade tooling tests passed. No normal service or database was changed by this suite."
+    "wave2_tools": "wave2-tools-focused.xml: all 80 isolated full-stack, Linux dependency and preserved-upgrade tooling tests passed. No normal service or database was changed by this suite.",
+    "auth_concurrency": "auth-races-before-semantic.xml: four genuine semantic failures before the repair. auth-races-final.xml: 157 tests passed. Expanded runtime-feature-role-effects.xml: ten actual-login PostgreSQL effects passed, including stale cached counters and concurrent absent-row initialization. Independent reviewer approved the frozen source; all credentials used were synthetic.",
+    "native_smoke_v3_staging": "Source extraction refused git archive tar.umask permissions before dependency/service startup. Partial archive/source/log preserved. Canonical Git executable modes and exclusive remote artifact publication were independently reviewed before v4.",
+    "native_smoke_v4": "Fresh native resources, source commit 2fb40216d33cb4cb3e2a0231a13c701e43754f60. SEND succeeded; delivery failed on missing recipient_exclusions selector access and exhausted retries. The 600-second drain refused qualification, all owned application processes quiesced, and all data/resources/evidence were preserved."
   }
 }

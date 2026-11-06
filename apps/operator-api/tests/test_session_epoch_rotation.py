@@ -97,7 +97,9 @@ class _FakeSession:
         self.locked_for_update = False
         self._fail_commit_on = fail_commit_on or set()
 
-    def get(self, model: object, identifier: object, *, with_for_update: bool = False) -> Any:
+    def get(
+        self, model: object, identifier: object, *, with_for_update: bool = False, populate_existing: bool = False
+    ) -> Any:
         if model is ConsoleSessionEpoch:
             if with_for_update:
                 self.locked_for_update = True

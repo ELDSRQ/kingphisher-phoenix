@@ -178,6 +178,7 @@ from kp_operator_api.console.onboarding import (
 from kp_operator_api.console.onboarding import (
     router as _onboarding_router,
 )
+from kp_operator_api.console.private_lock import lock_path, locked_row, private_file_lock
 from kp_operator_api.console.runtime_status import (
     RuntimeCapabilities,
     StatusResponse,
@@ -523,15 +524,28 @@ def _atomic_write_private_json(path: Path, payload: dict[str, Any]) -> None:
             os.close(dir_fd)
 
 
-def _write_session_epoch_marker(settings: Any, epoch: int) -> None:
+def _write_session_epoch_marker(settings: Any, epoch: int, *, repair_corrupt: bool = False) -> None:
     """Mirror the committed epoch to the mode-0600 marker the auth path reads."""
-    _atomic_write_private_json(console_run_dir(settings) / CONSOLE_SESSION_EPOCH_MARKER, {"epoch": epoch})
+    if type(epoch) is not int or epoch < 0:
+        raise CredentialRotationApplyError("session epoch is invalid")
+    with private_file_lock(lock_path(settings, "epoch-marker")):
+        try:
+            current = console_session_epoch_floor(settings)
+        except SessionEpochMarkerError:
+            if not repair_corrupt:
+                raise CredentialRotationApplyError("session epoch marker is invalid") from None
+            # Only explicit reconciliation from an authoritative DB epoch may
+            # heal malformed local state. Auth reads still reject corruption.
+            current = 0
+        _atomic_write_private_json(
+            console_run_dir(settings) / CONSOLE_SESSION_EPOCH_MARKER, {"epoch": max(current, epoch)}
+        )
 
 
 def _verify_session_epoch_marker(settings: Any, epoch: int) -> None:
     """Confirm the on-disk revocation floor now reflects the committed epoch."""
     try:
-        if console_session_epoch_floor(settings) != epoch:
+        if console_session_epoch_floor(settings) < epoch:
             raise CredentialRotationApplyError("session epoch marker verification failed")
     except SessionEpochMarkerError as exc:
         raise CredentialRotationApplyError("session epoch marker verification failed") from exc
@@ -545,15 +559,30 @@ def _bump_session_epoch_row(session: Session) -> int:
     both write N+1, losing a revocation (N7). The row is seeded by migration
     0049, so the create branch is only for a pre-seed/test session.
     """
-    row = session.get(ConsoleSessionEpoch, _SESSION_EPOCH_SINGLETON_ID, with_for_update=True)
-    if row is None:
-        row = ConsoleSessionEpoch(id=_SESSION_EPOCH_SINGLETON_ID, epoch=0)
-        session.add(row)
+    row = locked_row(
+        session, ConsoleSessionEpoch, _SESSION_EPOCH_SINGLETON_ID, {"id": _SESSION_EPOCH_SINGLETON_ID, "epoch": 0}
+    )
     row.epoch = (row.epoch or 0) + 1
     return row.epoch
 
 
 def reconcile_session_epoch(
+    session: Session,
+    audit: AuditStore,
+    settings: Any,
+    *,
+    best_effort: bool = False,
+) -> None:
+    """Serialize reconciliation with local credential verification/application."""
+    try:
+        with private_file_lock(lock_path(settings, "credential-operation")):
+            _reconcile_session_epoch_locked(session, audit, settings, best_effort=best_effort)
+    except Exception:
+        if not best_effort:
+            raise
+
+
+def _reconcile_session_epoch_locked(
     session: Session,
     audit: AuditStore,
     settings: Any,
@@ -580,7 +609,9 @@ def reconcile_session_epoch(
     the next call that can reach the database. It never lowers the floor.
     """
     try:
-        rotation = session.get(CredentialRotation, _CONSOLE_PASSWORD_CREDENTIAL)
+        rotation = session.get(
+            CredentialRotation, _CONSOLE_PASSWORD_CREDENTIAL, with_for_update=True, populate_existing=True
+        )
         if rotation is not None and rotation.state == "rotating":
             new_epoch = _bump_session_epoch_row(session)
             rotation.applied_generation = rotation.generation
@@ -594,9 +625,9 @@ def reconcile_session_epoch(
                 detail={"generation": rotation.generation, "session_epoch": new_epoch},
             )
             session.commit()
-            _write_session_epoch_marker(settings, new_epoch)
+            _write_session_epoch_marker(settings, new_epoch, repair_corrupt=True)
 
-        epoch_row = session.get(ConsoleSessionEpoch, _SESSION_EPOCH_SINGLETON_ID)
+        epoch_row = session.get(ConsoleSessionEpoch, _SESSION_EPOCH_SINGLETON_ID, populate_existing=True)
         db_epoch = epoch_row.epoch if (epoch_row and epoch_row.epoch) else 0
         if db_epoch > 0:
             try:
@@ -604,7 +635,7 @@ def reconcile_session_epoch(
             except SessionEpochMarkerError:
                 marker = -1  # unreadable/corrupt -> behind; rewrite from the DB
             if marker < db_epoch:
-                _write_session_epoch_marker(settings, db_epoch)
+                _write_session_epoch_marker(settings, db_epoch, repair_corrupt=True)
     except Exception:  # noqa: BLE001 - best-effort reconcile must never block login
         if not best_effort:
             raise
@@ -648,17 +679,12 @@ def _revoke_console_sessions(
 
 
 def _credential_rotation_row(session: Session, credential: str, *, live_gated: bool = False) -> CredentialRotation:
-    row = session.get(CredentialRotation, credential)
-    if row is None:
-        row = CredentialRotation(
-            credential=credential,
-            generation=0,
-            applied_generation=0,
-            state="idle",
-            live_gated=live_gated,
-        )
-        session.add(row)
-    return row
+    return locked_row(
+        session,
+        CredentialRotation,
+        credential,
+        {"credential": credential, "generation": 0, "applied_generation": 0, "state": "idle", "live_gated": live_gated},
+    )
 
 
 def _begin_credential_rotation(session: Session, credential: str) -> int:
@@ -676,8 +702,10 @@ def _begin_credential_rotation(session: Session, credential: str) -> int:
 
 def _mark_credential_rotation_applied(session: Session, credential: str, generation: int) -> None:
     """Advance ``applied_generation`` and settle the state (clears drift)."""
-    row = session.get(CredentialRotation, credential)
+    row = session.get(CredentialRotation, credential, with_for_update=True, populate_existing=True)
     if row is not None:
+        if row.generation != generation:
+            raise CredentialRotationApplyError("credential generation changed before verification")
         row.applied_generation = generation
         row.state = "idle"
 
@@ -868,6 +896,13 @@ def first_run_set_password(
     body: SetPasswordRequest,
     request: Request,
 ) -> SessionResponse:
+    """Set the first password exactly once across local API processes."""
+    _reject_if_managed(request, MANAGED_CONFIG_MESSAGE)
+    with private_file_lock(lock_path(request.app.state.settings, "credential-operation")):
+        return _first_run_set_password_locked(body, request)
+
+
+def _first_run_set_password_locked(body: SetPasswordRequest, request: Request) -> SessionResponse:
     """One-time first-run console password setup.
 
     Only reachable while the password is unset (a brand-new local dev stack);
@@ -912,6 +947,22 @@ def rotate_console_password(
     audit: AuditStore = Depends(get_audit_store),
     settings: Any = Depends(get_settings),
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> SessionResponse:
+    """Verify the persisted current credential and rotate it under one lock."""
+    _reject_if_managed(request, MANAGED_CONFIG_MESSAGE)
+    if request.app.state.settings.oidc_mode != "dev":
+        raise AuthenticationError("console password login is disabled; sign in via the identity provider")
+    with private_file_lock(lock_path(settings, "credential-operation")):
+        return _rotate_console_password_locked(body, request, session, audit, settings, principal)
+
+
+def _rotate_console_password_locked(
+    body: PasswordRotateRequest,
+    request: Request,
+    session: Session,
+    audit: AuditStore,
+    settings: Any,
+    principal: Principal,
 ) -> SessionResponse:
     """Rotate the console password and revoke every pre-rotation session.
 

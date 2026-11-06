@@ -7,6 +7,8 @@ No provider calls, configuration-file writes or real credential rotations occur.
 from __future__ import annotations
 
 import importlib.util
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -22,6 +24,7 @@ from kp_database.models import (
     CampaignAudienceManifest,
     CampaignProgram,
     CipherText,
+    ConsoleSessionEpoch,
     ProviderConfigGeneration,
     RecipientAssignment,
     ReplyMailReceipt,
@@ -45,6 +48,7 @@ from kp_operator_api.routes.campaigns import (
     record_cue_coverage_exception,
 )
 from kp_workers.retention_jobs import _purge_aged_receipts
+from psycopg import sql
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import DBAPIError
 from test_adaptive_program_iterations import _adaptive_source, _recipient
@@ -302,3 +306,73 @@ def test_additive_migration_restores_existing_role_grants_without_login_changes(
         with engine.connect() as connection:
             connection.execute(text(query)).all()
         engine.dispose()
+
+
+@pytest.mark.parametrize("singleton", ("provider", "epoch"))
+def test_actual_operator_locked_bump_refreshes_preloaded_singleton_after_another_commit(managed_database, singleton):
+    url, _, _, _ = managed_database
+    operator = create_engine(url.set(username="kp_operator", password="effect-operator"))
+    factory = make_session_factory(operator)
+    model = ProviderConfigGeneration if singleton == "provider" else ConsoleSessionEpoch
+    attribute = "generation" if singleton == "provider" else "epoch"
+
+    def bump(session):
+        return _bump_generation(session, "local") if singleton == "provider" else _bump_session_epoch_row(session)
+
+    try:
+        with factory() as stale:
+            stale.execute(text("SET LOCAL statement_timeout='5s'"))
+            assert stale.scalar(text("SELECT session_user")) == "kp_operator"
+            cached = stale.get(model, 1)  # strong reference deliberately retains the stale ORM identity
+            original = getattr(cached, attribute)
+            with factory() as other:
+                committed = bump(other)
+                other.commit()
+            assert getattr(cached, attribute) == original
+            assert bump(stale) == committed + 1
+            stale.commit()
+            assert getattr(cached, attribute) == committed + 1
+    finally:
+        operator.dispose()
+
+
+@pytest.mark.parametrize("singleton", ("provider", "epoch"))
+def test_actual_operator_concurrent_absent_singleton_initialization_advances_twice(managed_database, singleton):
+    url, _, _, _ = managed_database
+    name = f"kp_auth_singleton_{uuid4().hex}"
+    admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    with admin.connect() as connection:
+        connection.connection.driver_connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+    admin.dispose()
+    target = url.set(database=name)
+    schema = create_engine(target)
+    model = ProviderConfigGeneration if singleton == "provider" else ConsoleSessionEpoch
+    model.metadata.create_all(schema, tables=[model.__table__])
+    with schema.begin() as connection:
+        connection.execute(text("GRANT USAGE ON SCHEMA public TO kp_operator"))
+        connection.connection.driver_connection.execute(
+            sql.SQL("GRANT SELECT,INSERT,UPDATE ON TABLE {} TO kp_operator").format(sql.Identifier(model.__tablename__))
+        )
+    schema.dispose()
+    operator = create_engine(target.set(username="kp_operator", password="effect-operator"))
+    factory = make_session_factory(operator)
+    barrier = threading.Barrier(2, timeout=3)
+
+    def initialize_and_bump():
+        with factory() as session:
+            session.execute(text("SET LOCAL statement_timeout='5s'"))
+            assert session.scalar(text("SELECT session_user")) == "kp_operator"
+            assert session.get(model, 1) is None
+            barrier.wait()
+            value = _bump_generation(session, "local") if singleton == "provider" else _bump_session_epoch_row(session)
+            session.commit()
+            return value
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(initialize_and_bump) for _ in range(2)]
+            assert sorted(future.result(timeout=8) for future in futures) == [1, 2]
+        with factory() as session:
+            assert getattr(session.get(model, 1), "generation" if singleton == "provider" else "epoch") == 2
+    finally:
+        operator.dispose()
