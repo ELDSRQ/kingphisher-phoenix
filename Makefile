@@ -25,7 +25,7 @@ bootstrap:
 
 ## Regenerate the complete hash-verified dependency lock for disposable mocks.
 lock-mock-services:
-	@UV_PYTHON_DOWNLOADS=never uv pip compile infrastructure/mock-services/requirements.in --python-version 3.14 --python-platform linux --only-binary=:all: --generate-hashes --custom-compile-command 'make lock-mock-services' --output-file infrastructure/mock-services/requirements.txt
+	@UV_PYTHON_DOWNLOADS=never uv pip compile infrastructure/mock-services/requirements.in --python-version 3.15 --python-platform linux --only-binary=:all: --generate-hashes --custom-compile-command 'make lock-mock-services' --output-file infrastructure/mock-services/requirements.txt
 
 ## Start application services for local development.
 dev:

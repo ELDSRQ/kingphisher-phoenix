@@ -97,6 +97,14 @@ Both registry indexes expose native AMD64 and ARM64 manifests; only an executed
 gate qualifies an architecture. Fresh exact-source scans/runtime checks remain
 required for the updated candidate.
 
+The first refreshed-base build stopped because locked `psycopg-binary 3.3.4`
+has no Python 3.15 wheel. The follow-up refreshes the affected native dependency
+locks (including Psycopg, Pydantic/core, SQLAlchemy within 2.0, httptools,
+MarkupSafe, uvloop and websockets) and regenerates the mock lock with its binary
+resolver explicitly targeting 3.15. The source development pin remains 3.13;
+both the fresh CI environments and the native image gate must pass with these
+locks before any deployment. Failed candidates and their evidence are retained.
+
 **OS certificates.** The W2-02 wording came from the supplied handoff list; it
 was too broad for the current product. Developer ID signing/notarization applies
 when distributing a native macOS application; Windows package signing applies

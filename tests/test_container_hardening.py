@@ -92,5 +92,5 @@ def test_mock_dependency_lock_has_a_reproducible_regeneration_contract() -> None
         "PyJWT==2.13.0",
         "uvicorn==0.52.1",
     }
-    for flag in ("--python-version 3.14", "--python-platform linux", "--only-binary=:all:", "--generate-hashes"):
+    for flag in ("--python-version 3.15", "--python-platform linux", "--only-binary=:all:", "--generate-hashes"):
         assert flag in recipe
