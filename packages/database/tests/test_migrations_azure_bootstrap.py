@@ -414,6 +414,11 @@ def test_campaign_and_microsoft365_roles_have_only_their_runtime_permissions() -
     for column in ("campaign_id", "recipient_id", "audience_version"):
         assert _column_privileges(script, "delivery", "campaign_audience_manifest", column) == {"SELECT"}
     assert _column_privileges(script, "delivery", "campaign_audience_manifest", "recipient_hash") == set()
+    assert _table_privileges(script, "delivery", "recipient_exclusions") == set()
+    for column in ("recipient_id", "revoked_at", "expires_at", "campaign_id"):
+        assert _column_privileges(script, "delivery", "recipient_exclusions", column) == {"SELECT"}
+    for column in ("reason", "revoke_reason", "created_by", "revoked_by", "recipient_exclusion_id", "created_at"):
+        assert _column_privileges(script, "delivery", "recipient_exclusions", column) == set()
     assert _column_privileges(script, "tracking", "campaigns", "training_resource_id") == set()
     for column in ("title", "state", "schedule_start", "schedule_end", "max_recipients"):
         assert _column_privileges(script, "tracking", "campaigns", column) == set()

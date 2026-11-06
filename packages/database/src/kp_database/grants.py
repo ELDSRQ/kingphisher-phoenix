@@ -291,7 +291,12 @@ WORKLOAD_COLUMN_GRANTS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
     # Exact reviewed-roster join reads only the binding, never unrelated
     # manifest metadata or any authority to alter a frozen roster.
     "delivery": {
-        "SELECT": {"campaign_audience_manifest": ("campaign_id", "recipient_id", "audience_version")},
+        "SELECT": {
+            "campaign_audience_manifest": ("campaign_id", "recipient_id", "audience_version"),
+            # Recheck live exclusions after publication, without disclosing
+            # encrypted reasons or the identities who set/revoked them.
+            "recipient_exclusions": ("recipient_id", "revoked_at", "expires_at", "campaign_id"),
+        },
     },
     "mailbox": {"UPDATE": {"recipient_assignments": ("recipient_assignment_id",)}},
     "operator": {
