@@ -1726,6 +1726,32 @@ class PrivacyNotice(Base):
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class RetentionHold(Base):
+    """Administrator-controlled tenant purge holds; released rows are history."""
+
+    __tablename__ = "retention_holds"
+    __table_args__ = (
+        CheckConstraint("scope = 'single_tenant_database'", name="tenant_scope"),
+        CheckConstraint(
+            "(released_at IS NULL AND released_by IS NULL AND release_reason IS NULL) OR "
+            "(released_at IS NOT NULL AND released_by IS NOT NULL AND release_reason IS NOT NULL "
+            "AND released_at >= created_at)",
+            name="release_complete",
+        ),
+        Index("ix_retention_holds_active", "created_at", postgresql_where=sa_text("released_at IS NULL")),
+    )
+
+    retention_hold_id = _pk()
+    scope: Mapped[str] = mapped_column(String(64), nullable=False, default="single_tenant_database")
+    reference: Mapped[str] = mapped_column(CipherText, nullable=False)
+    reason: Mapped[str] = mapped_column(CipherText, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    released_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    released_at = mapped_column(DateTime(timezone=True), nullable=True)
+    release_reason: Mapped[str | None] = mapped_column(CipherText, nullable=True)
+
+
 class RetentionPolicy(Base):
     __tablename__ = "retention_policies"
     __table_args__ = (

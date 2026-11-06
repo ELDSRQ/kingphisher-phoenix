@@ -3,6 +3,94 @@
 // Built by apps/operator-ui/scripts/build-console.mjs; kept in sync by the bundle-drift gate.
 "use strict";
 (() => {
+  // src/console-js/retention-holds.js
+  async function renderRetentionHolds(root, { el: el2, api: api2, hasCapability: hasCapability2, CAPABILITY: CAPABILITY2, promptDialog: promptDialog2, confirmDialog: confirmDialog2, toast: toast2 }) {
+    const panel = el2("section", { class: "card", "aria-labelledby": "retention-holds-title" }, [
+      el2("h3", { id: "retention-holds-title", text: "Retention holds" }),
+      el2("p", { text: "A hold pauses irreversible deletion across this tenant, including retention expiry, recipient erasure and keyed awareness-ledger purges. It does not stop campaign delivery, revoke links or extend a privacy-request deadline." })
+    ]);
+    root.appendChild(panel);
+    const content = el2("div");
+    panel.appendChild(content);
+    const error = el2("p", { role: "alert", class: "modal-error", tabindex: "-1" });
+    panel.appendChild(error);
+    const administrator = hasCapability2(CAPABILITY2.MANAGE_ROLES);
+    let pendingHold = null;
+    async function refresh() {
+      error.textContent = "";
+      try {
+        const status = await api2("/privacy/retention-holds/status");
+        const records = administrator ? await api2("/privacy/retention-holds?limit=100&offset=0") : { items: [] };
+        content.replaceChildren(el2("p", { role: "status", text: status.active ? "Deletion paused: an active retention hold preserves tenant data. Erasure requests remain open." : "No active retention hold. Normal retention and verified erasure apply." }));
+        if (!administrator) {
+          content.appendChild(el2("p", { text: "An administrator manages holds and their release." }));
+          return;
+        }
+        content.appendChild(el2("button", { class: "btn", type: "button", text: "Set a retention hold", onclick: async () => {
+          const values = await promptDialog2({
+            title: "Set a retention hold",
+            description: "Pause all tenant retention and erasure purges until this hold is explicitly released. Use a case reference and avoid employee personal data. Holds do not expire automatically.",
+            fields: [
+              { name: "reference", label: "Case reference", required: true, maxLength: 255 },
+              { name: "reason", label: "Preservation reason", type: "textarea", required: true, maxLength: 2e3 }
+            ],
+            submitLabel: "Set hold"
+          });
+          if (!values) return;
+          if (!pendingHold || pendingHold.reference !== values.reference || pendingHold.reason !== values.reason) {
+            pendingHold = { hold_id: crypto.randomUUID(), reference: values.reference, reason: values.reason };
+          }
+          try {
+            await api2("/privacy/retention-holds", { method: "POST", body: JSON.stringify(pendingHold) });
+            pendingHold = null;
+            await refresh();
+            toast2("Retention hold set. Deletion is paused.", "success");
+          } catch (e) {
+            error.textContent = e.message;
+            error.focus();
+          }
+        } }));
+        if ((records.items || []).length === 100) content.appendChild(el2("p", { text: "Showing the first 100 holds, with active holds first. The protected API provides paginated history." }));
+        for (const hold of records.items || []) {
+          const row = el2("div", { class: "context-help" }, [
+            el2("h4", { text: `${hold.reference} \u2014 ${hold.active ? "Active" : "Released"}` }),
+            el2("p", { text: hold.reason }),
+            el2("p", { text: `Set by ${hold.created_by} on ${new Date(hold.created_at).toLocaleString()}.` })
+          ]);
+          if (hold.active) row.appendChild(el2("button", { class: "btn", type: "button", text: `Release hold: ${hold.reference}`, onclick: async (event) => {
+            const button = event.currentTarget;
+            const values = await promptDialog2({
+              title: "Release this retention hold?",
+              description: "Other active holds will continue to block deletion. Once all holds are released, eligible records may be deleted by the next normal retention run or an explicit erasure request.",
+              fields: [{ name: "reason", label: "Release reason", type: "textarea", required: true, maxLength: 2e3 }],
+              submitLabel: "Review release"
+            });
+            if (!values || !await confirmDialog2({ title: "Confirm hold release", message: `Release ${hold.reference}?`, detail: { "Release reason": values.reason }, confirmLabel: "Release hold" })) return;
+            button.disabled = true;
+            try {
+              await api2(`/privacy/retention-holds/${hold.hold_id}/release`, { method: "POST", body: JSON.stringify({ reason: values.reason }) });
+              await refresh();
+              toast2("Hold release recorded.", "success");
+            } catch (e) {
+              error.textContent = e.message;
+              error.focus();
+            } finally {
+              if (button.isConnected) button.disabled = false;
+            }
+          } }));
+          else row.appendChild(el2("p", { text: `Released by ${hold.released_by} on ${new Date(hold.released_at).toLocaleString()}: ${hold.release_reason}` }));
+          content.appendChild(row);
+        }
+      } catch {
+        content.replaceChildren(
+          el2("p", { role: "status", text: "Hold status is unavailable. Erasure remains blocked until preservation state can be verified." }),
+          el2("button", { class: "btn", type: "button", text: "Retry hold status", onclick: refresh })
+        );
+      }
+    }
+    await refresh();
+  }
+
   // src/console-js/dom.js
   function el(tag, attrs, children) {
     const node = document.createElement(tag);
@@ -29,6 +117,116 @@
       node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
     }
     return node;
+  }
+
+  // src/console-js/campaign-wizard.js
+  function campaignWizard({ root, el: el2, initialStep, onStepChange, completedThrough = 0 }) {
+    const labels = ["Select domain", "Sign RoE", "Recipients", "Choose/edit email", "Approve", "Send", "Monitor"];
+    const panels = /* @__PURE__ */ new Map();
+    const progress = el2("ol", { class: "campaign-progress" });
+    const status = el2("p", { class: "campaign-step-status", role: "status", "aria-live": "polite", "aria-atomic": "true" });
+    const summary = el2("div", { class: "campaign-errors", role: "alert", tabindex: "-1", hidden: "" });
+    const container = el2("div", { class: "campaign-setup" }, [
+      el2("nav", { "aria-label": "Campaign setup progress" }, [progress]),
+      status,
+      summary
+    ]);
+    root.appendChild(container);
+    let current;
+    function show(step, focus = true) {
+      if (!panels.has(step)) return;
+      current = step;
+      onStepChange(step);
+      for (const [number, panel] of panels) panel.hidden = number !== step;
+      progress.replaceChildren(...labels.map((label, index) => {
+        const number = index + 1;
+        const state = number === step ? "Current step" : number <= completedThrough || panels.has(number) && number < Math.max(...panels.keys()) ? "Completed step" : panels.has(number) ? "Available step" : "Upcoming step";
+        const content = [
+          el2("span", { class: "campaign-step-number", "aria-hidden": "true", text: number }),
+          el2("span", { text: label }),
+          el2("span", { class: "campaign-step-state", text: state })
+        ];
+        return el2("li", { "aria-current": number === step ? "step" : null }, [
+          panels.has(number) ? el2("button", { type: "button", "aria-label": `${number}. ${label}`, onclick: () => show(number) }, content) : el2("span", { class: "campaign-step-unavailable" }, content)
+        ]);
+      }));
+      status.textContent = `Step ${step} of ${labels.length}: ${labels[step - 1]}.`;
+      summary.hidden = true;
+      if (focus) panels.get(step).querySelector("h3").focus();
+    }
+    function add(step, title, children) {
+      let panel = panels.get(step);
+      if (!panel) {
+        panel = el2("section", { class: "card campaign-step", hidden: "", "aria-labelledby": `campaign-step-${step}` }, [
+          el2("h3", { id: `campaign-step-${step}`, tabindex: "-1", text: `${step}. ${labels[step - 1]}` })
+        ]);
+        panels.set(step, panel);
+        container.appendChild(panel);
+      }
+      panel.appendChild(el2("div", { class: "campaign-step-group" }, [el2("h4", { text: title }), ...children]));
+      return panel;
+    }
+    function finish(focus = false) {
+      const available = [...panels.keys()].sort((a, b) => a - b);
+      for (let index = 0; index < available.length; index += 1) {
+        const step = available[index];
+        const actions = el2("div", { class: "btn-row campaign-step-navigation" });
+        if (index > 0) actions.appendChild(el2("button", { type: "button", class: "btn", text: "Back", onclick: () => show(available[index - 1]) }));
+        if (index < available.length - 1) actions.appendChild(el2("button", { type: "button", class: "btn", text: `Continue to ${labels[available[index + 1] - 1].toLowerCase()}`, onclick: () => show(available[index + 1]) }));
+        panels.get(step).appendChild(actions);
+      }
+      if (available.length) show(panels.has(initialStep) ? initialStep : available.at(-1), focus);
+    }
+    function clearField(field) {
+      field.removeAttribute("aria-invalid");
+      const errorId = `${field.id}-error`;
+      const description = (field.getAttribute("aria-describedby") || "").split(" ").filter((id) => id && id !== errorId);
+      if (description.length) field.setAttribute("aria-describedby", description.join(" "));
+      else field.removeAttribute("aria-describedby");
+      container.querySelector(`[id="${errorId}"]`)?.remove();
+    }
+    function errors(items) {
+      container.querySelectorAll('[aria-invalid="true"]').forEach(clearField);
+      if (!items.length) {
+        summary.hidden = true;
+        return true;
+      }
+      summary.replaceChildren(el2("p", { text: "Check the following before continuing:" }), el2("ul", {}, items.map(({ field, message }) => {
+        field.setAttribute("aria-invalid", "true");
+        const errorId = `${field.id}-error`;
+        const descriptions = (field.getAttribute("aria-describedby") || "").split(" ").filter(Boolean);
+        field.setAttribute("aria-describedby", [...descriptions, errorId].join(" "));
+        field.insertAdjacentElement("afterend", el2("p", { id: errorId, class: "campaign-field-error", text: message }));
+        const focusField = () => {
+          const panel = [...panels].find(([, node]) => node.contains(field));
+          if (panel && panel[0] !== current) show(panel[0], false);
+          for (let node = field.parentElement; node && node !== container; node = node.parentElement) {
+            if (node.tagName === "DETAILS") node.open = true;
+          }
+          field.focus();
+        };
+        return el2("li", {}, [el2("a", { href: `#${field.id}`, text: message, onclick: (event) => {
+          event.preventDefault();
+          focusField();
+        } })]);
+      })));
+      summary.hidden = false;
+      summary.focus();
+      return false;
+    }
+    function validate(form) {
+      const items = [...form.querySelectorAll("input, select, textarea")].filter((field) => !field.checkValidity()).map((field) => {
+        const label = field.labels?.[0]?.textContent || "This field";
+        const message = field.validity.valueMissing ? `${label}: enter a value.` : field.validity.typeMismatch ? `${label}: enter a valid email address.` : `${label}: ${field.validationMessage}`;
+        return { field, message };
+      });
+      return errors(items);
+    }
+    container.addEventListener("input", (event) => {
+      if (event.target.getAttribute("aria-invalid") === "true") clearField(event.target);
+      summary.hidden = true;
+    });
+    return { add, finish, validate, errors };
   }
 
   // src/console-js/simple-campaigns.js
@@ -63,9 +261,11 @@
       flow.sourceTemplateId = event.detail.templateId;
       delete flow.templateId;
       emailContent = null;
+      emailDraft = null;
       save();
     });
     let csvText = "", importPreview = null, emailContent = null;
+    let emailDraft = null, detailsDraft = {}, setupStep = null, focusAfterRedraw = false;
     const activeRoe = (r) => !r.revoked_at && Date.parse(r.window_start) <= Date.now() && Date.parse(r.window_end) > Date.now();
     const button = (text, onclick, disabled = false, primary = false) => el2("button", {
       type: "button",
@@ -100,6 +300,7 @@
     };
     const fail = (node, error) => {
       node.textContent = error.message;
+      node.focus();
       toast2(error.message, "error");
     };
     function downloadTemplate() {
@@ -166,7 +367,7 @@
     views2.campaigns = async (root) => {
       if (!hasCapability2(CAPABILITY2.VIEW_AGGREGATE)) return;
       root.append(el2("h2", { text: "Campaigns" }), el2("p", { class: "sub", text: "Select domain \u2192 sign RoE \u2192 upload and confirm recipients \u2192 choose and edit an email \u2192 approve \u2192 send \u2192 monitor." }));
-      const error = el2("p", { role: "alert", class: "modal-error" });
+      const error = el2("p", { role: "alert", class: "modal-error", tabindex: "-1" });
       root.appendChild(error);
       let campaigns, domains, roes, templates, patterns, lessons, onboarding;
       try {
@@ -188,11 +389,33 @@
         return;
       }
       if (!root.isConnected) return;
-      const redraw = async () => {
+      const redraw = async (step) => {
+        if (step) setupStep = step;
+        focusAfterRedraw = true;
         root.replaceChildren();
         await views2.campaigns(root);
       };
       const own = campaigns.find((c) => c.campaign_id === flow.campaignId);
+      const ownStep = own ? ["draft", "pending_approval"].includes(own.state) ? 5 : own.can_send || own.can_publish ? 6 : 7 : null;
+      const wizard = hasCapability2(CAPABILITY2.CREATE_CAMPAIGN) ? campaignWizard({
+        root,
+        el: el2,
+        initialStep: own ? ownStep : setupStep,
+        completedThrough: own ? ownStep - 1 : 0,
+        onStepChange: (step) => {
+          setupStep = step;
+        }
+      }) : null;
+      const remember = (input, key2) => {
+        if (Object.hasOwn(detailsDraft, key2)) input.value = detailsDraft[key2];
+        input.addEventListener("input", () => {
+          detailsDraft[key2] = input.value;
+        });
+        input.addEventListener("change", () => {
+          detailsDraft[key2] = input.value;
+        });
+        return input;
+      };
       if (hasCapability2(CAPABILITY2.CREATE_CAMPAIGN) && !own) {
         const domainSelect = el2("select", { id: "setup-domain" }, [
           el2("option", { value: "", text: "Choose a verified company domain\u2026" }),
@@ -204,7 +427,7 @@
         guardUnsavedForm2(domainForm, "Domain selection");
         const selectDomain = button("Select domain", async () => {
           if (!domainSelect.value) {
-            error.textContent = "Choose your company domain first.";
+            wizard.errors([{ field: domainSelect, message: "Choose your company domain first." }]);
             return;
           }
           if (flow.domain !== domainSelect.value) {
@@ -212,11 +435,13 @@
             csvText = "";
             importPreview = null;
             emailContent = null;
+            emailDraft = null;
+            detailsDraft = {};
           }
           flow.domain = domainSelect.value;
           save();
           markFormSaved2(domainForm);
-          await redraw();
+          await redraw(2);
         }, false, true);
         domainForm.append(
           el2("label", { for: "setup-domain", text: "Company domain" }),
@@ -225,7 +450,7 @@
           button("Add or verify a domain", () => navigateTo2("sending")),
           el2("p", { text: "Choose the verified domain your recipients use. Domain suggestions do not select or authorize a domain." })
         );
-        root.appendChild(card("1. Select domain", [domainForm]));
+        wizard.add(1, "Company domain", [domainForm]);
         if (flow.domain) {
           const matching = roes.filter((r) => activeRoe(r) && (r.target_domains || []).includes(flow.domain));
           const roe = matching.find((r) => r.roe_id === flow.roeId);
@@ -239,18 +464,19 @@
           guardUnsavedForm2(roeForm, "RoE selection");
           const useRoe = button("Use signed RoE", async () => {
             if (!roeChoice.value) {
-              error.textContent = "Select a signed authorization or sign a new RoE.";
+              wizard.errors([{ field: roeChoice, message: "Select a signed authorization or sign a new RoE." }]);
               return;
             }
             if (flow.roeId !== roeChoice.value) {
               delete flow.rosterId;
               delete flow.templateId;
               emailContent = null;
+              importPreview = null;
             }
             flow.roeId = roeChoice.value;
             save();
             markFormSaved2(roeForm);
-            await redraw();
+            await redraw(3);
           }, false, true);
           const sign = button("Sign RoE for selected domain", async () => {
             const values = await promptDialog2({ title: `Sign RoE for ${flow.domain}`, description: "Confirm the domain owner's authorization for this awareness campaign.", fields: [
@@ -270,9 +496,11 @@
               }) });
               flow.roeId = record.roe_id;
               delete flow.rosterId;
+              delete flow.templateId;
+              importPreview = null;
               save();
               markFormSaved2(roeForm);
-              await redraw();
+              await redraw(3);
               toast2("RoE signed and selected", "success");
             } catch (e) {
               fail(error, e);
@@ -289,24 +517,29 @@
               el2("details", {}, [el2("summary", { text: "View signed terms" }), el2("p", { text: roe.terms })])
             ] : []
           );
-          root.appendChild(card("2. Sign RoE", [roeForm]));
+          wizard.add(2, "Signed authorization", [roeForm]);
           if (roe) {
+            const scope = el2("p", { class: "policy-banner", text: `Per signed RoE, only these domains are approved: ${roe.target_domains.join(", ")}. All others are rejected. This campaign targets ${flow.domain} only.` });
             const upload = el2("form", { "aria-label": "Upload and review recipients" });
             upload.addEventListener("submit", (e) => e.preventDefault());
             guardUnsavedForm2(upload, "Recipient roster");
             upload.append(button("Download CSV template", downloadTemplate), el2("p", { text: "The blank file is named recipient-roster-template.csv. Your browser saves it to Downloads, or asks you to choose a folder. Fill in email (required), name and department (optional); save as CSV and upload it here. Names personalize greetings when supplied; full names are not required." }));
-            const file = field(upload, "Completed recipient CSV", "setup-file", { type: "file", accept: ".csv,text/csv" });
+            const file = field(upload, "Completed recipient CSV", "setup-file", { type: "file", accept: ".csv,text/csv", "aria-describedby": "setup-csv-help" });
             const text = field(upload, "Or paste the completed CSV", "setup-csv", { rows: "5", maxlength: "524288" });
             text.value = csvText;
+            upload.appendChild(el2("p", { id: "setup-csv-help", class: "campaign-field-help", text: "Maximum file size: 512 KB. Only recipients in the selected authorized domain can be confirmed." }));
             const invalidate = () => {
               importPreview = null;
               csvText = text.value;
+              previewNode.replaceChildren();
+              validate.classList.add("primary");
             };
             text.addEventListener("input", invalidate);
             file.addEventListener("change", async () => {
               if (!file.files[0]) return;
               if (file.files[0].size > 524288) {
-                error.textContent = "CSV must be no larger than 512 KB.";
+                importPreview = null;
+                wizard.errors([{ field: file, message: "CSV must be no larger than 512 KB. Choose a smaller file." }]);
                 return;
               }
               text.value = await file.files[0].text();
@@ -326,13 +559,34 @@
               const btn = event.currentTarget;
               btn.disabled = true;
               try {
+                if (!text.value.trim()) {
+                  wizard.errors([{ field: text, message: "Upload a completed CSV or paste recipient rows before reviewing." }]);
+                  return;
+                }
                 csvText = text.value;
                 body = importBody();
-                importPreview = await api2("/recipients/import/preview", { method: "POST", body: JSON.stringify(body) });
+                const reviewed = await api2("/recipients/import/preview", { method: "POST", body: JSON.stringify(body) });
+                if (!upload.isConnected) return;
+                if (csvText !== body.csv_text || flow.roeId !== body.roe_id || flow.domain !== body.target_domain) {
+                  importPreview = null;
+                  wizard.errors([{ field: text, message: "The CSV changed during review. Review the current recipients again." }]);
+                  return;
+                }
+                importPreview = reviewed;
                 const counts = importPreview.counts;
+                const rowErrors = {
+                  missing_mailbox: "Email address is missing.",
+                  invalid_mailbox: "Enter a valid email address.",
+                  domain_not_allowed: "Email domain is outside the authorized scope.",
+                  recipient_domain_not_allowed: "Email domain is outside the authorized scope.",
+                  duplicate_mailbox: "This email address appears more than once in the upload.",
+                  name_too_long: "Shorten the name to 255 characters or fewer.",
+                  department_too_long: "Shorten the department to 255 characters or fewer."
+                };
+                validate.classList.remove("primary");
                 previewNode.replaceChildren(
                   el2("p", { role: "status", text: `Recipients validated against ${flow.domain}, authorized by the selected RoE. New: ${counts.created || 0}; already recorded: ${counts.existing || 0}; rejected: ${(counts.blocked || 0) + (counts.invalid || 0) + (counts.duplicate || 0)}.` }),
-                  ...(importPreview.errors || []).map((r) => el2("p", { text: `Row ${r.row}: ${r.code}` }))
+                  ...(importPreview.errors || []).map((r) => el2("p", { text: `Row ${r.row}: ${rowErrors[r.code] || "This row could not be accepted. Check its email, name and department."}` }))
                 );
                 if (importPreview.recipients) previewNode.appendChild(table(["Recipient", "Department"], importPreview.recipients.map((r) => [r.display_name ? `${r.display_name} (${r.masked_mailbox})` : r.masked_mailbox, r.department]), "Validated recipients before confirmation"));
                 previewNode.appendChild(button("Confirm validated recipients", async (event2) => {
@@ -348,7 +602,7 @@
                     csvText = "";
                     importPreview = null;
                     markFormSaved2(upload);
-                    await redraw();
+                    await redraw(4);
                   } catch (e) {
                     fail(error, e);
                   } finally {
@@ -365,13 +619,13 @@
             markFormSaved2(upload);
             if (flow.rosterId) {
               const roster = await boundedCollection2(`/recipients?roster_id=${encodeURIComponent(flow.rosterId)}`, "items");
-              const confirmed = card("3. Recipients confirmed", [
+              wizard.add(3, "Recipients confirmed", [
+                scope,
                 el2("p", { role: "status", text: `${roster.length} recipients from this upload only. The whole roster will be sent; no individual selection is required.` }),
                 table(["Recipient", "Department", "Status"], roster.map((r) => [r.display_name ? `${r.display_name} (${r.masked_mailbox})` : r.masked_mailbox || r.recipient_id, r.department, r.status]), "Confirmed campaign roster"),
                 el2("details", {}, [el2("summary", { text: "Replace uploaded roster" }), upload])
               ]);
-              root.appendChild(confirmed);
-            } else root.appendChild(card("3. Upload, review and confirm recipients", [upload]));
+            } else wizard.add(3, "Upload, review and confirm recipients", [scope, upload]);
             if (flow.rosterId) {
               const choices = templates.filter((t) => t.approval_state === "approved");
               const library = el2("select", { id: "setup-library" }, [
@@ -379,26 +633,32 @@
                 ...choices.map((t) => el2("option", { value: t.template_version_id, text: t.subject }))
               ]);
               library.value = flow.sourceTemplateId || "";
-              root.appendChild(card("4. Select an email from the library", [
+              const libraryForm = el2("form", { "aria-label": "Choose library email" });
+              libraryForm.addEventListener("submit", (event) => event.preventDefault());
+              guardUnsavedForm2(libraryForm, "Library email selection");
+              libraryForm.append(
                 el2("p", { text: "The library provides a starting example. Select one to load its wording, then edit the fake email for your campaign and review it before approval." }),
                 el2("label", { for: "setup-library", text: "Library email" }),
                 library,
                 button("Use this email as a starting point", async () => {
                   if (!library.value) {
-                    error.textContent = "Choose a library email first.";
+                    wizard.errors([{ field: library, message: "Choose a library email first." }]);
                     return;
                   }
                   try {
                     emailContent = await api2(`/templates/${library.value}/preview`);
                     flow.sourceTemplateId = library.value;
+                    emailDraft = null;
                     delete flow.templateId;
                     save();
-                    await redraw();
+                    markFormSaved2(libraryForm);
+                    await redraw(4);
                   } catch (e) {
                     fail(error, e);
                   }
-                }, false, true)
-              ]));
+                }, false, !flow.sourceTemplateId)
+              );
+              wizard.add(4, "Select an email from the library", [libraryForm]);
               if (flow.sourceTemplateId) {
                 if (!emailContent || emailContent.template_version_id !== (flow.templateId || flow.sourceTemplateId)) {
                   try {
@@ -408,6 +668,8 @@
                     delete flow.templateId;
                     emailContent = null;
                     save();
+                    wizard.finish(focusAfterRedraw);
+                    focusAfterRedraw = false;
                     return;
                   }
                 }
@@ -420,24 +682,38 @@
                 if (!wording.value.includes("[recipient name]")) wording.value = `Dear [recipient name],
 
 ${wording.value}`;
+                if (emailDraft?.sourceId === flow.sourceTemplateId) {
+                  subject.value = emailDraft.subject;
+                  wording.value = emailDraft.wording;
+                }
+                const rememberEmail = () => {
+                  emailDraft = { sourceId: flow.sourceTemplateId, subject: subject.value, wording: wording.value };
+                };
                 edit.appendChild(el2("p", { text: "The preview shows a sample name. [recipient name] uses the uploaded name for each recipient, or \u201Ccolleague\u201D when blank. [training link] becomes that recipient\u2019s training link. Review and edit the greeting with the rest of the email." }));
                 const previewEmail = button("Create fake email for review", async (event) => {
                   const btn = event.currentTarget;
-                  if (!edit.reportValidity()) return;
+                  if (!wizard.validate(edit)) return;
                   btn.disabled = true;
+                  const reviewedSubject = subject.value, reviewedWording = wording.value, sourceId = flow.sourceTemplateId;
                   try {
-                    const draft = await api2(`/templates/${flow.sourceTemplateId}/clone`, { method: "POST", body: JSON.stringify({
+                    const draft = await api2(`/templates/${sourceId}/clone`, { method: "POST", body: JSON.stringify({
                       reason: "Campaign email prepared for operator review",
-                      subject: subject.value,
-                      plain_text: wording.value.replaceAll("[recipient name]", '{{ recipient.first_name or "colleague" }}').replaceAll("[training link]", "{{ tracking.training_url }}")
+                      subject: reviewedSubject,
+                      plain_text: reviewedWording.replaceAll("[recipient name]", '{{ recipient.first_name or "colleague" }}').replaceAll("[training link]", "{{ tracking.training_url }}")
                     }) });
                     const prepared = await api2(`/templates/${draft.template_version_id}/preview`);
+                    if (!edit.isConnected) return;
+                    if (subject.value !== reviewedSubject || wording.value !== reviewedWording || flow.sourceTemplateId !== sourceId) {
+                      wizard.errors([{ field: wording, message: "The email changed while its preview was loading. Create a new preview of the current wording before approval." }]);
+                      return;
+                    }
                     flow.templateId = draft.template_version_id;
                     delete flow.emailApproved;
                     emailContent = prepared;
+                    rememberEmail();
                     save();
                     markFormSaved2(edit);
-                    await redraw();
+                    await redraw(5);
                   } catch (e) {
                     fail(error, e);
                   } finally {
@@ -445,32 +721,34 @@ ${wording.value}`;
                   }
                 }, false, true);
                 subject.addEventListener("input", () => {
+                  rememberEmail();
                   delete flow.templateId;
                   delete flow.emailApproved;
                   save();
                 });
                 wording.addEventListener("input", () => {
+                  rememberEmail();
                   delete flow.templateId;
                   delete flow.emailApproved;
                   save();
                 });
                 edit.appendChild(previewEmail);
                 markFormSaved2(edit);
-                root.appendChild(card("5. Create fake email for review", [edit]));
+                wizard.add(4, "Create fake email for review", [edit]);
                 if (flow.templateId) {
                   const preview = card("Email preview", [
                     el2("h4", { text: emailContent.subject }),
                     ...emailPreviewNode(emailContent),
                     el2("p", { text: "Review the subject, wording and sender below. Nothing has been sent." })
                   ]);
-                  root.appendChild(preview);
+                  wizard.add(5, "Review the exact email and campaign details", [preview]);
                   const setup = el2("form", { "aria-label": "Approve campaign" });
                   setup.addEventListener("submit", (e) => e.preventDefault());
                   guardUnsavedForm2(setup, "Campaign details");
-                  const title = field(setup, "Campaign name", "setup-title", { required: "", maxlength: "255", value: "" });
-                  const sender = field(setup, "From email", "setup-sender", { required: "", type: "email", value: `security-awareness@${flow.domain}` });
-                  const persona = field(setup, "From display name", "setup-persona", { maxlength: "255", value: "Security Awareness" });
-                  const advanced = el2("details", {}, [el2("summary", { text: "Delivery window and after-click training page" })]);
+                  const title = remember(field(setup, "Campaign name", "setup-title", { required: "", maxlength: "255", value: "" }), "title");
+                  const sender = remember(field(setup, "From email", "setup-sender", { required: "", type: "email", value: `security-awareness@${flow.domain}` }), "sender");
+                  const persona = remember(field(setup, "From display name", "setup-persona", { maxlength: "255", value: "Security Awareness" }), "persona");
+                  const advanced = el2("fieldset", { class: "campaign-delivery" }, [el2("legend", { text: "Delivery window and after-click training page" })]);
                   setup.appendChild(advanced);
                   const values = (onboarding?.steps || []).flatMap((s) => s.fields || []);
                   let trainingHost = "";
@@ -478,25 +756,50 @@ ${wording.value}`;
                     trainingHost = new URL(values.find((f) => f.key.endsWith("_TRAINING_BASE_URL") && f.value)?.value || "").hostname;
                   } catch {
                   }
-                  const training = field(advanced, "Training hostname", "setup-training", { required: "", value: trainingHost });
-                  const lesson = el2("select", { id: "setup-lesson", required: "" }, lessons.map((l) => el2("option", { value: l.training_resource_id, text: l.title })));
+                  const training = remember(field(advanced, "Training hostname", "setup-training", { required: "", value: trainingHost }), "training");
+                  const lesson = remember(el2("select", { id: "setup-lesson", required: "" }, lessons.map((l) => el2("option", { value: l.training_resource_id, text: l.title }))), "lesson");
                   advanced.append(el2("label", { for: "setup-lesson", text: "Training lesson after a click" }), lesson);
                   const localTime = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
-                  const begin = field(advanced, "Send from (local time)", "setup-start", { required: "", type: "datetime-local", value: localTime(/* @__PURE__ */ new Date()) });
-                  const end = field(advanced, "Stop sending after (local time)", "setup-end", { required: "", type: "datetime-local", value: localTime(new Date(Date.now() + 864e5)) });
+                  const begin = remember(field(advanced, "Send from (local time)", "setup-start", { required: "", type: "datetime-local", value: localTime(/* @__PURE__ */ new Date()) }), "begin");
+                  const end = remember(field(advanced, "Stop sending after (local time)", "setup-end", { required: "", type: "datetime-local", value: localTime(new Date(Date.now() + 864e5)) }), "end");
                   const approve = button(sessionInfo2()?.approvalPolicy === "enforce" ? "Request campaign approval" : "Approve campaign", async (event) => {
                     const btn = event.currentTarget;
-                    const invalid = setup.querySelector(":invalid");
-                    if (invalid) {
-                      advanced.open = true;
-                      invalid.reportValidity();
-                      invalid.focus();
+                    if (!wizard.validate(setup)) return;
+                    const startTime = new Date(begin.value).getTime(), endTime = new Date(end.value).getTime();
+                    if (endTime <= startTime || endTime <= Date.now()) {
+                      wizard.errors([{ field: end, message: "Stop sending must be after the start time and in the future." }]);
+                      return;
+                    }
+                    if (startTime < Date.parse(roe.window_start) || endTime > Date.parse(roe.window_end)) {
+                      wizard.errors([{ field: end, message: "Choose a delivery window within the signed authorization dates." }]);
+                      return;
+                    }
+                    let roster;
+                    try {
+                      roster = await boundedCollection2(`/recipients?roster_id=${encodeURIComponent(flow.rosterId)}`, "items");
+                    } catch (e) {
+                      fail(error, e);
+                      return;
+                    }
+                    if (!roster.length) {
+                      fail(error, new Error("The confirmed roster is empty. Return to Recipients and confirm a current upload."));
                       return;
                     }
                     const approved = await confirmDialog2({
                       title: "Approve this campaign?",
                       message: `Send only the confirmed uploaded roster at ${flow.domain}, using this reviewed email. Nothing is sent until you press Send.`,
-                      detail: { "Campaign": title.value, "Email": subject.value, "From": `${persona.value} <${sender.value}>`, "Recipient roster": flow.rosterName, "Authorized domain": flow.domain },
+                      detail: {
+                        "Campaign": title.value,
+                        "Email": emailContent.subject,
+                        "From": `${persona.value} <${sender.value}>`,
+                        "Recipient roster": flow.rosterName,
+                        "Confirmed recipients": roster.length,
+                        "Authorized domain": flow.domain,
+                        "Signed authorization": `${roe.authorizing_party}; signed by ${roe.signer}; valid ${new Date(roe.window_start).toLocaleString()} to ${new Date(roe.window_end).toLocaleString()}`,
+                        "Training lesson": lessons.find((item) => item.training_resource_id === lesson.value)?.title || "",
+                        "Training hostname": training.value,
+                        "Delivery window": `${new Date(begin.value).toLocaleString()} to ${new Date(end.value).toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`
+                      },
                       confirmLabel: sessionInfo2()?.approvalPolicy === "enforce" ? "Request approval" : "Approve"
                     });
                     if (!approved) return;
@@ -505,7 +808,6 @@ ${wording.value}`;
                       const pattern = choices.find((t) => t.template_version_id === flow.sourceTemplateId)?.pattern_id || patterns.find((p) => p.approval_state === "approved")?.campaign_pattern_id;
                       if (!pattern) throw new Error("No approved campaign pattern is available. Open Patterns to approve one.");
                       if (emailContent.approval_state !== "approved") await api2(`/templates/${flow.templateId}/decision`, { method: "POST", body: JSON.stringify({ decision: "approved", rationale: "Reviewed campaign email and safe preview" }) });
-                      const roster = await boundedCollection2(`/recipients?roster_id=${encodeURIComponent(flow.rosterId)}`, "items");
                       const created = await api2("/campaigns", { method: "POST", body: JSON.stringify({
                         delivery_mode: "reviewed_direct",
                         pattern_id: pattern,
@@ -527,8 +829,8 @@ ${wording.value}`;
                       const audience = await api2(`/campaigns/${flow.campaignId}/audience/preview`);
                       if (audience.included_count !== roster.length || audience.excluded_count) throw new Error("The roster changed or contains newly rejected recipients. Review the current list before approval.");
                       await api2(`/campaigns/${flow.campaignId}/confirm`, { method: "POST", body: JSON.stringify({ preview_hash: audience.preview_hash }) });
-                      await redraw();
-                      toast2("Campaign reviewed. Use Send when ready.", "success");
+                      await redraw(6);
+                      toast2("Campaign review saved. Check its status before sending.", "success");
                     } catch (e) {
                       fail(error, e);
                     } finally {
@@ -540,9 +842,10 @@ ${wording.value}`;
                     approve.disabled = true;
                     reviewNotice.textContent = "Email edited. Click Create fake email for review to update the preview before approval.";
                   });
+                  if (!lessons.length) setup.appendChild(el2("p", { class: "notice", text: "An approved training lesson is required. Open Training lessons to prepare one before approval." }));
                   setup.append(approve, reviewNotice);
                   markFormSaved2(setup);
-                  root.appendChild(card("6. Approve", [setup]));
+                  wizard.add(5, "Campaign approval", [setup]);
                 }
               }
             }
@@ -616,12 +919,14 @@ ${wording.value}`;
             }
           }));
         }
-        if (hasCapability2(CAPABILITY2.VIEW_NAMED_RESULTS)) section.appendChild(button("Monitor recipient results", () => monitor(c, outcomes)));
-        section.appendChild(button("Open dashboard", () => {
-          flow.monitorId = c.campaign_id;
-          save();
-          navigateTo2("dashboard");
-        }));
+        const monitorActions = [
+          ...hasCapability2(CAPABILITY2.VIEW_NAMED_RESULTS) ? [button("Monitor recipient results", () => monitor(c, outcomes))] : [],
+          button("Open dashboard", () => {
+            flow.monitorId = c.campaign_id;
+            save();
+            navigateTo2("dashboard");
+          })
+        ];
         section.appendChild(button("Report and exports", () => showCampaignReport(c)));
         if (c.can_recall) section.appendChild(button("Stop this campaign", async () => {
           if (!await confirmDialog2({ title: `Stop ${c.title}?`, message: "Stop future deliveries and disable this campaign's tracking links.", confirmLabel: "Stop campaign", danger: true })) return;
@@ -632,17 +937,26 @@ ${wording.value}`;
             fail(error, e);
           }
         }));
-        section.appendChild(outcomes);
-        root.appendChild(section);
+        if (wizard && c === own) {
+          wizard.add(ownStep === 5 ? 5 : 6, "Campaign status and actions", [section]);
+          if (ownStep !== 5) wizard.add(7, "Delivery and recipient results", [el2("p", { text: "Queued emails are waiting to send. Provider acceptance is a separate state from confirmed delivery." }), ...monitorActions, outcomes]);
+        } else {
+          section.append(...monitorActions, outcomes);
+          root.appendChild(section);
+        }
       }
       if (flow.campaignId) root.appendChild(button("Start a new campaign", async () => {
         flow = {};
         csvText = "";
         importPreview = null;
         emailContent = null;
+        emailDraft = null;
+        detailsDraft = {};
         save();
-        await redraw();
+        await redraw(1);
       }));
+      wizard?.finish(focusAfterRedraw);
+      focusAfterRedraw = false;
     };
   }
 
@@ -8350,6 +8664,7 @@ ${wording.value}`;
     const canDeleteData = hasCapability(CAPABILITY.DELETE_DATA);
     root.appendChild(el("h2", { text: "Privacy" }));
     root.appendChild(el("p", { class: "sub", text: "Privacy notice and data-subject requests (CCPA)." }));
+    await renderRetentionHolds(root, { el, api, hasCapability, CAPABILITY, promptDialog, confirmDialog, toast });
     let notice = null;
     let requests;
     try {

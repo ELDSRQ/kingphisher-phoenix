@@ -34,6 +34,7 @@ from kp_database.models import (
 )
 from kp_database.personal_data import ASSIGNMENT_LINKED_RECEIPT_MODELS
 from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
+from kp_database.retention_holds import active_retention_hold
 from kp_domain_models import models as dm
 from sqlalchemy import and_, delete, inspect, select
 from sqlalchemy.engine import CursorResult
@@ -106,8 +107,35 @@ def process_retention(ctx: WorkerContext, message: dict[str, Any]) -> None:
         ):
             return
         now = datetime.now(UTC)
+        hold_id = active_retention_hold(session)
         lifecycle = reconcile_campaign_lifecycle(session, now, queued_stale_hours=ctx.settings.queued_stale_hours)
         policy, retention_days = _resolve_retention_policy(session, policy_id)
+        if hold_id is not None:
+            session.add(
+                RetentionAction(
+                    retention_action_id=uuid.uuid4(),
+                    retention_policy_id=policy.retention_policy_id if policy is not None else None,
+                    executed_at=now,
+                    target_table="retention_hold",
+                    row_count_deleted=0,
+                    idempotency_key=idempotency_key,
+                )
+            )
+            ctx.audit_store.record(
+                session=session,
+                actor="worker:retention",
+                action="retention.held",
+                object_type="system",
+                object_id=str(policy_id),
+                detail={
+                    "hold_active": True,
+                    "rows_deleted": 0,
+                    "campaigns_completed": lifecycle["completed"],
+                    "campaigns_expired": lifecycle["expired"],
+                },
+            )
+            session.commit()
+            return
         cutoff = now - timedelta(days=retention_days)
         rows = list(
             session.scalars(

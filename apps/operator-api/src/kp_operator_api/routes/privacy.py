@@ -16,6 +16,7 @@ from kp_database.models import (
     PrivacyNotice,
     PrivacyRequest,
     Recipient,
+    RetentionHold,
     TrackingEvent,
 )
 from kp_database.personal_data import exported_store_names
@@ -26,13 +27,22 @@ from kp_database.privacy import (
     hash_mailbox,
 )
 from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
+from kp_database.retention_holds import (
+    RetentionHoldActive,
+    RetentionHoldStateUnavailable,
+    active_retention_hold,
+    create_retention_hold,
+    release_retention_hold,
+    require_no_retention_hold,
+)
 from kp_domain_models import models as dm
 from kp_telemetry.errors import (
     ConflictError,
     NotFoundError,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from kp_operator_api.auth import require_capability
@@ -56,6 +66,156 @@ class PrivacyRequestCreate(BaseModel):
     @classmethod
     def normalize_requester_mailbox(cls, value: str) -> str:
         return _normalize_mailbox(value, max_length=320)
+
+
+class RetentionHoldCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hold_id: uuid.UUID
+    reference: str = Field(min_length=1, max_length=255)
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reference", "reason")
+    @classmethod
+    def nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("a nonblank case reference and reason are required")
+        return value.strip()
+
+
+class RetentionHoldRelease(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("a nonblank release reason is required")
+        return value.strip()
+
+
+def _hold_payload(row: RetentionHold) -> dict[str, Any]:
+    return {
+        "hold_id": str(row.retention_hold_id),
+        "scope": row.scope,
+        "reference": row.reference,
+        "reason": row.reason,
+        "created_by": row.created_by,
+        "created_at": row.created_at,
+        "released_by": row.released_by,
+        "released_at": row.released_at,
+        "release_reason": row.release_reason,
+        "active": row.released_at is None,
+    }
+
+
+def _hold_no_cache(response: Response) -> None:
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+
+
+def _check_erasure_hold(session: Session) -> None:
+    try:
+        require_no_retention_hold(session)
+    except RetentionHoldActive as exc:
+        raise ConflictError(str(exc)) from None
+    except (RetentionHoldStateUnavailable, SQLAlchemyError):
+        raise HTTPException(
+            status_code=503, detail="Preservation state is unavailable; erasure was not applied."
+        ) from None
+
+
+@router.get("/privacy/retention-holds/status")
+def retention_hold_status(
+    response: Response,
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.HANDLE_PRIVACY)),
+) -> dict[str, Any]:
+    _hold_no_cache(response)
+    return {"active": active_retention_hold(session) is not None, "scope": "single_tenant_database"}
+
+
+@router.get("/privacy/retention-holds")
+def list_retention_holds(
+    response: Response,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    _hold_no_cache(response)
+    rows = session.scalars(
+        select(RetentionHold)
+        .order_by(
+            RetentionHold.released_at.is_not(None), RetentionHold.created_at.desc(), RetentionHold.retention_hold_id
+        )
+        .limit(limit)
+        .offset(offset)
+    )
+    return {"items": [_hold_payload(row) for row in rows]}
+
+
+@router.post("/privacy/retention-holds")
+def set_retention_hold(
+    body: RetentionHoldCreate,
+    response: Response,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    _hold_no_cache(response)
+    try:
+        row, changed = create_retention_hold(
+            session,
+            hold_id=body.hold_id,
+            reference=body.reference,
+            reason=body.reason,
+            actor=principal.principal_id,
+            now=datetime.now(UTC),
+        )
+    except ValueError:
+        raise ConflictError("hold identifier already belongs to a different request") from None
+    if changed:
+        audit.record(
+            session=session,
+            actor=principal.principal_id,
+            action="retention_hold.set",
+            object_type="retention_hold",
+            object_id=str(row.retention_hold_id),
+            detail={"scope": row.scope, "reference_provided": True, "reason_provided": True},
+        )
+    result = _hold_payload(row)
+    session.commit()
+    return result
+
+
+@router.post("/privacy/retention-holds/{hold_id}/release")
+def clear_retention_hold(
+    hold_id: uuid.UUID,
+    body: RetentionHoldRelease,
+    response: Response,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
+) -> dict[str, Any]:
+    _hold_no_cache(response)
+    row, changed = release_retention_hold(
+        session, hold_id=hold_id, reason=body.reason, actor=principal.principal_id, now=datetime.now(UTC)
+    )
+    if row is None:
+        raise NotFoundError("retention hold not found")
+    if changed:
+        audit.record(
+            session=session,
+            actor=principal.principal_id,
+            action="retention_hold.released",
+            object_type="retention_hold",
+            object_id=str(row.retention_hold_id),
+            detail={"scope": row.scope, "release_reason_provided": True},
+        )
+    result = _hold_payload(row)
+    session.commit()
+    return result
 
 
 class PrivacyVerification(BaseModel):
@@ -617,6 +777,8 @@ def fulfill_privacy_request(
     deleted = 0
     corrected = 0
     recipients = _recipients_for_request(session, settings, request)
+    if request.request_type == dm.PrivacyRequestType.DELETION:
+        _check_erasure_hold(session)
     request.status = PrivacyRequestStatus.IN_PROGRESS.value
     if request.request_type == dm.PrivacyRequestType.DELETION:
         # Fail closed before erasing: erasure must also purge the keyed-pseudonym
@@ -688,6 +850,7 @@ def delete_recipient(
     recipient = session.get(Recipient, recipient_id)
     if recipient is None or recipient.deleted_at is not None:
         raise NotFoundError("recipient not found")
+    _check_erasure_hold(session)
     # Resolve the governed ledger key first so a missing key fails the delete
     # closed rather than leaving re-identifiable ledger rows (KP-AUD-003).
     pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()

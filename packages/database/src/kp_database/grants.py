@@ -109,6 +109,7 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
             "source_policies",
             "threat_artifacts",
             "threat_bundle_imports",
+            "retention_holds",
         ),
         "SELECT, INSERT": ("campaign_program_occurrences",),
         # The console binds the durable launch review (create/re-create) and
@@ -176,7 +177,7 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
     },
     "retention": {
-        "SELECT": ("retention_policies",),
+        "SELECT": ("retention_policies", "retention_holds"),
         # microsoft365_integration_states is locked (FOR UPDATE SKIP LOCKED) and
         # its status/cursor fields updated during reported-mail retention.
         "SELECT, UPDATE": ("campaigns", "microsoft365_integration_states"),

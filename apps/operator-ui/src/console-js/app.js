@@ -1,6 +1,8 @@
 /* Kingphisher-Phoenix Operator Console — browser GUI, no CLI required. */
 "use strict";
 
+import { renderRetentionHolds } from "./retention-holds.js";
+
 const API = "/api/v1";
 
 const TOKEN_KEY = "kp_console_token";
@@ -7366,6 +7368,7 @@ views.privacy = async (root) => {
   const canDeleteData = hasCapability(CAPABILITY.DELETE_DATA);
   root.appendChild(el("h2", { text: "Privacy" }));
   root.appendChild(el("p", { class: "sub", text: "Privacy notice and data-subject requests (CCPA)." }));
+  await renderRetentionHolds(root, { el, api, hasCapability, CAPABILITY, promptDialog, confirmDialog, toast });
   let notice = null;
   let requests;
   try {
