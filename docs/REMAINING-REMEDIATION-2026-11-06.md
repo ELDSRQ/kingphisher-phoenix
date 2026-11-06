@@ -105,6 +105,13 @@ resolver explicitly targeting 3.15. The source development pin remains 3.13;
 both the fresh CI environments and the native image gate must pass with these
 locks before any deployment. Failed candidates and their evidence are retained.
 
+The next gate built all six images and reported zero prohibited findings for
+all five release images. It stopped on the separate mock image's stale PyJWT
+2.13.0 pin (seven HIGH/CRITICAL advisory entries). The mock input/lock now use
+2.15.1, matching the application lock's already-remediated version, with the
+same complete hash-verification and no scanner exclusion. Rerun the complete
+gate, including runtime/migration entrypoints, for the final candidate.
+
 **OS certificates.** The W2-02 wording came from the supplied handoff list; it
 was too broad for the current product. Developer ID signing/notarization applies
 when distributing a native macOS application; Windows package signing applies
