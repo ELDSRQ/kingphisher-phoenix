@@ -107,3 +107,32 @@ def test_endpoint_error_is_a_failure_and_counts_against_safety() -> None:
     # The one safety case errored, so the safety gate is not fully passed.
     assert local["safety_ok"] is False
     assert report["provider_telemetry"]["local"]["failures"] >= 1
+
+
+def test_unknown_provider_usage_is_never_attributed_to_model_free() -> None:
+    recording = _shipped_recordings()[0].model_copy(update={"provider": "future_provider"})
+    report = run_bakeoff(load_evaluation_set(), [recording])
+    assert set(report["provider_telemetry"]) == {"custom"}
+    assert report["provider_telemetry"]["custom"]["requests"] == len(load_evaluation_set().cases)
+
+
+def test_hosted_provider_cannot_prove_value_without_baseline() -> None:
+    recording = next(r for r in _shipped_recordings() if r.provider == "openai")
+    report = run_bakeoff(load_evaluation_set(), [recording])
+    summary = report["providers"][0]
+    assert summary["safety_ok"]
+    assert summary["recommendation"] == "disable"
+    assert "baseline absent" in summary["recommendation_rationale"]
+
+
+def test_endpoint_backed_model_free_label_is_not_a_deterministic_baseline() -> None:
+    recordings = _shipped_recordings()
+    for recording in recordings:
+        if recording.provider == "model_free":
+            recording.base_url = "https://api.openai.com/v1"
+            recording.acknowledged = True
+    report = run_bakeoff(load_evaluation_set(), recordings)
+    by_provider = {p["provider"]: p for p in report["providers"]}
+    assert by_provider["model_free"]["egress_class"] == "offsite"
+    assert by_provider["model_free"]["recommendation"] == "disable"
+    assert "baseline absent" in by_provider["openai"]["recommendation_rationale"]

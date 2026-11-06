@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Literal
 from urllib.parse import urlparse
 
+from kp_contracts.queue import MAX_QUEUE_RECONCILE_WINDOW_HOURS
 from kp_database.awareness_ledger import (
     LOCAL_AWARENESS_PSEUDONYM_KEY,
     LOCAL_AWARENESS_PSEUDONYM_KEY_VERSION,
@@ -233,7 +234,7 @@ class WorkerSettings(BaseSettings):
     # the owner/development path works today.
     queue_reconcile_enabled: bool = Field(default=False)
     queue_reconcile_interval_seconds: int = Field(default=300, ge=30, le=86400)
-    queue_reconcile_window_hours: int = Field(default=24, ge=1, le=2160)
+    queue_reconcile_window_hours: int = Field(default=24, ge=1, le=MAX_QUEUE_RECONCILE_WINDOW_HOURS)
     queue_reconcile_limit: int = Field(default=500, ge=1, le=5000)
     # --- bounded overload budgets (KP-AUD-024) ---
     # Small, opinionated producer backpressure + per-role handler deadlines. The

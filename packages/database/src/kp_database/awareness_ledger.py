@@ -17,7 +17,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Final, cast
 
 from kp_domain_models import models as dm
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
@@ -159,11 +159,13 @@ def purge_recipient_awareness_ledger(
     result = cast(
         "CursorResult[Any]",
         session.execute(
-            delete(AwarenessLedgerEntry).where(
+            delete(AwarenessLedgerEntry)
+            .where(
                 AwarenessLedgerEntry.tenant_scope == tenant_scope,
                 AwarenessLedgerEntry.recipient_pseudonym == pseudonym,
                 AwarenessLedgerEntry.pseudonym_key_version == pseudonym_key_version,
             )
+            .execution_options(synchronize_session=False)
         ),
     )
     return int(result.rowcount or 0)
@@ -463,6 +465,62 @@ class LedgerRecipientHistory:
     repeat_exposures: int
 
 
+@dataclass(frozen=True, slots=True)
+class PrivacyLedgerHistory:
+    entries: tuple[LedgerRecipientHistoryEntry, ...]
+    truncated: bool
+
+
+def privacy_ledger_recipient_history(
+    session: Session,
+    *,
+    privacy_request_id: uuid.UUID,
+    recipient_id: uuid.UUID,
+    tenant_scope: str,
+    pseudonym_key: bytes,
+    pseudonym_key_version: str,
+) -> PrivacyLedgerHistory:
+    """Read a minimized subject export using the authenticated operator login.
+
+    The capability-authorized route matches request mailbox to recipient and
+    computes the governed selector. SQL additionally requires a verified request
+    and existing recipient. No key material is sent to or stored in PostgreSQL.
+    The broader named-history reader and its privileges are unchanged.
+    """
+    _validate_pseudonym_inputs(
+        tenant_scope=tenant_scope,
+        key=pseudonym_key,
+        key_version=pseudonym_key_version,
+        as_of=datetime.now(UTC),
+    )
+    if not isinstance(privacy_request_id, uuid.UUID) or not isinstance(recipient_id, uuid.UUID):
+        raise TypeError("privacy request and recipient identifiers must be UUIDs")
+    rows = (
+        session.execute(
+            text(
+                "SELECT * FROM public.kp_privacy_subject_ledger("
+                ":request_id, :recipient_id, :scope, :pseudonym, :version, :limit)"
+            ),
+            {
+                "request_id": privacy_request_id,
+                "recipient_id": recipient_id,
+                "scope": tenant_scope,
+                "pseudonym": recipient_pseudonym(
+                    tenant_scope=tenant_scope, recipient_id=recipient_id, key=pseudonym_key
+                ),
+                "version": pseudonym_key_version,
+                "limit": MAX_LEDGER_RECIPIENT_HISTORY + 1,
+            },
+        )
+        .mappings()
+        .all()
+    )
+    return PrivacyLedgerHistory(
+        entries=tuple(LedgerRecipientHistoryEntry(**dict(row)) for row in rows[:MAX_LEDGER_RECIPIENT_HISTORY]),
+        truncated=len(rows) > MAX_LEDGER_RECIPIENT_HISTORY,
+    )
+
+
 def ledger_recipient_history(
     session: Session,
     *,
@@ -475,7 +533,7 @@ def ledger_recipient_history(
     """Return the bounded ledger history for one recipient's pseudonym.
 
     The caller supplies the stable tenant pseudonym key; this service resolves
-    ``recipient_id`` to its pseudonym and reads only the PII-free ledger, never
+    ``recipient_id`` to its pseudonym and reads only the keyed pseudonymous ledger, never
     recipient tables or raw evidence. The result is chronological and capped at
     ``MAX_LEDGER_RECIPIENT_HISTORY`` rows; ``truncated`` reports the cap.
 

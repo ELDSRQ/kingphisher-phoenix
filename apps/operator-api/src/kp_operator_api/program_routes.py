@@ -9,12 +9,15 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Query, Response, status
 from kp_authorization.rbac import Capability, Principal
 from kp_database.audit_store import AuditStore
-from kp_database.models import Campaign, CampaignProgram, CampaignProgramOccurrence
+from kp_database.models import Campaign, CampaignProgram, CampaignProgramAdaptation, CampaignProgramOccurrence
 from kp_database.program_service import (
     campaign_program_is_complete,
     get_campaign_program,
     list_campaign_program_occurrences,
+    list_program_adaptations,
     materialize_campaign_program,
+    materialize_next_program_iteration,
+    program_iteration_status,
     set_campaign_program_state,
 )
 from kp_domain_models import models as dm
@@ -44,6 +47,10 @@ class ProgramCreate(BaseModel):
 class ProgramStateChange(BaseModel):
     expected_version: int = Field(ge=1)
     rationale: str = Field(min_length=1, max_length=500)
+
+
+class ProgramIterationCreate(BaseModel):
+    expected_iteration: int = Field(ge=2, le=12, strict=True)
 
 
 def _utc_instant(value: datetime) -> str:
@@ -93,7 +100,41 @@ def _program_payload(
             _occurrence_payload(session, occurrence)
             for occurrence in list_campaign_program_occurrences(session, program.campaign_program_id)
         ]
+    progress = program_iteration_status(session, program)
+    payload["iteration_progress"] = {
+        "reason": progress.reason,
+        "materialized_count": progress.materialized_count,
+        "next_iteration": progress.next_iteration,
+        "schedule_start": _utc_instant(progress.schedule_start) if progress.schedule_start else None,
+        "schedule_end": _utc_instant(progress.schedule_end) if progress.schedule_end else None,
+        "prior_state": progress.prior_state,
+        "late": progress.late,
+    }
+    payload["adaptation_scope"] = "enrollment_and_difficulty_metadata"
+    payload["adaptation_changes_content"] = False
     return payload
+
+
+def _adaptation_payload(adaptation: CampaignProgramAdaptation) -> dict[str, Any]:
+    """Aggregate-only projection: never expose stored roster exclusion IDs."""
+    return {
+        "iteration_number": adaptation.iteration_number,
+        "iteration_campaign_id": str(adaptation.iteration_campaign_id),
+        "basis_campaign_id": str(adaptation.basis_campaign_id),
+        "signals": {
+            key: adaptation.signals.get(key, 0)
+            for key in ("accepted", "human_clicked", "automation_suspected_clicked", "reported")
+        },
+        "changes": {
+            key: adaptation.changes.get(key) for key in ("prior_level", "next_level", "difficulty_delta", "rationale")
+        },
+        "enrollment": {
+            key: adaptation.enrollment.get(key, 0)
+            for key in ("base_population", "enrolled", "excluded_opt_out", "excluded_scanner_only")
+        },
+        "content_changed": False,
+        "scope": "enrollment_and_difficulty_metadata",
+    }
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -157,6 +198,61 @@ def get_program(
     del principal
     program = get_campaign_program(session, program_id)
     return _program_payload(session, program, include_occurrences=True)
+
+
+@router.get("/{program_id}/adaptations")
+def get_program_adaptations(
+    program_id: uuid.UUID,
+    response: Response,
+    limit: int = Query(default=100, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=_COLLECTION_MAX_OFFSET),
+    session: Session = Depends(get_session),
+    principal: Principal = Depends(require_capability(Capability.VIEW_AGGREGATE)),
+) -> list[dict[str, Any]]:
+    del principal
+    response.headers["Cache-Control"] = "no-store"
+    return [
+        _adaptation_payload(item) for item in list_program_adaptations(session, program_id, limit=limit, offset=offset)
+    ]
+
+
+@router.post("/{program_id}/iterations")
+def create_program_iteration(
+    program_id: uuid.UUID,
+    body: ProgramIterationCreate,
+    response: Response,
+    session: Session = Depends(get_session),
+    audit: AuditStore = Depends(get_audit_store),
+    principal: Principal = Depends(require_capability(Capability.CREATE_CAMPAIGN)),
+) -> dict[str, Any]:
+    result = materialize_next_program_iteration(
+        session,
+        program_id=program_id,
+        expected_iteration=body.expected_iteration,
+        created_by=uuid.UUID(principal.principal_id),
+    )
+    audit.record(
+        session=session,
+        actor=principal.principal_id,
+        action="campaign_program.iteration.request",
+        object_type="campaign_program",
+        object_id=str(program_id),
+        detail={
+            "expected_iteration": body.expected_iteration,
+            "created": result.created,
+            "reason": result.reason,
+            "state": "draft" if result.created else None,
+        },
+    )
+    session.commit()
+    response.status_code = status.HTTP_201_CREATED if result.created else status.HTTP_200_OK
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "created": result.created,
+        "reason": result.reason,
+        "iteration_campaign_id": str(result.occurrence.campaign_id) if result.occurrence else None,
+        **_program_payload(session, result.program, include_occurrences=True),
+    }
 
 
 def _change_program_state(

@@ -111,7 +111,7 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
             "threat_bundle_imports",
             "retention_holds",
         ),
-        "SELECT, INSERT": ("campaign_program_occurrences",),
+        "SELECT, INSERT": ("campaign_program_occurrences", "campaign_program_adaptations"),
         # The console binds the durable launch review (create/re-create) and
         # reads canary membership; re-review deletes and re-inserts these rows.
         "SELECT, INSERT, DELETE": ("campaign_canary_recipients",),
@@ -126,12 +126,10 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
         # evidence is never created or removed by the console.
         "SELECT, UPDATE": ("recipient_delivery_suppressions",),
         # Right-to-erasure (KP-AUD-003) must reach the awareness ledger, which is
-        # otherwise retention-managed. The operator console gets DELETE ONLY
-        # here (never SELECT/INSERT/UPDATE): it can purge a data subject's keyed
-        # pseudonymous rows on erasure but can never read, project, or amend the
-        # five-year outcomes. Every other non-retention workload keeps zero
-        # access to this table.
-        "DELETE": ("awareness_ledger_entries",),
+        # otherwise retention-managed. Column SELECT below exposes only the
+        # exact subject selector needed for DELETE, never the five-year outcome.
+        # Receipt deletion likewise reads only the assignment selector.
+        "DELETE": ("awareness_ledger_entries", "reported_mail_receipts", "reply_mail_receipts"),
     },
     "tracking": {
         "SELECT": ("tracking_tokens", "training_resources", "campaigns"),
@@ -177,7 +175,19 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
     },
     "retention": {
-        "SELECT": ("retention_policies", "retention_holds"),
+        "SELECT": (
+            "retention_policies",
+            "retention_holds",
+            "campaign_programs",
+            "campaign_program_occurrences",
+            "campaign_program_adaptations",
+            "campaign_patterns",
+            "template_versions",
+            "training_resources",
+            "campaign_audiences",
+            "campaign_audience_manifest",
+            "recipient_exclusions",
+        ),
         # microsoft365_integration_states is locked (FOR UPDATE SKIP LOCKED) and
         # its status/cursor fields updated during reported-mail retention.
         "SELECT, UPDATE": ("campaigns", "microsoft365_integration_states"),
@@ -256,10 +266,34 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-#: privilege -> {table -> columns}. Currently empty (all column-scoping is
-#: expressed through the audit-anchor and outbox grants below), but kept so a
-#: future column-scoped workload grant has a home in the single source of truth.
-WORKLOAD_COLUMN_GRANTS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {}
+# PostgreSQL requires UPDATE on at least one column for SELECT ... FOR UPDATE.
+# Mailbox locks assignments while recording reports; it need not edit their
+# delivery or approval fields. Keep that lock permission column-scoped.
+WORKLOAD_COLUMN_GRANTS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
+    # Only needed for the existing program row lock. Draft insertion is solely
+    # through the login-restricted definer, never a direct campaign INSERT.
+    "retention": {"UPDATE": {"campaign_programs": ("updated_at",)}},
+    "mailbox": {"UPDATE": {"recipient_assignments": ("recipient_assignment_id",)}},
+    "operator": {
+        "SELECT": {
+            "awareness_ledger_entries": ("tenant_scope", "recipient_pseudonym", "pseudonym_key_version"),
+            "reported_mail_receipts": ("recipient_assignment_id", "disposition", "received_at"),
+            "reply_mail_receipts": ("recipient_assignment_id", "disposition", "received_at"),
+        },
+        "UPDATE": {
+            "microsoft365_integration_states": (
+                "pending_preview_id",
+                "pending_preview_hash",
+                "pending_payload",
+                "pending_created_at",
+                "pending_expires_at",
+                "status",
+                "last_error",
+                "updated_at",
+            ),
+        },
+    },
+}
 
 #: audit-anchor is a read-only evidence reader: column-scoped SELECT only.
 AUDIT_ANCHOR_COLUMN_GRANTS: dict[str, tuple[str, ...]] = {
@@ -314,6 +348,29 @@ OUTBOX_CONFLICT_SELECT_COLUMNS: tuple[str, ...] = ("idempotency_key",)
 
 #: audit-anchor gets EXECUTE on the two read-only verification functions only.
 AUDIT_ANCHOR_FUNCTIONS: tuple[str, ...] = ("kp_outbox_health()", "kp_verify_audit_head()")
+
+# Reconciliation reads bearer payloads only for the authenticated worker's own
+# topic. Operator, tracking, audit-anchor and shared audit_writer have no grant.
+QUEUE_RECONCILE_FUNCTION = "kp_reconcile_queue_outbox(text,integer,integer,timestamptz,uuid)"
+QUEUE_RECONCILE_TOPICS: dict[str, str] = {
+    "ingestion": "ingest",
+    "generation": "generate",
+    "delivery": "deliver",
+    "retention": "retention",
+    "mailbox": "mailbox",
+    "reply-mailbox": "reply-mailbox",
+    "reminder": "remind",
+    "alert": "alert",
+    "directory": "directory",
+    "curation": "curate",
+}
+WORKLOAD_FUNCTION_GRANTS: dict[str, tuple[str, ...]] = {
+    workload: (QUEUE_RECONCILE_FUNCTION,) for workload in QUEUE_RECONCILE_TOPICS
+}
+PRIVACY_LEDGER_EXPORT_FUNCTION = "kp_privacy_subject_ledger(uuid,uuid,text,text,text,integer)"
+WORKLOAD_FUNCTION_GRANTS["operator"] = (PRIVACY_LEDGER_EXPORT_FUNCTION,)
+PROGRAM_DRAFT_FUNCTION = "kp_create_adaptive_program_draft(uuid,integer,uuid,uuid,uuid,jsonb)"
+WORKLOAD_FUNCTION_GRANTS["retention"] += (PROGRAM_DRAFT_FUNCTION,)
 
 #: high-value tables the negative-direction probe always includes in the denied
 #: universe so a workload is proven to have NO access to audit evidence / the

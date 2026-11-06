@@ -1,0 +1,906 @@
+{
+  "schema_version": 1,
+  "updated": "2026-11-06",
+  "baseline": "db55667aeb9950e98297b54a3ad91af1d26a5017",
+  "repository": "ELDSRQ/kingphisher-phoenix",
+  "authorization": "User approved continued remediation and engineering actions until complete or no agent jobs remain. Human evidence/signatures must remain authentic.",
+  "provenance": {
+    "original_task_count": 29,
+    "recovery": "Recovered original task write and project-specific follow-up notes; verified PR146\u2013168 ancestry. Historical status is retained separately from current completion. Raw private recovery records remain in preserved qualification storage.",
+    "prior_implementation_pr": 169,
+    "canonical_path": "docs/remediation/registry.json"
+  },
+  "completion_rule": "No agent-actionable jobs remain only when every owner=agent item is complete or names a concrete external blocker; a historical merge is not current live/human qualification.",
+  "tasks": [
+    {
+      "id": "W0-01",
+      "legacy": [
+        "KP-AUD-001",
+        "RB-01"
+      ],
+      "priority": "P0",
+      "title": "SafetyValidator: gate image-host exemption on actual image-src origin",
+      "deps": [],
+      "historical": {
+        "status": "done",
+        "merged_pr": 150,
+        "merge_commit": "cea293cf4daa4cd70b4fc0e7bb58e484da3f450a",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W0-02",
+      "legacy": [
+        "KP-AUD-003"
+      ],
+      "priority": "P0",
+      "title": "Personal-data lifecycle: reply/reported receipts + ledger in retention/erasure/export",
+      "deps": [],
+      "historical": {
+        "status": "done",
+        "merged_pr": 149,
+        "merge_commit": "5e5bfe6e6975f89cbf119f467ec9dee67170f942",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [
+        "FU-10",
+        "FU-11",
+        "FU-12",
+        "FU-13"
+      ],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W0-03",
+      "legacy": [
+        "KP-AUD-021"
+      ],
+      "priority": "P0",
+      "title": "Upgrade advisory-matched deps; regenerate uv.lock; record disposition",
+      "deps": [],
+      "historical": {
+        "status": "done",
+        "merged_pr": 147,
+        "merge_commit": "21b3455bbfb1e81e862ec523cb94bbaeaaa7ec5d",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "evidence": [
+        "PR169: native AMD64 six-image gate, all25 phases; no high/critical/secret findings. Current change requires a new exact-source image gate."
+      ]
+    },
+    {
+      "id": "W0-04",
+      "legacy": [
+        "RB-01-harness"
+      ],
+      "priority": "P0",
+      "title": "Final-MIME regression harness (benign/adversarial corpus + no-network provider)",
+      "deps": [
+        "W0-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 159,
+        "merge_commit": "eec456e83027271dea75cee4e13664f85e95a490",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [
+        "FU-4"
+      ],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W1-01",
+      "legacy": [
+        "KP-AUD-002",
+        "KP-AUD-020-code"
+      ],
+      "priority": "P0",
+      "title": "Canonical RoleSpec manifest -> app/Terraform/grants/migration/health/UI (TF plan-only)",
+      "deps": [
+        "W0-04"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 152,
+        "merge_commit": "9b9d80756743cf958fc9a106e6a8366645a49908",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [
+        "FU-1",
+        "FU-2"
+      ],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W1-02",
+      "legacy": [
+        "KP-AUD-004"
+      ],
+      "priority": "P1",
+      "title": "Add curate topic to queue registry + DLQ admin/replay",
+      "deps": [
+        "W1-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 154,
+        "merge_commit": "f6ddbc92dc818193de12661ded2e7a07e882374b",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W1-03",
+      "legacy": [
+        "KP-AUD-006",
+        "KP-AUD-007"
+      ],
+      "priority": "P0",
+      "title": "Queue lease heartbeat/fencing + outbox<->queue reconciliation",
+      "deps": [
+        "W1-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 157,
+        "merge_commit": "6c294df43ff6db4cf48f79f45c8084db57937d2c",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [
+        "FU-5",
+        "FU-6",
+        "FU-7",
+        "FU-8",
+        "FU-9"
+      ],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W1-04",
+      "legacy": [
+        "KP-AUD-008"
+      ],
+      "priority": "P1",
+      "title": "AI provider config generation token + reconcile; minimize plaintext key",
+      "deps": [],
+      "historical": {
+        "status": "done",
+        "merged_pr": 161,
+        "merge_commit": "98e69ccf35a945be0ffde0a01542d1b3cdc6cd79",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W1-05",
+      "legacy": [
+        "KP-AUD-009",
+        "KP-AUD-010",
+        "KP-AUD-011",
+        "KP-AUD-012"
+      ],
+      "priority": "P0",
+      "title": "AI gateway: streaming byte cap, bounded JSON, caps/concurrency, dict-guard, honest PII copy",
+      "deps": [],
+      "historical": {
+        "status": "done",
+        "merged_pr": 148,
+        "merge_commit": "f93725e098ea44b12cfe3c5d9c739f6101302313",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W1-06",
+      "legacy": [
+        "KP-AUD-005",
+        "KP-AUD-014"
+      ],
+      "priority": "P0",
+      "title": "Reply confidence MEDIUM + automation-suspected click separation",
+      "deps": [],
+      "historical": {
+        "status": "done",
+        "merged_pr": 146,
+        "merge_commit": "77985b8787cca6a56d1a98ddf3345671a6ea2c7b",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W1-07",
+      "legacy": [
+        "KP-AUD-019"
+      ],
+      "priority": "P1",
+      "title": "Credential rotation state machine + session epoch/revocation",
+      "deps": [
+        "W1-04"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 162,
+        "merge_commit": "62f96fe3a0185c75f1b10d229d0e7a36635f1d0a",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W2-01",
+      "legacy": [
+        "KP-AUD-002",
+        "KP-AUD-004",
+        "KP-AUD-016",
+        "KP-AUD-024"
+      ],
+      "priority": "P1",
+      "title": "Operator health + mode-aware capability dashboard",
+      "deps": [
+        "W1-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 155,
+        "merge_commit": "d9eea620b7c3aefb606998e0f7bc1c614c63719a",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W3-01",
+      "legacy": [
+        "KP-AUD-015-part",
+        "Report04"
+      ],
+      "priority": "P1",
+      "title": "Deterministic cue + transformation manifests",
+      "deps": [
+        "W0-04"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 153,
+        "merge_commit": "fa284d5e0d887fb1915e5abc9b81256be1d3fa67",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W3-02",
+      "legacy": [
+        "Report04"
+      ],
+      "priority": "P2",
+      "title": "Governed current-threat library + provenance/freshness",
+      "deps": [
+        "W1-01",
+        "W3-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 158,
+        "merge_commit": "e5d0f7b67d63230e2a83554af34ccbd6d6692feb",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W3-03",
+      "legacy": [
+        "KP-AUD-013"
+      ],
+      "priority": "P1",
+      "title": "Default no third-party remote images; reject '*' in prod; bound asset dimensions",
+      "deps": [
+        "W0-01",
+        "W3-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 160,
+        "merge_commit": "a25c38ff9c9eb5b71ca891a55f5557951fce2ea3",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W3-04",
+      "legacy": [
+        "KP-AUD-010",
+        "KP-AUD-012",
+        "Report04"
+      ],
+      "priority": "P2",
+      "title": "AI quality/privacy/cost evaluation harness",
+      "deps": [
+        "W1-05",
+        "W3-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 156,
+        "merge_commit": "773efb384731dd156fb764972b950beeef03ced7",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W4-01",
+      "legacy": [
+        "KP-AUD-015"
+      ],
+      "priority": "P1",
+      "title": "Bind after-click training to simulation cues (coverage validator)",
+      "deps": [
+        "W2-05-code",
+        "W3-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 163,
+        "merge_commit": "19dfb26175e0ca266065eeb9668677a9737012c1",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [
+        "FU-14",
+        "FU-15",
+        "FU-16",
+        "FU-17"
+      ],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W4-02",
+      "legacy": [
+        "KP-AUD-003",
+        "KP-AUD-005",
+        "KP-AUD-014"
+      ],
+      "priority": "P0",
+      "title": "Reports around evidence quality + longitudinal uncertainty",
+      "deps": [
+        "W0-02",
+        "W1-06",
+        "W2-05-code"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 164,
+        "merge_commit": "f30ef1845582962ddfa8614dd6fcf3ad0cb9f335",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "complete",
+      "owner": "none",
+      "next_action": null
+    },
+    {
+      "id": "W4-03",
+      "legacy": [
+        "competitive"
+      ],
+      "priority": "P2",
+      "title": "Recurring cue-adaptive campaign programs (no autonomous send)",
+      "deps": [
+        "W4-01",
+        "W4-02"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 165,
+        "merge_commit": "6e12176148c306067a3f294d03ff7713b4301e82",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [
+        "FU-18",
+        "FU-19"
+      ],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W5-02",
+      "legacy": [
+        "KP-AUD-020",
+        "KP-AUD-022-docs"
+      ],
+      "priority": "P1",
+      "title": "Docs from canonical manifests + release-evidence schema",
+      "deps": [
+        "W0-03",
+        "W1-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 167,
+        "merge_commit": "a91e7431a6fd4fe399457b86f6b167b33760663c",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [
+        "FU-3"
+      ],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W5-03",
+      "legacy": [
+        "KP-AUD-023"
+      ],
+      "priority": "P2",
+      "title": "Extract policy services (behavior-preserving; characterization tests first)",
+      "deps": [
+        "W0-04",
+        "W1-01"
+      ],
+      "historical": {
+        "status": "done",
+        "merged_pr": 166,
+        "merge_commit": "079bb52d00d9578ffd5b66e612eab053353f0fba",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [
+        "FU-20"
+      ],
+      "status": "integration_pending",
+      "owner": "agent",
+      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+    },
+    {
+      "id": "W2-02",
+      "legacy": [
+        "KP-AUD-017"
+      ],
+      "priority": "P1",
+      "title": "Signed graphical on-prem installer",
+      "deps": [
+        "W1-01",
+        "W1-07"
+      ],
+      "historical": {
+        "status": "parked"
+      },
+      "followups": [],
+      "status": "external_gate",
+      "owner": "operator",
+      "next_action": "Qualify installation, upgrade, repair and reboot on supported clean hosts. OS publisher certificates apply only to distributed native signed packages; browser/server deployment does not require a controller signing identity."
+    },
+    {
+      "id": "W2-03",
+      "legacy": [
+        "KP-AUD-018"
+      ],
+      "priority": "P0",
+      "title": "Backup/restore product + measured RPO/RTO",
+      "deps": [
+        "W1-03",
+        "W2-01"
+      ],
+      "historical": {
+        "status": "parked"
+      },
+      "followups": [],
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Build and execute preserved isolated full-service restore with database, queue, files and keys. Report measured scope/timings; independent off-host secret recovery and business outage targets remain separate gates."
+    },
+    {
+      "id": "W2-04",
+      "legacy": [
+        "KP-AUD-002",
+        "KP-AUD-018",
+        "KP-AUD-022"
+      ],
+      "priority": "P0",
+      "title": "Azure wizard + live staging qualification",
+      "deps": [
+        "W0-03",
+        "W1-01",
+        "W2-03"
+      ],
+      "historical": {
+        "status": "parked"
+      },
+      "followups": [],
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Integrate reviewed deployment guards and final CI/images, wake retained Azure staging runner and execute guarded staging workflow. Preserve tracked receipt subscription and all live role assignments."
+    },
+    {
+      "id": "W2-05",
+      "legacy": [
+        "KP-AUD-016"
+      ],
+      "priority": "P0",
+      "title": "Campaign UX + human D6 + WCAG",
+      "deps": [
+        "W1-06",
+        "W2-01"
+      ],
+      "historical": {
+        "status": "parked"
+      },
+      "followups": [],
+      "status": "human_gate",
+      "owner": "operator",
+      "next_action": "Current on-prem D6 needs one independent human driver and manual keyboard/screen-reader accessibility checks on deployed release. Original second usability trial is a stronger pilot criterion, not a WCAG requirement or a universal second-account requirement."
+    },
+    {
+      "id": "W5-01",
+      "legacy": [
+        "KP-AUD-024"
+      ],
+      "priority": "P2",
+      "title": "Overload budgets + performance qualification",
+      "deps": [
+        "W1-03",
+        "W2-01"
+      ],
+      "historical": {
+        "status": "code_done_gate_pending",
+        "merged_pr": 168,
+        "merge_commit": "fb273050be63653284978c593cd9b31776016f7d",
+        "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
+      },
+      "followups": [],
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Execute actual workers/outbox/provider-sink workload at125 and1250 synthetic recipients, including slow/error handling and bounded sustained load. Five-minute Redis component result alone is insufficient."
+    },
+    {
+      "id": "W5-04",
+      "legacy": [
+        "KP-AUD-025"
+      ],
+      "priority": "P3",
+      "title": "Legal hold retention construct",
+      "deps": [
+        "W0-02"
+      ],
+      "historical": {
+        "status": "parked"
+      },
+      "followups": [],
+      "status": "code_complete",
+      "owner": "agent",
+      "next_action": "PR169 implements the approved tenant retention hold with audited authorized set/clear and purge suspension. Preserve its documented policy; repeat current combined migration/role gates."
+    },
+    {
+      "id": "W5-05",
+      "legacy": [
+        "KP-AUD-022",
+        "RB-05"
+      ],
+      "priority": "P0",
+      "title": "Controlled synthetic pilot + initial production qualification",
+      "deps": [
+        "W0-04",
+        "W1-all",
+        "W2-all",
+        "W3-03"
+      ],
+      "historical": {
+        "status": "parked"
+      },
+      "followups": [],
+      "status": "human_gate",
+      "owner": "operator",
+      "next_action": "Observe accepted current staging synthetic pilot and sign initial-use GO after engineering qualification. No real campaign permission or provider delivery is implied."
+    },
+    {
+      "id": "W5-06",
+      "legacy": [
+        "broad-use"
+      ],
+      "priority": "P0",
+      "title": "Broad operational-use qualification",
+      "deps": [
+        "W4-01",
+        "W4-02",
+        "W5-01",
+        "W5-02",
+        "W5-05"
+      ],
+      "historical": {
+        "status": "parked"
+      },
+      "followups": [],
+      "status": "human_gate",
+      "owner": "operator",
+      "next_action": "Record broad-use acceptance and signed GO after prerequisite release, recovery, accessibility and pilot gates."
+    }
+  ],
+  "followups": [
+    {
+      "id": "FU-1",
+      "parent": "W1-01",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "Terraform main.tf lacks reply endpoint/address and curation/report completeness preconditions; reported-mailbox alone is checked.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-2",
+      "parent": "W1-01",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "grants.py:218 mailbox has SELECT-only recipient_assignments; reported_mail_jobs.py:180/193 uses FOR UPDATE; WORKLOAD_COLUMN_GRANTS empty; bootstrap test:423/468 pins undergrant.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-3",
+      "parent": "W5-02",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "AI_HANDOFF.md:369 still calls keyed awareness ledger PII-free.",
+      "resolution": "Replace stale PII-free descriptions with keyed pseudonymous wording."
+    },
+    {
+      "id": "FU-4",
+      "parent": "W0-04",
+      "status": "complete",
+      "owner": "none",
+      "recovered_assessment": "safe_html.py:465-481 as_provenance calls _fold_removed_tags; clone_service persists folded provenance.",
+      "resolution": "safe_html.py:465-481 as_provenance calls _fold_removed_tags; clone_service persists folded provenance."
+    },
+    {
+      "id": "FU-5",
+      "parent": "W1-03",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "outbox.py:357 calls kp_reconcile_queue_outbox; no migration defines it. Next free slot after 0053 is 0054.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-6",
+      "parent": "W1-03",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "queue.py:182 replay review-only policy remains denylist, allowing future topics by default.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-7",
+      "parent": "W1-03",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "workers/config.py:236 allows reconcile window 2160h, equal to the 90-day dedup TTL.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-8",
+      "parent": "W1-03",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "queue.py:437-471 renewal updates stored raw envelope; ack/reject compare caller exact _raw, vulnerable to lost renewal replies.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-9",
+      "parent": "W1-03",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "outbox.py:309-314 logs review-required missing rows each reconciliation; default cadence 300s.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-10",
+      "parent": "W0-02",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "privacy.py:114 returns before ledger purge for already tombstoned recipients; no backfill path.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-11",
+      "parent": "W0-02",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "privacy.py:149 discards ledger purge count; erasure route audit has no purge count.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-12",
+      "parent": "W0-02",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "test_privacy_erasure_receipts recreates metadata and tests owner sessions, without kp_operator role, wrong-version, multi-row and missing/malformed key assertions.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-13",
+      "parent": "W0-02",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "Managed malformed-key tests cover export; managed delete/fulfill erasure fixture coverage unconfirmed, not a proved runtime defect.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-14",
+      "parent": "W4-01",
+      "status": "policy_unchanged",
+      "owner": "none",
+      "recovered_assessment": "Coverage references are bounded free-text operator attestations plus independent review; validating against actual lesson requires a reference contract.",
+      "resolution": "Preserve bounded operator attestations with independent review. Stronger structured references are optional product policy, not a proved defect."
+    },
+    {
+      "id": "FU-15",
+      "parent": "W4-01",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "NULL coverage author skips separation check; unique mapping blocks reauthoring. Existing decision=rejected already withdraws reviewed coverage, so no-revoke claim partly stale.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-16",
+      "parent": "W4-01",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "campaigns.py:1534 already row-locks coverage with_for_update=True. Historical no-lock assertion is stale; no fresh concurrency proof run.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-17",
+      "parent": "W4-01",
+      "status": "policy_unchanged",
+      "owner": "none",
+      "recovered_assessment": "Exception recorder permits creator but reopens review and clears approvals. Tightening is policy, not a demonstrated unauthorized send.",
+      "resolution": "Preserve existing exception invalidation and configured approval policy; no unsolicited second-person requirement."
+    },
+    {
+      "id": "FU-18",
+      "parent": "W4-03",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "Program create supports generation_mode but no adaptations/iterations convenience routes or adaptive console controls exist.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-19",
+      "parent": "W4-03",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "program_jobs discovery outside try, no created_by supplied; program_service propagates None, copies possibly stale schedule, silently stalls rejected/cancelled/expired prior iteration, and changes level metadata only.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    },
+    {
+      "id": "FU-20",
+      "parent": "W5-03",
+      "status": "integration_pending",
+      "owner": "agent",
+      "recovered_assessment": "Characterization suites omit listed edge cases. Deferred extractions are optional behavior-preserving refactors, not proved defects.",
+      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+    }
+  ],
+  "additional_items": [
+    {
+      "id": "REG-001",
+      "parent": "W3-04",
+      "title": "AI evaluation endpoint classification, unknown-provider telemetry and baseline honesty",
+      "status": "integration_pending",
+      "owner": "agent"
+    },
+    {
+      "id": "REG-002",
+      "parent": "W3-02",
+      "title": "Concurrent threat artifact insert deduplication without outer transaction loss",
+      "status": "integration_pending",
+      "owner": "agent"
+    },
+    {
+      "id": "REG-003",
+      "parent": "W2-01",
+      "title": "Health session creation and authorization-query unavailable states",
+      "status": "integration_pending",
+      "owner": "agent"
+    },
+    {
+      "id": "REG-004",
+      "parent": "W2-03",
+      "title": "Preserve checkpoint archives and private partial captures on collision/failure",
+      "status": "integration_pending",
+      "owner": "agent"
+    },
+    {
+      "id": "REG-005",
+      "parent": "W2-04",
+      "title": "Preserve cloud roles and ACS receipt continuity; strict non-destructive plan guards",
+      "status": "integration_pending",
+      "owner": "agent"
+    },
+    {
+      "id": "REG-006",
+      "parent": "W0-02",
+      "title": "Serialize subject erasure with in-flight ledger projector",
+      "status": "integration_pending",
+      "owner": "agent"
+    },
+    {
+      "id": "REG-007",
+      "parent": "W0-02",
+      "title": "Actual-role bounded subject export without broad ledger outcome/receipt identifier access",
+      "status": "in_progress",
+      "owner": "agent"
+    },
+    {
+      "id": "REG-008",
+      "parent": "W4-03",
+      "title": "Actual retention-role adaptive drafts through constrained database operation; cyclic discovery avoids oldest500 starvation",
+      "status": "integration_pending",
+      "owner": "agent"
+    },
+    {
+      "id": "REG-009",
+      "parent": "W1-03",
+      "title": "Keyset reconciliation sweep reaches records beyond first batch under ongoing publications; changed-condition warnings",
+      "status": "integration_pending",
+      "owner": "agent"
+    }
+  ],
+  "evidence": {
+    "prior_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42255462847",
+    "current_local_root": "/private/tmp/kp-registry-completion-20261106-3lkIJ1",
+    "privacy_role_effects": "privacy-role-effects-v3.xml:6 actual-role PostgreSQL effects including projector/erasure interleaving",
+    "adaptive": "6 migrated PostgreSQL +14 Chromium/WCAG2.2 scenarios; adaptive-postgres-v3.xml",
+    "queue": "257 focused +2 real Redis; queue-followups-completion.json",
+    "queue_roles": "cursor-reconcile-postgres-v2.xml:8 actual-login PostgreSQL tests passed100.45s, including >limit recovery amid new publication, mailbox lock, scope/role/bounds denial and NOINHERIT migration",
+    "followon": "138 focused +3 PostgreSQL concurrency; followon-completion.json",
+    "preservation": "Checkpoint/plan guard25 tests passed; workflow actionlint and zizmor clean; pinned workflow/connector contract updated together",
+    "privacy_export": "privacy-export-role-effects.xml:7 actual-login PostgreSQL tests; application identity binding, service-role SQL trust documented in PRIVACY-EXPORT-BOUNDARY.md",
+    "terraform_connectors": "terraform-connectors-v5.log:5 mocked provider plans passed; no Azure apply",
+    "static": "Ruff check/format clean; strict mypy219 sources clean; lock check resolved92 packages",
+    "combined_hermetic": "hermetic-integration-v2.log:4184 passed,173 deselected,256.52s; no skips. New fullstack harness is a separate wave, not included in this result.",
+    "adaptive_worker": "adaptive-role-effects-final.xml:9 passed62.66s; adaptive-discovery-postgres.xml:1 passed9.46s. Managed tick, operator create/read, replay, unauthorized actual-login denial and keyset wrap proved."
+  }
+}

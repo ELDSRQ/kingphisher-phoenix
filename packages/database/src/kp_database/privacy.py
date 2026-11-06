@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -74,6 +75,14 @@ def hash_mailbox(mailbox: str, salt: bytes) -> str:
     return hashlib.sha256(salt + inner).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class RecipientErasureResult:
+    recipient_found: bool
+    tombstoned_now: bool = False
+    already_tombstoned: bool = False
+    ledger_rows_purged: int = 0
+
+
 def erase_recipient_data(
     session: Session,
     recipient_id: UUID,
@@ -82,6 +91,28 @@ def erase_recipient_data(
     pseudonym_key: bytes,
     pseudonym_key_version: str,
 ) -> bool:
+    """Compatibility interface: report whether this call created a tombstone.
+
+    Cleanup also reaches historical tombstones. Call the result-returning
+    interface when recording purge counts or repeated-erasure remediation.
+    """
+    return erase_recipient_data_with_result(
+        session,
+        recipient_id,
+        erased_at=erased_at,
+        pseudonym_key=pseudonym_key,
+        pseudonym_key_version=pseudonym_key_version,
+    ).tombstoned_now
+
+
+def erase_recipient_data_with_result(
+    session: Session,
+    recipient_id: UUID,
+    *,
+    erased_at: datetime,
+    pseudonym_key: bytes,
+    pseudonym_key_version: str,
+) -> RecipientErasureResult:
     """Erase a recipient and all directly linked behavioral data.
 
     The recipient row is retained as an anonymous tombstone so historic
@@ -95,7 +126,7 @@ def erase_recipient_data(
     The caller fails closed (cannot resolve the key -> raises) before invoking
     this function, so erasure never silently leaves re-identifiable rows behind.
     """
-    from kp_database.awareness_ledger import purge_recipient_awareness_ledger
+    from kp_database.awareness_ledger import _validate_pseudonym_inputs, purge_recipient_awareness_ledger
     from kp_database.models import (
         AudienceGroupMember,
         Microsoft365IntegrationState,
@@ -107,12 +138,21 @@ def erase_recipient_data(
         TrainingAssignment,
     )
     from kp_database.personal_data import ASSIGNMENT_LINKED_RECEIPT_MODELS
+    from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
     from kp_database.retention_holds import require_no_retention_hold
 
+    # Validate before any SQL writes or autoflush, including direct callers.
+    _validate_pseudonym_inputs(
+        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+        key=pseudonym_key,
+        key_version=pseudonym_key_version,
+        as_of=erased_at,
+    )
     require_no_retention_hold(session)
-    recipient = session.get(Recipient, recipient_id)
-    if recipient is None or recipient.deleted_at is not None:
-        return False
+    recipient = session.get(Recipient, recipient_id, with_for_update=True, populate_existing=True)
+    if recipient is None:
+        return RecipientErasureResult(recipient_found=False)
+    already_tombstoned = recipient.deleted_at is not None
     assignment_ids = list(
         session.scalars(
             select(RecipientAssignment.recipient_assignment_id).where(RecipientAssignment.recipient_id == recipient_id)
@@ -134,25 +174,16 @@ def erase_recipient_data(
         # receipts previously escaped erasure entirely (KP-AUD-003).
         for receipt_model in ASSIGNMENT_LINKED_RECEIPT_MODELS:
             model: Any = receipt_model
-            session.execute(delete(model).where(model.recipient_assignment_id.in_(assignment_ids)))
+            session.execute(
+                delete(model)
+                .where(model.recipient_assignment_id.in_(assignment_ids))
+                .execution_options(synchronize_session=False)
+            )
         session.execute(delete(TrackingToken).where(TrackingToken.recipient_assignment_id.in_(assignment_ids)))
     session.execute(delete(TrackingEvent).where(TrackingEvent.recipient_id == recipient_id))
     session.execute(delete(TrainingAssignment).where(TrainingAssignment.recipient_id == recipient_id))
     session.execute(delete(RecipientExclusion).where(RecipientExclusion.recipient_id == recipient_id))
     session.execute(delete(AudienceGroupMember).where(AudienceGroupMember.recipient_id == recipient_id))
-    # Right-to-erasure must reach the keyed-pseudonym awareness ledger: while the
-    # governed key exists the subject's rows are re-identifiable personal data
-    # (KP-AUD-003, erasure Option A). The ledger carries no recipient FK, so the
-    # pseudonym is recomputed from the active key and the matching rows deleted.
-    from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
-
-    purge_recipient_awareness_ledger(
-        session,
-        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
-        recipient_id=recipient_id,
-        pseudonym_key=pseudonym_key,
-        pseudonym_key_version=pseudonym_key_version,
-    )
     pending_states = list(
         session.scalars(
             select(Microsoft365IntegrationState)
@@ -180,6 +211,24 @@ def erase_recipient_data(
             delete(RecipientAssignment).where(RecipientAssignment.recipient_assignment_id.in_(assignment_ids))
         )
 
+    # Delete assignments before the ledger purge: a projector holds each
+    # assignment FOR UPDATE until its ledger write commits. Waiting here makes
+    # that projection visible to the following READ COMMITTED purge and stops
+    # later projectors from recreating subject data from a deleted assignment.
+    # Historical tombstones still retain the UUID needed for exact cleanup
+    # with a governed retained key version; never derive it from their marker.
+    ledger_rows_purged = purge_recipient_awareness_ledger(
+        session,
+        tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
+        recipient_id=recipient_id,
+        pseudonym_key=pseudonym_key,
+        pseudonym_key_version=pseudonym_key_version,
+    )
+
+    if already_tombstoned:
+        return RecipientErasureResult(
+            recipient_found=True, already_tombstoned=True, ledger_rows_purged=ledger_rows_purged
+        )
     marker = f"erased-{uuid4()}"
     recipient.employee_key = marker
     recipient.mailbox = marker
@@ -192,4 +241,4 @@ def erase_recipient_data(
     recipient.directory_generation = None
     recipient.directory_owned = False
     recipient.deleted_at = erased_at
-    return True
+    return RecipientErasureResult(recipient_found=True, tombstoned_now=True, ledger_rows_purged=ledger_rows_purged)

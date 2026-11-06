@@ -12,6 +12,7 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from kp_curation.threat_library import (
     FAILURE_THRESHOLD,
     artifact_hash,
@@ -23,6 +24,7 @@ from kp_curation.threat_library import (
 from kp_database.models import SourcePolicy, ThreatArtifact
 from kp_domain_models import models as dm
 from sqlalchemy import Engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 _LURE_HTML = (
@@ -174,3 +176,43 @@ def test_duplicate_import_is_idempotent(engine: Engine) -> None:
         assert second.threat_artifact_id == first.threat_artifact_id
         count = len(list(session.scalars(select(ThreatArtifact))))
         assert count == 1  # the repeat import collapsed onto the first artifact
+
+
+def test_insert_race_deduplicates_and_preserves_caller_transaction(engine: Engine, monkeypatch) -> None:
+    policy = _policy(engine)
+    with Session(engine) as session:
+        first = ingest_threat_artifact(
+            session, policy=policy, title="Verify your account", raw_html=_LURE_HTML, origin=dm.ArtifactOrigin.FEED
+        )
+        session.commit()
+        scalar = session.scalar
+        reads = 0
+
+        def miss_first_read(statement, *args, **kwargs):
+            nonlocal reads
+            reads += 1
+            return None if reads == 1 else scalar(statement, *args, **kwargs)
+
+        monkeypatch.setattr(session, "scalar", miss_first_read)
+        pending = SourcePolicy(
+            source_key="batch-state",
+            owner="test",
+            license="test",
+            parser="test",
+            trust=dm.SourceTrust.PARTNER,
+            freshness=7,
+            enabled=True,
+        )
+        session.add(pending)
+        second = ingest_threat_artifact(
+            session, policy=policy, title="Verify your account", raw_html=_LURE_HTML, origin=dm.ArtifactOrigin.FEED
+        )
+        assert second.deduplicated and second.threat_artifact_id == first.threat_artifact_id
+        session.commit()
+        assert session.get(SourcePolicy, pending.source_policy_id) is not None
+
+
+def test_unrelated_integrity_failure_is_not_reported_as_deduplication(engine: Engine) -> None:
+    policy = _policy(engine)
+    with Session(engine) as session, pytest.raises(IntegrityError):
+        ingest_threat_artifact(session, policy=policy, title="Verify your account", raw_html=_LURE_HTML, origin=None)

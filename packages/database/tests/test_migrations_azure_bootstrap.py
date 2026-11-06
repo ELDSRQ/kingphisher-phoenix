@@ -94,6 +94,7 @@ class _Connection:
     # healthy path; a test sets it False so the post-commit KP-008 probe fails
     # (proving the migration fails the deploy closed instead of shipping a 503).
     probe_enqueue_ok: bool = True
+    probe_reconcile_ok: bool = True
 
     def scalar(self, statement: object, parameters: dict[str, object] | None = None) -> int | str | bool | None:
         if "current_user" in str(statement):
@@ -122,6 +123,8 @@ class _Connection:
             return _Result(self._model_column_privilege(parameters or {}))
         if "INSERT INTO transactional_outbox" in text_sql and not self.probe_enqueue_ok:
             raise RuntimeError("permission denied for table transactional_outbox")
+        if "FROM public.kp_reconcile_queue_outbox" in text_sql and not self.probe_reconcile_ok:
+            raise RuntimeError("permission denied for queue reconciliation")
         return _Result(None)
 
     # The probe compares live PostgreSQL against the kp_database.grants oracle;
@@ -376,13 +379,22 @@ def test_campaign_and_microsoft365_roles_have_only_their_runtime_permissions() -
         assert _table_privileges(script, "operator", table) == {"SELECT", "INSERT", "UPDATE", "DELETE"}
     assert _table_privileges(script, "operator", "campaign_programs") == {"SELECT", "INSERT", "UPDATE"}
     assert _table_privileges(script, "operator", "campaign_program_occurrences") == {"SELECT", "INSERT"}
-    for table in {"campaign_programs", "campaign_program_occurrences"}:
-        for workload in script.TABLE_GRANTS.keys() - {"operator"}:
+    assert _table_privileges(script, "operator", "campaign_program_adaptations") == {"SELECT", "INSERT"}
+    for table in {"campaign_programs", "campaign_program_occurrences", "campaign_program_adaptations"}:
+        assert _table_privileges(script, "retention", table) == {"SELECT"}
+        for workload in script.TABLE_GRANTS.keys() - {"operator", "retention"}:
             assert _table_privileges(script, workload, table) == set()
+    assert _column_privileges(script, "retention", "campaign_programs", "updated_at") == {"UPDATE"}
+    assert _column_privileges(script, "retention", "campaign_programs", "state") == set()
+    assert script.PROGRAM_DRAFT_FUNCTION in script.WORKLOAD_FUNCTION_GRANTS["retention"]
     assert _table_privileges(script, "operator", "microsoft365_integration_states") == {"SELECT"}
     assert _table_privileges(script, "operator", "delivery_report_correlations") == {"SELECT"}
     assert _table_privileges(script, "tracking", "campaigns") == {"SELECT"}
-    assert script.WORKLOAD_COLUMN_GRANTS == {}
+    assert script.WORKLOAD_COLUMN_GRANTS["mailbox"] == {
+        "UPDATE": {"recipient_assignments": ("recipient_assignment_id",)},
+    }
+    assert _column_privileges(script, "mailbox", "recipient_assignments", "recipient_assignment_id") == {"UPDATE"}
+    assert _column_privileges(script, "mailbox", "recipient_assignments", "state") == set()
     assert _column_privileges(script, "tracking", "campaigns", "training_resource_id") == set()
     for column in ("title", "state", "schedule_start", "schedule_end", "max_recipients"):
         assert _column_privileges(script, "tracking", "campaigns", column) == set()
@@ -450,7 +462,7 @@ def test_microsoft365_worker_roles_deny_cross_workload_mutations() -> None:
         "operator": {
             "microsoft365_integration_states": {"INSERT", "UPDATE", "DELETE"},
             "delivery_report_correlations": {"INSERT", "UPDATE", "DELETE"},
-            "reported_mail_receipts": {"SELECT", "INSERT", "UPDATE", "DELETE"},
+            "reported_mail_receipts": {"SELECT", "INSERT", "UPDATE"},
         },
         "directory": {
             "campaign_audience_manifest": {"SELECT", "INSERT", "UPDATE"},
@@ -612,6 +624,12 @@ def test_outbox_insert_granted_to_enqueue_roles_and_probed(monkeypatch: pytest.M
     # least-privilege logins.
     assert "INSERT INTO transactional_outbox" in statements
     assert "SELECT kp_outbox_health()" in statements
+    assert "SELECT outbox_id FROM public.kp_reconcile_queue_outbox(%(topic)s,1,1)" in statements
+    assert (
+        "GRANT EXECUTE ON FUNCTION public.kp_reconcile_queue_outbox(text,integer,integer,timestamptz,uuid) "
+        "TO kp_worker_retention" in statements
+    )
+    assert "kp_reconcile_queue_outbox(text,integer,integer,timestamptz,uuid) TO audit_writer" not in statements
 
 
 def test_migration_fails_closed_when_runtime_enqueue_probe_denied(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -624,4 +642,13 @@ def test_migration_fails_closed_when_runtime_enqueue_probe_denied(monkeypatch: p
     _run_bootstrap(script, engine, monkeypatch)
 
     with pytest.raises(RuntimeError, match="KP-008 runtime privilege probe FAILED"):
+        script.main()
+
+
+def test_migration_fails_closed_when_runtime_reconciliation_probe_denied(monkeypatch: pytest.MonkeyPatch) -> None:
+    script = _load_script()
+    engine = _Engine()
+    engine.connection.probe_reconcile_ok = False
+    _run_bootstrap(script, engine, monkeypatch)
+    with pytest.raises(RuntimeError, match="queue reconciliation EXECUTE denied"):
         script.main()

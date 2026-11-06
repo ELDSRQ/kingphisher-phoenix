@@ -11,7 +11,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from kp_authorization.rbac import Capability, Principal
 from kp_database.audit_store import AuditStore
-from kp_database.awareness_ledger import LedgerRecipientHistoryEntry, ledger_recipient_history
+from kp_database.awareness_ledger import (
+    LedgerRecipientHistoryEntry,
+    ledger_recipient_history,
+    privacy_ledger_recipient_history,
+)
 from kp_database.models import (
     PrivacyNotice,
     PrivacyRequest,
@@ -23,7 +27,7 @@ from kp_database.personal_data import exported_store_names
 from kp_database.privacy import (
     VERIFIED_PRIVACY_STATES,
     PrivacyRequestStatus,
-    erase_recipient_data,
+    erase_recipient_data_with_result,
     hash_mailbox,
 )
 from kp_database.reporting import SINGLE_TENANT_DATABASE_SCOPE
@@ -466,6 +470,28 @@ def _serialize_receipt(row: Any) -> dict[str, Any]:
     }
 
 
+def _privacy_export_receipts(session: Session, model: Any, assignment_ids: list[Any], *, label: str) -> list[Any]:
+    """Select only the three disclosed receipt fields, never bearer evidence."""
+    if not assignment_ids:
+        return []
+    rows = list(
+        session.execute(
+            select(
+                model.recipient_assignment_id,
+                model.disposition,
+                model.received_at,
+            )
+            .where(model.recipient_assignment_id.in_(assignment_ids))
+            .limit(_PRIVACY_EXPORT_RECORD_LIMIT + 1)
+        )
+    )
+    if len(rows) > _PRIVACY_EXPORT_RECORD_LIMIT:
+        raise HTTPException(
+            status_code=413, detail=f"privacy export {label} exceed the supported single-response boundary"
+        )
+    return rows
+
+
 def _serialize_ledger_entry(entry: LedgerRecipientHistoryEntry) -> dict[str, Any]:
     return {
         "campaign_id": str(entry.campaign_id),
@@ -660,23 +686,17 @@ def export_privacy_request(
     )
     # Reply and reported receipts link to the subject only through their
     # assignments; before KP-AUD-003 neither appeared in the export.
-    reported_receipts = (
-        _bounded_privacy_export_rows(
-            session,
-            select(ReportedMailReceipt).where(ReportedMailReceipt.recipient_assignment_id.in_(assignment_ids)),
-            label="reported mail receipts",
-        )
-        if assignment_ids
-        else []
+    reported_receipts = _privacy_export_receipts(
+        session,
+        ReportedMailReceipt,
+        assignment_ids,
+        label="reported mail receipts",
     )
-    reply_receipts = (
-        _bounded_privacy_export_rows(
-            session,
-            select(ReplyMailReceipt).where(ReplyMailReceipt.recipient_assignment_id.in_(assignment_ids)),
-            label="reply mail receipts",
-        )
-        if assignment_ids
-        else []
+    reply_receipts = _privacy_export_receipts(
+        session,
+        ReplyMailReceipt,
+        assignment_ids,
+        label="reply mail receipts",
     )
     # The awareness ledger holds no recipient/assignment foreign key; it is
     # resolved through the governed pseudonym key and returns only the subject's
@@ -693,17 +713,22 @@ def export_privacy_request(
             # 500-ing the whole DSR access export: the subject still receives
             # every other store, and the ledger section is flagged unavailable.
             pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             awareness_ledger_available = False
             awareness_ledger_unavailable_reason = LEDGER_UNAVAILABLE_PSEUDONYM_CONFIG
         else:
             for recipient in recipients:
-                history = ledger_recipient_history(
+                reader = privacy_ledger_recipient_history if settings.config_is_managed else ledger_recipient_history
+                export_arguments = (
+                    {"privacy_request_id": request.privacy_request_id} if settings.config_is_managed else {}
+                )
+                history = reader(
                     session,
                     tenant_scope=SINGLE_TENANT_DATABASE_SCOPE,
                     recipient_id=recipient.recipient_id,
                     pseudonym_key=pseudonym_key,
                     pseudonym_key_version=pseudonym_key_version,
+                    **export_arguments,
                 )
                 awareness_ledger.extend(history.entries)
                 # Surface under-disclosure: if any recipient's history hit the
@@ -755,6 +780,16 @@ def export_privacy_request(
     )
 
 
+def _erasure_pseudonym_config(settings: OperatorApiSettings) -> tuple[bytes, str]:
+    try:
+        return settings.require_awareness_pseudonym_config()
+    except (RuntimeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="erasure is unavailable until the governed awareness-ledger key configuration is valid",
+        ) from None
+
+
 @router.post("/privacy/requests/{request_id}/fulfill")
 def fulfill_privacy_request(
     request_id: uuid.UUID,
@@ -776,26 +811,27 @@ def fulfill_privacy_request(
     note = body.note
     deleted = 0
     corrected = 0
+    ledger_rows_purged = 0
     recipients = _recipients_for_request(session, settings, request)
     if request.request_type == dm.PrivacyRequestType.DELETION:
         _check_erasure_hold(session)
+        pseudonym_key, pseudonym_key_version = _erasure_pseudonym_config(settings)
     request.status = PrivacyRequestStatus.IN_PROGRESS.value
     if request.request_type == dm.PrivacyRequestType.DELETION:
         # Fail closed before erasing: erasure must also purge the keyed-pseudonym
         # awareness ledger, which requires the active governed key. Resolving it
         # first means a missing/malformed key aborts the deletion rather than
         # leaving re-identifiable ledger rows behind (KP-AUD-003, Option A).
-        pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()
         for recipient in recipients:
-            deleted += int(
-                erase_recipient_data(
-                    session,
-                    recipient.recipient_id,
-                    erased_at=datetime.now(UTC),
-                    pseudonym_key=pseudonym_key,
-                    pseudonym_key_version=pseudonym_key_version,
-                )
+            result = erase_recipient_data_with_result(
+                session,
+                recipient.recipient_id,
+                erased_at=datetime.now(UTC),
+                pseudonym_key=pseudonym_key,
+                pseudonym_key_version=pseudonym_key_version,
             )
+            deleted += int(result.tombstoned_now)
+            ledger_rows_purged += result.ledger_rows_purged
         request.requester_key = f"erased-request-{request.privacy_request_id}"
     elif request.request_type == dm.PrivacyRequestType.CORRECTION:
         allowed = {"employee_key", "mailbox", "display_name", "department"}
@@ -825,6 +861,13 @@ def fulfill_privacy_request(
             "request_type": request.request_type.value,
             "deleted": deleted,
             "corrected": corrected,
+            "ledger_rows_purged": ledger_rows_purged,
+            "ledger_purge_status": ("purged" if ledger_rows_purged else "no_matching_rows")
+            if request.request_type == dm.PrivacyRequestType.DELETION
+            else None,
+            "ledger_purge_scope": "active_key_version"
+            if request.request_type == dm.PrivacyRequestType.DELETION
+            else None,
             "completion_note_provided": bool(note),
         },
     )
@@ -834,6 +877,7 @@ def fulfill_privacy_request(
         "status": request.status,
         "deleted": deleted,
         "corrected": corrected,
+        "ledger_rows_purged": ledger_rows_purged,
         "matched": len(recipients),
         "sla_deadline": request.sla_deadline,
     }
@@ -848,13 +892,13 @@ def delete_recipient(
     principal: Principal = Depends(require_capability(Capability.DELETE_DATA)),
 ) -> dict[str, Any]:
     recipient = session.get(Recipient, recipient_id)
-    if recipient is None or recipient.deleted_at is not None:
+    if recipient is None:
         raise NotFoundError("recipient not found")
     _check_erasure_hold(session)
     # Resolve the governed ledger key first so a missing key fails the delete
     # closed rather than leaving re-identifiable ledger rows (KP-AUD-003).
-    pseudonym_key, pseudonym_key_version = settings.require_awareness_pseudonym_config()
-    erase_recipient_data(
+    pseudonym_key, pseudonym_key_version = _erasure_pseudonym_config(settings)
+    result = erase_recipient_data_with_result(
         session,
         recipient.recipient_id,
         erased_at=datetime.now(UTC),
@@ -867,6 +911,20 @@ def delete_recipient(
         action="recipient.delete",
         object_type="recipient",
         object_id=str(recipient.recipient_id),
+        detail={
+            "already_tombstoned": result.already_tombstoned,
+            "ledger_rows_purged": result.ledger_rows_purged,
+            "ledger_purge_key_version": pseudonym_key_version,
+            "ledger_purge_scope": "active_key_version",
+            # Zero may mean already purged, no recorded outcomes, or a key
+            # mismatch; it never establishes that all retained versions cleared.
+            "ledger_purge_status": "purged" if result.ledger_rows_purged else "no_matching_rows",
+        },
     )
     session.commit()
-    return {"recipient_id": str(recipient.recipient_id), "deleted_at": recipient.deleted_at}
+    return {
+        "recipient_id": str(recipient.recipient_id),
+        "deleted_at": recipient.deleted_at,
+        "already_tombstoned": result.already_tombstoned,
+        "ledger_rows_purged": result.ledger_rows_purged,
+    }

@@ -22,6 +22,9 @@ from kp_contracts.queue import (
     AUDIT_ANCHOR_HEARTBEAT_KEY,
     CRITICAL_QUEUE_TOPICS,
     DEFAULT_QUEUE_TOPICS,
+    QUEUE_PUBLISH_DEDUP_TTL_SECONDS,
+    QUEUE_REPLAY_REVIEW_ONLY_TOPICS,
+    QUEUE_REPLAY_SAFE_TOPICS,
     JobQueue,
     QueueOverflowError,
 )
@@ -63,6 +66,13 @@ def test_critical_queue_topics_are_the_audit_named_set() -> None:
     expected = frozenset({"deliver", "retention", "audit-anchor"})
     assert expected == CRITICAL_QUEUE_TOPICS
     assert set(DEFAULT_QUEUE_TOPICS) >= CRITICAL_QUEUE_TOPICS
+
+
+def test_automatic_replay_requires_explicit_topic_membership() -> None:
+    assert set(DEFAULT_QUEUE_TOPICS) >= QUEUE_REPLAY_SAFE_TOPICS
+    assert not QUEUE_REPLAY_SAFE_TOPICS & QUEUE_REPLAY_REVIEW_ONLY_TOPICS
+    assert {"deliver", "reply-mailbox", "alert"} <= QUEUE_REPLAY_REVIEW_ONLY_TOPICS
+    assert "future-external-send" not in QUEUE_REPLAY_SAFE_TOPICS
 
 
 class _MemoryClient:
@@ -154,8 +164,8 @@ class _MemoryClient:
                 self.rpush(dlq, raw)
             return None
 
-        if "kp_queue_renew_lease_v1" in marker:
-            processing, job_id, owner, new_deadline = map(str, values)
+        if "kp_queue_renew_lease_v2" in marker:
+            processing, job_id, owner, fence, new_deadline = map(str, values)
             for raw in list(self.lists.get(processing, [])):
                 try:
                     message = json.loads(raw)
@@ -163,13 +173,47 @@ class _MemoryClient:
                     continue
                 if not isinstance(message, dict):
                     continue
-                if message.get("id") == job_id and message.get("owner") == owner:
+                if message.get("id") == job_id and message.get("owner") == owner and message.get("fence") == int(fence):
                     message["lease_deadline"] = float(new_deadline)
                     encoded = json.dumps(message, separators=(",", ":"))
                     self.lrem(processing, 1, raw)
                     self.lpush(processing, encoded)
                     return encoded
             return None
+
+        if "kp_queue_ack_claim_v1" in marker or "kp_queue_reject_claim_v1" in marker:
+            rejecting = "kp_queue_reject_claim_v1" in marker
+            if rejecting:
+                processing, ready, dlq, job_id, owner, fence, max_retries, rejected_at = map(str, values)
+            else:
+                processing, job_id, owner, fence = map(str, values)
+            for raw in list(self.lists.get(processing, [])):
+                try:
+                    message = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    not isinstance(message, dict)
+                    or message.get("id") != job_id
+                    or message.get("owner") != owner
+                    or message.get("fence") != int(fence)
+                ):
+                    continue
+                if not rejecting:
+                    return self.lrem(processing, 1, raw)
+                retries = int(message["retry"]) + 1
+                message["retry"] = retries
+                for key in ("started_at", "owner", "fence", "lease_deadline"):
+                    message.pop(key, None)
+                exhausted = retries >= int(max_retries)
+                if exhausted:
+                    message["dead_lettered_at"] = float(rejected_at)
+                encoded = json.dumps(message, separators=(",", ":"))
+                if self.lrem(processing, 1, raw) == 0:
+                    return 0
+                self.rpush(dlq if exhausted else ready, encoded)
+                return 2 if exhausted else 1
+            return 0
 
         if "kp_queue_move_if_present_v1" in marker:
             source, destination, old_raw, new_raw = map(str, values)
@@ -551,6 +595,78 @@ def test_renew_lease_extends_only_for_the_current_owner(queue: JobQueue) -> None
     assert queue.renew_lease("generation", stale, lease_seconds=999) is False
 
 
+@pytest.mark.parametrize("outcome", ("ack", "reject", "dead-letter"))
+def test_lost_renewal_response_does_not_prevent_finalizing_current_claim(
+    queue: JobQueue, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    queue.publish("generate", {"pattern_id": "p1"})
+    message = queue.pop("generate", timeout=0, owner="owner-a", lease_seconds=30)
+    assert message is not None
+    old_raw = message["_raw"]
+    client = queue._client
+    original_eval = client.eval
+
+    def lose_renewal_reply(script: str, *args: Any, **kwargs: Any) -> Any:
+        result = original_eval(script, *args, **kwargs)
+        if "kp_queue_renew_lease_v2" in script:
+            raise redis.TimeoutError("synthetic lost reply after Redis applied renewal")
+        return result
+
+    monkeypatch.setattr(client, "eval", lose_renewal_reply)
+    with pytest.raises(redis.TimeoutError):
+        queue.renew_lease("generate", message, lease_seconds=300)
+    assert message["_raw"] == old_raw
+    assert client.lists[_key("generate", ":processing")][0] != old_raw  # type: ignore[attr-defined]
+
+    if outcome == "ack":
+        queue.ack("generate", message)
+        assert queue.pop("generate", timeout=0) is None
+    else:
+        # Neither payload nor retry state from this caller may overwrite the
+        # authoritative renewed Redis envelope.
+        message["retry"] = 900
+        message["payload"] = {"untrusted_caller_copy": True}
+        queue.reject("generate", message, max_retries=1 if outcome == "dead-letter" else 3)
+        if outcome == "dead-letter":
+            assert queue.dead_letter_count("generate") == 1
+            assert queue.list_dead_letters("generate")[0]["message"]["retry"] == 1
+        else:
+            retried = queue.pop("generate", timeout=0)
+            assert retried is not None
+            assert retried["payload"] == {"pattern_id": "p1"}
+            assert retried["retry"] == 1
+            queue.ack("generate", retried)
+    assert client.lists[_key("generate", ":processing")] == []  # type: ignore[attr-defined]
+
+
+def test_reused_owner_cannot_finalize_or_renew_an_older_fence(queue: JobQueue) -> None:
+    queue.publish("generate", {"pattern_id": "p1"})
+    old = queue.pop("generate", timeout=0, owner="reused-owner", lease_seconds=-1)
+    assert old is not None
+    assert queue.recover_stale("generate") == 1
+    current = queue.pop("generate", timeout=0, owner="reused-owner", lease_seconds=300)
+    assert current is not None
+    assert current["fence"] > old["fence"]
+    queue.ack("generate", old)
+    queue.reject("generate", old)
+    assert queue.renew_lease("generate", old, lease_seconds=600) is False
+    assert queue._client.lrange(_key("generate", ":processing"), 0, -1) == [current["_raw"]]
+    queue.ack("generate", current)
+    assert queue._client.lrange(_key("generate", ":processing"), 0, -1) == []
+
+
+@pytest.mark.parametrize("fence", (None, True, "1", 0, -1))
+def test_finalize_without_an_authentic_claim_fence_is_a_noop(queue: JobQueue, fence: Any) -> None:
+    queue.publish("generate", {"pattern_id": "p1"})
+    current = queue.pop("generate", timeout=0)
+    assert current is not None
+    invalid = {**current, "fence": fence}
+    queue.ack("generate", invalid)
+    queue.reject("generate", invalid)
+    assert queue.renew_lease("generate", invalid, lease_seconds=300) is False
+    assert queue._client.lrange(_key("generate", ":processing"), 0, -1) == [current["_raw"]]
+
+
 def test_recovery_reassigns_owner_and_fences_out_the_zombie(queue: JobQueue) -> None:
     queue.publish("generation", {"pattern_id": "p1"})
     zombie = queue.pop("generation", timeout=0, owner="owner-a", lease_seconds=30)
@@ -789,6 +905,60 @@ def test_delayed_message_is_not_visible_until_due(queue: JobQueue, monkeypatch: 
     message = queue.pop("deliver", timeout=0)
     assert message is not None
     assert message["payload"]["campaign_id"] == "c1"
+
+
+@pytest.mark.contract
+@pytest.mark.redis
+@pytest.mark.parametrize("outcome", ("ack", "reject"))
+def test_live_redis_finalizes_claim_after_lost_renewal_reply(monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        pytest.skip("REDIS_URL is not configured")
+    # Preserve this generated namespace as evidence; never flush a database or
+    # remove another run's keys. The publish marker has its normal bounded TTL.
+    queue = JobQueue(redis_url, prefix=f"kp:test:lease-effect:{uuid.uuid4()}:")
+    try:
+        queue.publish("generate", {"pattern_id": "synthetic"}, idempotency_key="lost-reply")
+        assert (
+            QUEUE_PUBLISH_DEDUP_TTL_SECONDS - 5
+            <= queue._client.ttl(queue._published("generate", "lost-reply"))
+            <= QUEUE_PUBLISH_DEDUP_TTL_SECONDS
+        )
+        message = queue.pop("generate", timeout=0, owner="same-owner", lease_seconds=30)
+        assert message is not None
+        original_raw = message["_raw"]
+        original_eval = queue._client.eval
+
+        def lose_reply(script: str, *args: Any, **kwargs: Any) -> Any:
+            result = original_eval(script, *args, **kwargs)
+            if "kp_queue_renew_lease_v2" in script:
+                raise redis.TimeoutError("synthetic lost reply after Redis applied renewal")
+            return result
+
+        monkeypatch.setattr(queue._client, "eval", lose_reply)
+        with pytest.raises(redis.TimeoutError):
+            queue.renew_lease("generate", message, lease_seconds=300)
+        assert message["_raw"] == original_raw
+        stored = queue._client.lrange(queue._processing("generate"), 0, -1)
+        assert len(stored) == 1 and stored[0] != original_raw
+        monkeypatch.setattr(queue._client, "eval", original_eval)
+        if outcome == "ack":
+            queue.ack("generate", message)
+            assert queue.pop("generate", timeout=0) is None
+        else:
+            queue.reject("generate", message)
+            current = queue.pop("generate", timeout=0, owner="same-owner", lease_seconds=300)
+            assert current is not None and current["retry"] == 1
+            assert current["fence"] > message["fence"]
+            queue.ack("generate", message)
+            queue.reject("generate", message)
+            assert queue.renew_lease("generate", message, lease_seconds=600) is False
+            assert queue._client.lrange(queue._processing("generate"), 0, -1) == [current["_raw"]]
+            queue.ack("generate", current)
+        assert queue._client.llen(queue._processing("generate")) == 0
+        assert queue._client.llen(queue._topic("generate")) == 0
+    finally:
+        queue.close()
 
 
 @pytest.mark.contract

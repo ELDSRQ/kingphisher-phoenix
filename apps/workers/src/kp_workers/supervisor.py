@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from kp_contracts.queue import QUEUE_REPLAY_REVIEW_ONLY_TOPICS
+from kp_contracts.queue import QUEUE_REPLAY_SAFE_TOPICS
 from kp_telemetry.errors import SafetyRejectionError
 from kp_telemetry.logging import get_logger
 
@@ -380,7 +380,7 @@ class WorkerSupervisor:
         reconcile = getattr(spec.context.audit_store, "reconcile_queue_after_restore", None)
         if not callable(reconcile):
             return
-        replay_safe = spec.topic not in QUEUE_REPLAY_REVIEW_ONLY_TOPICS
+        replay_safe = spec.topic in QUEUE_REPLAY_SAFE_TOPICS
         try:
             report = reconcile(
                 spec.context.queue,
@@ -397,7 +397,10 @@ class WorkerSupervisor:
             )
             return
         if report.get("replayed") or report.get("review_required"):
-            self._logger.warning(
+            # The dispatcher warns when the review condition changes. Keep
+            # unchanged review counts as an informational supervisor heartbeat.
+            log = self._logger.warning if report.get("replayed") else self._logger.info
+            log(
                 "worker_role_queue_reconciled",
                 role=spec.name,
                 replay_safe=replay_safe,

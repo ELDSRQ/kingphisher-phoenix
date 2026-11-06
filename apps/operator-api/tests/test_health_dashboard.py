@@ -206,3 +206,31 @@ def test_health_dashboard_reports_db_backed_items_safely_without_a_database(env_
     for item in body["items"]:
         assert "Traceback" not in item["reason"]
         assert "psycopg" not in item["reason"].lower()
+
+
+def test_health_dashboard_survives_session_factory_failure(env_file: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _app(env_file)
+    client = TestClient(app)
+    token = _login(client)
+
+    def unavailable():
+        raise RuntimeError("private connection credentials")
+
+    monkeypatch.setattr(app.state, "session_factory", unavailable)
+    response = client.get("/api/v1/console/health", headers=_auth(token))
+    assert response.status_code == 200
+    assert "private connection credentials" not in response.text
+    by_id = {item["id"]: item for item in response.json()["items"]}
+    assert by_id["authorization_roe"]["state"] == "unavailable"
+    assert by_id["ai_provider"]["state"] == "unavailable"
+
+
+def test_failed_roe_query_reports_unavailable_not_absent() -> None:
+    from unittest.mock import Mock
+
+    session = Mock()
+    session.scalars.side_effect = RuntimeError("private query detail")
+    item = hd._roe_item(session, now=datetime.now(UTC))
+    assert item.state == "unavailable"
+    assert "private query detail" not in item.reason
+    assert hd._desired_provider(session) is None

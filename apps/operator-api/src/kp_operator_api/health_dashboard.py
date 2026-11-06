@@ -27,6 +27,7 @@ and it is authenticated, so it is not a public enumeration surface.
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -390,6 +391,17 @@ def _ai_provider_item(request: Request, session: Session | None, *, now: datetim
             evidence_timestamp=stamp,
         )
     desired = _desired_provider(session)
+    if desired is None:
+        return HealthItem(
+            id="ai_provider",
+            capability="AI generation provider",
+            state="unavailable",
+            severity="warning",
+            reason="The selected generation provider could not be read from the database.",
+            safe_action="Restore database access, then confirm the active provider in AI model.",
+            workflow="#modelcontrol",
+            evidence_timestamp=stamp,
+        )
     runtime = _runtime_provider(request.app.state.settings)
     if desired == provider_registry.LOCAL and runtime is None:
         return HealthItem(
@@ -428,13 +440,13 @@ def _ai_provider_item(request: Request, session: Session | None, *, now: datetim
     )
 
 
-def _desired_provider(session: Session | None) -> str:
+def _desired_provider(session: Session | None) -> str | None:
     if session is None:
-        return provider_registry.LOCAL
+        return None
     try:
         rows = session.scalars(select(AiGenerationProvider)).all()
     except Exception:  # noqa: BLE001
-        return provider_registry.LOCAL
+        return None
     for row in rows:
         if row.is_active:
             return str(row.provider)
@@ -455,7 +467,11 @@ def _runtime_provider(settings: Any) -> str | None:
 
 def _roe_item(session: Session | None, *, now: datetime) -> HealthItem:
     stamp = _iso(now) or ""
-    if session is None:
+    rows: list[RulesOfEngagement] | None = None
+    if session is not None:
+        with suppress(Exception):
+            rows = list(session.scalars(select(RulesOfEngagement)))
+    if rows is None:
         return HealthItem(
             id="authorization_roe",
             capability="Campaign authorization (Rules of Engagement)",
@@ -466,10 +482,6 @@ def _roe_item(session: Session | None, *, now: datetime) -> HealthItem:
             workflow="#sending",
             evidence_timestamp=stamp,
         )
-    try:
-        rows = list(session.scalars(select(RulesOfEngagement)))
-    except Exception:  # noqa: BLE001
-        rows = []
     active_ends = [
         row.window_end
         for row in rows
@@ -715,8 +727,10 @@ def get_health_dashboard(
     managed = bool(settings.config_is_managed)
 
     session: Session | None = None
-    try:
+    # Session construction can fail before any query; the report still works.
+    with suppress(Exception):
         session = request.app.state.session_factory()
+    try:
         items: list[HealthItem] = [
             _migration_item(request, now=now, managed=managed),
             _database_item(request, now=now, managed=managed),
@@ -730,7 +744,8 @@ def get_health_dashboard(
         ]
     finally:
         if session is not None:
-            session.close()
+            with suppress(Exception):
+                session.close()
 
     return HealthDashboard(
         generated_at=_iso(now) or "",

@@ -26,14 +26,12 @@
 # Usage:
 #   checkpoint-state-wsl2.sh            capture, verify, write the manifest
 #   checkpoint-state-wsl2.sh --verify   verify an existing checkpoint only
+#   checkpoint-state-wsl2.sh --output-dir /absolute/new/checkpoint
 set -euo pipefail
+umask 077
 
 KP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 KP_OUT="$KP_ROOT/migration-checkpoint"
-KP_POSTGRES_DUMP="$KP_OUT/postgres.dump"
-KP_REDIS_RDB="$KP_OUT/redis.rdb"
-KP_GLOBALS_SQL="$KP_OUT/globals.sql"
-KP_MANIFEST="$KP_OUT/MANIFEST.txt"
 KP_POSTGRES_CONTAINER=phishing-awareness-platform-postgres-1
 KP_REDIS_CONTAINER=phishing-awareness-platform-redis-1
 KP_DB=kingphisher
@@ -42,22 +40,24 @@ KP_MAC_ENGINE_NAME='colima-kingphisher'
 KP_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 KP_VERIFY_ONLY=0
 
-case "${1:-}" in
-  '') ;;
-  --verify) KP_VERIFY_ONLY=1 ;;
-  *) printf 'usage: %s [--verify]\n' "$0" >&2; exit 2 ;;
-esac
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --verify) KP_VERIFY_ONLY=1; shift ;;
+    --output-dir)
+      [ "$#" -ge 2 ] || { printf '%s\n' '--output-dir requires an absolute path' >&2; exit 2; }
+      KP_OUT="$2"; shift 2 ;;
+    *) printf 'usage: %s [--verify] [--output-dir /absolute/path]\n' "$0" >&2; exit 2 ;;
+  esac
+done
+KP_POSTGRES_DUMP="$KP_OUT/postgres.dump"
+KP_REDIS_RDB="$KP_OUT/redis.rdb"
+KP_GLOBALS_SQL="$KP_OUT/globals.sql"
+KP_MANIFEST="$KP_OUT/MANIFEST.txt"
 
 fail() {
   printf 'CHECKPOINT BLOCKED: %s\n' "$*" >&2
   printf 'The running stack is untouched.\n' >&2
-  # Partial artifacts are removed so a retry is not blocked by the
-  # refuse-to-overwrite guard, and so a half-written checkpoint can never be
-  # mistaken for a verified one. Anything already verified is left alone.
-  if [ "${KP_PARTIAL:-0}" = "1" ]; then
-    rm -f "$KP_POSTGRES_DUMP" "$KP_REDIS_RDB" "$KP_GLOBALS_SQL"
-    printf 'Removed the partial checkpoint in %s.\n' "$KP_OUT" >&2
-  fi
+  printf 'All existing and partial checkpoint artifacts are preserved. Choose a new output directory for another capture.\n' >&2
   exit 1
 }
 say(){ printf '==> %s\n' "$*"; }
@@ -65,6 +65,27 @@ ok(){  printf '  ok %s\n' "$*"; }
 
 # ------------------------------------------------------------ engine identity
 command -v docker >/dev/null 2>&1 || fail "docker is not on PATH"
+case "${DOCKER_HOST:-unix:///var/run/docker.sock}" in
+  unix:///var/run/docker.sock) ;;
+  *) fail "Docker endpoint must be the explicit native WSL2 socket" ;;
+esac
+[ -z "${DOCKER_CONTEXT:-}" ] || fail "DOCKER_CONTEXT must be unset"
+docker() { command docker --host unix:///var/run/docker.sock "$@"; }
+python3 - "$KP_OUT" "$KP_VERIFY_ONLY" <<'PY' || fail "invalid checkpoint output path"
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if not path.is_absolute() or str(path.resolve()) != str(path) or path == Path('/'):
+    raise SystemExit('output path must be absolute, canonical and have no symbolic parents')
+if sys.argv[2] == '1':
+    if not path.is_dir():
+        raise SystemExit('verification requires an existing checkpoint directory')
+elif path.exists():
+    raise SystemExit('checkpoint output already exists; preserve it and select a new output directory')
+elif not path.parent.is_dir():
+    raise SystemExit('checkpoint output parent directory must already exist')
+PY
 KP_ENGINE="$(docker info --format '{{.Name}}|{{.OSType}}|{{.Architecture}}' 2>/dev/null)" \
   || fail "cannot reach the Docker engine"
 case "$KP_ENGINE" in
@@ -106,6 +127,28 @@ verify_artifacts() {
 }
 
 if [ "$KP_VERIFY_ONLY" = "1" ]; then
+  python3 - "$KP_OUT" <<'PY' || fail "checkpoint manifest integrity verification failed"
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+manifest = root / 'MANIFEST.txt'
+if manifest.is_symlink() or not manifest.is_file() or manifest.stat().st_size > 65536:
+    raise SystemExit('verified checkpoint requires a regular bounded manifest')
+records = dict(line.split(None, 1) for line in manifest.read_text().splitlines() if line.strip())
+for name, key in [('postgres.dump', 'postgres_dump_sha256'), ('globals.sql', 'globals_sql_sha256'), ('redis.rdb', 'redis_rdb_sha256')]:
+    path = root / name
+    if path.is_symlink() or not path.is_file() or not re.fullmatch('[0-9a-f]{64}', records.get(key, '')):
+        raise SystemExit('checkpoint file or manifest digest is invalid')
+    digest = hashlib.sha256()
+    with path.open('rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            digest.update(chunk)
+    if digest.hexdigest() != records[key]:
+        raise SystemExit('checkpoint content does not match its manifest')
+PY
   verify_artifacts
   [ -f "$KP_MANIFEST" ] && { say "manifest"; sed 's/^/     /' "$KP_MANIFEST"; }
   ok "existing checkpoint verified"
@@ -125,11 +168,10 @@ KP_TABLES="$(docker exec "$KP_POSTGRES_CONTAINER" psql -U "$KP_DB_USER" -d "$KP_
   || fail "source database has no public tables; refusing to capture an empty checkpoint"
 ok "source database has $KP_TABLES public tables"
 
-KP_PARTIAL=1
-mkdir -p "$KP_OUT"
-for f in "$KP_POSTGRES_DUMP" "$KP_REDIS_RDB" "$KP_GLOBALS_SQL"; do
-  [ -e "$f" ] && fail "$f already exists; move the previous checkpoint aside rather than overwriting it"
-done
+# Atomic directory reservation excludes concurrent captures. Never reuse or
+# remove an existing directory, including a failed capture's partial evidence.
+mkdir -m 700 "$KP_OUT" || fail "checkpoint output could not be reserved without clobbering"
+set -o noclobber
 
 # ------------------------------------------------------------------- postgres
 say "capturing cluster globals (roles and their grants)"
@@ -163,11 +205,11 @@ for _ in $(seq 1 60); do
   [ "$(redis_cli LASTSAVE | tr -d '\r')" != "$KP_LAST_SAVE" ] && break
 done
 [ "$(redis_cli LASTSAVE | tr -d '\r')" != "$KP_LAST_SAVE" ] || fail "BGSAVE did not complete within 60s"
-docker cp "$KP_REDIS_CONTAINER:/data/dump.rdb" "$KP_REDIS_RDB" >/dev/null || fail "could not copy dump.rdb"
+docker cp "$KP_REDIS_CONTAINER:/data/dump.rdb" - | tar -xOf - > "$KP_REDIS_RDB" \
+  || fail "could not capture dump.rdb without clobbering"
 ok "wrote $(wc -c < "$KP_REDIS_RDB" | tr -d ' ') bytes"
 
 verify_artifacts
-KP_PARTIAL=0
 
 # ------------------------------------------------------------------ manifest
 {

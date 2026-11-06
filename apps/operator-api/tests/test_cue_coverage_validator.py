@@ -17,6 +17,7 @@ real queries would.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
@@ -179,7 +180,8 @@ class _CoverageSession:
         entity = statement.column_descriptions[0]["entity"]
         name = entity.__name__
         if name == "TrainingCueCoverage":
-            # The real query filters reviewed=True; mirror that here.
+            # Fixtures below name known independent reviewers; the legacy
+            # identity predicates are tested against real SQL in the peer suite.
             return _Result([row for row in self.coverage if getattr(row, "reviewed", False)])
         if name == "CampaignCueCoverageException":
             return _Result(self.exceptions)
@@ -196,6 +198,9 @@ def _coverage_row(cue_id: str, *, reviewed: bool = True) -> SimpleNamespace:
         lesson_section=f"section:{cue_id}",
         quiz_item=f"quiz:{cue_id}",
         reviewed=reviewed,
+        created_by=uuid.uuid4(),
+        reviewed_by=uuid.uuid4() if reviewed else None,
+        reviewed_at=datetime.now(UTC) if reviewed else None,
     )
 
 

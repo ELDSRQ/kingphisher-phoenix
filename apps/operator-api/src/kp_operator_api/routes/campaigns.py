@@ -1466,38 +1466,88 @@ def create_campaign_cue_coverage(
     approval gate once an independent reviewer marks it reviewed.
     """
 
-    campaign = session.scalar(select(Campaign).where(Campaign.campaign_id == campaign_id).with_for_update())
-    if campaign is None:
-        raise NotFoundError("campaign not found")
+    campaign = _get_campaign(session, campaign_id)
     resource = _campaign_bound_resource(session, campaign)
     existing = session.scalar(
-        select(TrainingCueCoverage).where(
+        select(TrainingCueCoverage)
+        .where(
             TrainingCueCoverage.training_resource_id == resource.training_resource_id,
             TrainingCueCoverage.resource_version == resource.version,
             TrainingCueCoverage.cue_id == body.cue_id,
         )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
-    if existing is not None:
+    if existing is not None and existing.reviewed:
         raise ConflictError("this cue already has a coverage mapping for the lesson version")
-    coverage = TrainingCueCoverage(
-        coverage_id=uuid.uuid4(),
-        training_resource_id=resource.training_resource_id,
-        resource_version=resource.version,
-        cue_id=body.cue_id,
-        lesson_section=body.lesson_section,
-        quiz_item=body.quiz_item,
-        reviewed=False,
-        created_by=_principal_uuid(principal),
-        created_at=datetime.now(UTC),
-    )
-    session.add(coverage)
-    # A new unreviewed draft cannot change an already-reviewed coverage set, so
-    # no bound campaign review is re-opened here; it becomes effective only once
-    # an independent reviewer marks it reviewed below.
+    reopened: list[uuid.UUID] = []
+    if existing is None:
+        # A new draft retains campaign serialization. Existing mappings instead
+        # lock coverage before invalidating campaigns, matching decision order.
+        locked_campaign = session.scalar(
+            select(Campaign)
+            .where(Campaign.campaign_id == campaign_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if locked_campaign is None:
+            raise NotFoundError("campaign not found")
+        if (
+            locked_campaign.training_resource_id != resource.training_resource_id
+            or locked_campaign.training_resource_version != resource.version
+        ):
+            raise ConflictError("campaign's training lesson changed; refresh before authoring cue coverage")
+        concurrent = session.scalar(
+            select(TrainingCueCoverage).where(
+                TrainingCueCoverage.training_resource_id == resource.training_resource_id,
+                TrainingCueCoverage.resource_version == resource.version,
+                TrainingCueCoverage.cue_id == body.cue_id,
+            )
+        )
+        if concurrent is not None:
+            raise ConflictError("this cue already has a coverage mapping for the lesson version; refresh to reauthor")
+        coverage = TrainingCueCoverage(
+            coverage_id=uuid.uuid4(),
+            training_resource_id=resource.training_resource_id,
+            resource_version=resource.version,
+            cue_id=body.cue_id,
+            lesson_section=body.lesson_section,
+            quiz_item=body.quiz_item,
+            reviewed=False,
+            created_by=_principal_uuid(principal),
+            created_at=datetime.now(UTC),
+        )
+        session.add(coverage)
+    else:
+        current_campaign = session.scalar(
+            select(Campaign).where(Campaign.campaign_id == campaign_id).execution_options(populate_existing=True)
+        )
+        if current_campaign is None:
+            raise NotFoundError("campaign not found")
+        if (
+            current_campaign.training_resource_id != resource.training_resource_id
+            or current_campaign.training_resource_version != resource.version
+        ):
+            raise ConflictError("campaign's training lesson changed; refresh before authoring cue coverage")
+        # Reuse the unique cue identity after a rejected/unfinished draft. The
+        # new author owns this revision, which needs a fresh independent review.
+        coverage = existing
+        coverage.lesson_section = body.lesson_section
+        coverage.quiz_item = body.quiz_item
+        coverage.created_by = _principal_uuid(principal)
+        coverage.created_at = datetime.now(UTC)
+        coverage.reviewed = False
+        coverage.reviewed_by = None
+        coverage.reviewed_at = None
+        reopened = invalidate_campaigns_for_coverage_change(
+            session, coverage.training_resource_id, coverage.resource_version
+        )
+    # A newly created draft becomes effective only after independent review;
+    # replacing an existing draft also clears any stale bound launch review.
     audit.record(
         session=session,
         actor=principal.principal_id,
-        action="campaign.cue_coverage.create",
+        action="campaign.cue_coverage.create" if existing is None else "campaign.cue_coverage.reauthor",
         object_type="training_cue_coverage",
         object_id=str(coverage.coverage_id),
         detail={
@@ -1505,6 +1555,7 @@ def create_campaign_cue_coverage(
             "training_resource_id": str(resource.training_resource_id),
             "resource_version": resource.version,
             "cue_id": coverage.cue_id,
+            "campaigns_review_reopened": [str(affected) for affected in reopened],
         },
     )
     session.commit()
@@ -1531,7 +1582,7 @@ def decide_campaign_cue_coverage(
 
     campaign = _get_campaign(session, campaign_id)
     resource = _campaign_bound_resource(session, campaign)
-    coverage = session.get(TrainingCueCoverage, coverage_id, with_for_update=True)
+    coverage = session.get(TrainingCueCoverage, coverage_id, with_for_update=True, populate_existing=True)
     if (
         coverage is None
         or coverage.training_resource_id != resource.training_resource_id
@@ -1539,9 +1590,13 @@ def decide_campaign_cue_coverage(
     ):
         raise NotFoundError("cue coverage mapping not found for this campaign's lesson")
     reviewer_id = _principal_uuid(principal)
+    want_reviewed = body.decision == "reviewed"
+    if want_reviewed and coverage.created_by is None:
+        raise PermissionDeniedError(
+            "coverage needs a known author before independent review; reauthor the mapping first"
+        )
     if coverage.created_by is not None and coverage.created_by == reviewer_id:
         raise PermissionDeniedError("coverage authors cannot review their own coverage mapping")
-    want_reviewed = body.decision == "reviewed"
     if want_reviewed and coverage.reviewed:
         raise ConflictError("coverage mapping is already reviewed")
     if not want_reviewed and not coverage.reviewed:

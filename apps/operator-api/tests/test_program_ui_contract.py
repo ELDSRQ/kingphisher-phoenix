@@ -26,6 +26,8 @@ def test_program_api_routes_match_gui_contract() -> None:
         ("POST", "/api/v1/programs"),
         ("GET", "/api/v1/programs"),
         ("GET", "/api/v1/programs/{program_id}"),
+        ("GET", "/api/v1/programs/{program_id}/adaptations"),
+        ("POST", "/api/v1/programs/{program_id}/iterations"),
         ("POST", "/api/v1/programs/{program_id}/pause"),
         ("POST", "/api/v1/programs/{program_id}/resume"),
     }
@@ -69,5 +71,11 @@ def test_program_planner_does_not_claim_unimplemented_automation() -> None:
     lowered = PROGRAM_VIEW.lower()
     assert "cron" not in lowered
     assert "rrule" not in lowered
-    assert "adaptive" not in lowered
+    assert "generation_mode: timeline.generationMode" in PROGRAM_VIEW
+    assert "recommended difficulty level" in PROGRAM_VIEW
+    assert "does not rewrite the email or training content" in PROGRAM_VIEW
+    assert "Past planned windows are shown as late and do not silently move" in PROGRAM_VIEW
+    assert "expected_iteration: progress.next_iteration" in PROGRAM_VIEW
+    assert 'text: "Review adaptations"' in PROGRAM_VIEW
+    assert 'text: "Create next draft"' in PROGRAM_VIEW
     assert ".innerHTML" not in PROGRAM_VIEW

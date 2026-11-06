@@ -21,6 +21,7 @@ from kp_database.models import (
     RulesOfEngagement,
     TemplateVersion,
     TrainingResource,
+    TransactionalOutbox,
 )
 from kp_database.session import create_db_engine
 from kp_domain_models import models as dm
@@ -280,11 +281,18 @@ def test_program_create_list_and_detail_are_bounded_and_pii_free(client: TestCli
 
 
 @requires_db
-def test_pause_is_versioned_blocks_future_schedule_and_does_not_recall_source(client: TestClient) -> None:
+def test_pause_is_versioned_blocks_future_send_and_does_not_recall_source(client: TestClient) -> None:
     source_id = _seed_source(client)
     created = _create_program(client, source_id)
     program_id = created["campaign_program_id"]
     future_id = created["occurrences"][1]["campaign_id"]
+    with client.app.state.session_factory() as session:
+        future = session.get(Campaign, UUID(future_id))
+        assert future is not None and future.delivery_mode == "reviewed_direct"
+        # Exercise the program gate on the current Send route. This isolated
+        # negative fixture reaches that gate without sending or seeding work.
+        future.state = dm.CampaignState.APPROVED
+        session.commit()
 
     paused = client.post(
         f"/api/v1/programs/{program_id}/pause",
@@ -294,7 +302,7 @@ def test_pause_is_versioned_blocks_future_schedule_and_does_not_recall_source(cl
     assert paused.status_code == 200, paused.text
     assert paused.json()["state"] == "paused"
     assert paused.json()["version"] == 2
-    blocked = client.post(f"/api/v1/campaigns/{future_id}/schedule", headers=ADMIN_HEADERS)
+    blocked = client.post(f"/api/v1/campaigns/{future_id}/send", headers=ADMIN_HEADERS)
     assert blocked.status_code == 409
     assert blocked.json()["detail"] == "KP-005: campaign program is paused; resume it before scheduling this occurrence"
 
@@ -329,14 +337,12 @@ def test_pause_is_versioned_blocks_future_schedule_and_does_not_recall_source(cl
             "campaign_program.paused",
             "campaign_program.active",
         ]
-        blocked_audit = session.scalar(
-            select(AuditEvent).where(
-                AuditEvent.object_id == str(future_id),
-                AuditEvent.action == "campaign.schedule.blocked",
+        assert (
+            session.scalar(
+                select(func.count()).select_from(TransactionalOutbox).where(TransactionalOutbox.topic == "deliver")
             )
+            == 0
         )
-        assert blocked_audit is not None
-        assert blocked_audit.detail == {"reason": "campaign_program_paused"}
 
 
 @requires_db
@@ -363,6 +369,18 @@ def test_program_completion_is_derived_from_occurrence_campaign_states(client: T
 def test_program_routes_enforce_auth_and_bounded_inputs(client: TestClient) -> None:
     source_id = _seed_source(client)
     assert client.get("/api/v1/programs").status_code == 401
+    program_uuid = uuid4()
+    assert client.get(f"/api/v1/programs/{program_uuid}/adaptations").status_code == 401
+    assert client.post(f"/api/v1/programs/{program_uuid}/iterations", json={"expected_iteration": 2}).status_code == 401
+    assert (
+        client.get(f"/api/v1/programs/{program_uuid}/adaptations?limit=101", headers=ADMIN_HEADERS).status_code == 422
+    )
+    assert (
+        client.post(
+            f"/api/v1/programs/{program_uuid}/iterations", headers=AUDITOR_HEADERS, json={"expected_iteration": 2}
+        ).status_code
+        == 403
+    )
     assert client.get("/api/v1/programs?limit=201", headers=ADMIN_HEADERS).status_code == 422
     assert client.get("/api/v1/programs?offset=10001", headers=ADMIN_HEADERS).status_code == 422
     denied = client.post(

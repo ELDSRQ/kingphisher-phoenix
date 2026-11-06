@@ -800,18 +800,34 @@ def test_queue_reconcile_runs_at_startup_and_marks_delivery_review_only() -> Non
     assert store.calls[0]["limit"] == 500
 
 
-def test_queue_reconcile_marks_internal_topics_replay_safe() -> None:
+@pytest.mark.parametrize("topic", ("generate", "retention", "mailbox", "remind", "directory", "curate", "ingest"))
+def test_queue_reconcile_marks_internal_topics_replay_safe(topic: str) -> None:
     queue = FakeQueue()
     store = _ReconcileRecordingAuditStore()
-    spec = _spec("reminder", "remind", queue, lambda _ctx, _m: None)
+    spec = _spec("reminder", topic, queue, lambda _ctx, _m: None)
     spec.context.audit_store = store
     spec.context.settings.queue_reconcile_enabled = True
     supervisor = WorkerSupervisor({"reminder": spec}, logger=FakeLogger())
 
-    supervisor.initialize()
+    supervisor._reconcile_queue_after_restore(spec)
 
     assert len(store.calls) == 1
     assert store.calls[0]["replay_safe"] is True
+
+
+@pytest.mark.parametrize("topic", ("deliver", "reply-mailbox", "alert", "future-external-send"))
+def test_queue_reconcile_requires_review_for_external_or_unknown_topics(topic: str) -> None:
+    queue = FakeQueue()
+    store = _ReconcileRecordingAuditStore()
+    spec = _spec("delivery", topic, queue, lambda _ctx, _m: None)
+    spec.context.audit_store = store
+    spec.context.settings.queue_reconcile_enabled = True
+    supervisor = WorkerSupervisor({"delivery": spec}, logger=FakeLogger())
+
+    supervisor._reconcile_queue_after_restore(spec)
+
+    assert len(store.calls) == 1
+    assert store.calls[0]["replay_safe"] is False
 
 
 def test_queue_reconcile_is_disabled_by_default() -> None:
@@ -824,3 +840,26 @@ def test_queue_reconcile_is_disabled_by_default() -> None:
     supervisor.initialize()
 
     assert store.calls == []
+
+
+@pytest.mark.parametrize("replayed", [0, 1])
+def test_queue_review_heartbeat_does_not_repeat_dispatcher_warning(replayed: int) -> None:
+    from unittest.mock import Mock
+
+    queue = FakeQueue()
+    store = Mock()
+    store.reconcile_queue_after_restore.return_value = {
+        "checked": 3,
+        "replayed": replayed,
+        "review_required": 3,
+        "present": 0,
+    }
+    spec = _spec("delivery", "deliver", queue, lambda _ctx, _m: None)
+    spec.context.audit_store = store
+    spec.context.settings.queue_reconcile_enabled = True
+    logger = Mock()
+    supervisor = WorkerSupervisor({"delivery": spec}, logger=logger)
+    for _ in range(2):
+        supervisor._reconcile_queue_after_restore(spec)
+    assert logger.warning.call_count == (2 if replayed else 0)
+    assert logger.info.call_count == (0 if replayed else 2)
