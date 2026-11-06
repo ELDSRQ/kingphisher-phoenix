@@ -52,9 +52,11 @@
         "FU-12",
         "FU-13"
       ],
-      "status": "integration_pending",
+      "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W0-03",
@@ -122,9 +124,11 @@
         "FU-1",
         "FU-2"
       ],
-      "status": "integration_pending",
+      "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W1-02",
@@ -171,9 +175,11 @@
         "FU-8",
         "FU-9"
       ],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W1-04",
@@ -190,9 +196,9 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "complete",
-      "owner": "none",
-      "next_action": null
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification."
     },
     {
       "id": "W1-05",
@@ -253,9 +259,9 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "complete",
-      "owner": "none",
-      "next_action": null
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification."
     },
     {
       "id": "W2-01",
@@ -277,9 +283,11 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W3-01",
@@ -321,9 +329,11 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W3-03",
@@ -367,9 +377,11 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W4-01",
@@ -394,9 +406,11 @@
         "FU-16",
         "FU-17"
       ],
-      "status": "integration_pending",
+      "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W4-02",
@@ -444,9 +458,11 @@
         "FU-18",
         "FU-19"
       ],
-      "status": "integration_pending",
+      "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "next_action": "Repair actual-login scheduling gate and rerun reviewed-direct native smoke; preserve program pause lock barrier.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W5-02",
@@ -469,9 +485,11 @@
       "followups": [
         "FU-3"
       ],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W5-03",
@@ -493,9 +511,11 @@
       "followups": [
         "FU-20"
       ],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W2-02",
@@ -612,9 +632,11 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "code_complete",
-      "owner": "agent",
-      "next_action": "PR169 implements the approved tenant retention hold with audited authorized set/clear and purge suspension. Preserve its documented policy; repeat current combined migration/role gates."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W5-05",
@@ -665,26 +687,32 @@
     {
       "id": "FU-1",
       "parent": "W1-01",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "Terraform main.tf lacks reply endpoint/address and curation/report completeness preconditions; reported-mailbox alone is checked.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-2",
       "parent": "W1-01",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "grants.py:218 mailbox has SELECT-only recipient_assignments; reported_mail_jobs.py:180/193 uses FOR UPDATE; WORKLOAD_COLUMN_GRANTS empty; bootstrap test:423/468 pins undergrant.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-3",
       "parent": "W5-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "AI_HANDOFF.md:369 still calls keyed awareness ledger PII-free.",
-      "resolution": "Replace stale PII-free descriptions with keyed pseudonymous wording."
+      "resolution": "Replace stale PII-free descriptions with keyed pseudonymous wording.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-4",
@@ -697,74 +725,92 @@
     {
       "id": "FU-5",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "outbox.py:357 calls kp_reconcile_queue_outbox; no migration defines it. Next free slot after 0053 is 0054.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-6",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "queue.py:182 replay review-only policy remains denylist, allowing future topics by default.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-7",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "workers/config.py:236 allows reconcile window 2160h, equal to the 90-day dedup TTL.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-8",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "queue.py:437-471 renewal updates stored raw envelope; ack/reject compare caller exact _raw, vulnerable to lost renewal replies.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-9",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "outbox.py:309-314 logs review-required missing rows each reconciliation; default cadence 300s.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-10",
       "parent": "W0-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "privacy.py:114 returns before ledger purge for already tombstoned recipients; no backfill path.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-11",
       "parent": "W0-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "privacy.py:149 discards ledger purge count; erasure route audit has no purge count.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-12",
       "parent": "W0-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "test_privacy_erasure_receipts recreates metadata and tests owner sessions, without kp_operator role, wrong-version, multi-row and missing/malformed key assertions.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-13",
       "parent": "W0-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "Managed malformed-key tests cover export; managed delete/fulfill erasure fixture coverage unconfirmed, not a proved runtime defect.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-14",
@@ -777,18 +823,22 @@
     {
       "id": "FU-15",
       "parent": "W4-01",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "NULL coverage author skips separation check; unique mapping blocks reauthoring. Existing decision=rejected already withdraws reviewed coverage, so no-revoke claim partly stale.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-16",
       "parent": "W4-01",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "campaigns.py:1534 already row-locks coverage with_for_update=True. Historical no-lock assertion is stale; no fresh concurrency proof run.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-17",
@@ -801,26 +851,32 @@
     {
       "id": "FU-18",
       "parent": "W4-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "Program create supports generation_mode but no adaptations/iterations convenience routes or adaptive console controls exist.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-19",
       "parent": "W4-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "program_jobs discovery outside try, no created_by supplied; program_service propagates None, copies possibly stale schedule, silently stalls rejected/cancelled/expired prior iteration, and changes level metadata only.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-20",
       "parent": "W5-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "Characterization suites omit listed edge cases. Deferred extractions are optional behavior-preserving refactors, not proved defects.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     }
   ],
   "additional_items": [
@@ -828,64 +884,117 @@
       "id": "REG-001",
       "parent": "W3-04",
       "title": "AI evaluation endpoint classification, unknown-provider telemetry and baseline honesty",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-002",
       "parent": "W3-02",
       "title": "Concurrent threat artifact insert deduplication without outer transaction loss",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-003",
       "parent": "W2-01",
       "title": "Health session creation and authorization-query unavailable states",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-004",
       "parent": "W2-03",
       "title": "Preserve checkpoint archives and private partial captures on collision/failure",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-005",
       "parent": "W2-04",
       "title": "Preserve cloud roles and ACS receipt continuity; strict non-destructive plan guards",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-006",
       "parent": "W0-02",
       "title": "Serialize subject erasure with in-flight ledger projector",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-007",
       "parent": "W0-02",
       "title": "Actual-role bounded subject export without broad ledger outcome/receipt identifier access",
-      "status": "in_progress",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-008",
       "parent": "W4-03",
       "title": "Actual retention-role adaptive drafts through constrained database operation; cyclic discovery avoids oldest500 starvation",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-009",
       "parent": "W1-03",
       "title": "Keyset reconciliation sweep reaches records beyond first batch under ongoing publications; changed-condition warnings",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
+    },
+    {
+      "id": "REG-010",
+      "parent": "W2-04",
+      "title": "Re-register retained Azure runner additively; preserve removed registration assets and separate new private home",
+      "status": "complete",
+      "owner": "none",
+      "evidence": "staging-runner-draft/result.md: GHrunner22 online/idle, newprivateHOME/service, oldassets preserved; no workflowdispatched"
+    },
+    {
+      "id": "REG-011",
+      "parent": "W4-03",
+      "title": "Standalone reviewed-direct SEND denied by joined program-occurrence FOR SHARE; lock only mutable program row without expanding grants",
+      "status": "in_progress",
+      "owner": "agent",
+      "priority": "P0",
+      "evidence": "Native smokev2:allAPIsetup/reviews succeeded;SEND500;actualkp_operator deniedcampaign_program_occurrences UPDATErequiredforimplicitrowlock"
+    },
+    {
+      "id": "REG-012",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Complete canonical runtime grants for existing provider/session/cue workflows, delivery manifest reads and retention reply receipt purge",
+      "resolution": "Migration0057 plus exact minimal role/column privileges and actual-login effect proofs; no password rotation."
+    },
+    {
+      "id": "REG-013",
+      "parent": "W1-07",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Serialize credential and provider changes across processes; preserve monotonic revocation and configuration generations",
+      "resolution": "Prove reversed completion races, then protect durable markers and complete change operations with private process locks. Refresh locked database state before incrementing. Test with synthetic credentials only; preserve actual development credentials."
     }
   ],
   "evidence": {
@@ -901,6 +1010,14 @@
     "terraform_connectors": "terraform-connectors-v5.log:5 mocked provider plans passed; no Azure apply",
     "static": "Ruff check/format clean; strict mypy219 sources clean; lock check resolved92 packages",
     "combined_hermetic": "hermetic-integration-v2.log:4184 passed,173 deselected,256.52s; no skips. New fullstack harness is a separate wave, not included in this result.",
-    "adaptive_worker": "adaptive-role-effects-final.xml:9 passed62.66s; adaptive-discovery-postgres.xml:1 passed9.46s. Managed tick, operator create/read, replay, unauthorized actual-login denial and keyset wrap proved."
+    "adaptive_worker": "adaptive-role-effects-final.xml:9 passed62.66s; adaptive-discovery-postgres.xml:1 passed9.46s. Managed tick, operator create/read, replay, unauthorized actual-login denial and keyset wrap proved.",
+    "current_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42282621617",
+    "current_ci_result": "4158 hermetic passed,212 deselected;161 PostgreSQL passed,4209 deselected,1 retained upstream SQLAlchemy inspection warning;4 Redis passed,4366 deselected;14 browser passed;Ruff/format,strict mypy219 and lock passed. Linux excludes controller-only tests; controller combined run4184 passed before final focused additions.",
+    "merge": "PR170 merged at exact reviewed headfd97d3053a5144e00408e85c84562cdb8f898267; mainmergeacabf08ba7e551e8af849073197cf5c3648183f8.",
+    "fullstack_code_review": "27 focused tests +Ruff/format +strict mypy6; independent code review closed all accounting, deadline, uncertainty andrestore issues. Frozen harnessfingerprintb920f9e6bf470748811d292f5666733eab79299677eb955796e894fcfe7eba18; native smoke staged with archive4b35215a464d69d102c2a6756f54b73ca9bfb0daee87aa2bc1501f9a40f7af2b.",
+    "native_smoke_v1": "Failedbeforebootstrap:internalDockerbridgepublishedportsnull;all3nativecontainers/runs/evidencepreserved;qualifierguard/connectivityrepairindependentlyreviewed35tests.",
+    "native_smoke_v2": "Signed RoE, import, confirmation and both logical approvals passed against managed logins. SEND failed because joined FOR SHARE required unintended occurrence UPDATE. Four actual-login tests now prove the narrow lock fix and both pause/schedule concurrency orders. v2 processes quiesced; all data/evidence preserved.",
+    "runtime_feature_roles": "runtime-feature-role-effects.xml: six actual-login PostgreSQL effects passed in 40.012 seconds. Provider/session metadata, independent cue review and exceptions, bounded old reply-receipt purge, exact delivery roster reads, unrelated-role denial and additive migration without login changes are covered.",
+    "wave2_tools": "wave2-tools-focused.xml: all 80 isolated full-stack, Linux dependency and preserved-upgrade tooling tests passed. No normal service or database was changed by this suite."
   }
 }

@@ -142,7 +142,13 @@ docker_ready() {
     && bounded "$DOCKER_TIMEOUT_SECONDS" docker info >/dev/null 2>&1
 }
 
-if [ "$SKIP_DEPS" -eq 0 ] && ! docker_ready; then
+docker_compose_ready() {
+  command_exists docker \
+    && bounded "$DOCKER_TIMEOUT_SECONDS" docker compose version >/dev/null 2>&1
+}
+
+if [ "$SKIP_DEPS" -eq 0 ] \
+  && { ! docker_ready || { [ "$OS" = linux ] && ! docker_compose_ready; }; }; then
   case "$OS" in
     macos)
       step "installing Docker via Homebrew + Colima"
@@ -153,6 +159,13 @@ if [ "$SKIP_DEPS" -eq 0 ] && ! docker_ready; then
         || die "Colima did not start within 5 minutes; open Colima/Docker diagnostics, then re-run with --skip-deps"
       ;;
     linux)
+      # A configured endpoint is authority. Unavailability does not authorize
+      # installing a local replacement or starting a different Docker daemon.
+      # shellcheck source=scripts/linux-docker-packages.sh
+      source "$PROJECT_ROOT/scripts/linux-docker-packages.sh"
+      if ! docker_ready && ! linux_docker_endpoint_is_local_default; then
+        die "The configured Docker endpoint is unavailable or ambiguous. Restore that exact endpoint and re-run; no local engine fallback or package change was attempted."
+      fi
       step "installing Docker via apt (needs sudo)"
       if [ "$(id -u)" -eq 0 ]; then
         SUDO=""
@@ -160,10 +173,29 @@ if [ "$SKIP_DEPS" -eq 0 ] && ! docker_ready; then
         SUDO="sudo"
       fi
       $SUDO apt-get update
-      $SUDO apt-get install -y docker.io docker-compose-plugin
-      $SUDO systemctl enable --now docker
-      if [ "$(id -u)" -ne 0 ]; then
-        $SUDO usermod -aG docker "$INSTALL_USER"
+      # Ubuntu Noble supplies docker-compose-v2; upstream Docker sources use
+      # docker-compose-plugin. Select only configured, trusted package sources.
+      compose_package="$(linux_compose_package)" \
+        || die "Docker Compose v2 is unavailable in the configured apt sources. Install a trusted docker-compose-plugin or docker-compose-v2 package, then re-run. No repositories were added or project services changed."
+      if docker_ready; then
+        # A working daemon needs only its missing CLI plugin repaired. Do not
+        # replace its engine provider with the distribution's docker.io.
+        $SUDO apt-get --no-remove install -y "$compose_package" \
+          || die "Compose dependency repair could not preserve installed packages. Repair the trusted matching Compose package and re-run; no engine replacement is permitted."
+      else
+        if linux_docker_engine_present; then
+          $SUDO apt-get --no-remove install -y "$compose_package" \
+            || die "Compose dependency repair could not preserve installed packages. Repair the trusted matching Compose package and re-run; no engine replacement is permitted."
+          $SUDO systemctl start docker \
+            || die "The installed Docker engine could not start. Restore its existing service and re-run; its provider was preserved."
+        else
+          $SUDO apt-get --no-remove install -y docker.io "$compose_package" \
+            || die "Docker dependency installation could not preserve installed packages. Repair trusted prerequisites and re-run; no packages may be removed."
+          $SUDO systemctl enable --now docker
+          if [ "$(id -u)" -ne 0 ]; then
+            $SUDO usermod -aG docker "$INSTALL_USER"
+          fi
+        fi
       fi
       ;;
   esac
@@ -191,6 +223,14 @@ else
     || die "Docker stopped responding; check the daemon and re-run with --skip-deps"
 fi
 ok "docker present"
+if [ -n "$DOCKER_WRAP" ]; then
+  bounded "$DOCKER_TIMEOUT_SECONDS" sg docker -c "docker compose version" >/dev/null 2>&1 \
+    || die "Docker Compose v2 could not run. Install or repair the trusted Compose plugin, then re-run without --skip-deps. No project lifecycle operation has run."
+else
+  docker_compose_ready \
+    || die "Docker Compose v2 could not run. Install or repair the trusted Compose plugin, then re-run without --skip-deps. No project lifecycle operation has run."
+fi
+ok "docker compose present"
 
 # Validate recovery-sensitive values and inspect for preserved volumes before
 # dependency synchronization changes the regenerable Python environment.

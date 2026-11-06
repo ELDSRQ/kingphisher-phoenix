@@ -70,5 +70,35 @@ Independent review found and prompted repairs for lost-job starvation beyond
 the first reconciliation page, the erasure/projector race, managed export
 undergrants and adaptive-worker undergrants. SQL export identity binding remains
 the application's responsibility; see [the boundary](PRIVACY-EXPORT-BOUNDARY.md).
-The separate full-stack harness wave still requires implementation and actual
-execution. None of these checks constitutes human acceptance or production GO.
+PR170 merged these repairs after required CI passed: 4,158 hermetic tests,
+161 PostgreSQL effects, four Redis effects, fourteen browser scenarios and
+strict mypy on 219 sources. The separate full-stack harness is implemented and
+independently reviewed; its native smoke runs have exposed additional runtime
+defects that must be repaired before the full profile. None of these checks
+constitutes human acceptance or production GO.
+
+## Wave 2 ownership and acceptance
+
+All work uses the isolated `codex/fullstack-qualification-20261106` worktree.
+The original dirty checkout and normal development runtime remain preserved.
+
+| Assignment | Exclusive components | Acceptance |
+| --- | --- | --- |
+| Runtime role repair | Program scheduling lock, canonical grant matrix, migration 0057 and dedicated real-role tests | Standalone and program SEND without occurrence UPDATE; both pause/send lock orders; minimum provider/session/cue, delivery roster and receipt-retention permissions under actual NOINHERIT logins |
+| Credential concurrency | Console credential/provider operations, private locking helper and dedicated race tests | Monotonic durable revocation and generation markers, serialized password/provider changes across processes, refreshed locked ORM state, deterministic reversed-completion proofs with synthetic credentials |
+| Preserved runtime upgrade | New development-upgrade coordinator and preservation tests | Read-only preflight, private checkpoint, isolated restore/migration/decryption rehearsal, explicit reviewed cutover preserving original source/environment/configuration and all normal container identities |
+| Root integration | Registry, integration, native full-stack execution, final images, cloud deployment and clean-VM execution | Independent review, focused and full CI gates, fresh immutable source per native attempt, exact-source image scans, truthful measured qualification and preserved failure evidence |
+
+The Ubuntu Compose package repair is reviewed and passes the focused tooling
+suite. Azure's removed runner registration was repaired additively using a new
+runner directory, private home and service; the previous assets remain intact.
+The new runner is online. Cloud workflow dispatch and clean-machine execution
+wait for qualified source, not another general engineering authorization.
+
+Native smoke v1 exposed unusable published ports on an internal bridge. The
+reviewed repair requires a dedicated bridge with explicit loopback publications
+and verifies all native images and running services. Native smoke v2 completed
+signed RoE, roster import/confirmation and logical approvals, then found SEND's
+unnecessary joined row lock. Its source processes were quiesced and its new
+containers, volumes, network and evidence were preserved. The normal runtime
+was never stopped or reconfigured by either attempt.
