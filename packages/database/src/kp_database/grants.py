@@ -291,6 +291,9 @@ WORKLOAD_COLUMN_GRANTS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
     # Exact reviewed-roster join reads only the binding, never unrelated
     # manifest metadata or any authority to alter a frozen roster.
     "delivery": {
+        # The final pre-provider Recipient FOR SHARE serializes an operator's
+        # exclusion with an in-flight send. No mailbox/status writes needed.
+        "UPDATE": {"recipients": ("recipient_id",)},
         "SELECT": {
             "campaign_audience_manifest": ("campaign_id", "recipient_id", "audience_version"),
             # Recheck live exclusions after publication, without disclosing

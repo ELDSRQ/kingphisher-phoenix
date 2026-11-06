@@ -16,7 +16,7 @@ import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from kp_database.campaign_service import _excluded_recipient_ids
-from kp_database.models import RecipientAssignment, RecipientExclusion, TrackingToken
+from kp_database.models import Recipient, RecipientAssignment, RecipientExclusion, TrackingToken
 from kp_database.session import make_session_factory
 from kp_domain_models import models as dm
 from kp_workers.jobs import _gate_delivery_recipient
@@ -166,3 +166,48 @@ def test_additive_exclusion_migration_regrants_existing_login_without_broadening
         assert not connection.scalar(
             text("SELECT has_column_privilege('kp_worker_delivery','public.recipient_exclusions','reason','SELECT')")
         )
+
+
+def test_actual_delivery_locks_recipient_shared_without_mailbox_or_status_update(subject):
+    _, assignments, factory, engines, _ = subject
+    with factory() as session:
+        recipient_id = session.get(RecipientAssignment, assignments[0]).recipient_id
+    with make_session_factory(engines["delivery"])() as session:
+        assert session.scalar(text("SELECT session_user")) == "kp_worker_delivery"
+        row = session.get(Recipient, recipient_id, with_for_update={"read": True}, populate_existing=True)
+        assert row is not None and row.recipient_id == recipient_id
+    for column in ("mailbox", "status", "display_name", "department"):
+        _deny(engines["delivery"], f"UPDATE public.recipients SET {column}={column} WHERE false")  # noqa: S608
+
+
+def test_additive_recipient_lock_migration_preserves_login_and_column_boundary(managed_database):
+    _, admin, _, _ = managed_database
+    path = Path(__file__).resolve().parents[1] / "alembic/versions/0059_delivery_recipient_lock.py"
+    spec = importlib.util.spec_from_file_location("recipient_lock_migration", path)
+    assert spec and spec.loader
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    with admin.begin() as connection:
+        before = connection.execute(
+            text("SELECT oid,rolpassword,rolinherit,rolcanlogin FROM pg_authid WHERE rolname='kp_worker_delivery'")
+        ).one()
+        connection.execute(text("REVOKE UPDATE(recipient_id) ON public.recipients FROM kp_worker_delivery"))
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+        assert (
+            connection.execute(
+                text("SELECT oid,rolpassword,rolinherit,rolcanlogin FROM pg_authid WHERE rolname='kp_worker_delivery'")
+            ).one()
+            == before
+        )
+        assert connection.scalar(
+            text("SELECT has_column_privilege('kp_worker_delivery','public.recipients','recipient_id','UPDATE')")
+        )
+        assert not connection.scalar(
+            text("SELECT has_table_privilege('kp_worker_delivery','public.recipients','UPDATE')")
+        )
+        for column in ("mailbox", "status", "display_name", "department"):
+            assert not connection.scalar(
+                text("SELECT has_column_privilege('kp_worker_delivery','public.recipients',:column,'UPDATE')"),
+                {"column": column},
+            )
