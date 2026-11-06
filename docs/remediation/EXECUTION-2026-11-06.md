@@ -119,3 +119,22 @@ checks 224 production sources. Two test-fixture failures are preserved in their
 original unique XML files; the final proof uses fresh evidence. The combined
 source still needs exact-source CI, full native load/recovery and image gates
 before deployment or the preserved normal-runtime upgrade.
+
+Full native v7 completed both delivery baselines and the 300-second observation,
+and proved critical-role progress during a five-second SMTP stall. It failed
+honestly on a pre-DATA451 refusal classified as uncertain; recovery was not
+reached. All source processes quiesced and all resources remain preserved.
+The cause was Python's SMTP exceptions inheriting `OSError`, which masked
+structured refusal evidence in both transport paths.
+
+The reviewed repair permits only typed SMTP DATA4xx refusals to retry, with at
+most three durable claims and five/ten-second spacing between attempt starts.
+Stable attempt/message/correlation identity preserves the existing foreign-key
+history. Exact generation/counter/date and server-clock claim checks reject
+original, stale and early jobs. Refusal audit plus a singleton delayed outbox
+intent commit together; uncertain outcomes never automatically retry. All normal
+recipient and signed live authorization gates run again. Both 147 focused and
+147 independent tests pass. Five actual-role PostgreSQL effects pass in78.583s,
+including durable three-call exhaustion, rollback, revocation and exact audit
+intent-to-signed-event projection. The complete native profile and final CI must
+now run against the repaired source before advancing the release.

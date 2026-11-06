@@ -633,8 +633,9 @@ def test_recipients_refused_is_a_definite_failure(monkeypatch: pytest.MonkeyPatc
 
 
 def test_transient_4xx_response_stays_indeterminate(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A 4xx is not a definite non-delivery, so the no-auto-retry indeterminate
-    # contract is preserved rather than declaring a false FAILED.
+    # This unclassified response lacks typed DATA-phase evidence. Preserve the
+    # conservative unknown-result policy; SMTPDataError4xx has a separate,
+    # bounded retry path based on explicit proof that DATA was not accepted.
     roe = _make_roe(target_domains=["example.com"])
     campaign = _make_campaign(roe=roe)
     recipient = _make_recipient("user@example.com")

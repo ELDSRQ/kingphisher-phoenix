@@ -103,7 +103,7 @@ from kp_templating.ics import generate_invite
 from kp_templating.render import CampaignContext, MessageRenderer, RecipientContext, TrackingContext
 from kp_templating.spf import SpfResult, check_spf_for_mailbox
 from pydantic import ValidationError as PydanticValidationError
-from sqlalchemy import and_, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -718,29 +718,85 @@ def _make_batch_sender(ctx: WorkerContext) -> EmailSender:
     )
 
 
+SMTP_DATA_MAX_ATTEMPTS = 3
+SMTP_DATA_RETRY_BASE_SECONDS = 5
+SMTP_DATA_RETRY_MAX_DELAY_SECONDS = 30
+_SMTP_DATA_RETRY_PENDING = "smtp_data_retry_pending"
+
+
+def _smtp_retry_not_before(assignment: RecipientAssignment) -> datetime | None:
+    """Bound spacing between durable attempt starts; response time counts."""
+    count = assignment.delivery_attempt_count
+    claimed_at = assignment.delivery_claimed_at
+    if (
+        type(count) is not int
+        or not 1 <= count < SMTP_DATA_MAX_ATTEMPTS
+        or not isinstance(claimed_at, datetime)
+        or claimed_at.tzinfo is None
+    ):
+        return None
+    delay = min(SMTP_DATA_RETRY_MAX_DELAY_SECONDS, SMTP_DATA_RETRY_BASE_SECONDS * 2 ** (count - 1))
+    return claimed_at.astimezone(UTC) + timedelta(seconds=delay)
+
+
 def _claim_delivery(
     session: Session,
     assignment: RecipientAssignment,
     campaign_id: uuid.UUID,
     *,
     claimed_at: datetime,
+    retry_marker: dict[str, Any] | None = None,
 ) -> uuid.UUID | None:
-    """Atomically acquire the sole automatic provider attempt.
+    """Atomically acquire provider ownership or one proven-negative retry.
 
     The claim is its own committed transaction. If the worker disappears at
     any later point, a duplicate queue job observes SENDING instead of QUEUED
     and refuses to contact the provider. A stale-claim reconciler later makes
     the uncertainty explicit; it never changes the row back to QUEUED.
+    Only an exact DATA-rejection generation may reuse that stable identity;
+    its persisted count and start-time deadline fence every automatic retry.
     """
 
     attempt_id = uuid.uuid4()
+    conditions = [RecipientAssignment.delivery_attempt_id.is_(None), RecipientAssignment.delivery_attempt_count == 0]
+    if retry_marker is not None:
+        # Only a scheduled generation may reuse the existing stable attempt.
+        # Original jobs have no marker; stale/altered/early jobs cannot consume
+        # a later generation or bypass the durable counter/deadline.
+        eligible = _smtp_retry_not_before(assignment)
+        try:
+            marker_time = datetime.fromisoformat(retry_marker.get("not_before", ""))
+        except (TypeError, ValueError):
+            marker_time = None
+        if (
+            set(retry_marker) != {"assignment_id", "attempt_id", "after_attempt", "not_before"}
+            or assignment.delivery_attempt_id is None
+            or eligible is None
+            or retry_marker.get("assignment_id") != str(assignment.recipient_assignment_id)
+            or retry_marker.get("attempt_id") != str(assignment.delivery_attempt_id)
+            or type(retry_marker.get("after_attempt")) is not int
+            or retry_marker.get("after_attempt") != assignment.delivery_attempt_count
+            or marker_time != eligible
+            or assignment.failure_reason != _SMTP_DATA_RETRY_PENDING
+        ):
+            session.rollback()
+            return None
+        attempt_id = assignment.delivery_attempt_id
+        conditions = [
+            RecipientAssignment.delivery_attempt_id == attempt_id,
+            RecipientAssignment.delivery_attempt_count == assignment.delivery_attempt_count,
+            RecipientAssignment.delivery_attempt_count < SMTP_DATA_MAX_ATTEMPTS,
+            RecipientAssignment.failure_reason == _SMTP_DATA_RETRY_PENDING,
+            RecipientAssignment.delivery_claimed_at == assignment.delivery_claimed_at,
+            func.clock_timestamp() >= eligible,
+        ]
     claimed_id = session.scalar(
         update(RecipientAssignment)
         .where(
             RecipientAssignment.recipient_assignment_id == assignment.recipient_assignment_id,
             RecipientAssignment.campaign_id == campaign_id,
             RecipientAssignment.send_state == dm.SendState.QUEUED,
-            RecipientAssignment.delivery_attempt_id.is_(None),
+            *conditions,
         )
         .values(
             send_state=dm.SendState.SENDING,
@@ -1697,6 +1753,7 @@ class _DeliveryOutcome:
     failed: int = 0
     blocked: int = 0
     indeterminate: int = 0
+    retry_deferred: int = 0
     stop_observed: bool = False
 
 
@@ -2163,6 +2220,69 @@ def _live_delivery_authorization_reason(
     return None
 
 
+def _defer_smtp_data_rejection(
+    ctx: WorkerContext,
+    session: Session,
+    assignment: RecipientAssignment,
+    correlation: DeliveryReportCorrelation,
+    payload: dict[str, Any],
+    *,
+    smtp_code: int,
+) -> bool:
+    """Atomically retain rejection evidence and enqueue a proven-negative retry.
+
+    Never replace the attempt/correlation: existing foreign keys deliberately
+    bind that stable identity. Each refusal has a distinct append-only audit
+    intent; only its count/deadline-scoped queue generation may claim again.
+    """
+    count = assignment.delivery_attempt_count
+    eligible = _smtp_retry_not_before(assignment)
+    correlation.provider_status = f"smtp_data_rejected_{smtp_code}"
+    assignment.failure_reason = _SMTP_DATA_RETRY_PENDING if eligible is not None else "smtp_data_retry_exhausted"
+    assignment.send_state = dm.SendState.QUEUED if eligible is not None else dm.SendState.FAILED
+    ctx.audit_store.record(
+        session=session,
+        actor="worker:delivery",
+        action="campaign.deliver.smtp_rejected",
+        object_type="recipient_assignment",
+        object_id=str(assignment.recipient_assignment_id),
+        idempotency_key=f"deliver:smtp-rejected:{assignment.delivery_attempt_id}:{count}",
+        detail={
+            "delivery_attempt_id": str(assignment.delivery_attempt_id),
+            "attempt": count,
+            "smtp_code": smtp_code,
+            "retry_scheduled": eligible is not None,
+            "not_before": eligible.isoformat() if eligible is not None else None,
+        },
+    )
+    if eligible is None:
+        return False
+    identifier = str(assignment.recipient_assignment_id)
+    retry_payload = dict(payload)
+    retry_payload["recipient_assignment_ids"] = [identifier]
+    bearers = payload.get("tracking_bearers")
+    retry_payload["tracking_bearers"] = (
+        {identifier: bearers[identifier]} if isinstance(bearers, dict) and identifier in bearers else {}
+    )
+    retry_payload["smtp_data_retry"] = {
+        "assignment_id": identifier,
+        "attempt_id": str(assignment.delivery_attempt_id),
+        "after_attempt": count,
+        "not_before": eligible.isoformat(),
+    }
+    enqueue_queue(
+        session,
+        topic="deliver",
+        payload=retry_payload,
+        idempotency_key=f"deliver:smtp-data:{assignment.delivery_attempt_id}:{count}",
+        available_at=eligible,
+    )
+    dispatch = getattr(ctx.audit_store, "dispatch_pending_queue", None)
+    if dispatch is not None:
+        dispatch_after_commit(session, lambda: dispatch(ctx.queue))
+    return True
+
+
 def _deliver_assignments(
     ctx: WorkerContext,
     session: Session,
@@ -2186,6 +2306,7 @@ def _deliver_assignments(
     failed = 0
     blocked = 0
     indeterminate = 0
+    retry_deferred = 0
     stop_observed = False
     locked_campaign: Campaign | None = campaign
     sender = _make_batch_sender(ctx) if assignment_ids else None
@@ -2214,12 +2335,17 @@ def _deliver_assignments(
             recipient = gated.target.recipient
             token = gated.target.token
             tracking_bearer = gated.target.tracking_bearer
-            attempt_id = _claim_delivery(
-                session,
-                assignment,
-                campaign.campaign_id,
-                claimed_at=datetime.now(UTC),
-            )
+            marker = payload.get("smtp_data_retry")
+            if marker is None:
+                attempt_id = _claim_delivery(session, assignment, campaign.campaign_id, claimed_at=datetime.now(UTC))
+            elif (
+                isinstance(marker, dict) and assignment_ids == [assignment_id] and ctx.settings.email_provider == "smtp"
+            ):
+                attempt_id = _claim_delivery(
+                    session, assignment, campaign.campaign_id, claimed_at=datetime.now(UTC), retry_marker=marker
+                )
+            else:
+                raise SafetyRejectionError("SMTP retry metadata must identify one configured SMTP assignment")
             if attempt_id is None:
                 # Another worker claimed this assignment after our read.
                 # Its provider call (or its uncertain result) owns the row.
@@ -2372,7 +2498,19 @@ def _deliver_assignments(
                 assignment.failure_reason = "provider_rejected"
                 failed += 1
             except smtplib.SMTPResponseException as exc:
-                if exc.smtp_code is not None and exc.smtp_code >= 500:
+                if (
+                    isinstance(exc, smtplib.SMTPDataError)
+                    and isinstance(exc.smtp_code, int)
+                    and 400 <= exc.smtp_code < 500
+                    and ctx.settings.email_provider == "smtp"
+                ):
+                    if _defer_smtp_data_rejection(
+                        ctx, session, assignment, correlation_row, payload, smtp_code=exc.smtp_code
+                    ):
+                        retry_deferred += 1
+                    else:
+                        failed += 1
+                elif exc.smtp_code is not None and exc.smtp_code >= 500:
                     # A permanent 5xx (sender refused, data error, ...) is a
                     # definite non-delivery: nothing was accepted.
                     logger.error(
@@ -2433,6 +2571,7 @@ def _deliver_assignments(
         failed=failed,
         blocked=blocked,
         indeterminate=indeterminate,
+        retry_deferred=retry_deferred,
         stop_observed=stop_observed,
     )
 
@@ -2477,7 +2616,7 @@ def _record_delivery_summary(
             "sent": outcome.sent,
             "failed": outcome.failed,
             "indeterminate": outcome.indeterminate,
-            "deferred": deferred,
+            "deferred": deferred + outcome.retry_deferred,
             "template_hash": template_hash,
             "spf_has_record": plan.spf.has_spf,
             "spf_domain": plan.spf.domain,

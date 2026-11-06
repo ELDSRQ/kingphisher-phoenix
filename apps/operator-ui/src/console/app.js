@@ -1937,10 +1937,15 @@ ${wording.value}`;
       ])))
     ]));
     const failures = Object.entries(operational.failure_reasons || {});
+    const smtpOutcomeLabels = /* @__PURE__ */ new Map([
+      ["smtp_data_retry_pending", "Email relay temporarily refused the message; retry scheduled."],
+      ["smtp_data_retry_exhausted", "Email relay refused all three attempts."]
+    ]);
+    const failureReasonLabel = (reason) => smtpOutcomeLabels.get(reason) || reason || "None";
     form.appendChild(el("h4", { class: "modal-section", text: "Failure reasons" }));
     form.appendChild(failures.length ? el("table", { class: "report-table", "aria-label": "Aggregate failure reasons" }, [
       el("tbody", {}, failures.map(([name, value]) => el("tr", {}, [
-        el("td", { text: name.replaceAll("_", " ") }),
+        el("td", { text: failureReasonLabel(name).replaceAll("_", " ") }),
         el("td", { class: "num", text: String(value) })
       ])))
     ]) : el("p", { class: "empty", text: "No failed delivery reasons are recorded." }));
@@ -1969,7 +1974,7 @@ ${wording.value}`;
           el("td", { text: recipientReference(result) }),
           el("td", { text: result.department || "No department" }),
           el("td", { text: result.send_state }),
-          el("td", { text: result.failure_reason || "None" }),
+          el("td", { text: failureReasonLabel(result.failure_reason) }),
           el("td", { text: result.opened ? "Yes" : "No" }),
           el("td", { text: result.clicked ? "Yes" : "No" }),
           el("td", { text: result.reported ? "Yes" : "No" }),

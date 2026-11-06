@@ -105,6 +105,7 @@ def batch(monkeypatch):
 
     return SimpleNamespace(
         run=run,
+        ctx=ctx,
         session=session,
         plan=plan,
         campaign=campaign,
