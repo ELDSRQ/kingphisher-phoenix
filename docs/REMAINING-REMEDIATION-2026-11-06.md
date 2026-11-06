@@ -15,7 +15,7 @@ migrated during this work.
 | W5-04 retention holds | Tenant-wide explicit admin holds; encrypted case text; release history; retention/erasure/keyed-ledger guards; least-privilege grants; database protection against legacy purges | Deploy and qualify migration/API/retention together; organization owns case-specific hold decisions |
 | W5-01 overload budgets | New bounded component qualification passed on real `.105` Redis for 60 seconds and five minutes, including critical-topic progress and supervisor deadline isolation | Full deployed workload/provider/outbox soak and agreed operating thresholds; no full-stack GO claimed |
 | W2-02 signing/clean VM | Current delivery is source/shell installation and browser/server software; no distributed native installer signing step exists | Clean-machine installation matrix. OS signing is conditional on distributing a native signed installer/app, not a server/browser release prerequisite |
-| W2-03 recovery | Fresh isolated schema and preservation/erasure effects qualified; no full system restore claimed | Clean-room recovery of application state/secrets/audit and measured recovery point/time; broad remediation authorization already covers an isolated drill |
+| W2-03 recovery | Fresh live database snapshot restored to an isolated container; all 46 table counts match; signed audit head and 101,257-event chain verify; existing recipient key decrypts; restored 0045 upgrades to 0053 and audit verifies again | Full service restore including Redis/files and independently recovered secrets; service RTO and scheduled-backup RPO remain unmeasured |
 | W2-04 staging | Azure account and staging resources reachable; four apps report Running with immutable image digests | Current-source plan/apply and deployment qualification |
 | W5-05 / W5-06 | No pilot or broad-use sign-off manufactured | Signed pilot/broad-use GO after staging, recovery and human acceptance |
 
@@ -61,6 +61,41 @@ Neither uses normal development volumes. No existing project assets were pruned,
 removed or recreated.
 
 ## Requirement scope and operating targets
+
+### Additional recovery and image qualification
+
+The preserved live-database rehearsal at `2026-11-06T16:18:44Z` copied a
+consistent exported PostgreSQL snapshot into a new task-owned container,
+`kp-recovery-qualification-20261106-5qsooi`. All **46 tables / 351,043 rows**
+matched the same source snapshot, including **101,257 audit events**. Backup:
+**1.869 s**; container startup, restore and SQL checks: **6.105 s**. Audit-chain
+verification and a recipient decrypt check passed using existing keys read in
+memory from the preserved host configuration. The restored copy upgraded from
+`0045_template_assets` to `0053_retention_holds` in **0.103 s**, created no active
+holds, and passed audit verification again. The live database was not migrated.
+The 29,496,443-byte dump and private log remain on `.105` with mode 0600; the
+sanitized controller report is `live-database-recovery-v1.json` in this run's
+evidence directory. This is database recovery evidence; it does not prove that
+Redis/files or secrets can be recovered after loss of that host, or guarantee
+a backup schedule's RPO or full service RTO.
+
+The subsequent native AMD64 image gate built all six images at `ba7db91` but
+failed on the operator image's base OS scan: **nine HIGH/CRITICAL findings** in
+`ca-certificates-bundle`, `libexpat1`, `py3-pip-wheel` and `zlib`; no application
+dependency or secret finding was reported in that image. The gate stopped
+before qualifying the other images. Original images, source, cache and scan
+evidence were preserved. The remediation updates both Python base manifest
+pins, consistently across the five release images and the mock image, to the
+vendor's November 6 builds. The new public base uses Python 3.15, within this
+project's declared `>=3.13` range; dependency resolution and runtime behavior
+must be requalified rather than inferred from that version range. No mutable
+tag, scanner exemption, package deletion or live-stack replacement is used.
+
+Builder: `sha256:fe4dbb574f811d271ac002a3e0270659f69841738276ef2d0084323baf1d75df`.
+Runtime: `sha256:f3e5face39b0acd813fae456df27b33bf6a6bffba5d201d15f6498138cb8fd96`.
+Both registry indexes expose native AMD64 and ARM64 manifests; only an executed
+gate qualifies an architecture. Fresh exact-source scans/runtime checks remain
+required for the updated candidate.
 
 **OS certificates.** The W2-02 wording came from the supplied handoff list; it
 was too broad for the current product. Developer ID signing/notarization applies

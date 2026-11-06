@@ -16,10 +16,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CONTAINER_DIR = REPOSITORY_ROOT / "infrastructure" / "containers"
 RELEASE_IMAGES = ("operator-api", "tracking-api", "worker", "migration", "ai-gateway")
 HARDENED_BUILDER = (
-    "FROM cgr.dev/chainguard/python@sha256:aa8fd2447b8b52922db57deb3894b622c3229387aaaec5934d64b85dbff6eb17 AS builder"
+    "FROM cgr.dev/chainguard/python@sha256:fe4dbb574f811d271ac002a3e0270659f69841738276ef2d0084323baf1d75df AS builder"
 )
 HARDENED_RUNTIME = (
-    "FROM cgr.dev/chainguard/python@sha256:ee37f5e4fb445732409626797dccb6f2a6337872def2bab48729ee61b335fa77"
+    "FROM cgr.dev/chainguard/python@sha256:f3e5face39b0acd813fae456df27b33bf6a6bffba5d201d15f6498138cb8fd96"
 )
 
 
