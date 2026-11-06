@@ -6,7 +6,7 @@
   "authorization": "User approved continued remediation and engineering actions until complete or no agent jobs remain. Human evidence/signatures must remain authentic.",
   "provenance": {
     "original_task_count": 29,
-    "recovery": "Recovered original task write and project-specific follow-up notes; verified PR146\u2013168 ancestry. Historical status is retained separately from current completion. Raw private recovery records remain in preserved qualification storage.",
+    "recovery": "Recovered original task write and project-specific follow-up notes; verified PR146–168 ancestry. Historical status is retained separately from current completion. Raw private recovery records remain in preserved qualification storage.",
     "prior_implementation_pr": 169,
     "canonical_path": "docs/remediation/registry.json"
   },
@@ -54,7 +54,7 @@
       ],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification.",
+      "next_action": "Runtime grant and privacy repairs are implemented and independently reviewed. Run final exact-source CI and native recovery qualification before closing current acceptance.",
       "completed_pr": 170,
       "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
@@ -126,7 +126,7 @@
       ],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification.",
+      "next_action": "Migrations 0057–0060 and minimal actual-login effect proofs pass. Finish tracking concurrency repair, then final exact-source CI, native qualification and image gates.",
       "completed_pr": 170,
       "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
@@ -198,7 +198,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification."
+      "next_action": "Provider generation and cross-process serialization repairs pass focused and actual-login tests. Complete final exact-source CI and qualification; no actual credentials are rotated."
     },
     {
       "id": "W1-05",
@@ -261,7 +261,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification."
+      "next_action": "Monotonic revocation and credential serialization repairs pass focused and actual-login tests. Complete final exact-source CI and qualification; actual credentials remain unchanged."
     },
     {
       "id": "W2-01",
@@ -408,7 +408,7 @@
       ],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Close the confirmed canonical runtime grant gap with nonrotating migration0057 and actual-login feature effects, then rerun native qualification.",
+      "next_action": "Actual tracking login now completes bound training, knowledge check and replay. Finish concurrent bearer/timestamp repair and final exact-source gates.",
       "completed_pr": 170,
       "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
@@ -435,7 +435,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Repair the proven training completion/open stale-snapshot race, verify immutable evidence under real concurrent logins, then run exact-source CI and qualification."
+      "next_action": "Finish the proven training completion/open stale-snapshot repair and concurrent actual-login proofs, then final exact-source CI and qualification."
     },
     {
       "id": "W4-03",
@@ -460,7 +460,7 @@
       ],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Repair actual-login scheduling gate and rerun reviewed-direct native smoke; preserve program pause lock barrier.",
+      "next_action": "Scheduling repair and both pause/send lock orders pass; native reviewed-direct SEND now succeeds. Complete final exact-source CI and qualification.",
       "completed_pr": 170,
       "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
@@ -553,7 +553,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Build and execute preserved isolated full-service restore with database, queue, files and keys. Report measured scope/timings; independent off-host secret recovery and business outage targets remain separate gates."
+      "next_action": "Execute the implemented isolated full-service restore and preserved real-data upgrade rehearsal. Report measured scope and timings; off-host secret recovery and business outage objectives remain separate gates."
     },
     {
       "id": "W2-04",
@@ -575,7 +575,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate reviewed deployment guards and final CI/images, wake retained Azure staging runner and execute guarded staging workflow. Preserve tracked receipt subscription and all live role assignments."
+      "next_action": "Retained Azure runner is repaired and online. After final CI/native/image gates, dispatch guarded staging deployment and preserve existing roles and ACS receipt resources."
     },
     {
       "id": "W2-05",
@@ -616,7 +616,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Execute actual workers/outbox/provider-sink workload at125 and1250 synthetic recipients, including slow/error handling and bounded sustained load. Five-minute Redis component result alone is insufficient."
+      "next_action": "Run the implemented actual-worker profile: 125 and 1,250 synthetic recipients, 300-second burst observation, SMTP faults, queue isolation and recovery. Do not infer sustained throughput or long-term capacity from this bounded profile."
     },
     {
       "id": "W5-04",
@@ -973,26 +973,27 @@
       "id": "REG-011",
       "parent": "W4-03",
       "title": "Standalone reviewed-direct SEND denied by joined program-occurrence FOR SHARE; lock only mutable program row without expanding grants",
-      "status": "in_progress",
+      "status": "integration_pending",
       "owner": "agent",
       "priority": "P0",
-      "evidence": "Native smokev2:allAPIsetup/reviews succeeded;SEND500;actualkp_operator deniedcampaign_program_occurrences UPDATErequiredforimplicitrowlock"
+      "evidence": "Native smokev2:allAPIsetup/reviews succeeded;SEND500;actualkp_operator deniedcampaign_program_occurrences UPDATErequiredforimplicitrowlock",
+      "resolution": "Narrow program-only shared lock and both pause/send order proofs pass under actual logins. Native smoke v6 now passes SEND and the complete training workflow. Final exact-source CI and qualification remain."
     },
     {
       "id": "REG-012",
       "parent": "W1-01",
       "priority": "P0",
       "owner": "agent",
-      "status": "in_progress",
+      "status": "integration_pending",
       "title": "Complete canonical runtime grants for existing provider/session/cue workflows, delivery manifest reads and retention reply receipt purge",
-      "resolution": "Migration0057 plus exact minimal role/column privileges and actual-login effect proofs; no password rotation."
+      "resolution": "Migration 0057 and six original/ten expanded actual-login effects pass. Grants remain minimal and no passwords were rotated. Final exact-source CI and qualification remain."
     },
     {
       "id": "REG-013",
       "parent": "W1-07",
       "priority": "P0",
       "owner": "agent",
-      "status": "in_progress",
+      "status": "integration_pending",
       "title": "Serialize credential and provider changes across processes; preserve monotonic revocation and configuration generations",
       "resolution": "Four before-fix failures reproduced. Monotonic durable markers, complete credential/provider operation locks and refreshed conflict-safe counters are implemented and independently reviewed. 157 focused tests and ten actual-login PostgreSQL effects passed. Await integrated CI and current-source qualification; actual development credentials remain unchanged."
     },
@@ -1001,9 +1002,9 @@
       "parent": "W1-01",
       "priority": "P0",
       "owner": "agent",
-      "status": "in_progress",
+      "status": "integration_pending",
       "title": "Delivery must read active recipient exclusion selectors without exclusion mutation or private rationale access",
-      "resolution": "Native smoke v4 SEND succeeded, then delivery exhausted retries. A read-only query under its actual login confirmed SQLSTATE 42501 on recipient_exclusions. Add migration 0058 and the four required selector columns; prove current/global/expired/revoked filtering and denial boundaries before another fresh smoke."
+      "resolution": "Migration 0058 grants only four selector columns; actual-login filtering and denial proofs pass. Native v6 delivery succeeds. Per-recipient membership freshness and provider fencing are covered by REG-017; final source gates remain."
     },
     {
       "id": "REG-015",
@@ -1011,7 +1012,7 @@
       "owner": "agent",
       "status": "in_progress",
       "title": "Preserved development-runtime upgrade with real-data restore rehearsal before additive migration",
-      "resolution": "New explicit-phase coordinator preserves original source, environment, configuration and container identities. Pre-stop bounds, complete checkpoint, isolated restore/decryption/audit proof, Redis payload fences and captured cgroup checks require final independent review, CI and qualified-source execution. No normal runtime mutation has occurred."
+      "resolution": "Independently reviewed explicit-phase coordinator and 59 preservation tests pass, including executable-mode preservation and integrity checks. Final CI/native/image gates precede qualified-source execution. No normal runtime mutation has occurred."
     },
     {
       "id": "REG-016",
@@ -1019,52 +1020,52 @@
       "owner": "agent",
       "status": "in_progress",
       "title": "Actual clean Linux installation, repair, baseline upgrade and reboot qualification",
-      "resolution": "Reviewed bounded new-VM scope; private coordinator implementation in progress. Separate sequential task-owned Docker daemons preserve both installation datasets while retaining frozen Compose identity. No Azure VM resources created yet."
+      "resolution": "Private coordinator is implemented, independently reviewed and frozen with 51 offline tests passing. New isolated Azure VM execution requires final merged source and matching green CI. Sequential owned Docker engines, reboot identity proof and bounded deallocation preserve both installation datasets. No VM resources have been created."
     },
     {
       "id": "REG-017",
       "parent": "W1-01",
       "priority": "P0",
       "owner": "agent",
-      "status": "in_progress",
+      "status": "integration_pending",
       "title": "Serialize each final provider boundary with recipient exclusion and erasure changes",
-      "resolution": "Delivery cached exclusion membership once per batch and omitted the promised post-claim check. Refresh per-recipient membership and lock the recipient before the final campaign/provider boundary, using a minimal row-lock grant in migration 0059. Prove both exclusion/delivery orders and changes during an earlier batch send or claim-to-provider gap with synthetic concurrency tests."
+      "resolution": "Committed recipient-first shared lock, fresh bounded membership query and final recipient-state refresh pass six actual-role concurrency effects, including both exclusion lock orders and claim-gap/mid-batch changes. Final exact-source CI and qualification remain."
     },
     {
       "id": "REG-018",
       "parent": "W1-01",
       "priority": "P0",
       "owner": "agent",
-      "status": "in_progress",
+      "status": "integration_pending",
       "title": "Refresh and serialize live launch, training, approval and signed RoE authorization at every provider boundary",
-      "resolution": "Worker sessions retain cached rows after commit. The batch plan validated RoE and approvals once, while later launch checks could reuse stale audience/template/training rows. Refresh final authorization per assignment, hold minimal RoE/training shared locks through the provider result, and prove committed revocation or supersession blocks later sends without repeating SPF/DNS work."
+      "resolution": "Committed fresh final launch/approval/lesson/RoE checks and shared authority locks pass eight actual-role effects. A final clock check follows blocking gates; SPF/DNS is not repeated. Final exact-source CI and qualification remain."
     },
     {
       "id": "REG-019",
       "parent": "W1-01",
       "priority": "P0",
       "owner": "agent",
-      "status": "in_progress",
+      "status": "integration_pending",
       "title": "Permit tracking's campaign/training row locks without mutable content or campaign authority",
-      "resolution": "Native smoke v5 achieved three SMTP sink acceptances and a successful report, then its actual training click returned 503. Tracking's campaign and selected-lesson row locks lack required column UPDATE privileges. Add only identity-column lock grants and prove the real click, training page, knowledge completion and replay behavior under the actual tracking login."
+      "resolution": "Migration 0060 grants only identity-column locks. Five actual-login effects prove both original atomic failures and passing click/training/quiz/replay with denied mutable writes. Native smoke v6 passes. Final exact-source gates remain."
     },
     {
       "id": "REG-020",
       "parent": "W1-01",
       "priority": "P0",
       "owner": "agent",
-      "status": "in_progress",
+      "status": "integration_pending",
       "title": "Avoid tracking/provider assignment deadlocks and refresh bearer authorization after lock waits",
-      "resolution": "Tracking held assignment locks before exclusive campaign/lesson locks, while delivery held shared campaign/lesson locks through its provider result and then updated that assignment. Use compatible shared reads in campaign-before-assignment order and refresh token authorization after waits. Prove click progress during a provider boundary and serialization with campaign recall using actual role logins."
+      "resolution": "Compatible shared campaign/lesson reads, campaign-before-assignment ordering and post-wait token refresh are implemented and independently approved. An immutable pre-wait verifier copy is compared in constant time after refresh. Nine actual-role concurrency tests pass, including provider overlap, recall/expiry and ACTIVE same-row token rotation. Final exact-source CI and qualification remain."
     },
     {
       "id": "REG-021",
       "parent": "W4-02",
       "priority": "P1",
       "owner": "agent",
-      "status": "in_progress",
+      "status": "integration_pending",
       "title": "Refresh training child state after its parent lock before idempotent completion or page-open updates",
-      "resolution": "A joined SELECT can retain a training-row snapshot taken before waiting for the parent assignment lock. Refresh the child and its authorization after acquiring that lock so concurrent completion/open requests cannot overwrite the first completion timestamp or regress its state. Prove exact event and timestamp idempotency with actual concurrent role logins."
+      "resolution": "The joined child is refreshed after acquiring the stable parent lock, with its purpose-specific stored verifier rechecked before use. Real concurrent tracking workers prove first open/completion timestamps and event counts remain immutable; rotating either child verifier during a wait returns 404 without new evidence. All nine actual-role tracking race tests and 52 local tests pass; independent review approved the exact source. Final integrated gates remain."
     }
   ],
   "evidence": {
@@ -1098,6 +1099,8 @@
     "recipient_provider_fences": "delivery-recipient-races-v3.xml: six actual-role effects passed in 44.968 seconds. Real exclusion endpoint and production claim/correlation/send loop prove both lock orders, claim-gap/mid-batch changes and status/deletion refresh. Synthetic provider receipt callbacks only; no external mail.",
     "live_provider_authority": "delivery-live-authority-races-v1.xml: eight actual-role effects passed in 51.437 seconds, including signed positive authority, stale cached changes and both RoE/lesson mutation lock orders. Independent 56 focused tests passed with zero skips; final timing checks follow blocking launch/safety gates. Worker source independently approved and no actual credentials or normal runtime were changed.",
     "evidence_path_correction": "Some early JUnit paths were reused while suites expanded, superseding their earlier raw XML. The six-test runtime-feature result is recorded in commit 2fb4021; the current raw report contains its expanded ten-test rerun. The four-test 0058 report was retained separately before expansion. Independent controller/agent reports and all failed native resources remain preserved. All subsequent runs require fresh unique evidence paths; no historical report is being reconstructed or represented as an original.",
-    "upgrade_executable_preservation": "upgrade-executable-before.xml reproduced a real helper PermissionError and two missing mode-drift refusals. upgrade-executable-after.xml: all 59 preservation tests passed. Strict mypy on seven sources, Ruff/format and independent review passed. Qualified executable files retain private mode 0700, other files 0600; later phases validate executable membership and mode integrity before runtime actions. No normal upgrade has been executed."
+    "upgrade_executable_preservation": "upgrade-executable-before.xml reproduced a real helper PermissionError and two missing mode-drift refusals. upgrade-executable-after.xml: all 59 preservation tests passed. Strict mypy on seven sources, Ruff/format and independent review passed. Qualified executable files retain private mode 0700, other files 0600; later phases validate executable membership and mode integrity before runtime actions. No normal upgrade has been executed.",
+    "native_smoke_v6": "PASS at source 714fc8a08204a48452ffff8773d7fd449655a6f5; archive SHA-256 632f52c073cc41fb0c71769d39429286ad21c67851a5f6a658c988a784b67295. Three real SMTP sink acceptances, bound training/knowledge/replay and queue accounting passed; all owned source processes quiesced in 16.738 seconds and resources were preserved. This precedes the final tracking concurrency repair and is not the full load/recovery profile or confirmed recipient delivery.",
+    "tracking_concurrency": "tracking-delivery-races-root-1794007909.xml: nine actual-role PostgreSQL cases passed with zero skips in 62.690 seconds. Includes production provider overlap, campaign-before-assignment recall/expiry, pixel verifier rotation, concurrent first open/completion and purpose-specific verifier rotation after real lock waits. Separate ASGI portals model concurrent tracking workers. Earlier fixture failures and their unique XML files are preserved. Independent 52 local tests, exact three-file review, combined lint711 and strict mypy224 pass."
   }
 }

@@ -15,6 +15,7 @@ import re
 import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -24,7 +25,7 @@ from kp_database.campaign_service import (
     tracking_token_verifier,
     training_resource_content_digest,
 )
-from kp_database.models import RecipientAssignment
+from kp_database.models import RecipientAssignment, TrackingToken
 from kp_database.privacy import minimize_ip
 from kp_database.training import TrainingBearerPurpose, training_bearer, training_bearer_verifier
 from kp_domain_models import models as dm
@@ -50,6 +51,7 @@ class _Token:
     recipient_assignment_id = uuid.uuid4()
     status = dm.TokenStatus.ACTIVE
     expires_at = None
+    token_hash = "a" * 64
 
 
 class _RecipientAssignment:
@@ -84,7 +86,10 @@ class _FakeSession:
     def scalar(self, stmt: object) -> object | None:
         self.scalar_statements.append(stmt)
         if self.scalar_results:
-            return self.scalar_results.pop(0)
+            result = self.scalar_results.pop(0)
+            if result is not None and hasattr(result, "training_assignment_id"):
+                self.get_results[result.training_assignment_id] = result
+            return result
         return self.dedup_event
 
     def get(self, model: object, identifier: object, **kwargs: object) -> object | None:
@@ -142,6 +147,8 @@ def _client(
 
     app.dependency_overrides[_session] = _override
     fake.get_results.setdefault(_Token.recipient_assignment_id, _RecipientAssignment())
+    fake.get_results.setdefault(_Token.token_id, _Token())
+    fake.get_results.setdefault(_Token.campaign_id, SimpleNamespace(campaign_id=_Token.campaign_id))
 
     def _resolve(token_hash: str, session: object, verifier_key: bytes) -> _Token | None:
         if token_hash == "deadbeef" * 8:
@@ -441,6 +448,9 @@ def test_valid_opaque_bearer_works_but_database_verifier_cannot_be_replayed() ->
             if model is RecipientAssignment and identifier == token.recipient_assignment_id:
                 assert options == {"with_for_update": True, "populate_existing": True}
                 return self.assignment
+            if model is TrackingToken and identifier == token.token_id:
+                assert options == {"populate_existing": True}
+                return token
             return None
 
         def commit(self) -> None:
@@ -942,10 +952,12 @@ def test_campaign_training_binding_is_explicit_and_superseded_resource_fails_clo
     assert _campaign_training_resource(fake, campaign_id) is original  # type: ignore[arg-type]
     assert campaign.training_resource_id == original_id
     assert any(
-        identifier == campaign_id and kwargs.get("with_for_update") is True for _, identifier, kwargs in fake.get_calls
+        identifier == campaign_id and kwargs == {"with_for_update": {"read": True}, "populate_existing": True}
+        for _, identifier, kwargs in fake.get_calls
     )
     assert any(
-        identifier == original_id and kwargs.get("with_for_update") is True for _, identifier, kwargs in fake.get_calls
+        identifier == original_id and kwargs == {"with_for_update": {"read": True}, "populate_existing": True}
+        for _, identifier, kwargs in fake.get_calls
     )
 
     original.approval_state = dm.TemplateApprovalState.SUPERSEDED
@@ -1076,6 +1088,9 @@ def test_training_resolution_locks_the_parent_assignment_serialization_boundary(
             "training_assignment_id": assignment_id,
             "recipient_assignment_id": _Token.recipient_assignment_id,
             "access_expires_at": expires_at,
+            "training_token_hash": training_bearer_verifier(
+                raw_bearer, TRAINING_KEY, purpose=TrainingBearerPurpose.OPEN
+            ),
         },
     )()
     fake = _FakeSession()
@@ -1096,6 +1111,24 @@ def test_training_resolution_locks_the_parent_assignment_serialization_boundary(
     sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
     assert "JOIN recipient_assignments" in sql
     assert "FOR UPDATE OF recipient_assignments" in sql
+
+
+def test_assignment_wait_rejects_active_same_identity_token_verifier_rotation() -> None:
+    from kp_tracking_api.routers import _lock_tracking_assignment
+
+    token = _Token()
+    token.token_hash = "a" * 64
+
+    class RotatingSession(_FakeSession):
+        def get(self, model: object, identifier: object, **kwargs: object) -> object | None:
+            if model is RecipientAssignment:
+                token.token_hash = "b" * 64  # same identity is refreshed during the parent wait
+                return _RecipientAssignment()
+            return token
+
+    fake = RotatingSession()
+    assert _lock_tracking_assignment(fake, token) is None  # type: ignore[arg-type]
+    assert fake.executed == [] and fake.added == []
 
 
 def test_body_limit_rejects_oversized_content_length(monkeypatch: pytest.MonkeyPatch) -> None:

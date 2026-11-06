@@ -102,3 +102,20 @@ signed RoE, roster import/confirmation and logical approvals, then found SEND's
 unnecessary joined row lock. Its source processes were quiesced and its new
 containers, volumes, network and evidence were preserved. The normal runtime
 was never stopped or reconfigured by either attempt.
+
+The later native smoke attempts exposed minimal exclusion, recipient and live
+authorization row-lock undergrants. Migrations 0058–0060 repair those boundaries
+without mutable mailbox/content/authorization access or password rotation.
+Native smoke v6 passes actual SMTP sink acceptance, bound training, knowledge
+completion, replay and queue accounting; it preserves all resources and does
+not assert recipient delivery or qualify the full profile.
+
+The final tracking repair removes the provider/assignment lock inversion and
+rechecks bearer authorization after waits. Nine actual-role concurrency cases
+pass in 62.690 seconds with no skips, including token and purpose-specific
+verifier rotations and immutable first training timestamps. Independent review
+and 52 local tracking tests pass; combined lint checks 711 files and strict mypy
+checks 224 production sources. Two test-fixture failures are preserved in their
+original unique XML files; the final proof uses fresh evidence. The combined
+source still needs exact-source CI, full native load/recovery and image gates
+before deployment or the preserved normal-runtime upgrade.
