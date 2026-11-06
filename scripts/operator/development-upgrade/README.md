@@ -50,6 +50,10 @@ After prepare, the remaining commands take only the same `--run` and explicit
    binds only the new `data` symlink to the existing project's data directory.
    The source checkout, old `.venv`, `.env`, unit, override and data are untouched.
    Only the new release environment is synchronized. Existing names fail closed.
+   Qualified executable files retain owner execution permission as mode `0700`;
+   other copied files use `0600`. The plan records executable membership, and
+   later phases refuse permission drift as well as changed bytes. This keeps
+   directly invoked operator helpers usable without widening source access.
    Before creating the release, read-only preflight checks encrypted entity row
    counts, Redis key/memory totals, archive file counts/symlinks and computed free
    space. Required headroom includes 8 GiB plus twice the project archive size,

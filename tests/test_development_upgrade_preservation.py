@@ -142,6 +142,40 @@ def test_prepare_only_creates_versioned_copy_and_fresh_environment(layout):
     assert len(layout.commands.calls) == 1 and layout.commands.calls[0][1:3] == ["sync", "--frozen"]
 
 
+def add_qualified_executable(layout):
+    name = "scripts/qualified-helper.sh"
+    helper = layout.source / name
+    helper.write_text("#!/bin/sh\nprintf 'qualified helper executed\\n'\n")
+    helper.chmod(0o755)
+    manifest = json.loads(layout.manifest.read_text())
+    manifest["files"][name] = digest(helper)
+    layout.manifest.write_text(json.dumps(manifest))
+    return name
+
+
+def test_prepared_operator_helper_remains_executable_and_private(layout):
+    name = add_qualified_executable(layout)
+    prepare(layout)
+    copied = Path(layout.upgrade.plan["source"]) / name
+    result = subprocess.run(  # noqa: S603 - fixed fixture verified by the source manifest
+        [str(copied)], capture_output=True, text=True, check=True
+    )
+    assert result.stdout == "qualified helper executed\n"
+    assert copied.stat().st_mode & 0o777 == 0o700
+    assert (copied.parent.parent / "pyproject.toml").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("changed_mode", (0o600, 0o755))
+def test_prepared_helper_mode_drift_is_refused_before_runtime_actions(layout, changed_mode):
+    name = add_qualified_executable(layout)
+    prepare(layout)
+    plan = layout.upgrade.plan
+    (Path(plan["source"]) / name).chmod(changed_mode)
+    with pytest.raises(Blocked, match="prepared_source_mode_changed"):
+        layout.upgrade._source(plan)
+    assert len(layout.commands.calls) == 1  # Only the new environment sync ran.
+
+
 @pytest.mark.parametrize("collision", ["run", "release"])
 def test_prepare_collisions_preserve_every_existing_asset(layout, collision):
     target = layout.run if collision == "run" else layout.releases / f"{layout.commit}-20261106T190000Z-abc12345"

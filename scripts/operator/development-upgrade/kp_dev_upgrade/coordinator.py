@@ -357,10 +357,13 @@ class Upgrade:
         target.mkdir(mode=0o700)
         private_json(self.run / "private-before-service.json", unit)
         private_json(self.run / "private-prepare-preflight.json", preflight)
+        executables = sorted(name for name in files if (source / name).stat().st_mode & 0o111)
         for name in files:
             output = target / name
             output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             private_bytes(output, (source / name).read_bytes())
+            if name in executables:
+                output.chmod(0o700)
         private_bytes(self.run / "qualified-source.json", manifest.read_bytes())
         original_config = (NORMAL / ".env").read_bytes()
         binding = (
@@ -384,6 +387,7 @@ class Upgrade:
             "qualified_manifest_sha256": manifest_hash,
             "private_config_sha256": digest(target / ".env"),
             "files": files,
+            "executables": executables,
             "old_source": str(NORMAL),
             "old_venv": str(NORMAL / ".venv"),
             "normal_state_changes_authorized_only_in_explicit_phases": True,
@@ -546,10 +550,21 @@ class Upgrade:
         source = canonical(Path(plan["source"]))
         if digest(source / ".env") != plan["private_config_sha256"]:
             raise Blocked("private_configuration_drift")
+        executable_names = plan.get("executables")
+        if (
+            not isinstance(executable_names, list)
+            or any(not isinstance(name, str) for name in executable_names)
+            or len(set(executable_names)) != len(executable_names)
+            or not set(executable_names) <= plan["files"].keys()
+        ):
+            raise Blocked("prepared_source_executable_manifest_changed")
         for name, expected in plan["files"].items():
             member = canonical(source / name)
             if digest(member) != expected:
                 raise Blocked("prepared_source_changed")
+            expected_mode = 0o700 if name in executable_names else 0o600
+            if member.stat().st_mode & 0o7777 != expected_mode:
+                raise Blocked("prepared_source_mode_changed")
         if not (source / "data").is_symlink() or (source / "data").readlink() != NORMAL / "data":
             raise Blocked("shared_data_binding_changed")
         return source
