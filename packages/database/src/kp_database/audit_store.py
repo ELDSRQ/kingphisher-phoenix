@@ -87,12 +87,14 @@ class AuditStore:
         self._legacy_hmac_key = hmac_key
         self._intent_engine = intent_engine or engine
         self._dispatcher = OutboxDispatcher(engine)
+        self._dispatcher.bind_reconciliation_engine(self._intent_engine)
         self._allow_owner_fallback = hmac_key is not None and intent_engine is None
         self._dispatcher.set_owner_fallback_for_development(self._allow_owner_fallback)
 
     def bind_intent_engine(self, engine: Engine) -> None:
         """Bind the least-privilege business connection used to stage intent."""
         self._intent_engine = engine
+        self._dispatcher.bind_reconciliation_engine(engine)
         # Metadata-only tests and the offline demo historically use one owner
         # URL and create tables without Alembic functions. Managed deployments
         # use distinct URLs and never enable this compatibility path.
@@ -260,7 +262,7 @@ class AuditStore:
 
         KP-AUD-007: recovers queue jobs lost to a Redis data loss after their
         durable outbox row was already marked ``dispatched``. Re-enqueues only
-        replay-safe topics; delivery/reply are surfaced for human review, never
+        explicitly replay-safe topics; other topics require human review, never
         auto re-sent.
         """
         return self._dispatcher.reconcile_queue(

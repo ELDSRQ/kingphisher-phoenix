@@ -35,6 +35,15 @@ def test_onprem_custom_base_url_stays_on_network() -> None:
     assert decision.egress_class == "on_network"
 
 
+@pytest.mark.parametrize("provider", ["local", "model_free"])
+def test_local_labels_do_not_override_explicit_endpoint(provider: str) -> None:
+    denied = decide_generation_egress(provider, "https://api.openai.com/v1", acknowledged=False)
+    assert not denied.allowed
+    assert denied.egress_class == "offsite"
+    assert decide_generation_egress(provider, "http://127.0.0.1:8080/v1", acknowledged=False).allowed
+    assert not decide_generation_egress(provider, "not-an-endpoint", acknowledged=False).allowed
+
+
 def test_offsite_provider_denied_without_acknowledgement_allowed_with() -> None:
     denied = decide_generation_egress("openai", "https://api.openai.com/v1", acknowledged=False)
     assert denied.allowed is False

@@ -272,6 +272,16 @@ resource "terraform_data" "workload_config_guard" {
       error_message = "reported_mailbox_address is required when Microsoft 365 report ingestion is enabled."
     }
     precondition {
+      condition     = trimspace(var.reply_mailbox_endpoint) == "" || trimspace(var.reply_mailbox_address) != ""
+      error_message = "reply_mailbox_address is required when Microsoft 365 reply ingestion is enabled."
+    }
+    precondition {
+      condition = trimspace(var.curation_mailbox_address) == "" || (
+        trimspace(var.reported_mailbox_endpoint) != "" && trimspace(var.reported_mailbox_address) != ""
+      )
+      error_message = "curation_mailbox_address requires complete reported-mailbox endpoint and address configuration."
+    }
+    precondition {
       condition = local.acs_provision || (
         can(regex("/providers/Microsoft.Communication/CommunicationServices/[^/]+$", var.acs_existing_communication_service_id)) &&
         trimspace(var.acs_existing_email_endpoint) != "" &&
@@ -1512,14 +1522,9 @@ resource "azurerm_role_assignment" "ai_gateway_foundry_user" {
   role_definition_name = "Cognitive Services User"
   principal_id         = azurerm_user_assigned_identity.workload["ai-gateway"].principal_id
 
-  lifecycle {
-    # The Cognitive Services User role assignment on the Foundry resource may
-    # already exist from a previous partial apply (e.g. when the gateway was
-    # created but a later step failed). Ignore changes to the principal and
-    # role definition so that Terraform adopts the existing assignment rather
-    # than trying to re-create it and failing with 409 Conflict.
-    ignore_changes = [principal_id, role_definition_name]
-  }
+  # Terraform owns this exact identity/role/scope. An assignment left outside
+  # state by a partial apply must be reviewed/imported, never deleted to avoid
+  # a conflict or silently accepted with principal/role drift ignored.
 }
 
 resource "azurerm_container_app" "operator" {

@@ -72,9 +72,13 @@ class _RouteSession:
         self.added: list[Any] = []
         self.deletes: list[Any] = []
         self.commits = 0
+        self.locked_models: list[str] = []
+        self.invalidation_queries: list[Any] = []
 
     def get(self, model: Any, ident: Any = None, **_kw: Any) -> Any:
         name = model.__name__
+        if _kw.get("with_for_update"):
+            self.locked_models.append(name)
         if name == "TemplateVersion":
             return self._template
         if name == "TrainingResource":
@@ -89,10 +93,14 @@ class _RouteSession:
 
     def scalar(self, stmt: Any) -> Any:
         name = _entity_name(stmt)
+        if stmt._for_update_arg is not None:
+            self.locked_models.append(name)
         if name == "Campaign":
             return self._campaign
         if name == "CampaignCueCoverageException":
             return self._existing_exception
+        if name == "TrainingCueCoverage":
+            return self._coverage[0] if self._coverage else None
         return None
 
     def execute(self, stmt: Any) -> _Scalars:
@@ -106,6 +114,7 @@ class _RouteSession:
         if name == "CampaignCueCoverageException":
             return _Scalars(self._exceptions)
         if name == "Campaign":
+            self.invalidation_queries.append(stmt)
             return _Scalars(self._invalidate)
         if name == "CampaignApproval":
             return _Scalars(self._approvals)
@@ -158,8 +167,8 @@ def _coverage_row(resource: SimpleNamespace, cue_id: str, *, created_by: Any, re
         reviewed=reviewed,
         created_by=created_by,
         created_at=None,
-        reviewed_by=None,
-        reviewed_at=None,
+        reviewed_by=uuid4() if reviewed else None,
+        reviewed_at=campaign_routes.datetime.now(campaign_routes.UTC) if reviewed else None,
     )
 
 
@@ -439,6 +448,130 @@ def test_coverage_decision_reopens_bound_campaign_reviews() -> None:
     assert bound.state is dm.CampaignState.DRAFT
     assert session.deletes  # launch gate + approvals cleared
     assert session.commits == 1
+
+
+def test_legacy_coverage_without_known_author_cannot_be_reviewed() -> None:
+    resource = _resource()
+    coverage = _coverage_row(resource, "urgency", created_by=None, reviewed=False)
+    campaign = SimpleNamespace(
+        campaign_id=uuid4(),
+        training_resource_id=resource.training_resource_id,
+        training_resource_version=resource.version,
+    )
+    session = _RouteSession(campaign=campaign, resource=resource, coverage=[coverage])
+    with pytest.raises(PermissionDeniedError, match="author.*unknown|known author"):
+        campaign_routes.decide_campaign_cue_coverage(
+            campaign_id=campaign.campaign_id,
+            coverage_id=coverage.coverage_id,
+            body=campaign_routes.CueCoverageDecision(decision="reviewed"),
+            session=session,
+            audit=_Audit(),
+            principal=_principal(),
+        )
+    assert session.commits == 0
+
+
+def test_rejected_coverage_can_be_reauthored_and_must_be_reviewed_again() -> None:
+    resource = _resource()
+    coverage = _coverage_row(resource, "urgency", created_by=uuid4(), reviewed=True)
+    campaign = SimpleNamespace(
+        campaign_id=uuid4(),
+        training_resource_id=resource.training_resource_id,
+        training_resource_version=resource.version,
+        state=dm.CampaignState.APPROVED,
+    )
+    session = _RouteSession(campaign=campaign, resource=resource, coverage=[coverage], invalidate_campaigns=[campaign])
+    audit = _Audit()
+    reviewer = _principal()
+    campaign_routes.decide_campaign_cue_coverage(
+        campaign_id=campaign.campaign_id,
+        coverage_id=coverage.coverage_id,
+        body=campaign_routes.CueCoverageDecision(decision="rejected"),
+        session=session,
+        audit=audit,
+        principal=reviewer,
+    )
+    author = _principal()
+    result = campaign_routes.create_campaign_cue_coverage(
+        campaign_id=campaign.campaign_id,
+        body=campaign_routes.CueCoverageCreate(
+            cue_id="urgency", lesson_section="revised section", quiz_item="revised quiz"
+        ),
+        session=session,
+        audit=audit,
+        principal=author,
+    )
+    assert result["coverage_id"] == str(coverage.coverage_id)
+    assert coverage.lesson_section == "revised section" and coverage.quiz_item == "revised quiz"
+    assert coverage.created_by == UUID(author.principal_id)
+    assert coverage.reviewed is False and coverage.reviewed_by is None and coverage.reviewed_at is None
+    assert campaign.state == dm.CampaignState.DRAFT and session.deletes
+    assert audit.actions == ["campaign.cue_coverage.rejected", "campaign.cue_coverage.reauthor"]
+    with pytest.raises(PermissionDeniedError, match="cannot review their own"):
+        campaign_routes.decide_campaign_cue_coverage(
+            campaign_id=campaign.campaign_id,
+            coverage_id=coverage.coverage_id,
+            body=campaign_routes.CueCoverageDecision(decision="reviewed"),
+            session=session,
+            audit=audit,
+            principal=author,
+        )
+    campaign_routes.decide_campaign_cue_coverage(
+        campaign_id=campaign.campaign_id,
+        coverage_id=coverage.coverage_id,
+        body=campaign_routes.CueCoverageDecision(decision="reviewed"),
+        session=session,
+        audit=audit,
+        principal=reviewer,
+    )
+    assert coverage.reviewed and coverage.reviewed_by == UUID(reviewer.principal_id)
+    assert session.locked_models == ["TrainingCueCoverage"] * 4
+    assert len(session.invalidation_queries) == 3
+    for statement in session.invalidation_queries:
+        assert statement._for_update_arg is not None
+        assert [str(column) for column in statement._order_by_clauses] == ["campaigns.campaign_id"]
+        assert statement.get_execution_options()["populate_existing"] is True
+
+
+def test_new_coverage_draft_retains_campaign_lock_and_author_identity() -> None:
+    resource = _resource()
+    campaign = SimpleNamespace(
+        campaign_id=uuid4(),
+        training_resource_id=resource.training_resource_id,
+        training_resource_version=resource.version,
+    )
+    principal = _principal()
+    session = _RouteSession(campaign=campaign, resource=resource)
+    result = campaign_routes.create_campaign_cue_coverage(
+        campaign_id=campaign.campaign_id,
+        body=campaign_routes.CueCoverageCreate(cue_id="urgency", lesson_section="lesson", quiz_item="quiz"),
+        session=session,
+        audit=_Audit(),
+        principal=principal,
+    )
+    assert result["reviewed"] is False
+    assert session.added[0].created_by == UUID(principal.principal_id)
+    assert session.locked_models == ["TrainingCueCoverage", "Campaign"]
+
+
+def test_creation_cannot_replace_reviewed_coverage() -> None:
+    resource = _resource()
+    coverage = _coverage_row(resource, "urgency", created_by=uuid4(), reviewed=True)
+    campaign = SimpleNamespace(
+        campaign_id=uuid4(),
+        training_resource_id=resource.training_resource_id,
+        training_resource_version=resource.version,
+    )
+    session = _RouteSession(campaign=campaign, resource=resource, coverage=[coverage])
+    with pytest.raises(ConflictError, match="already.*mapping"):
+        campaign_routes.create_campaign_cue_coverage(
+            campaign_id=campaign.campaign_id,
+            body=campaign_routes.CueCoverageCreate(cue_id="urgency", lesson_section="edited", quiz_item="edited"),
+            session=session,
+            audit=_Audit(),
+            principal=_principal(),
+        )
+    assert session.commits == 0 and coverage.reviewed
 
 
 # --- exception route: state reset + non-required cue rejected -----------------

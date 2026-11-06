@@ -11,12 +11,12 @@ Semantics:
 - ``renew_lease`` extends the ``lease_deadline`` of an in-flight claim, but only
   for the current owner (a heartbeat issued by the supervisor while a handler
   runs). A stale owner's renewal is refused.
-- ``ack`` removes a successfully processed message from ``:processing``. Because
-  it matches the exact claimed envelope (which embeds the owner), an ack issued
-  by a stale owner removes nothing — it is fenced.
+- ``ack`` removes a successfully processed message from ``:processing`` by its
+  stable job, owner and fence identity. A lost lease-renewal reply cannot prevent
+  completion, while an ack issued by a stale owner/fence removes nothing.
 - ``reject`` returns a failed message to the queue with an incremented retry
   counter; messages that exhaust their retries land on ``kp:queue:dlq:<topic>``.
-  It is fenced by the same exact-envelope match as ``ack``.
+  It uses the same claim identity as ``ack`` and the current stored envelope.
 - ``recover_stale`` re-queues ONLY genuinely-expired claims (``lease_deadline``
   in the past), so a concurrent recovery pass or a slow healthy handler can no
   longer trigger duplicate delivery. Crashed workers are still recovered once
@@ -94,7 +94,7 @@ while true do
 end
 """
 
-_RENEW_LEASE_SCRIPT = """-- kp_queue_renew_lease_v1
+_RENEW_LEASE_SCRIPT = """-- kp_queue_renew_lease_v2
 -- Extend a claim's lease, fenced to the presenting owner. A renewal from a
 -- stale owner (the claim was already recovered and re-owned) finds no match
 -- and is refused, so a zombie handler cannot keep a message it no longer owns.
@@ -105,8 +105,9 @@ for _, raw in ipairs(items) do
         and type(message) == 'table'
         and message['id'] == ARGV[1]
         and message['owner'] == ARGV[2]
+        and message['fence'] == tonumber(ARGV[3])
     then
-        message['lease_deadline'] = tonumber(ARGV[3])
+        message['lease_deadline'] = tonumber(ARGV[4])
         local encoded = cjson.encode(message)
         redis.call('LREM', KEYS[1], 1, raw)
         redis.call('LPUSH', KEYS[1], encoded)
@@ -114,6 +115,49 @@ for _, raw in ipairs(items) do
     end
 end
 return nil
+"""
+
+_ACK_CLAIM_SCRIPT = """-- kp_queue_ack_claim_v1
+for _, raw in ipairs(redis.call('LRANGE', KEYS[1], 0, -1)) do
+    local ok, message = pcall(cjson.decode, raw)
+    if ok and type(message) == 'table'
+        and message['id'] == ARGV[1]
+        and message['owner'] == ARGV[2]
+        and message['fence'] == tonumber(ARGV[3])
+    then
+        return redis.call('LREM', KEYS[1], 1, raw)
+    end
+end
+return 0
+"""
+
+_REJECT_CLAIM_SCRIPT = """-- kp_queue_reject_claim_v1
+for _, raw in ipairs(redis.call('LRANGE', KEYS[1], 0, -1)) do
+    local ok, message = pcall(cjson.decode, raw)
+    if ok and type(message) == 'table'
+        and message['id'] == ARGV[1]
+        and message['owner'] == ARGV[2]
+        and message['fence'] == tonumber(ARGV[3])
+    then
+        -- Read retry/payload from Redis, not a possibly stale caller envelope.
+        local retries = tonumber(message['retry']) + 1
+        message['retry'] = retries
+        message['started_at'] = nil
+        message['owner'] = nil
+        message['fence'] = nil
+        message['lease_deadline'] = nil
+        local exhausted = retries >= tonumber(ARGV[4])
+        if exhausted then message['dead_lettered_at'] = tonumber(ARGV[5]) end
+        -- Redis does not roll back earlier script writes on an encoding error.
+        -- Encode first so failure leaves the original claim recoverable.
+        local encoded_ok, encoded = pcall(cjson.encode, message)
+        if not encoded_ok then return 0 end
+        if redis.call('LREM', KEYS[1], 1, raw) == 0 then return 0 end
+        redis.call('RPUSH', exhausted and KEYS[3] or KEYS[2], encoded)
+        return exhausted and 2 or 1
+    end
+end
+return 0
 """
 
 _MOVE_IF_PRESENT_SCRIPT = """-- kp_queue_move_if_present_v1
@@ -171,15 +215,21 @@ _MAX_DLQ_SCAN = 10_000
 #: and passes it to ``pop``; this constant only covers direct/ad-hoc callers.
 DEFAULT_LEASE_SECONDS = 60
 
-#: Topics whose jobs perform an externally-visible send whose provider
-#: acceptance is unknown after a Redis data loss. A queue<->outbox reconciliation
-#: (KP-AUD-007) must NEVER auto re-enqueue these — doing so could re-send an
-#: employee a duplicate simulated-phishing email. They are surfaced for human
-#: review instead. Every other topic (reminder/alert and internal maintenance
-#: roles) is safe to re-enqueue because its handler is idempotent by
-#: idempotency key / training token. The consuming worker, which knows its own
-#: topic, decides ``replay_safe`` and passes it to the reconciler.
-QUEUE_REPLAY_REVIEW_ONLY_TOPICS = frozenset({"deliver", "reply-mailbox"})
+#: Redis remembers consumed job IDs for this long after initial publication.
+#: Reconciliation must search a strictly shorter window, or an expired marker
+#: could be mistaken for Redis data loss and cause a completed job to run again.
+QUEUE_PUBLISH_DEDUP_TTL_SECONDS = 90 * 24 * 60 * 60
+MAX_QUEUE_RECONCILE_WINDOW_HOURS = 89 * 24
+
+#: Explicitly audited replay-safe handlers. Unknown/future topics fail closed.
+#: Reminders persist their no-retry follow-up claim before transport; alerts
+#: have no equivalent durable send claim and therefore require human review.
+QUEUE_REPLAY_SAFE_TOPICS = frozenset(
+    {"audit-anchor", "ingest", "generate", "retention", "mailbox", "remind", "directory", "curate"}
+)
+#: Retained for consumers presenting the known review-only topics. Automatic
+#: replay authority comes ONLY from membership in QUEUE_REPLAY_SAFE_TOPICS.
+QUEUE_REPLAY_REVIEW_ONLY_TOPICS = frozenset({"deliver", "reply-mailbox", "alert"})
 
 #: Default per-topic READY-depth budget for NON-critical topics (KP-AUD-024
 #: producer backpressure). When a topic's ready list already holds this many
@@ -364,7 +414,7 @@ class JobQueue:
             self._published(topic, message["idempotency_key"]),
             self._delayed(topic) if delayed else self._topic(topic),
             encoded,
-            90 * 24 * 60 * 60,
+            QUEUE_PUBLISH_DEDUP_TTL_SECONDS,
             "delayed" if delayed else "ready",
             available_at or 0,
             job_id,
@@ -441,19 +491,18 @@ class JobQueue:
         claim is no longer owned by this caller (already recovered/re-owned, or
         acked), which is the fence that stops a zombie handler from holding a
         message another worker now owns. On success the passed ``message`` dict
-        is updated in place so a subsequent ``ack``/``reject`` matches.
+        receives refreshed lease metadata. Finalization uses the stable claim
+        identity even when this renewal reply is lost after Redis applied it.
         """
-        job_id = message.get("id")
-        owner = message.get("owner")
-        if not isinstance(job_id, str) or not isinstance(owner, str):
+        identity = self._claim_identity(message)
+        if identity is None:
             return False
         new_deadline = time.time() + float(lease_seconds)
         raw = self._client.eval(
             _RENEW_LEASE_SCRIPT,
             1,
             self._processing(topic),
-            job_id,
-            owner,
+            *identity,
             new_deadline,
         )
         if raw is None:
@@ -463,37 +512,36 @@ class JobQueue:
         message["lease_deadline"] = new_deadline
         return True
 
+    @staticmethod
+    def _claim_identity(message: dict[str, Any]) -> tuple[str, str, int] | None:
+        job_id, owner, fence = (message.get(key) for key in ("id", "owner", "fence"))
+        if not isinstance(job_id, str) or not job_id or not isinstance(owner, str) or not owner:
+            return None
+        if type(fence) is not int or fence < 1:
+            return None
+        return job_id, owner, fence
+
     def ack(self, topic: str, message: dict[str, Any]) -> None:
-        raw = message.get("_raw")
-        if raw is not None:
-            self._client.lrem(self._processing(topic), 1, self._as_str(raw))
+        identity = self._claim_identity(message)
+        if identity is not None:
+            self._client.eval(_ACK_CLAIM_SCRIPT, 1, self._processing(topic), *identity)
 
     def reject(self, topic: str, message: dict[str, Any], *, max_retries: int = 3) -> None:
-        raw = message.get("_raw")
-        if raw is None:
+        identity = self._claim_identity(message)
+        if identity is None:
             logger.warning("cannot reject unclaimed message %s", message.get("id"))
             return
-        queued_message = {key: value for key, value in message.items() if key != "_raw"}
-        retries = int(queued_message.get("retry", 0)) + 1
-        queued_message["retry"] = retries
-        # Drop per-claim lease state so the next claim re-stamps a fresh owner,
-        # fencing token and lease deadline.
-        for lease_field in ("started_at", "owner", "fence", "lease_deadline"):
-            queued_message.pop(lease_field, None)
-        destination = self._topic(topic) if retries < max_retries else self._dlq(topic)
-        if retries >= max_retries:
-            queued_message["dead_lettered_at"] = time.time()
         moved = self._client.eval(
-            _MOVE_IF_PRESENT_SCRIPT,
-            2,
+            _REJECT_CLAIM_SCRIPT,
+            3,
             self._processing(topic),
-            destination,
-            self._as_str(cast(bytes | str, raw)),
-            json.dumps(queued_message),
+            self._topic(topic),
+            self._dlq(topic),
+            *identity,
+            max_retries,
+            time.time(),
         )
-        if moved and retries >= max_retries:
-            # The destination envelope is constructed before the move so the
-            # timestamp must be included in the atomically inserted value.
+        if moved == 2:
             logger.error("message %s exhausted %d retries; moving to DLQ", message.get("id"), max_retries)
 
     @staticmethod

@@ -26,6 +26,7 @@ from kp_database.models import (
     CipherText,
     Microsoft365IntegrationState,
     PrivacyNotice,
+    PrivacyRequest,
     Recipient,
     RecipientAssignment,
     ReplyMailReceipt,
@@ -340,7 +341,9 @@ def test_recipient_delete_endpoint(client: TestClient) -> None:
     assert ok.status_code == 200, ok.text
 
     again = client.delete(f"/api/v1/recipients/{recipient_id}", headers=ADMIN_HEADERS)
-    assert again.status_code == 404
+    assert again.status_code == 200, again.text
+    assert again.json()["already_tombstoned"] is True
+    assert again.json()["ledger_rows_purged"] == 0
 
 
 @requires_db
@@ -631,3 +634,71 @@ def test_export_fails_closed_when_ledger_pseudonym_key_unavailable(
     # Every other store is still disclosed despite the ledger config failure.
     assert len(body["reply_receipts"]) == 1
     assert len(body["reported_receipts"]) == 1
+
+
+@requires_db
+def test_repeat_delete_repairs_historical_tombstone_ledger_without_rewriting_marker(client: TestClient) -> None:
+    recipient_id = _seed_recipient(f"historical-{uuid4()}@example.com")
+    first = client.delete(f"/api/v1/recipients/{recipient_id}", headers=ADMIN_HEADERS)
+    assert first.status_code == 200, first.text
+    with _session() as session:
+        recipient = session.get(Recipient, UUID(recipient_id))
+        assert recipient is not None
+        original = (recipient.mailbox, recipient.mailbox_sha256, recipient.deleted_at)
+    # Characterize a tombstone produced before ledger erasure was implemented.
+    _seed_ledger_entry(UUID(recipient_id))
+    _seed_ledger_entry(UUID(recipient_id))
+
+    remediated = client.delete(f"/api/v1/recipients/{recipient_id}", headers=ADMIN_HEADERS)
+
+    assert remediated.status_code == 200, remediated.text
+    assert remediated.json()["already_tombstoned"] is True
+    assert remediated.json()["ledger_rows_purged"] == 2
+    with _session() as session:
+        recipient = session.get(Recipient, UUID(recipient_id))
+        assert recipient is not None
+        assert (recipient.mailbox, recipient.mailbox_sha256, recipient.deleted_at) == original
+
+
+@requires_db
+@pytest.mark.parametrize(
+    ("key", "version"), (("", "v1"), ("not-hex", "v1"), ("11" * 31, "v1"), ("11" * 32, "bad version"))
+)
+def test_managed_erasure_key_failure_preserves_subject_and_verified_request(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, key: str, version: str
+) -> None:
+    mailbox = f"managed-key-failure-{uuid4()}@example.com"
+    recipient_id = _seed_recipient(mailbox)
+    assignment_id = _seed_assignment_with_receipts(recipient_id)
+    _seed_ledger_entry(UUID(recipient_id))
+    submitted = client.post(
+        "/api/v1/privacy/requests",
+        headers=PRIVACY_HEADERS,
+        json={"request_type": "deletion", "requester_mailbox": mailbox},
+    )
+    assert submitted.status_code == 201, submitted.text
+    request_id = submitted.json()["privacy_request_id"]
+    verified = client.post(
+        f"/api/v1/privacy/requests/{request_id}/verify",
+        headers=PRIVACY_HEADERS,
+        json={"method": "authenticated_hr_record", "evidence_ref": "managed-key-atomicity"},
+    )
+    assert verified.status_code == 200, verified.text
+    # Exercise the actual managed key resolver, independently of unrelated
+    # managed ACS/OIDC startup requirements of this disposable API fixture.
+    managed = OperatorApiSettings.model_construct(
+        config_store="managed", awareness_pseudonym_key=key, awareness_pseudonym_key_version=version
+    )
+    resolver = OperatorApiSettings.require_awareness_pseudonym_config
+    monkeypatch.setattr(OperatorApiSettings, "require_awareness_pseudonym_config", lambda _settings: resolver(managed))
+
+    direct = client.delete(f"/api/v1/recipients/{recipient_id}", headers=ADMIN_HEADERS)
+    fulfilled = client.post(f"/api/v1/privacy/requests/{request_id}/fulfill", headers=PRIVACY_HEADERS, json={})
+
+    assert direct.status_code == fulfilled.status_code == 503
+    with _session() as session:
+        recipient = session.get(Recipient, UUID(recipient_id))
+        request = session.get(PrivacyRequest, UUID(request_id))
+        assert recipient is not None and recipient.deleted_at is None and recipient.mailbox == mailbox
+        assert request is not None and request.status == "verified" and request.completed_at is None
+        assert session.get(RecipientAssignment, UUID(assignment_id)) is not None

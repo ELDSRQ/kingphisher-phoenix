@@ -8,6 +8,7 @@ mutation or an in-memory-only queue request.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -15,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from kp_auditing.audit import GENESIS_HASH, AuditRecord
+from kp_contracts.queue import MAX_QUEUE_RECONCILE_WINDOW_HOURS, QUEUE_REPLAY_SAFE_TOPICS
 from sqlalchemy import DateTime, bindparam, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError, ProgrammingError
@@ -152,7 +154,15 @@ class OutboxDispatcher:
 
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
+        self._reconciliation_engine = engine
+        self._review_conditions: dict[str, str] = {}
+        self._reconciliation_cursors: dict[str, tuple[datetime, uuid.UUID]] = {}
+        self._review_sweeps: dict[str, tuple[str, int]] = {}
         self._allow_owner_fallback = False
+
+    def bind_reconciliation_engine(self, engine: Engine) -> None:
+        """Read only the worker's topic through its own authenticated login."""
+        self._reconciliation_engine = engine
 
     def allow_owner_fallback_for_development(self) -> None:
         """Enable compatibility for metadata-only local test databases."""
@@ -277,10 +287,9 @@ class OutboxDispatcher:
         ``idempotency_key``) against ``queue.job_published`` and, for rows the
         queue no longer remembers, applies a SAFE per-role replay rule:
 
-        * ``replay_safe`` topics (reminder/alert and internal maintenance roles,
-          all idempotent by key/token) are re-enqueued with their original
+        * Explicitly allowlisted ``replay_safe`` topics are re-enqueued with their original
           idempotency key, preserving at-least-once semantics.
-        * review-only topics (delivery/reply — an external send whose provider
+        * Other topics (including delivery, reply and alert — an external send whose provider
           acceptance is unknown) are NEVER auto re-enqueued, because that could
           re-send an employee a duplicate simulated-phishing email. They are
           counted and surfaced for a human decision; no row is mutated.
@@ -290,8 +299,20 @@ class OutboxDispatcher:
         for a loss. Returns non-sensitive counts only. This reads the outbox and
         may re-publish to the queue; it makes no external provider call and does
         not touch the PostgreSQL assignment-claim fence.
+
+        Each call scans at most ``limit`` rows. A per-topic keyset cursor walks
+        older pages before restarting at the head, so concurrent publications
+        cannot starve an older loss. A failed page is retried without advancing.
         """
-        rows = self._claim_reconcilable_dispatched(topic=topic, window_seconds=window_seconds, limit=limit)
+        cursor = self._reconciliation_cursors.get(topic)
+        cursor_arguments: dict[str, Any] = {}
+        if cursor is not None:
+            cursor_arguments = {"before_dispatched_at": cursor[0], "before_outbox_id": cursor[1]}
+        rows = self._claim_reconcilable_dispatched(
+            topic=topic, window_seconds=window_seconds, limit=limit, **cursor_arguments
+        )
+        replay_safe = replay_safe and topic in QUEUE_REPLAY_SAFE_TOPICS
+        review_ids = []
         checked = replayed = review_required = already_present = 0
         for row in rows:
             checked += 1
@@ -306,11 +327,7 @@ class OutboxDispatcher:
                 continue
             if not replay_safe:
                 review_required += 1
-                logger.warning(
-                    "outbox_queue_reconcile_review_required topic=%s outbox_id=%s",
-                    topic,
-                    row["outbox_id"],
-                )
+                review_ids.append(str(row["outbox_id"]))
                 continue
             available_at = row["available_at"]
             queue.publish(
@@ -320,7 +337,29 @@ class OutboxDispatcher:
                 available_at=available_at.timestamp() if available_at is not None else None,
             )
             replayed += 1
-        if replayed or review_required:
+        fingerprint, review_count = self._review_sweeps.get(topic, ("", 0))
+        if review_ids:
+            fingerprint = hashlib.sha256((fingerprint + "\n" + "\n".join(review_ids)).encode()).hexdigest()
+            review_count += len(review_ids)
+        if len(rows) == limit:
+            # Advance only after the whole page succeeds. New publications sort
+            # ahead of this cursor and cannot keep older rows out of the sweep.
+            last = rows[-1]
+            self._reconciliation_cursors[topic] = (last["dispatched_at"], uuid.UUID(str(last["outbox_id"])))
+            self._review_sweeps[topic] = (fingerprint, review_count)
+        else:
+            self._reconciliation_cursors.pop(topic, None)
+            self._review_sweeps.pop(topic, None)
+            if review_count and self._review_conditions.get(topic) != fingerprint:
+                logger.warning(
+                    "outbox_queue_reconcile_review_required topic=%s count=%s action=manual_provider_reconciliation",
+                    topic,
+                    review_count,
+                )
+                self._review_conditions[topic] = fingerprint
+            elif not review_count and self._review_conditions.pop(topic, None) is not None:
+                logger.info("outbox_queue_reconcile_review_cleared topic=%s", topic)
+        if replayed:
             logger.warning(
                 "outbox_queue_reconcile_completed topic=%s checked=%s replayed=%s review_required=%s present=%s",
                 topic,
@@ -336,28 +375,51 @@ class OutboxDispatcher:
             "present": already_present,
         }
 
-    def _claim_reconcilable_dispatched(self, *, topic: str, window_seconds: int, limit: int) -> list[dict[str, Any]]:
+    def _claim_reconcilable_dispatched(
+        self,
+        *,
+        topic: str,
+        window_seconds: int,
+        limit: int,
+        before_dispatched_at: datetime | None = None,
+        before_outbox_id: uuid.UUID | None = None,
+    ) -> list[dict[str, Any]]:
         """Return recently-dispatched queue rows for one topic.
 
-        Mirrors the ``dispatch_queue``/``reconcile`` access pattern: a future
-        SECURITY DEFINER function (``kp_reconcile_queue_outbox``) is preferred so
-        the least-privilege managed role never reads the restricted table
-        directly; absent it, the owner/development fallback reads the table
-        directly. The managed function + EXECUTE grant does not exist yet (it
-        needs a migration — see the W1-03 report), so in a managed topology this
-        raises ``ProgrammingError`` until that migration lands.
+        The SECURITY DEFINER function authenticates the worker login and exposes
+        only its topic. The opt-in metadata-only development fallback is retained.
         """
-        bounded_limit = max(1, min(limit, 5000))
+        if type(window_seconds) is not int or not 1 <= window_seconds <= MAX_QUEUE_RECONCILE_WINDOW_HOURS * 3600:
+            raise ValueError("reconciliation window must remain inside the queue deduplication lifetime")
+        if type(limit) is not int or not 1 <= limit <= 5000:
+            raise ValueError("reconciliation limit must be between 1 and 5000")
+        if (before_dispatched_at is None) != (before_outbox_id is None):
+            raise ValueError("reconciliation cursor requires both timestamp and outbox id")
+        if before_dispatched_at is not None and (
+            not isinstance(before_dispatched_at, datetime)
+            or before_dispatched_at.tzinfo is None
+            or before_dispatched_at.utcoffset() is None
+            or not isinstance(before_outbox_id, uuid.UUID)
+        ):
+            raise ValueError("reconciliation cursor must contain an aware timestamp and UUID")
+        parameters = {
+            "topic": topic,
+            "window": window_seconds,
+            "limit": limit,
+            "before_time": before_dispatched_at,
+            "before_id": before_outbox_id,
+        }
         try:
-            with self._engine.connect() as connection:
+            with self._reconciliation_engine.connect() as connection:
                 return [
                     dict(row)
                     for row in connection.execute(
                         text(
-                            "SELECT * FROM kp_reconcile_queue_outbox("
-                            "CAST(:topic AS text), CAST(:window AS integer), CAST(:limit AS integer))"
+                            "SELECT * FROM public.kp_reconcile_queue_outbox("
+                            "CAST(:topic AS text), CAST(:window AS integer), CAST(:limit AS integer), "
+                            "CAST(:before_time AS timestamptz), CAST(:before_id AS uuid))"
                         ),
-                        {"topic": topic, "window": max(1, window_seconds), "limit": bounded_limit},
+                        parameters,
                     )
                     .mappings()
                     .all()
@@ -365,19 +427,21 @@ class OutboxDispatcher:
         except ProgrammingError:
             if not self._allow_owner_fallback:
                 raise
-            with self._engine.connect() as connection:
+            with self._reconciliation_engine.connect() as connection:
                 return [
                     dict(row)
                     for row in connection.execute(
                         text(
                             "SELECT outbox_id, topic, payload, idempotency_key, available_at, dispatched_at "
-                            "FROM transactional_outbox "
+                            "FROM public.transactional_outbox "
                             "WHERE kind = 'queue' AND status = 'dispatched' AND topic = :topic "
                             "AND dispatched_at IS NOT NULL "
                             "AND dispatched_at >= now() - make_interval(secs => :window) "
-                            "ORDER BY dispatched_at DESC, outbox_id LIMIT :limit"
+                            "AND (CAST(:before_time AS timestamptz) IS NULL OR "
+                            "(dispatched_at,outbox_id) < (CAST(:before_time AS timestamptz),CAST(:before_id AS uuid))) "
+                            "ORDER BY dispatched_at DESC, outbox_id DESC LIMIT :limit"
                         ),
-                        {"topic": topic, "window": max(1, window_seconds), "limit": bounded_limit},
+                        parameters,
                     )
                     .mappings()
                     .all()

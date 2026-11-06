@@ -35,7 +35,7 @@ const BLOCKING_IMPACTS = new Set(["serious", "critical"]);
 
 // WCAG 2.1 AA is the target. Including 'best-practice' would fail on advisory
 // rules that are not conformance requirements.
-const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
+const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
 
 // Views reachable from the operator nav for a fully-capable session. Each is
 // audited independently: a violation on one view must not mask another.

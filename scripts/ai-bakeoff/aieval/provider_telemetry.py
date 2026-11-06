@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
-from kp_operator_api.ai_providers import PROVIDERS  # type: ignore[import-untyped]
+from kp_operator_api.ai_providers import PROVIDERS
 from kp_telemetry.metrics import MetricDefinition, MetricRegistry
 
 #: The model-free deterministic baseline is a first-class "provider" so it can

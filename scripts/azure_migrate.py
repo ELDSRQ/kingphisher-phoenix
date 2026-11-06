@@ -20,10 +20,14 @@ from kp_database.grants import (
     AUDIT_ANCHOR_FUNCTIONS,
     OUTBOX_CONFLICT_SELECT_COLUMNS,
     OUTBOX_INSERT_COLUMNS,
+    PRIVACY_LEDGER_EXPORT_FUNCTION,
+    PROGRAM_DRAFT_FUNCTION,
+    QUEUE_RECONCILE_FUNCTION,
     REQUIRED_WORKLOADS,
     RUNTIME_ROLES,
     TABLE_GRANTS,
     WORKLOAD_COLUMN_GRANTS,
+    WORKLOAD_FUNCTION_GRANTS,
 )
 from psycopg import sql
 from sqlalchemy import create_engine, text
@@ -82,6 +86,11 @@ def _probe_workload_privileges(database_url: str, workload: str, password: str) 
                         failures.append(f"{role}: {verb} on {table} {direction}")
             # Column-scoped precision: the outbox arbiter column is readable but
             # the bearer payload is not; audit-anchor reads only its columns.
+            for verb, table_columns in WORKLOAD_COLUMN_GRANTS.get(workload, {}).items():
+                for table, columns in table_columns.items():
+                    for column in columns:
+                        if not _probe_has_column_privilege(probe, table, column, verb):
+                            failures.append(f"{role}: {verb} ({column}) on {table} missing")
             if workload in grants.enqueue_workloads():
                 if not _probe_has_column_privilege(probe, "transactional_outbox", "idempotency_key", "SELECT"):
                     failures.append(f"{role}: SELECT (idempotency_key) on transactional_outbox missing (KP-008)")
@@ -92,6 +101,15 @@ def _probe_workload_privileges(database_url: str, workload: str, password: str) 
                     for column in columns:
                         if not _probe_has_column_privilege(probe, table, column, "SELECT"):
                             failures.append(f"{role}: SELECT ({column}) on {table} missing")
+            if workload in grants.QUEUE_RECONCILE_TOPICS:
+                try:
+                    probe.exec_driver_sql(
+                        "SELECT outbox_id FROM public.kp_reconcile_queue_outbox(%(topic)s,1,1)",
+                        {"topic": grants.QUEUE_RECONCILE_TOPICS[workload]},
+                    )
+                except Exception as exc:  # noqa: BLE001 - bounded fresh-login deployment gate
+                    failures.append(f"{role}: queue reconciliation EXECUTE denied ({type(exc).__name__})")
+                    probe.rollback()
             # Keep the real INSERT ... ON CONFLICT DML probe as the special case:
             # kp_operator actually enqueues, proving the arbiter SELECT is enough.
             if workload == "operator":
@@ -281,6 +299,8 @@ def main() -> None:
             "kp_fail_outbox(uuid,text)",
             "kp_outbox_health()",
             "kp_verify_audit_head()",
+            QUEUE_RECONCILE_FUNCTION,
+            PRIVACY_LEDGER_EXPORT_FUNCTION,
         ):
             connection.execute(text(f"ALTER FUNCTION public.{signature} OWNER TO audit_owner"))
         connection.execute(text("REVOKE CREATE ON SCHEMA public FROM audit_owner"))
@@ -352,6 +372,12 @@ def main() -> None:
             if workload in runtime_passwords:
                 _reset_privileges(connection, role_name)
                 _grant_workload(connection, workload, role_name)
+                # Adaptive business writes are owned by the migration
+                # principal, not by the separate audit evidence owner.
+                if PROGRAM_DRAFT_FUNCTION in WORKLOAD_FUNCTION_GRANTS.get(workload, ()):
+                    connection.execute(
+                        text(f"GRANT EXECUTE ON FUNCTION public.{PROGRAM_DRAFT_FUNCTION} TO {role_name}")
+                    )
                 # Workloads may create intent but cannot select another
                 # workload's bearer payload or alter dispatch/evidence state.
                 # transactional_outbox and the two read-only audit functions are
@@ -364,6 +390,10 @@ def main() -> None:
                 # can read true while a fresh runtime session is still denied.
                 connection.execute(text("SET ROLE audit_owner"))
                 try:
+                    for signature in WORKLOAD_FUNCTION_GRANTS.get(workload, ()):
+                        if signature == PROGRAM_DRAFT_FUNCTION:
+                            continue
+                        connection.execute(text(f"GRANT EXECUTE ON FUNCTION public.{signature} TO {role_name}"))
                     if workload != "audit-anchor":
                         outbox_insert_columns = ", ".join(OUTBOX_INSERT_COLUMNS)
                         connection.execute(

@@ -74,3 +74,26 @@ class TestTwoPersonApprovalReason:
 
     def test_empty_is_missing_approvals(self) -> None:
         assert _two_person_approval_reason([]) == "missing_approvals"
+
+    def test_three_approvals_can_cover_both_facets(self) -> None:
+        a, b, c = uuid4(), uuid4(), uuid4()
+        approvals = [
+            _approval(dm.ApprovalType.SECURITY, a),
+            _approval(dm.ApprovalType.SECURITY, b),
+            _approval(dm.ApprovalType.PRIVACY, c),
+        ]
+        assert _two_person_approval_reason(approvals) is None
+
+    def test_duplicate_approvals_do_not_create_distinct_approvers(self) -> None:
+        a = uuid4()
+        approvals = [
+            _approval(dm.ApprovalType.SECURITY, a),
+            _approval(dm.ApprovalType.PRIVACY, a),
+            _approval(dm.ApprovalType.SECURITY, a),
+        ]
+        assert _two_person_approval_reason(approvals) == "insufficient_distinct_approvers"
+
+    def test_missing_facet_precedes_single_approver_reason(self) -> None:
+        a = uuid4()
+        approvals = [_approval(dm.ApprovalType.SECURITY, a), _approval(dm.ApprovalType.SECURITY, a)]
+        assert _two_person_approval_reason(approvals) == "missing_approvals"

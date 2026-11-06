@@ -7,8 +7,8 @@ rest of the harness and the operator surface are held to:
 * **Discovery defaults to local threat metadata.** The default discovery source
   is the on-network metadata already held by the platform; a hosted web-search
   discovery is a separate, explicitly acknowledged action.
-* **A hosted (offsite) provider requires an explicit acknowledgement.** On- or
-  unknown-network providers run without one; an offsite provider is denied
+* **A hosted (offsite) provider requires an explicit acknowledgement.**
+  On-network providers run without one; an offsite or unknown provider is denied
   unless the operator has acknowledged that content leaves the local network.
 * **One PII backstop, not a second "no PII" claim.** The sole guard is the
   ``@``-backstop ``assert_pii_free_query`` in ``kp_contracts.discovery`` (W1-05
@@ -26,20 +26,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from kp_contracts.discovery import assert_pii_free_query
-from kp_operator_api.ai_providers import (  # type: ignore[import-untyped]
+from kp_operator_api.ai_providers import (
     EGRESS_OFFSITE,
     EGRESS_ON_NETWORK,
     EGRESS_UNKNOWN,
     LOCAL,
+    classify_egress,
     provider_egress,
 )
 
-#: The model-free deterministic baseline runs no model and reaches no network,
-#: so it is on-network by construction (it is not a registry provider).
+#: The endpoint-free deterministic baseline runs no model and reaches no
+#: network. A recording with an explicit endpoint cannot rely on this label.
 MODEL_FREE = "model_free"
-
-#: Providers that are on-network by construction regardless of a base URL.
-_ON_NETWORK_BY_CONSTRUCTION: frozenset[str] = frozenset({LOCAL, MODEL_FREE})
 
 #: The default discovery source: on-network threat metadata, no egress.
 DISCOVERY_SOURCE_LOCAL_METADATA = "local_metadata"
@@ -69,7 +67,12 @@ def decide_generation_egress(provider: str, base_url: str | None, *, acknowledge
     ``acknowledged`` is true, and denied otherwise.
     """
 
-    egress = EGRESS_ON_NETWORK if provider in _ON_NETWORK_BY_CONSTRUCTION else provider_egress(provider, base_url)
+    # These labels describe the endpoint-free baseline/default only. An explicit
+    # endpoint must be classified on its own merits, even when labelled local.
+    if provider in (LOCAL, MODEL_FREE):
+        egress = classify_egress(base_url) if base_url and base_url.strip() else EGRESS_ON_NETWORK
+    else:
+        egress = provider_egress(provider, base_url)
     if egress == EGRESS_ON_NETWORK:
         return EgressDecision(
             allowed=True,

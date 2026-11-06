@@ -34,6 +34,7 @@ from typing import Any, Literal, Protocol
 
 from kp_domain_models import models as dm
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from kp_curation.clone_service import CloneError, clone_real_message
@@ -277,6 +278,23 @@ def ingest_threat_artifact(
         reviewed_at=None,
         first_seen_at=as_of,
     )
-    session.add(artifact)
-    session.flush()
+    # Open the savepoint before adding our row: a collision must roll back only
+    # this insert and leave the caller's transaction available for the batch.
+    savepoint = session.begin_nested()
+    try:
+        session.add(artifact)
+        session.flush()
+        savepoint.commit()
+    except IntegrityError:
+        savepoint.rollback()
+        # A concurrent transaction may have won after our initial read. At the
+        # normal READ COMMITTED isolation this query sees its committed row.
+        existing = session.scalar(
+            select(ThreatArtifactRow.threat_artifact_id)
+            .where(ThreatArtifactRow.content_hash == safe.content_hash)
+            .limit(1)
+        )
+        if existing is None:
+            raise  # A different integrity violation must remain visible.
+        return IngestResult(False, True, False, str(existing), reason="duplicate artifact")
     return IngestResult(True, False, False, str(artifact.threat_artifact_id))

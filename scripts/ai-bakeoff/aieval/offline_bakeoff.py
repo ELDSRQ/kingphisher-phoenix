@@ -170,8 +170,10 @@ def evaluate_provider(
         within_budget_all = within_budget_all and within_budget
 
         outcome = _outcome(schema_passed, rec.endpoint_error, case.kind, dims)
+        # Unregistered model providers share the bounded custom bucket; their
+        # requests must never inflate the deterministic baseline's usage.
         telemetry.record(
-            recording.provider if recording.provider in telemetry.allowed_providers else MODEL_FREE,
+            recording.provider if recording.provider in telemetry.allowed_providers else "custom",
             outcome,  # type: ignore[arg-type]
             latency_ms=rec.latency_ms,
             prompt_tokens=rec.prompt_tokens,
@@ -217,7 +219,7 @@ def _beats_baseline(summary: dict[str, Any], baseline: dict[str, Any] | None) ->
     """True when a provider measurably improves on the deterministic baseline."""
 
     if baseline is None:
-        return True
+        return False
     better_cues = (summary["cue_validity_mean"] or 0.0) > (baseline["cue_validity_mean"] or 0.0)
     better_realism = (summary["realism_pass_rate"] or 0.0) > (baseline["realism_pass_rate"] or 0.0)
     return better_cues or better_realism
@@ -228,6 +230,8 @@ def _recommend(summary: dict[str, Any], egress: Any, baseline: dict[str, Any] | 
         return "disable", egress.reason
     if not summary["safety_ok"]:
         return "disable", f"unsafe: safety gate {summary['safety_passed']} did not fully pass"
+    if egress.egress_class != "on_network" and baseline is None:
+        return "disable", "deterministic baseline absent; measurable gain to justify egress cannot be established"
     if egress.egress_class != "on_network" and not _beats_baseline(summary, baseline):
         return (
             "disable",
@@ -246,7 +250,7 @@ def run_bakeoff(evaluation_set: EvaluationSet, recordings: list[ProviderRecordin
     for recording in recordings:
         summaries.append(evaluate_provider(evaluation_set, recording, telemetry))
 
-    baseline = next((s for s in summaries if s["provider"] == MODEL_FREE), None)
+    baseline = next((s for s in summaries if s["provider"] == MODEL_FREE and not s["base_url"]), None)
     for summary in summaries:
         egress = decide_generation_egress(
             summary["provider"], summary["base_url"], acknowledged=summary["acknowledged"]

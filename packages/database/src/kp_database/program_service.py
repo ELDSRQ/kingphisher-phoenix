@@ -18,7 +18,7 @@ from typing import Any
 
 from kp_domain_models import models as dm
 from kp_telemetry.errors import ConflictError, NotFoundError, ValidationError_
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from kp_database.campaign_service import (
@@ -239,7 +239,9 @@ def _build_iteration_campaign(
     campaign = Campaign(
         campaign_id=campaign_id,
         pattern_id=source.pattern_id,
-        delivery_mode=getattr(source, "delivery_mode", None) or "canary",
+        # New program drafts follow the current reviewed-direct workflow;
+        # the legacy source campaign and its canary evidence stay untouched.
+        delivery_mode="reviewed_direct",
         current_template_id=source.current_template_id,
         title=_occurrence_title(source.title, occurrence_number, occurrence_count),
         state=dm.CampaignState.DRAFT,
@@ -794,6 +796,63 @@ class ProgramIterationResult:
     reason: str
 
 
+@dataclass(frozen=True)
+class ProgramIterationStatus:
+    """Read-only progress; completion here means all draft slots exist."""
+
+    reason: str
+    materialized_count: int
+    next_iteration: int | None = None
+    schedule_start: datetime | None = None
+    schedule_end: datetime | None = None
+    basis_campaign_id: uuid.UUID | None = None
+    prior_state: str | None = None
+    late: bool = False
+
+
+def program_iteration_status(
+    session: Session, program: CampaignProgram, *, now: datetime | None = None
+) -> ProgramIterationStatus:
+    """Describe blocked, late and ready iterations without creating anything.
+
+    Adaptive difficulty is an explanatory metadata recommendation. Enrollment
+    narrows the reviewed source roster; email and training content are copied
+    unchanged and must be reviewed by a person on every resulting DRAFT.
+    """
+    current_time = _require_aware(now or datetime.now(UTC), label="iteration time")
+    occurrences = _program_occurrences(session, program.campaign_program_id)
+    count = len(occurrences)
+    if program.generation_mode != GENERATION_MODE_ADAPTIVE:
+        return ProgramIterationStatus("not_adaptive", count)
+    if not occurrences:
+        raise ConflictError("adaptive program is missing its source occurrence")
+    latest = occurrences[-1]
+    if latest.occurrence_number >= program.occurrence_count:
+        return ProgramIterationStatus("complete", count)
+    prior_campaign = session.get(Campaign, latest.campaign_id)
+    source = session.get(Campaign, program.source_campaign_id)
+    if prior_campaign is None or source is None:
+        raise ConflictError("adaptive program occurrence is missing its campaign")
+    number = latest.occurrence_number + 1
+    offset = timedelta(days=program.cadence_days * (number - 1))
+    start = _require_aware(source.schedule_start, label="schedule start") + offset
+    end = _require_aware(source.schedule_end, label="schedule end") + offset
+    if end <= start:
+        raise ConflictError("adaptive program contains an invalid timeline")
+    late = start <= current_time
+    if program.state is not dm.CampaignProgramState.ACTIVE:
+        reason = "paused"
+    elif prior_campaign.state in _TERMINAL_CAMPAIGN_STATES - _ADAPTATION_READY_PRIOR_STATES:
+        reason = f"stalled_prior_{prior_campaign.state.value}"
+    elif prior_campaign.state not in _ADAPTATION_READY_PRIOR_STATES:
+        reason = "late_prior_not_complete" if late else "prior_not_complete"
+    else:
+        reason = "late" if late else "ready"
+    return ProgramIterationStatus(
+        reason, count, number, start, end, latest.campaign_id, prior_campaign.state.value, late
+    )
+
+
 def _prior_adaptive_level(campaign: Campaign) -> int:
     try:
         return _clamp_level(int((campaign.difficulty or {}).get("adaptive_level", MIN_ADAPTIVE_LEVEL)))
@@ -806,7 +865,9 @@ def materialize_next_program_iteration(
     *,
     program_id: uuid.UUID,
     created_by: uuid.UUID | None = None,
+    expected_iteration: int | None = None,
     now: datetime | None = None,
+    retention_worker: bool = False,
 ) -> ProgramIterationResult:
     """Generate the next DRAFT iteration of an adaptive program, if one is due.
 
@@ -820,48 +881,45 @@ def materialize_next_program_iteration(
 
     current_time = _require_aware(now or datetime.now(UTC), label="iteration time")
     program = get_campaign_program(session, program_id, for_update=True)
-    if program.generation_mode != GENERATION_MODE_ADAPTIVE:
-        return ProgramIterationResult(program, None, None, False, "not_adaptive")
-    if program.state is not dm.CampaignProgramState.ACTIVE:
-        return ProgramIterationResult(program, None, None, False, "paused")
-
-    occurrences = _program_occurrences(session, program_id)
-    if not occurrences:  # pragma: no cover - creation always seeds occurrence 1
-        raise ConflictError("adaptive program is missing its source occurrence")
-    latest = occurrences[-1]
-    if latest.occurrence_number >= program.occurrence_count:
-        return ProgramIterationResult(program, None, None, False, "complete")
-
-    prior_campaign = session.get(Campaign, latest.campaign_id)
-    if prior_campaign is None:
-        raise ConflictError("adaptive program occurrence is missing its campaign")
-    if prior_campaign.state not in _ADAPTATION_READY_PRIOR_STATES:
-        return ProgramIterationResult(program, None, None, False, "prior_not_complete")
-
-    next_number = latest.occurrence_number + 1
+    progress = program_iteration_status(session, program, now=current_time)
+    if expected_iteration is not None and (
+        type(expected_iteration) is not int or expected_iteration != progress.next_iteration
+    ):
+        raise ConflictError("program iteration changed; reload the program before creating another draft")
+    if progress.reason != "ready":
+        return ProgramIterationResult(program, None, None, False, progress.reason)
+    assert progress.next_iteration is not None and progress.basis_campaign_id is not None
+    assert progress.schedule_start is not None and progress.schedule_end is not None
+    next_number = progress.next_iteration
+    prior_campaign = session.get(Campaign, progress.basis_campaign_id)
+    assert prior_campaign is not None
     source = session.get(Campaign, program.source_campaign_id)
     if source is None:  # pragma: no cover - FK RESTRICT protects this
         raise ConflictError("adaptive program source campaign is missing")
     # Revalidate the source blueprint is still a frozen, approved, RoE-bound
     # campaign before generating a new iteration from it; these raise on drift.
+    if source.roe_id is None:
+        raise ConflictError("adaptive program source requires its reviewed Rules of Engagement binding")
     _reviewed_source_audience(session, source)
     _approved_source_content(session, source)
-    require_bound_training_resource(session, source)
+    require_bound_training_resource(session, source, lock=not retention_worker)
 
-    schedule_start = _require_aware(source.schedule_start, label="schedule start")
-    schedule_end = _require_aware(source.schedule_end, label="schedule end")
-    offset = timedelta(days=program.cadence_days * (next_number - 1))
-    occurrence_start = schedule_start + offset
-    occurrence_end = schedule_end + offset
+    occurrence_start, occurrence_end = progress.schedule_start, progress.schedule_end
+    # A worker/requester must not erase the author attribution that campaign
+    # approval separation relies on. Fall back only for legacy unattributed
+    # programs; never substitute a requesting approver for a known author.
+    author = program.created_by or source.created_by or created_by
+    if author is None:
+        raise ConflictError("adaptive program has no attributable author; review the source before continuing")
 
     base_ids = _source_reviewed_recipient_ids(session, program.source_campaign_id)
     if not base_ids:
         raise ConflictError("adaptive program source has no reviewed recipient population")
 
-    signals = _prior_iteration_signals(session, latest.campaign_id)
+    signals = _prior_iteration_signals(session, progress.basis_campaign_id)
     plan = plan_iteration_adaptation(_prior_adaptive_level(prior_campaign), signals)
 
-    scanner_only = _scanner_only_recipient_ids(session, latest.campaign_id)
+    scanner_only = _scanner_only_recipient_ids(session, progress.basis_campaign_id)
 
     campaign_id = uuid.uuid4()
     # Opt-out/suppression is scoped per campaign or global; a brand-new campaign
@@ -873,7 +931,9 @@ def materialize_next_program_iteration(
     difficulty["adaptive_level"] = plan.next_level
     difficulty["program_adaptation"] = {
         "iteration_number": next_number,
-        "basis_campaign_id": str(latest.campaign_id),
+        "basis_campaign_id": str(progress.basis_campaign_id),
+        "content_changed": False,
+        "scope": "enrollment_and_difficulty_metadata",
         "prior_level": plan.prior_level,
         "next_level": plan.next_level,
         "difficulty_delta": plan.difficulty_delta,
@@ -888,7 +948,7 @@ def materialize_next_program_iteration(
         occurrence_count=program.occurrence_count,
         occurrence_start=occurrence_start,
         occurrence_end=occurrence_end,
-        created_by=created_by,
+        created_by=author,
         difficulty=difficulty,
     )
     excluded_union = set(enrollment.excluded_opt_out) | set(enrollment.excluded_scanner_only)
@@ -907,7 +967,7 @@ def materialize_next_program_iteration(
         campaign_program_id=program_id,
         iteration_number=next_number,
         iteration_campaign_id=campaign_id,
-        basis_campaign_id=latest.campaign_id,
+        basis_campaign_id=progress.basis_campaign_id,
         signals={
             "accepted": signals.accepted,
             "human_clicked": signals.human_clicked,
@@ -920,6 +980,8 @@ def materialize_next_program_iteration(
             "difficulty_delta": plan.difficulty_delta,
             "rationale": plan.rationale,
             "drivers": [dict(driver) for driver in plan.drivers],
+            "content_changed": False,
+            "scope": "enrollment_and_difficulty_metadata",
         },
         enrollment={
             "base_population": len(base_ids),
@@ -930,37 +992,89 @@ def materialize_next_program_iteration(
             "excluded_scanner_only_ids": [str(item) for item in enrollment.excluded_scanner_only],
         },
     )
-    session.add_all([campaign, audience, occurrence, adaptation])
-    program.updated_at = current_time
-    session.flush()
+    if retention_worker:
+        # The real retention login has no campaign INSERT authority. All linked
+        # writes cross a constrained database boundary in this same transaction;
+        # source identity/content/author/window are derived again inside it.
+        persisted_id = session.scalar(
+            text(
+                "SELECT public.kp_create_adaptive_program_draft("
+                ":program,:iteration,:campaign,:occurrence,:adaptation,CAST(:metadata AS jsonb))"
+            ),
+            {
+                "program": program_id,
+                "iteration": next_number,
+                "campaign": campaign_id,
+                "occurrence": occurrence.campaign_program_occurrence_id,
+                "adaptation": adaptation.campaign_program_adaptation_id,
+                "metadata": json.dumps(
+                    {
+                        "difficulty": difficulty,
+                        "signals": adaptation.signals,
+                        "changes": adaptation.changes,
+                        "enrollment": adaptation.enrollment,
+                        "excluded_ids": audience.exclude_recipient_ids,
+                        "configuration_hash": audience.configuration_hash,
+                        "manifest_hash": campaign.manifest_hash,
+                    }
+                ),
+            },
+        )
+        occurrence = session.scalars(
+            select(CampaignProgramOccurrence).where(CampaignProgramOccurrence.campaign_id == persisted_id)
+        ).one()
+        adaptation = session.scalars(
+            select(CampaignProgramAdaptation).where(CampaignProgramAdaptation.iteration_campaign_id == persisted_id)
+        ).one()
+        session.expire(program)
+    else:
+        session.add_all([campaign, audience, occurrence, adaptation])
+        program.updated_at = current_time
+        session.flush()
     return ProgramIterationResult(program, occurrence, adaptation, True, "created")
 
 
-def list_program_adaptations(session: Session, program_id: uuid.UUID) -> tuple[CampaignProgramAdaptation, ...]:
+def list_program_adaptations(
+    session: Session, program_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+) -> tuple[CampaignProgramAdaptation, ...]:
+    if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or not 0 <= offset <= 10_000:
+        raise ValidationError_("adaptation pagination is outside its supported bounds")
     get_campaign_program(session, program_id)
     return tuple(
         session.scalars(
             select(CampaignProgramAdaptation)
             .where(CampaignProgramAdaptation.campaign_program_id == program_id)
             .order_by(CampaignProgramAdaptation.iteration_number)
+            .offset(offset)
+            .limit(limit)
         )
     )
 
 
-def active_adaptive_program_ids(session: Session, *, limit: int = 500) -> tuple[uuid.UUID, ...]:
-    """Program ids a generation worker should consider, oldest first.
+def active_adaptive_program_ids(
+    session: Session, *, limit: int = 500, after_id: uuid.UUID | None = None
+) -> tuple[uuid.UUID, ...]:
+    """A bounded cyclic page of active programs, in stable UUID order.
 
     Returns only ACTIVE adaptive programs; whether any one is actually due is
     decided (under a row lock) by :func:`materialize_next_program_iteration`.
     """
 
-    rows = session.scalars(
+    if type(limit) is not int or not 1 <= limit <= 500:
+        raise ValidationError_("adaptive discovery limit must be between 1 and 500")
+    statement = (
         select(CampaignProgram.campaign_program_id)
         .where(
             CampaignProgram.generation_mode == GENERATION_MODE_ADAPTIVE,
             CampaignProgram.state == dm.CampaignProgramState.ACTIVE,
         )
-        .order_by(CampaignProgram.created_at, CampaignProgram.campaign_program_id)
-        .limit(limit)
+        .order_by(CampaignProgram.campaign_program_id)
     )
-    return tuple(rows)
+    if after_id is None:
+        return tuple(session.scalars(statement.limit(limit)))
+    tail = tuple(session.scalars(statement.where(CampaignProgram.campaign_program_id > after_id).limit(limit)))
+    if len(tail) == limit:
+        return tail
+    return tail + tuple(
+        session.scalars(statement.where(CampaignProgram.campaign_program_id <= after_id).limit(limit - len(tail)))
+    )

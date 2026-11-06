@@ -218,6 +218,7 @@ jobs:
         run: |
           terraform init -backend=false -input=false
           terraform validate
+          terraform test -filter=tests/connector_guards.tftest.hcl -no-color
       - name: Prepare required database roles and schema
         if: inputs.deployment_phase == 'workloads'
         env:
@@ -365,6 +366,10 @@ jobs:
       # secret; it is only consumed at the runner VM's first boot.
       TF_VAR_deploy_ci_runner: ${{ vars.DEPLOY_CI_RUNNER || 'false' }}
       TF_VAR_ci_runner_registration_token: ${{ secrets.CI_RUNNER_REGISTRATION_TOKEN }}
+      DEPLOY_AI_GATEWAY: ${{ vars.DEPLOY_AI_GATEWAY || 'false' }}
+      AI_FOUNDRY_ENDPOINT: ${{ vars.AI_FOUNDRY_ENDPOINT || '' }}
+      AI_FOUNDRY_RESOURCE_ID: ${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}
+      AI_LLAMA_IMAGE: ${{ vars.AI_LLAMA_IMAGE }}
     steps:
       - name: Initialize append-only deployment checkpoint
         shell: bash
@@ -1425,7 +1430,7 @@ jobs:
           -var="environment=$DEPLOYMENT_ENVIRONMENT"
           -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
           -var="deploy_workloads=false"
-          -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
+          -var="deploy_ai_gateway=$DEPLOY_AI_GATEWAY"
           -var="acs_deployment_stage=foundation_bootstrap"
       - name: Enforce ACS foundation bootstrap plan allowlist
         if: inputs.deployment_phase == 'foundation_bootstrap'
@@ -1847,7 +1852,7 @@ jobs:
           -var-file="$RUNNER_TEMP/reviewed.auto.tfvars.json"
           -var="environment=$DEPLOYMENT_ENVIRONMENT"
           -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
-          -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
+          -var="deploy_ai_gateway=$DEPLOY_AI_GATEWAY"
           -var="deploy_workloads=false"
           -var="acs_deployment_stage=foundation_finalize"
           -target=azurerm_communication_service_email_domain_association.main
@@ -2468,34 +2473,6 @@ jobs:
           KP_MIGRATION_DIGEST: ${{ steps.images.outputs.migration_digest }}
           KP_AI_GATEWAY_DIGEST: ${{ steps.images.outputs.ai_gateway_digest }}
         run: python3 "$KP_CHECKPOINT_HELPER" --stage immutable_images_verified --status passed
-      - name: Clean up any existing Key Vault secret role assignments for the gateway
-        # Runs BEFORE Plan workloads: the release plan must see the live
-        # assignments already gone so it schedules their recreation in the same
-        # apply. Running it after the plan (as it previously did) deletes the
-        # assignments after the plan recorded them as no-ops, so the apply never
-        # recreates them and the receipt-activation gate then refuses the
-        # unexpected creates.
-        if: inputs.deployment_phase == 'workloads'
-        working-directory: infrastructure/terraform
-        env:
-          TF_VAR_ai_foundry_resource_id: ${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}
-        run: |
-          set -euo pipefail
-          if [ -n "${TF_VAR_ai_foundry_resource_id}" ]; then
-            KV_NAME="kvkpstaging6117w"
-            SECRET_NAME="ai-gateway-auth-key"
-            SECRET_SCOPE="/subscriptions/169644fd-c81d-4935-af55-5770f8271022/resourceGroups/rg-kp-staging/providers/Microsoft.KeyVault/vaults/${KV_NAME}/secrets/${SECRET_NAME}"
-            ROLE_IDS=$(az role assignment list \
-              --scope "${SECRET_SCOPE}" \
-              --role "Key Vault Secrets User" \
-              --query "[].id" -o tsv 2>/dev/null || echo '')
-            for ROLE_ID in ${ROLE_IDS}; do
-              if [ -n "${ROLE_ID}" ]; then
-                echo "Deleting existing secret-scope role assignment: ${ROLE_ID}"
-                az role assignment delete --ids "${ROLE_ID}" >/dev/null 2>&1 || true
-              fi
-            done
-          fi
       # Moved to AFTER every step that talks to the registry data plane from
       # the runner (scan pulls, attest pushes, attestation verify pulls).
       # Closing the window straight after the build only works when a private
@@ -2531,6 +2508,12 @@ jobs:
           fi
           az acr update --name "$registry" --set "publicNetworkAccess=$desired" >/dev/null
           echo "registry public network access restored to ${desired} for network_mode=${DEPLOYMENT_NETWORK_MODE}"
+      # Existing role assignments remain Terraform-owned. A conflicting orphan
+      # must be reviewed/imported; never delete live grants to force an apply.
+      - name: Preserve tracked ACS receipts through workload updates
+        if: inputs.deployment_phase == 'workloads'
+        working-directory: infrastructure/terraform
+        run: python3 ../../scripts/operator/deployment-preflight/deployment_plan_guards.py receipt-state
       - name: Plan workloads
         if: inputs.deployment_phase == 'workloads'
         env:
@@ -2549,81 +2532,23 @@ jobs:
           -var="network_mode=$DEPLOYMENT_NETWORK_MODE"
           -var="deploy_workloads=true"
           -var="acs_deployment_stage=workloads"
-          -var="enable_acs_event_subscription=false"
+          -var="enable_acs_event_subscription=$KP_PRESERVE_ACS_RECEIPTS"
           -var="operator_image=$IMAGE_REGISTRY/operator-api@$OPERATOR_API_DIGEST"
           -var="tracking_image=$IMAGE_REGISTRY/tracking-api@$TRACKING_API_DIGEST"
           -var="worker_image=$IMAGE_REGISTRY/worker@$WORKER_DIGEST"
           -var="migration_image=$IMAGE_REGISTRY/migration@$MIGRATION_DIGEST"
-          -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
-          -var="ai_foundry_endpoint=${{ vars.AI_FOUNDRY_ENDPOINT || '' }}"
-          -var="ai_foundry_resource_id=${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}"
+          -var="deploy_ai_gateway=$DEPLOY_AI_GATEWAY"
+          -var="ai_foundry_endpoint=$AI_FOUNDRY_ENDPOINT"
+          -var="ai_foundry_resource_id=$AI_FOUNDRY_RESOURCE_ID"
           -var="ai_gateway_image=$IMAGE_REGISTRY/ai-gateway@$AI_GATEWAY_DIGEST"
-          -var="ai_llama_image=${{ vars.AI_LLAMA_IMAGE }}"
+          -var="ai_llama_image=$AI_LLAMA_IMAGE"
       - name: Refuse destructive workload changes
         if: inputs.deployment_phase == 'workloads'
         working-directory: infrastructure/terraform
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import subprocess
-
-          result = subprocess.run(
-              ["terraform", "show", "-json", "release.tfplan"],
-              check=True,
-              capture_output=True,
-              text=True,
-          )
-          plan = json.loads(result.stdout)
-          # The ACS receipt Event Grid subscription is deliberately managed in two
-          # stages: the main workloads apply runs with enable_acs_event_subscription
-          # =false (so it is never created before worker readiness), and the later
-          # receipt-activation stage recreates it with =true after readiness. On a
-          # re-run the main plan therefore shows this one subscription as a removal
-          # that the activation stage immediately restores. Tolerate exactly that
-          # address; every other removal or replacement is still refused.
-          allowed_deletions = {
-              "azurerm_eventgrid_system_topic_event_subscription.acs_delivery[0]",
-          }
-          destructive = sorted(
-              change["address"]
-              for change in plan.get("resource_changes", [])
-              if "delete" in change.get("change", {}).get("actions", [])
-              and change["address"] not in allowed_deletions
-          )
-          if destructive:
-              raise SystemExit(
-                  "workloads phase is create/update-only and refuses deletes or replacements; "
-                  "reconcile the existing deployment by correlation ID before continuing"
-              )
-          PY
+        run: python3 ../../scripts/operator/deployment-preflight/deployment_plan_guards.py workloads release.tfplan
       - name: Checkpoint non-destructive workload plan
         if: inputs.deployment_phase == 'workloads'
         run: python3 "$KP_CHECKPOINT_HELPER" --stage workload_plan_safe --status passed
-      - name: Clean up any existing Foundry role assignment for the gateway
-        if: inputs.deployment_phase == 'workloads'
-        working-directory: infrastructure/terraform
-        env:
-          TF_VAR_ai_foundry_resource_id: ${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}
-        run: |
-          set -euo pipefail
-          if [ -n "${TF_VAR_ai_foundry_resource_id}" ]; then
-            CLIENT_ID=$(terraform -chdir=infrastructure/terraform output -raw ai_gateway_identity_client_id 2>/dev/null || echo '')
-            if [ -n "${CLIENT_ID}" ]; then
-              ROLE_IDS=$(az role assignment list \
-                --scope "${TF_VAR_ai_foundry_resource_id}" \
-                --role "Cognitive Services User" \
-                --assignee "${CLIENT_ID}" \
-                --query "[].id" -o tsv 2>/dev/null || echo '')
-              for ROLE_ID in ${ROLE_IDS}; do
-                if [ -n "${ROLE_ID}" ]; then
-                  echo "Deleting existing role assignment: ${ROLE_ID}"
-                  az role assignment delete --ids "${ROLE_ID}" >/dev/null 2>&1 || true
-                fi
-              done
-            fi
-          fi
       - name: Apply workloads
         if: inputs.deployment_phase == 'workloads'
         working-directory: infrastructure/terraform
@@ -2894,53 +2819,15 @@ jobs:
           -var="tracking_image=$IMAGE_REGISTRY/tracking-api@$TRACKING_API_DIGEST"
           -var="worker_image=$IMAGE_REGISTRY/worker@$WORKER_DIGEST"
           -var="migration_image=$IMAGE_REGISTRY/migration@$MIGRATION_DIGEST"
-          -var="deploy_ai_gateway=${{ vars.DEPLOY_AI_GATEWAY || 'false' }}"
-          -var="ai_foundry_endpoint=${{ vars.AI_FOUNDRY_ENDPOINT || '' }}"
-          -var="ai_foundry_resource_id=${{ vars.AI_FOUNDRY_RESOURCE_ID || '' }}"
+          -var="deploy_ai_gateway=$DEPLOY_AI_GATEWAY"
+          -var="ai_foundry_endpoint=$AI_FOUNDRY_ENDPOINT"
+          -var="ai_foundry_resource_id=$AI_FOUNDRY_RESOURCE_ID"
           -var="ai_gateway_image=$IMAGE_REGISTRY/ai-gateway@$AI_GATEWAY_DIGEST"
-          -var="ai_llama_image=${{ vars.AI_LLAMA_IMAGE }}"
+          -var="ai_llama_image=$AI_LLAMA_IMAGE"
       - name: Refuse unrelated changes in receipt activation plan
         if: inputs.deployment_phase == 'workloads'
         working-directory: infrastructure/terraform
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          import subprocess
-
-          result = subprocess.run(
-              ["terraform", "show", "-json", "acs-receipts.tfplan"],
-              check=True,
-              capture_output=True,
-              text=True,
-          )
-          plan = json.loads(result.stdout)
-          destructive = sorted(
-              change["address"]
-              for change in plan.get("resource_changes", [])
-              if "delete" in change.get("change", {}).get("actions", [])
-          )
-          if destructive:
-              raise SystemExit("receipt activation plan refuses deletes or replacements")
-          # The receipt activation must CREATE exactly the delivery-receipt Event
-          # Grid subscription and create no other infrastructure. In-place updates
-          # to already-applied workload resources are benign azurerm re-normalisation
-          # drift (e.g. the container-apps subnet's service_delegation, which the
-          # provider re-plans on every run) rather than new or destructive changes,
-          # so they are tolerated; only unexpected creations are unrelated changes.
-          created = {
-              change["address"]
-              for change in plan.get("resource_changes", [])
-              if "create" in change.get("change", {}).get("actions", [])
-          }
-          allowed = {"azurerm_eventgrid_system_topic_event_subscription.acs_delivery[0]"}
-          unexpected = created - allowed
-          if unexpected:
-              raise SystemExit(f"receipt activation plan contains unrelated changes: {sorted(unexpected)}")
-          if allowed - created:
-              raise SystemExit("receipt activation plan did not create the Event Grid subscription")
-          PY
+        run: python3 ../../scripts/operator/deployment-preflight/deployment_plan_guards.py receipt-activation acs-receipts.tfplan
       - name: Checkpoint non-destructive receipt plan
         if: inputs.deployment_phase == 'workloads'
         run: python3 "$KP_CHECKPOINT_HELPER" --stage receipt_plan_safe --status passed

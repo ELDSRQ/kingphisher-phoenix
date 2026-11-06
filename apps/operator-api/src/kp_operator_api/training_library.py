@@ -205,6 +205,10 @@ def cue_coverage_for_campaign(
                 TrainingCueCoverage.training_resource_id == resource.training_resource_id,
                 TrainingCueCoverage.resource_version == resource.version,
                 TrainingCueCoverage.reviewed.is_(True),
+                TrainingCueCoverage.created_by.is_not(None),
+                TrainingCueCoverage.reviewed_by.is_not(None),
+                TrainingCueCoverage.reviewed_at.is_not(None),
+                TrainingCueCoverage.reviewed_by != TrainingCueCoverage.created_by,
             )
         )
         .scalars()
@@ -264,9 +268,12 @@ def invalidate_campaigns_for_coverage_change(
     left untouched. Returns the affected campaign ids for auditing.
     """
 
+    # Coverage is locked before these rows. Every cue takes campaign locks in
+    # the same order, and refreshes state after waiting on a concurrent launch.
     affected = (
         session.execute(
-            select(Campaign).where(
+            select(Campaign)
+            .where(
                 Campaign.training_resource_id == training_resource_id,
                 Campaign.training_resource_version == resource_version,
                 Campaign.state.in_(
@@ -277,6 +284,9 @@ def invalidate_campaigns_for_coverage_change(
                     )
                 ),
             )
+            .order_by(Campaign.campaign_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         .scalars()
         .all()

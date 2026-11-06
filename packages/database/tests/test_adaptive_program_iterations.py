@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -33,6 +34,7 @@ from kp_database.models import (
     CampaignAudienceManifest,
     CampaignLaunchGate,
     CampaignPattern,
+    CampaignProgram,
     CampaignProgramAdaptation,
     CampaignProgramOccurrence,
     CipherText,
@@ -45,6 +47,7 @@ from kp_database.models import (
     TrainingResource,
 )
 from kp_database.program_service import (
+    active_adaptive_program_ids,
     materialize_campaign_program,
     materialize_next_program_iteration,
     set_campaign_program_state,
@@ -281,6 +284,18 @@ def _clicked(session, assignment: RecipientAssignment, *, automation: bool) -> N
     session.flush()
 
 
+@requires_db
+def test_discovery_keyset_page_wraps_without_starving_later_programs() -> None:
+    with _session() as session:
+        ids = sorted(
+            (_adaptive_source(session, [_recipient(f"page-{uuid4().hex}@example.test")]) for _ in range(3)),
+            key=str,
+        )
+        assert active_adaptive_program_ids(session, limit=2) == tuple(ids[:2])
+        assert active_adaptive_program_ids(session, limit=2, after_id=ids[1]) == (ids[2], ids[0])
+        assert active_adaptive_program_ids(session, limit=2, after_id=ids[2]) == tuple(ids[:2])
+
+
 def _complete_source(session, program_id: UUID) -> UUID:
     """Mark the source iteration COMPLETED and return its campaign id."""
     source_campaign_id = session.scalar(
@@ -350,6 +365,10 @@ def test_generation_produces_draft_iteration_excluding_scanner_and_opt_out() -> 
         assert iteration is not None
         # INVARIANT: the iteration is a DRAFT with no authorization of its own.
         assert iteration.state is dm.CampaignState.DRAFT
+        assert iteration.delivery_mode == "reviewed_direct"
+        program = session.get(CampaignProgram, program_id)
+        assert program is not None
+        assert iteration.created_by == program.created_by
         assert iteration.roe_id is None
         assert iteration.manifest_signed_at is None
         assert session.get(CampaignLaunchGate, iteration.campaign_id) is None
@@ -388,6 +407,8 @@ def test_generation_produces_draft_iteration_excluding_scanner_and_opt_out() -> 
         assert adaptation.signals["human_clicked"] == 1
         assert adaptation.signals["automation_suspected_clicked"] == 1
         assert adaptation.changes["drivers"]
+        assert adaptation.changes["content_changed"] is False
+        assert adaptation.changes["scope"] == "enrollment_and_difficulty_metadata"
 
 
 @requires_db
@@ -481,3 +502,37 @@ def test_prior_not_complete_generates_nothing() -> None:
         session.commit()
         assert result.created is False
         assert result.reason == "prior_not_complete"
+
+
+@requires_db
+def test_concurrent_materialization_keeps_one_draft_and_original_creator() -> None:
+    with _session() as session:
+        program_id = _adaptive_source(session, [_recipient("concurrent@example.com")])
+        _complete_source(session, program_id)
+        program = session.get(CampaignProgram, program_id)
+        assert program is not None
+        creator = program.created_by
+        session.commit()
+
+    def generate():
+        with _session() as session:
+            result = materialize_next_program_iteration(session, program_id=program_id)
+            session.commit()
+            return result.created
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(lambda _index: generate(), range(2)))
+    assert sorted(results) == [False, True]
+    with _session() as session:
+        occurrences = list(
+            session.scalars(
+                select(CampaignProgramOccurrence).where(
+                    CampaignProgramOccurrence.campaign_program_id == program_id,
+                )
+            )
+        )
+        assert len(occurrences) == 2
+        generated = session.get(Campaign, next(item.campaign_id for item in occurrences if item.occurrence_number == 2))
+        assert generated is not None
+        assert generated.created_by == creator
+        assert generated.state is dm.CampaignState.DRAFT

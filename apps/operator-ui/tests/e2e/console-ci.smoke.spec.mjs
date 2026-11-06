@@ -150,7 +150,7 @@ async function scanCampaignAccessibility(page, testInfo, name) {
   // Message HTML has an opaque origin under sandbox="". Audit the console
   // separately; the message content still needs its own accessibility review.
   const result = await new AxeBuilder({ page }).exclude("iframe.email-preview-html")
-    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
   await testInfo.attach(name, { body: JSON.stringify(result, null, 2), contentType: "application/json" });
   expect(result.violations.map((violation) => ({ id: violation.id, impact: violation.impact }))).toEqual([]);
 }
@@ -209,6 +209,74 @@ test("administrator hold controls retain retry identity, cancel release, and pre
   await expect(page.getByRole("heading", { name: "CASE-2026-01 — Released", exact: true })).toBeVisible();
   await expect(page.getByText(/Released by Fixture administrator/)).toContainText("Case resolved after administrator review");
   expect(writes.filter((write) => write.path.endsWith("/release"))).toHaveLength(1);
+});
+
+test("adaptive programs expose truthful progress and create only a reviewed next draft", async ({ page }, testInfo) => {
+  await installHumanFlowFixture(page);
+  const sourceId = "40000000-0000-4000-8000-000000000001";
+  const writes = [];
+  const progress = { reason: "ready", materialized_count: 1, next_iteration: 2, schedule_start: "2050-01-01T12:00:00Z", schedule_end: "2050-01-01T13:00:00Z" };
+  const program = { campaign_program_id: "40000000-0000-4000-8000-000000000002", source_campaign_id: "40000000-0000-4000-8000-000000000003",
+    source_campaign_title: "Existing adaptive exercise", state: "active", version: 1, cadence_days: 28, occurrence_count: 3, generation_mode: "adaptive", complete: false,
+    updated_at: "2026-11-06T12:00:00Z", iteration_progress: progress };
+  const programs = [program, { ...program, campaign_program_id: "40000000-0000-4000-8000-000000000004", source_campaign_title: "Rejected prior exercise",
+    iteration_progress: { ...progress, reason: "stalled_prior_rejected" } }];
+  const adaptation = { iteration_number: 2, signals: { accepted: 10, human_clicked: 4, reported: 1 },
+    changes: { prior_level: 3, next_level: 2, rationale: "Prior human-click rate exceeded the threshold; recommendation only." },
+    enrollment: { base_population: 10, enrolled: 8, excluded_opt_out: 1, excluded_scanner_only: 1 }, content_changed: false };
+  await page.route("**/api/v1/campaigns**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname !== "/api/v1/campaigns" || route.request().method() !== "GET") return route.fallback();
+    return route.fulfill({ json: [{ campaign_id: sourceId, title: "Future scheduled source", state: "scheduled", audience_frozen: true, roe_bound: true,
+      schedule_start: "2050-01-01T12:00:00Z", schedule_end: "2050-01-01T13:00:00Z" }] });
+  });
+  await page.route("**/api/v1/programs**", async (route) => {
+    const request = route.request(), url = new URL(request.url()), path = url.pathname;
+    if (request.method() === "GET") {
+      if (path.endsWith("/adaptations")) return route.fulfill({ json: [adaptation] });
+      if (path === "/api/v1/programs") return route.fulfill({ json: programs });
+      return route.fulfill({ json: { ...program, occurrences: [] } });
+    }
+    const body = request.postDataJSON(); writes.push({ path, body });
+    if (path.endsWith("/iterations")) {
+      progress.reason = "prior_not_complete"; progress.materialized_count = 2; progress.next_iteration = 3;
+      return route.fulfill({ status: 201, json: { ...program, created: true, reason: "created", iteration_campaign_id: "draft-only" } });
+    }
+    return route.fulfill({ status: 201, json: { created: true, campaign_program_id: "new-program" } });
+  });
+  await page.goto("/console/#programs");
+  await page.locator("#console-password").fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Repeat a campaign on a schedule" })).toBeVisible();
+  await expect(page.getByText("Stalled: the prior campaign was rejected", { exact: true })).toBeVisible();
+  await page.getByLabel("How to prepare later drafts").selectOption("adaptive");
+  await expect(page.getByText(/It does not rewrite the email or training content/)).toBeVisible();
+  await page.getByRole("button", { name: "Review & create finite program", exact: true }).click();
+  const create = page.getByRole("dialog", { name: "Create 3-occurrence program?", exact: true });
+  await expect(create).toContainText("email and training content stay unchanged");
+  await create.getByRole("button", { name: "Create program drafts", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].body.generation_mode).toBe("adaptive");
+  await expect(page.getByRole("heading", { name: "Repeat a campaign on a schedule" })).toBeVisible();
+  await page.getByRole("button", { name: "Review adaptations", exact: true }).first().click();
+  const review = page.getByRole("dialog", { name: "Enrollment adaptations", exact: true });
+  await expect(review).toContainText("Recommended difficulty: 3 → 2");
+  await expect(review).toContainText("Email and training content: unchanged");
+  await review.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Create next draft", exact: true }).click();
+  const next = page.getByRole("dialog", { name: "Create iteration 2 as a draft?", exact: true });
+  await expect(next).toContainText("No approval or send is performed");
+  await next.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(writes).toHaveLength(1);
+  await page.getByRole("button", { name: "Create next draft", exact: true }).click();
+  await page.getByRole("dialog", { name: "Create iteration 2 as a draft?", exact: true })
+    .getByRole("button", { name: "Create next draft", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1].body).toEqual({ expected_iteration: 2 });
+  await expect(page.getByText("Waiting for the prior campaign to complete", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create next draft", exact: true })).toHaveCount(0);
+  expect(writes.every((write) => write.path.startsWith("/api/v1/programs"))).toBe(true);
+  await scanCampaignAccessibility(page, testInfo, "adaptive-program-wcag22aa");
 });
 
 test("campaign steps support keyboard error recovery and preserve the recipient draft when going Back", async ({ page }, testInfo) => {

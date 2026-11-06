@@ -4223,7 +4223,8 @@ views.programs = async (root) => {
   root.appendChild(el("p", {
     class: "sub",
     text: "Optional. Take a campaign you have already scheduled and lay out repeats of it every so many days — "
-      + "a quarterly refresher, say. You never need this to run a campaign.",
+      + "a quarterly refresher, say. You can create all drafts now or adapt enrollment after each completed run. "
+      + "You never need this to run a campaign.",
   }));
 
   let programs;
@@ -4266,6 +4267,10 @@ views.programs = async (root) => {
     el("option", { value: "84", text: "Every 84 days" }),
   ]);
   const countInput = el("input", { id: "program-count", type: "number", min: "2", max: "12", value: "3" });
+  const modeSelect = el("select", { id: "program-mode", "aria-describedby": "program-adaptation-scope" }, [
+    el("option", { value: "fixed_schedule", text: "Create all repeat drafts now" }),
+    el("option", { value: "adaptive", text: "Adapt enrollment after each completed run" }),
+  ]);
   const timelinePreview = el("div", { class: "field-help", role: "status" });
 
   function selectedSource() {
@@ -4287,7 +4292,7 @@ views.programs = async (root) => {
       end: new Date(firstEnd.getTime() + (interval * index)).toISOString(),
     }));
     return {
-      source, count, cadenceDays, occurrences,
+      source, count, cadenceDays, occurrences, generationMode: modeSelect.value,
       firstStart: occurrences[0].start,
       finalEnd: occurrences[occurrences.length - 1].end,
     };
@@ -4296,12 +4301,14 @@ views.programs = async (root) => {
   function updateTimelinePreview() {
     const timeline = programTimeline();
     timelinePreview.textContent = timeline
-      ? `Exact UTC window: ${timeline.firstStart} through ${timeline.finalEnd}. ${timeline.count} total occurrences.`
+      ? `Exact UTC window: ${timeline.firstStart} through ${timeline.finalEnd}. ${timeline.count} total occurrences. `
+        + (timeline.generationMode === "adaptive" ? "Later drafts are created one at a time after the prior run completes." : "All later drafts are created now.")
       : "Choose an eligible source and enter 2–12 occurrences to review the exact UTC window.";
   }
   sourceSelect.addEventListener("change", updateTimelinePreview);
   cadenceSelect.addEventListener("change", updateTimelinePreview);
   countInput.addEventListener("input", updateTimelinePreview);
+  modeSelect.addEventListener("change", updateTimelinePreview);
   updateTimelinePreview();
 
   const createButton = el("button", {
@@ -4309,6 +4316,7 @@ views.programs = async (root) => {
     disabled: canCreateProgram && sources.length ? null : "disabled",
     title: canCreateProgram ? null : "Campaign creation capability is required.",
     onclick: async (event) => {
+      const button = event.currentTarget;
       const timeline = programTimeline();
       if (!timeline) { toast("Choose a source and enter 2–12 occurrences.", "error"); return; }
       const reviewDetail = {
@@ -4319,24 +4327,29 @@ views.programs = async (root) => {
         reviewDetail[`Run ${occurrence.occurrenceNumber} (UTC)`] = `${occurrence.start} — ${occurrence.end}`;
       }
       reviewDetail["Future occurrences"] = "Draft, audience unfrozen, approvals absent, RoE unbound";
+      reviewDetail["Mode"] = timeline.generationMode === "adaptive" ? "Enrollment adaptation after each completed run" : "All drafts now";
       const confirmed = await confirmDialog({
         title: `Create ${timeline.count}-occurrence program?`,
-        message: "This creates the complete finite timeline now. Only the existing source remains scheduled; every later occurrence must pass the normal campaign review gates independently.",
+        message: (timeline.generationMode === "adaptive"
+          ? "Later drafts are created individually after each prior run completes. Enrollment can narrow and difficulty recommendations can change; email and training content stay unchanged. "
+          : "This creates the complete finite timeline now. ")
+          + "Only the existing source remains scheduled; every later occurrence must pass the normal campaign review gates independently.",
         detail: reviewDetail,
         confirmLabel: "Create program drafts",
       });
       if (!confirmed) return;
-      event.target.disabled = true;
+      button.disabled = true;
       try {
         const result = await api("/programs", { method: "POST", body: JSON.stringify({
           source_campaign_id: timeline.source.campaign_id,
           cadence_days: timeline.cadenceDays,
           occurrence_count: timeline.count,
+          generation_mode: timeline.generationMode,
         }) });
         toast(result.created ? "Finite campaign program created" : "Existing matching program loaded", "success");
         location.reload();
       } catch (e) { toast(e.message, "error"); }
-      finally { event.target.disabled = false; }
+      finally { button.disabled = false; }
     },
   });
   root.appendChild(el("fieldset", { disabled: canCreateProgram ? null : "disabled" }, [
@@ -4347,8 +4360,13 @@ views.programs = async (root) => {
         el("label", { for: "program-cadence", text: "Repeat every" }), cadenceSelect,
         el("label", { for: "program-count", text: "How many times in total" }), countInput,
       ]),
+      el("div", {}, [el("label", { for: "program-mode", text: "How to prepare later drafts" }), modeSelect]),
     ]),
     timelinePreview,
+    el("p", { id: "program-adaptation-scope", class: "field-help", text:
+      "Enrollment adaptation uses the previous run's human-click and report counts, removes opted-out and scanner-only recipients, "
+      + "and records a recommended difficulty level. It does not rewrite the email or training content. Review and edit those before each send. "
+      + "A rejected, cancelled or expired prior run stalls the program. Past planned windows are shown as late and do not silently move." }),
     // These two used to sit at the top of the page, where they were read before
     // the reader knew what the feature was. They constrain this control, so
     // they belong beside it.
@@ -4414,8 +4432,74 @@ views.programs = async (root) => {
     openDialog(dlg);
   }
 
+  const iterationReason = (program) => {
+    const reason = program.iteration_progress?.reason;
+    const labels = {
+      ready: "Ready to create the next draft",
+      paused: "Paused",
+      complete: "All iteration drafts exist; campaign work may remain",
+      prior_not_complete: "Waiting for the prior campaign to complete",
+      late: "Planned window has passed; no draft generated. Create a new future campaign plan.",
+      late_prior_not_complete: "Late: the prior campaign has not completed",
+      stalled_prior_rejected: "Stalled: the prior campaign was rejected",
+      stalled_prior_cancelled: "Stalled: the prior campaign was cancelled",
+      stalled_prior_expired: "Stalled: the prior campaign expired",
+      stalled_prior_recalled: "Stalled: the prior campaign was recalled",
+      stalled_prior_stopped: "Stalled: the prior campaign was stopped",
+    };
+    return labels[reason] || "Fixed schedule";
+  };
+
+  async function reviewAdaptations(program) {
+    let adaptations;
+    try { adaptations = await api(`/programs/${program.campaign_program_id}/adaptations?limit=100`); }
+    catch (e) { toast(e.message, "error"); return; }
+    const { dlg, form } = dialogShell("Enrollment adaptations",
+      "Aggregate results only. Difficulty is a recommendation; email and training content are unchanged. Every resulting campaign is a draft that needs its own review and approval.");
+    if (!adaptations.length) form.appendChild(el("p", { text: "No adaptations have been recorded yet." }));
+    for (const item of adaptations) {
+      form.appendChild(el("div", { class: "card" }, [
+        el("h3", { text: `Iteration ${item.iteration_number}` }),
+        el("p", { text: item.changes.rationale || "Difficulty recommendation retained." }),
+        el("p", { text: `Recommended difficulty: ${item.changes.prior_level} → ${item.changes.next_level}. `
+          + `Prior accepted: ${item.signals.accepted}; human clicks: ${item.signals.human_clicked}; reports: ${item.signals.reported}.` }),
+        el("p", { text: `Reviewed source population: ${item.enrollment.base_population}; enrolled: ${item.enrollment.enrolled}; `
+          + `opt-outs: ${item.enrollment.excluded_opt_out}; scanner-only exclusions: ${item.enrollment.excluded_scanner_only}.` }),
+        el("p", { text: "Email and training content: unchanged. Review the new draft in Campaigns." }),
+      ]));
+    }
+    form.appendChild(el("div", { class: "modal-actions" }, [
+      el("button", { class: "btn primary", type: "button", text: "Close", onclick: () => dlg.close() }),
+    ]));
+    openDialog(dlg);
+  }
+
+  function createNextIteration(program) {
+    return async (event) => {
+      const button = event.currentTarget;
+      const progress = program.iteration_progress;
+      const confirmed = await confirmDialog({
+        title: `Create iteration ${progress.next_iteration} as a draft?`,
+        message: "This narrows the reviewed roster using prior results and records a difficulty recommendation. Email and training content stay unchanged. No approval or send is performed.",
+        detail: { "Planned start UTC": formatUtcInstant(progress.schedule_start), "Planned end UTC": formatUtcInstant(progress.schedule_end) },
+        confirmLabel: "Create next draft",
+      });
+      if (!confirmed) return;
+      button.disabled = true;
+      try {
+        const result = await api(`/programs/${program.campaign_program_id}/iterations`, {
+          method: "POST", body: JSON.stringify({ expected_iteration: progress.next_iteration }),
+        });
+        toast(result.created ? "Next draft created; review it in Campaigns" : iterationReason(result), result.created ? "success" : "info");
+        await render();
+      } catch (e) { toast(e.message, "error"); }
+      finally { button.disabled = false; }
+    };
+  }
+
   function changeState(program, target) {
     return async (event) => {
+      const button = event.currentTarget;
       const pausing = target === "pause";
       const values = await promptDialog({
         title: `${pausing ? "Pause" : "Resume"} program?`,
@@ -4429,7 +4513,7 @@ views.programs = async (root) => {
         submitLabel: pausing ? "Pause future scheduling" : "Resume future scheduling",
       });
       if (!values) return;
-      event.target.disabled = true;
+      button.disabled = true;
       try {
         await api(`/programs/${program.campaign_program_id}/${target}`, {
           method: "POST",
@@ -4438,7 +4522,7 @@ views.programs = async (root) => {
         toast(`Program ${pausing ? "paused" : "resumed"}`, "success");
         location.reload();
       } catch (e) { toast(e.message, "error"); }
-      finally { event.target.disabled = false; }
+      finally { button.disabled = false; }
     };
   }
 
@@ -4451,6 +4535,12 @@ views.programs = async (root) => {
       const actions = [el("button", {
         class: "btn small", type: "button", text: "Review exact UTC timeline", onclick: () => reviewTimeline(program),
       })];
+      if (program.generation_mode === "adaptive") {
+        actions.push(el("button", { class: "btn small", type: "button", text: "Review adaptations", onclick: () => reviewAdaptations(program) }));
+        if (canCreateProgram && program.iteration_progress?.reason === "ready") actions.push(el("button", {
+          class: "btn small primary", type: "button", text: "Create next draft", onclick: createNextIteration(program),
+        }));
+      }
       if (!program.complete && canChangeProgramState) actions.push(el("button", {
         class: program.state === "active" ? "btn small danger" : "btn small primary",
         type: "button",
@@ -4467,7 +4557,10 @@ views.programs = async (root) => {
           text: program.complete ? "complete" : program.state,
         })]),
         el("td", { text: `${program.cadence_days} days` }),
-        el("td", { class: "num", text: String(program.occurrence_count) }),
+        el("td", {}, [
+          el("span", { text: `${program.iteration_progress?.materialized_count ?? program.occurrence_count} / ${program.occurrence_count} created` }),
+          program.generation_mode === "adaptive" ? el("p", { class: "field-help", text: iterationReason(program) }) : null,
+        ].filter(Boolean)),
         el("td", { class: "mono", text: formatUtcInstant(program.updated_at) }),
         el("td", {}, actions),
       ]);

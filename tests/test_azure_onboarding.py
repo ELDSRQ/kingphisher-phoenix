@@ -609,9 +609,7 @@ def test_workflow_three_stage_acs_plans_are_allowlisted_and_create_update_only()
     workloads = workflow[workload_plan:]
     assert '-var="deploy_workloads=true"' in workloads
     assert '-var="deploy_workloads=false"' not in workloads
-    assert '["terraform", "show", "-json", "release.tfplan"]' in workloads
-    assert 'if "delete" in change.get("change", {}).get("actions", [])' in workloads
-    assert "workloads phase is create/update-only and refuses deletes or replacements" in workloads
+    assert "deployment_plan_guards.py workloads release.tfplan" in workloads
     assert "terraform apply -auto-approve release.tfplan" in workloads
     assert '-var="acs_deployment_stage=workloads"' in workloads
     assert workflow.count('-var="deploy_workloads=false"') == 2
@@ -845,21 +843,13 @@ def test_workflow_has_no_automated_project_or_cloud_cleanup_commands() -> None:
     workflow = (REPO_ROOT / ".github/workflows/azure-deploy.yml").read_text(encoding="utf-8")
 
     forbidden_commands = (
-        r"(?m)^\s*docker\s+(?:builder\s+)?prune\b",
-        r"(?m)^\s*docker\s+compose\s+down\b",
-        r"(?m)^\s*terraform\s+destroy\b",
-        r"(?m)^\s*az\s+\S+(?:\s+\S+)*\s+delete\b",
-        r"(?m)^\s*git\s+(?:clean|reset)\b",
+        r"(?m)^[ \t]*docker[ \t]+(?:builder[ \t]+)?prune\b",
+        r"(?m)^[ \t]*docker[ \t]+compose[ \t]+down\b",
+        r"(?m)^[ \t]*terraform[ \t]+destroy\b",
+        r"(?m)^[ \t]*az[ \t]+\S+(?:[ \t]+\S+)*[ \t]+delete\b",
+        r"(?m)^[ \t]*git[ \t]+(?:clean|reset)\b",
     )
-    # Allow the two pre-apply role-assignment cleanups, which remove orphaned
-    # assignments that Terraform then re-creates: the Foundry "Cognitive
-    # Services User" grant for the ai-gateway identity (AI-015/Path D), and the
-    # "Key Vault Secrets User" grants on the ai-gateway-auth-key secret that
-    # otherwise 409 on re-apply. Both use this exact delete line.
-    workflow = workflow.replace(
-        'az role assignment delete --ids "${ROLE_ID}" >/dev/null 2>&1 || true',
-        "",
-    )
+    workflow = re.sub(r"\\\r?\n[ \t]*", " ", workflow)
     assert not any(re.search(pattern, workflow) for pattern in forbidden_commands)
 
 
@@ -872,12 +862,14 @@ def test_workflow_activates_acs_receipts_only_after_migration_and_readiness() ->
     activation_apply = workflow.index("- name: Activate ACS receipt subscription after readiness")
     assert workload_plan < qualification < activation_plan < activation_apply
     initial_deploy = workflow[workload_plan:qualification]
-    assert "enable_acs_event_subscription=false" in initial_deploy
+    assert "enable_acs_event_subscription=$KP_PRESERVE_ACS_RECEIPTS" in initial_deploy
     assert "terraform apply -auto-approve release.tfplan" in initial_deploy
     assert "enable_acs_event_subscription=true" in workflow
-    assert "azurerm_eventgrid_system_topic_event_subscription.acs_delivery[0]" in workflow
-    assert "receipt activation plan contains unrelated changes" in workflow
-    assert "receipt activation plan did not create the Event Grid subscription" in workflow
+    preserve = workflow.index("- name: Preserve tracked ACS receipts through workload updates")
+    assert preserve < workload_plan
+    assert "deployment_plan_guards.py receipt-state" in workflow
+    assert "deployment_plan_guards.py workloads release.tfplan" in initial_deploy
+    assert "deployment_plan_guards.py receipt-activation acs-receipts.tfplan" in workflow
     assert "./scripts/azure_release.sh" in workflow[:activation_plan]
 
 

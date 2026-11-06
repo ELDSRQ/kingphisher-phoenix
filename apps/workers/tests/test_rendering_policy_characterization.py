@@ -51,6 +51,16 @@ class TestUrlIdentity:
     def test_not_a_url_rejected(self) -> None:
         assert _url_identity("not a url") is None
 
+    @pytest.mark.parametrize("port", ["invalid", "65536", "-1"])
+    def test_invalid_or_out_of_range_port_rejected(self, port: str) -> None:
+        assert _url_identity(f"https://example.com:{port}/x") is None
+
+    def test_explicit_zero_port_uses_default(self) -> None:
+        assert _url_identity("https://example.com:0/x") == ("https", "example.com", 443, "/x")
+
+    def test_ipv6_hostname_preserved_without_brackets(self) -> None:
+        assert _url_identity("http://[::1]:8080/x") == ("http", "::1", 8080, "/x")
+
 
 class TestContainsUrl:
     def test_exact_match(self) -> None:
@@ -63,10 +73,17 @@ class TestContainsUrl:
         content = "click &lt;https://example.com/awareness&gt;"
         assert _contains_url(content, "https://example.com/awareness") is True
 
-    def test_percent_encoded_not_decoded_into_path(self) -> None:
-        # unquote decodes the content before scanning; a percent-encoded
-        # delimiter becomes visible and splits the URL token.
-        assert _contains_url("https://example.com/awareness", "https://example.com/awareness") is True
+    def test_percent_encoded_path_decoded_before_matching(self) -> None:
+        assert _contains_url("https://example.com/%61wareness", "https://example.com/awareness") is True
+
+    @pytest.mark.parametrize("entity", ["&amp;", "&#38;", "&#x26;"])
+    def test_html_entities_decoded_in_path(self, entity: str) -> None:
+        assert _contains_url(f"https://example.com/safety{entity}privacy", "https://example.com/safety&privacy")
+
+    def test_later_url_can_match_after_an_unrelated_url(self) -> None:
+        assert _contains_url(
+            "https://other.example/awareness and https://example.com/awareness", "https://example.com/awareness"
+        )
 
     def test_different_path_rejected(self) -> None:
         assert _contains_url("https://example.com/v1/track/click/abc", "https://example.com/awareness") is False
@@ -110,6 +127,15 @@ class TestDeliveryTemplateContent:
         tmpl = _template(subject="  ", plain_text=f"p {TRAINING_URL_PLACEHOLDER}", safe_html="")
         with pytest.raises(SafetyRejectionError):
             _delivery_template_content(tmpl)
+
+    def test_whitespace_only_plain_text_rejected(self) -> None:
+        tmpl = _template(subject="S", plain_text=" \t\n", safe_html=f"<p>{TRAINING_URL_PLACEHOLDER}</p>")
+        with pytest.raises(SafetyRejectionError):
+            _delivery_template_content(tmpl)
+
+    def test_whitespace_only_html_is_a_text_only_template(self) -> None:
+        tmpl = _template(subject="S", plain_text=f"Hello {TRAINING_URL_PLACEHOLDER}", safe_html=" \t\n")
+        assert _delivery_template_content(tmpl) == ("S", f"Hello {TRAINING_URL_PLACEHOLDER}", " \t\n")
 
     def test_missing_plain_placeholder_rejected(self) -> None:
         tmpl = _template(subject="S", plain_text="no placeholder", safe_html="")
