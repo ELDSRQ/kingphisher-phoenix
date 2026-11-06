@@ -120,7 +120,226 @@ async function installHumanFlowFixture(page) {
   return { state, rosterId, campaignId };
 }
 
-for (const width of [1280, 768]) {
+async function openCampaignSetup(page) {
+  await page.goto("/console/#campaigns");
+  await page.locator("#console-password").fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByLabel("Company domain", { exact: true })).toBeVisible();
+}
+
+async function selectCampaignAuthorization(page) {
+  await page.getByLabel("Company domain", { exact: true }).selectOption("example.com");
+  await page.getByRole("button", { name: "Select domain", exact: true }).click();
+  await page.getByLabel("Saved signed authorization", { exact: true }).selectOption("30000000-0000-4000-8000-000000000006");
+  await page.getByRole("button", { name: "Use signed RoE", exact: true }).click();
+}
+
+async function confirmCampaignRoster(page) {
+  await page.getByLabel("Or paste the completed CSV", { exact: true }).fill("email,name\nfirst@example.com,Erik\nparticipant@example.com,\n");
+  await page.getByRole("button", { name: "Review uploaded recipients", exact: true }).click();
+  await page.getByRole("button", { name: "Confirm validated recipients", exact: true }).click();
+}
+
+async function prepareCampaignEmail(page) {
+  await page.getByLabel("Library email", { exact: true }).selectOption("30000000-0000-4000-8000-000000000002");
+  await page.getByRole("button", { name: "Use this email as a starting point", exact: true }).click();
+  await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
+}
+
+async function scanCampaignAccessibility(page, testInfo, name) {
+  // Message HTML has an opaque origin under sandbox="". Audit the console
+  // separately; the message content still needs its own accessibility review.
+  const result = await new AxeBuilder({ page }).exclude("iframe.email-preview-html")
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  await testInfo.attach(name, { body: JSON.stringify(result, null, 2), contentType: "application/json" });
+  expect(result.violations.map((violation) => ({ id: violation.id, impact: violation.impact }))).toEqual([]);
+}
+
+test("administrator hold controls retain retry identity, cancel release, and preserve released history", async ({ page }, testInfo) => {
+  await installHumanFlowFixture(page);
+  const holds = [], writes = [];
+  let failFirstSet = true;
+  await page.route("**/api/v1/privacy/**", async (route) => {
+    const path = new URL(route.request().url()).pathname, method = route.request().method();
+    if (path.endsWith("/requests")) return route.fulfill({ json: [] });
+    if (path.endsWith("/notice")) return route.fulfill({ json: { notice_text: "Synthetic privacy notice", version: 1, effective_at: "2026-01-01" } });
+    if (path.endsWith("/retention-holds/status")) return route.fulfill({ json: { active: holds.some((hold) => hold.active), scope: "single_tenant_database" } });
+    if (path.endsWith("/retention-holds") && method === "GET") return route.fulfill({ json: { items: holds } });
+    if (path.endsWith("/retention-holds") && method === "POST") {
+      const body = route.request().postDataJSON(); writes.push({ path, body });
+      if (!holds.some((hold) => hold.hold_id === body.hold_id)) holds.push({ ...body, active: true, created_by: "Fixture administrator", created_at: "2026-11-06T12:00:00Z" });
+      if (failFirstSet) { failFirstSet = false; return route.fulfill({ status: 503, json: { detail: "Synthetic lost response after commit" } }); }
+      return route.fulfill({ json: holds.find((hold) => hold.hold_id === body.hold_id) });
+    }
+    if (path.endsWith("/release")) {
+      const body = route.request().postDataJSON(); writes.push({ path, body });
+      const hold = holds.find((item) => path.includes(item.hold_id));
+      Object.assign(hold, { active: false, released_by: "Fixture administrator", released_at: "2026-11-06T13:00:00Z", release_reason: body.reason });
+      return route.fulfill({ json: hold });
+    }
+    await route.fallback();
+  });
+  await page.goto("/console/#privacy");
+  await page.locator("#console-password").fill(FIXTURE_PASSWORD);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByText("No active retention hold. Normal retention and verified erasure apply.", { exact: true })).toBeVisible();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.getByRole("button", { name: "Set a retention hold", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Set a retention hold", exact: true });
+    await dialog.getByLabel("Case reference", { exact: true }).fill("CASE-2026-01");
+    await dialog.getByLabel("Preservation reason", { exact: true }).fill("Preserve the tenant records for review");
+    await dialog.getByRole("button", { name: "Set hold", exact: true }).click();
+    if (!attempt) await expect(page.getByRole("alert").filter({ hasText: "Synthetic lost response after commit" })).toBeVisible();
+  }
+  await expect(page.getByText(/Deletion paused: an active retention hold/)).toBeVisible();
+  expect(holds).toHaveLength(1);
+  expect(writes[0].body.hold_id).toBe(writes[1].body.hold_id);
+  await scanCampaignAccessibility(page, testInfo, "privacy-hold-active-axe");
+  await page.screenshot({ path: testInfo.outputPath("privacy-hold-active.png"), fullPage: true });
+  for (const confirm of [false, true]) {
+    await page.getByRole("button", { name: "Release hold: CASE-2026-01", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Release this retention hold?", exact: true });
+    await dialog.getByLabel("Release reason", { exact: true }).fill("Case resolved after administrator review");
+    await dialog.getByRole("button", { name: "Review release", exact: true }).click();
+    const confirmation = page.getByRole("dialog", { name: "Confirm hold release", exact: true });
+    await confirmation.getByRole("button", { name: confirm ? "Release hold" : "Cancel", exact: true }).click();
+    if (!confirm) expect(writes.filter((write) => write.path.endsWith("/release"))).toHaveLength(0);
+  }
+  await expect(page.getByText("No active retention hold. Normal retention and verified erasure apply.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "CASE-2026-01 — Released", exact: true })).toBeVisible();
+  await expect(page.getByText(/Released by Fixture administrator/)).toContainText("Case resolved after administrator review");
+  expect(writes.filter((write) => write.path.endsWith("/release"))).toHaveLength(1);
+});
+
+test("campaign steps support keyboard error recovery and preserve the recipient draft when going Back", async ({ page }, testInfo) => {
+  const { state } = await installHumanFlowFixture(page);
+  await openCampaignSetup(page);
+  const progress = page.getByRole("navigation", { name: "Campaign setup progress", exact: true });
+  await expect(progress.getByRole("listitem")).toHaveCount(7);
+  await expect(progress.locator('[aria-current="step"]')).toContainText("Select domain");
+  await expect(page.locator(".campaign-step:visible")).toHaveCount(1);
+  await expect(progress.getByRole("button", { name: "6. Send", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Select domain", exact: true }).press("Enter");
+  const summary = page.locator(".campaign-errors");
+  await expect(summary).toBeFocused();
+  await scanCampaignAccessibility(page, testInfo, "domain-field-errors-axe");
+  await summary.getByRole("link", { name: "Choose your company domain first.", exact: true }).press("Enter");
+  const domain = page.getByLabel("Company domain", { exact: true });
+  await expect(domain).toBeFocused();
+  await expect(domain).toHaveAttribute("aria-invalid", "true");
+  await domain.selectOption("example.com");
+  await page.getByRole("button", { name: "Select domain", exact: true }).press("Enter");
+  await expect(page.getByRole("heading", { name: "2. Sign RoE", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "Use signed RoE", exact: true }).press("Enter");
+  await summary.getByRole("link").press("Enter");
+  await expect(page.getByLabel("Saved signed authorization", { exact: true })).toBeFocused();
+  await page.getByLabel("Saved signed authorization", { exact: true }).selectOption("30000000-0000-4000-8000-000000000006");
+  await page.getByRole("button", { name: "Use signed RoE", exact: true }).press("Enter");
+  await page.getByRole("button", { name: "Review uploaded recipients", exact: true }).press("Enter");
+  await summary.getByRole("link").press("Enter");
+  const csv = page.getByLabel("Or paste the completed CSV", { exact: true });
+  await expect(csv).toBeFocused();
+  await expect(csv).toHaveAttribute("aria-describedby", "setup-csv-error");
+  const text = "email,name\nfirst@example.com,Erik\nparticipant@example.com,\n";
+  await csv.fill(text);
+  await expect(csv).not.toHaveAttribute("aria-invalid", "true");
+  await page.getByRole("button", { name: "Back", exact: true }).press("Enter");
+  await expect(page.getByRole("heading", { name: "2. Sign RoE", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "Use signed RoE", exact: true }).press("Enter");
+  await expect(csv).toHaveValue(text);
+  expect(state.writes).toEqual([]);
+  expect(await page.evaluate(() => sessionStorage.getItem("kp_campaign_setup"))).not.toContain("first@example.com");
+  await scanCampaignAccessibility(page, testInfo, "recipients-step-axe");
+});
+
+test("campaign approval validates fields and authorization dates before offering the exact final review", async ({ page }, testInfo) => {
+  const { state } = await installHumanFlowFixture(page);
+  await page.setViewportSize({ width: 320, height: 900 });
+  await openCampaignSetup(page);
+  await selectCampaignAuthorization(page);
+  await confirmCampaignRoster(page);
+  await prepareCampaignEmail(page);
+  const approve = page.getByRole("button", { name: "Approve campaign", exact: true });
+  const summary = page.locator(".campaign-errors");
+  await approve.click();
+  await expect(summary).toBeFocused();
+  await summary.getByRole("link", { name: "Campaign name: enter a value.", exact: true }).press("Enter");
+  await expect(page.getByLabel("Campaign name", { exact: true })).toBeFocused();
+  await page.getByLabel("Campaign name", { exact: true }).fill("Keyboard review");
+  await page.getByLabel("From email", { exact: true }).fill("invalid mailbox");
+  await approve.click();
+  await expect(summary.getByRole("link", { name: "From email: enter a valid email address.", exact: true })).toBeVisible();
+  await scanCampaignAccessibility(page, testInfo, "approval-field-errors-axe");
+  await page.screenshot({ path: testInfo.outputPath("campaign-field-errors.png"), fullPage: true });
+  await summary.getByRole("link").press("Enter");
+  await expect(page.getByLabel("From email", { exact: true })).toBeFocused();
+  await page.getByLabel("From email", { exact: true }).fill("awareness@example.com");
+  await page.getByLabel("Send from (local time)", { exact: true }).fill("2040-01-01T09:00");
+  await page.getByLabel("Stop sending after (local time)", { exact: true }).fill("2039-01-01T10:00");
+  await approve.click();
+  await expect(summary).toContainText("Stop sending must be after the start time");
+  await page.getByLabel("Stop sending after (local time)", { exact: true }).fill("2051-01-01T10:00");
+  await approve.click();
+  await expect(summary).toContainText("Choose a delivery window within the signed authorization dates.");
+  expect(state.writes.some((write) => write.path === "/campaigns")).toBe(false);
+  await page.getByLabel("Stop sending after (local time)", { exact: true }).fill("2040-01-01T10:00");
+  await approve.click();
+  const dialog = page.getByRole("dialog", { name: "Approve this campaign?", exact: true });
+  await expect(dialog).toContainText("Keyboard review");
+  await expect(dialog).toContainText("awareness@example.com");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).press("Enter");
+  await expect(approve).toBeFocused();
+  expect(state.writes.some((write) => write.path === "/campaigns")).toBe(false);
+});
+
+test("a CSV changed during validation cannot expose a stale recipient confirmation", async ({ page }) => {
+  const { state } = await installHumanFlowFixture(page);
+  await openCampaignSetup(page);
+  await selectCampaignAuthorization(page);
+  let release;
+  const responseGate = new Promise((resolve) => { release = resolve; });
+  await page.route("**/recipients/import/preview", async (route) => {
+    await responseGate;
+    await route.fallback();
+  });
+  const csv = page.getByLabel("Or paste the completed CSV", { exact: true });
+  await csv.fill("email\nfirst@example.com\n");
+  const request = page.waitForRequest("**/recipients/import/preview");
+  await page.getByRole("button", { name: "Review uploaded recipients", exact: true }).click();
+  await request;
+  await csv.fill("email\nreplacement@example.com\n");
+  release();
+  await expect(page.locator(".campaign-errors")).toContainText("The CSV changed during review.");
+  await expect(page.getByRole("button", { name: "Confirm validated recipients", exact: true })).toHaveCount(0);
+  expect(state.writes).toEqual([]);
+});
+
+test("email edits made during preview loading remain drafts and cannot be approved with the old preview", async ({ page }) => {
+  const { state } = await installHumanFlowFixture(page);
+  await openCampaignSetup(page);
+  await selectCampaignAuthorization(page);
+  await confirmCampaignRoster(page);
+  await page.getByLabel("Library email", { exact: true }).selectOption("30000000-0000-4000-8000-000000000002");
+  await page.getByRole("button", { name: "Use this email as a starting point", exact: true }).click();
+  let release;
+  const responseGate = new Promise((resolve) => { release = resolve; });
+  await page.route("**/templates/*/clone", async (route) => { await responseGate; await route.fallback(); });
+  const request = page.waitForRequest("**/templates/*/clone");
+  await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
+  await request;
+  const currentWording = "Dear [recipient name],\nNew wording changed while loading. [training link]";
+  await page.getByLabel("Email body", { exact: true }).fill(currentWording);
+  release();
+  await expect(page.locator(".campaign-errors")).toContainText("The email changed while its preview was loading.");
+  await expect(page.getByLabel("Email body", { exact: true })).toHaveValue(currentWording);
+  await expect(page.getByRole("button", { name: "Approve campaign", exact: true })).toHaveCount(0);
+  expect(state.writes.some((write) => write.path === "/campaigns")).toBe(false);
+  await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Approve campaign", exact: true })).toBeEnabled();
+  expect(state.writes.findLast((write) => write.path.endsWith("/clone")).body.plain_text).toContain("New wording changed while loading.");
+});
+
+for (const width of [1280, 768, 320]) {
   test(`whole-roster human flow at ${width}px: domain, signed RoE, CSV, edit, approve, send and named results`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
     const { state, campaignId } = await installHumanFlowFixture(page);
@@ -133,7 +352,7 @@ for (const width of [1280, 768]) {
     await page.getByRole("button", { name: "Select domain", exact: true }).click();
     await page.getByLabel("Saved signed authorization", { exact: true }).selectOption("30000000-0000-4000-8000-000000000006");
     await page.getByRole("button", { name: "Use signed RoE", exact: true }).click();
-    await expect(page.getByText(/only these domains are approved: example.com/)).toBeVisible();
+    await expect(page.getByRole("region", { name: "3. Recipients", exact: true }).getByText(/only these domains are approved: example.com/)).toBeVisible();
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("button", { name: "Download CSV template", exact: true }).click();
     const download = await downloadPromise;
@@ -146,9 +365,12 @@ for (const width of [1280, 768]) {
     await expect(review.locator("tbody tr")).toHaveCount(2);
     await expect(review).not.toContainText("Outside");
     await page.getByRole("button", { name: "Confirm validated recipients", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Step 4 of 7" })).toBeVisible();
+    await page.getByRole("navigation", { name: "Campaign setup progress" }).getByRole("button", { name: "3. Recipients", exact: true }).click();
     const roster = page.getByRole("table", { name: "Confirmed campaign roster", exact: true });
     await expect(roster.locator("tbody tr")).toHaveCount(2);
     await expect(roster).not.toContainText("Past import");
+    await page.getByRole("button", { name: "Continue to choose/edit email", exact: true }).click();
     await page.getByLabel("Library email", { exact: true }).selectOption("30000000-0000-4000-8000-000000000002");
     await page.getByRole("button", { name: "Use this email as a starting point", exact: true }).click();
     await page.getByLabel("Email subject", { exact: true }).fill("Reviewed human trial email");
@@ -164,25 +386,46 @@ for (const width of [1280, 768]) {
     const brandedPreview = page.locator("iframe.email-preview-html");
     await expect(brandedPreview).toBeVisible();
     await expect(brandedPreview).toHaveAttribute("sandbox", "");
+    await expect(brandedPreview).toHaveAttribute("title", "Rendered email preview");
     const srcdoc = await brandedPreview.getAttribute("srcdoc");
     expect(srcdoc).toContain("Review my mailbox");
     expect(srcdoc).toContain("data:image/png;base64,");
     expect(srcdoc).toContain("Northwind IT Service Desk");
     // The rendered iframe body actually shows the branded content to the reviewer.
     await expect(brandedPreview.contentFrame().getByText("Review my mailbox")).toBeVisible();
+    await page.getByLabel("Campaign name", { exact: true }).fill("Preserved campaign name");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(page.getByLabel("Email subject", { exact: true })).toHaveValue("Reviewed human trial email");
+    if (width === 1280) await scanCampaignAccessibility(page, testInfo, "email-editor-axe");
     await page.getByLabel("Email subject", { exact: true }).fill("Revised reviewed human trial email");
+    await page.getByRole("navigation", { name: "Campaign setup progress" }).getByRole("button", { name: "5. Approve", exact: true }).click();
     await expect(page.getByRole("button", { name: "Approve campaign", exact: true })).toBeDisabled();
     await expect(page.getByText(/Email edited\. Click Create fake email for review/)).toBeVisible();
+    await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.getByRole("button", { name: "Create fake email for review", exact: true }).click();
     await expect(page.getByRole("button", { name: "Approve campaign", exact: true })).toBeEnabled();
+    await expect(page.getByLabel("Campaign name", { exact: true })).toHaveValue("Preserved campaign name");
     await page.getByLabel("Campaign name", { exact: true }).fill("Streamlined human trial");
     await expect(page.getByLabel("Training hostname", { exact: true })).toHaveValue("127.0.0.1");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    if (width !== 768) {
+      await scanCampaignAccessibility(page, testInfo, "approval-step-axe");
+    }
+    await page.screenshot({ path: testInfo.outputPath("campaign-approval-step.png"), fullPage: true });
     await page.getByRole("button", { name: "Approve campaign", exact: true }).click();
-    await page.getByRole("dialog", { name: "Approve this campaign?", exact: true }).getByRole("button", { name: "Approve", exact: true }).click();
+    const approvalDialog = page.getByRole("dialog", { name: "Approve this campaign?", exact: true });
+    await expect(approvalDialog.locator("dt", { hasText: "Confirmed recipients" }).locator("+ dd")).toHaveText("2");
+    await expect(approvalDialog).toContainText("Synthetic company; signed by Fixture operator");
+    await expect(approvalDialog).toContainText("Recognize phishing");
+    await expect(approvalDialog).toContainText("127.0.0.1");
+    if (width === 320) await scanCampaignAccessibility(page, testInfo, "approval-dialog-axe");
+    if (width === 320) await page.screenshot({ path: testInfo.outputPath("campaign-approval-dialog.png"), fullPage: true });
+    await approvalDialog.getByRole("button", { name: "Approve", exact: true }).click();
     await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
     const created = state.writes.find((w) => w.path === "/campaigns").body;
     expect(created.delivery_mode).toBe("reviewed_direct"); expect(created.max_recipients).toBe(2);
-    const emailCopy = state.writes.find((w) => w.path.endsWith("/clone")).body.plain_text;
+    const emailCopy = state.writes.findLast((w) => w.path.endsWith("/clone")).body.plain_text;
+    expect(state.writes.findLast((w) => w.path.endsWith("/clone")).body.subject).toBe("Revised reviewed human trial email");
     expect(emailCopy).toContain('{{ recipient.first_name or "colleague" }}');
     expect(emailCopy).toContain("{{ tracking.training_url }}");
     expect(state.writes.find((w) => w.path.endsWith("/audience")).body.group_ids).toHaveLength(1);
@@ -196,8 +439,7 @@ for (const width of [1280, 768]) {
     await expect(page.getByRole("alert").filter({ hasText: /Wait at least 1 second/ }).first()).toBeVisible();
     expect(state.sendAttempts).toBe(1);
     if (width === 1280) {
-      const accessibility = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
-      expect(accessibility.violations.filter((v) => ["serious", "critical"].includes(v.impact)).map((v) => v.id)).toEqual([]);
+      await scanCampaignAccessibility(page, testInfo, "send-step-axe");
     }
     state.throttleSchedule = false;
     await page.getByRole("button", { name: "Send", exact: true }).click();

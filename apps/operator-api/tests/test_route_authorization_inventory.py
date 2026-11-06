@@ -261,6 +261,7 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
         frozenset({"handle:privacy_requests"}),
         _routes(
             "GET /api/v1/privacy/notice",
+            "GET /api/v1/privacy/retention-holds/status",
             "GET /api/v1/privacy/requests",
             "POST /api/v1/privacy/requests",
             "POST /api/v1/privacy/requests/{request_id}/verify",
@@ -295,6 +296,9 @@ _ROUTES_BY_REQUIREMENT: tuple[tuple[frozenset[str], frozenset[RouteKey]], ...] =
     (
         frozenset({"manage:roles"}),
         _routes(
+            "GET /api/v1/privacy/retention-holds",
+            "POST /api/v1/privacy/retention-holds",
+            "POST /api/v1/privacy/retention-holds/{hold_id}/release",
             "GET /api/v1/console/azure-deployment",
             "POST /api/v1/console/azure-deployment/validate",
             "POST /api/v1/console/azure-deployment/orchestration/plan",

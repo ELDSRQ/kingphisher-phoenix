@@ -135,16 +135,15 @@ PERSONAL_DATA_STORES: Final[tuple[PersonalDataStore, ...]] = (
         name="awareness_ledger",
         model=AwarenessLedgerEntry,
         in_export=True,
-        in_erasure=False,
+        in_erasure=True,
         in_retention=True,
         note=(
             "The awareness ledger is PSEUDONYMOUS, not anonymous. Each row's recipient_pseudonym "
             "is HMAC(governed pseudonym_key, recipient_id) and carries no recipient/assignment "
-            "foreign key or recipient attribute; but erasure leaves a tombstone recipient row that "
-            "retains its recipient_id, so a holder of the pseudonym key can recompute the "
-            "pseudonym and relink surviving ledger rows to the tombstone. As an ACCEPTED-RISK "
-            "retention decision the ledger is RETAINED through erasure as aggregate awareness "
-            "evidence and expires only on its own five-year horizon in the retention job. The "
+            "foreign key or recipient attribute. Erasure purges matching rows under the active "
+            "governed key version; retained prior versions require the same governed erasure "
+            "process for each retained key. An active tenant preservation hold pauses erasure "
+            "and scheduled expiry together, without marking the request fulfilled. The "
             "access export discloses the subject's own ledger outcomes (resolved via the pseudonym "
             "key), never the raw pseudonym or any recipient attribute."
         ),

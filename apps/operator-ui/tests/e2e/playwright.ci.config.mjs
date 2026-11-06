@@ -33,6 +33,9 @@ if (process.env.TEST_WORKER_INDEX !== undefined) {
 }
 const baseURL = `http://127.0.0.1:${port}`;
 const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+// An isolated qualification environment can supply its interpreter without
+// replacing or modifying the preserved development .venv.
+const fixturePython = process.env.KP_CONSOLE_CI_PYTHON || resolve(projectRoot, ".venv/bin/python");
 
 export default defineConfig({
   testDir: ".",
@@ -53,7 +56,7 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: `${shellQuote(resolve(projectRoot, ".venv/bin/python"))} ${shellQuote(resolve(projectRoot, "scripts/operator/e2e/console_smoke_fixture.py"))} --port ${port} --run-id ${runId}`,
+    command: `${shellQuote(fixturePython)} ${shellQuote(resolve(projectRoot, "scripts/operator/e2e/console_smoke_fixture.py"))} --port ${port} --run-id ${runId}`,
     cwd: projectRoot,
     url: `${baseURL}/__smoke__/ready`,
     reuseExistingServer: false,

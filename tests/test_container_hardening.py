@@ -89,8 +89,8 @@ def test_mock_dependency_lock_has_a_reproducible_regeneration_contract() -> None
     assert direct_dependencies == {
         "cryptography==50.0.0",
         "fastapi==0.141.1",
-        "PyJWT==2.13.0",
+        "PyJWT==2.15.1",
         "uvicorn==0.52.1",
     }
-    for flag in ("--python-version 3.14", "--python-platform linux", "--only-binary=:all:", "--generate-hashes"):
+    for flag in ("--python-version 3.15", "--python-platform linux", "--only-binary=:all:", "--generate-hashes"):
         assert flag in recipe

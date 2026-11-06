@@ -38,6 +38,7 @@ def _flatten(diffs: list[object]) -> list[tuple]:
 
 
 @requires_privileged_db
+@pytest.mark.filterwarnings("error:Cannot correctly sort tables:sqlalchemy.exc.SAWarning")
 def test_head_schema_has_no_pending_model_additions() -> None:
     with _upgraded_database() as database_url:
         engine = create_engine(database_url.render_as_string(hide_password=False))

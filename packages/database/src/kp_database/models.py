@@ -217,7 +217,11 @@ class Source(Base):
     source_type: Mapped[dm.SourceType] = mapped_column(Enum(dm.SourceType, name="source_type"))
     base_domain: Mapped[str] = mapped_column(String(255))
     fetch_path: Mapped[str] = mapped_column(String(1024), default="/")
-    license_state_id = mapped_column(UUID(as_uuid=True), ForeignKey("source_terms.source_terms_id"), nullable=True)
+    # Terms point back to their source; add this nullable reverse link separately
+    # so schema sorting and autogenerate can resolve that dependency cycle.
+    license_state_id = mapped_column(
+        UUID(as_uuid=True), ForeignKey("source_terms.source_terms_id", use_alter=True), nullable=True
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     last_success_at = mapped_column(DateTime(timezone=True), nullable=True)
     last_attempt_at = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1724,6 +1728,32 @@ class PrivacyNotice(Base):
     notice_text: Mapped[str] = mapped_column(Text)
     effective_at = mapped_column(DateTime(timezone=True), nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class RetentionHold(Base):
+    """Administrator-controlled tenant purge holds; released rows are history."""
+
+    __tablename__ = "retention_holds"
+    __table_args__ = (
+        CheckConstraint("scope = 'single_tenant_database'", name="tenant_scope"),
+        CheckConstraint(
+            "(released_at IS NULL AND released_by IS NULL AND release_reason IS NULL) OR "
+            "(released_at IS NOT NULL AND released_by IS NOT NULL AND release_reason IS NOT NULL "
+            "AND released_at >= created_at)",
+            name="release_complete",
+        ),
+        Index("ix_retention_holds_active", "created_at", postgresql_where=sa_text("released_at IS NULL")),
+    )
+
+    retention_hold_id = _pk()
+    scope: Mapped[str] = mapped_column(String(64), nullable=False, default="single_tenant_database")
+    reference: Mapped[str] = mapped_column(CipherText, nullable=False)
+    reason: Mapped[str] = mapped_column(CipherText, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at = mapped_column(DateTime(timezone=True), nullable=False)
+    released_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    released_at = mapped_column(DateTime(timezone=True), nullable=True)
+    release_reason: Mapped[str | None] = mapped_column(CipherText, nullable=True)
 
 
 class RetentionPolicy(Base):

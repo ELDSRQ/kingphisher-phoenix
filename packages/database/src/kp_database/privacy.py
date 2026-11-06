@@ -107,7 +107,9 @@ def erase_recipient_data(
         TrainingAssignment,
     )
     from kp_database.personal_data import ASSIGNMENT_LINKED_RECEIPT_MODELS
+    from kp_database.retention_holds import require_no_retention_hold
 
+    require_no_retention_hold(session)
     recipient = session.get(Recipient, recipient_id)
     if recipient is None or recipient.deleted_at is not None:
         return False

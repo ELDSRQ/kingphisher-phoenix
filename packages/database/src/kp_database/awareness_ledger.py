@@ -142,11 +142,13 @@ def purge_recipient_awareness_ledger(
     * Deleting by ``recipient_pseudonym`` removes every campaign/exposure row for
       the subject regardless of ``assignment_exposure_pseudonym``.
 
-    Returns the number of ledger rows deleted. A future retention-hold construct
-    (W5-04 / ``LEGAL_HOLD``) must be consulted by the caller before erasure; no
-    such hold exists in the schema today, so there is nothing to check here yet.
+    Returns the number of ledger rows deleted. Tenant preservation holds are
+    checked here too, so direct callers cannot bypass the erasure guard.
     """
 
+    from kp_database.retention_holds import require_no_retention_hold
+
+    require_no_retention_hold(session)
     _validate_pseudonym_inputs(
         tenant_scope=tenant_scope,
         key=pseudonym_key,
