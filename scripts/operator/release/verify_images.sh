@@ -37,6 +37,7 @@ readonly expected_trivy_version="0.74.0"
 readonly configured_trivy_executable="${KP_TRIVY_EXECUTABLE:-}"
 readonly expected_trivy_sha256="${KP_TRIVY_EXPECTED_SHA256:-}"
 readonly configured_trivy_cache_dir="${KP_TRIVY_CACHE_DIR:-}"
+readonly qualification_subnet="${KP_IMAGE_QUALIFICATION_SUBNET:-}"
 readonly qualification_label_key="com.kingphisher.release-qualification"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 readonly started_at
@@ -151,6 +152,24 @@ require_timeout_configuration() {
       return 2
     fi
   done
+}
+
+require_network_configuration() {
+  [[ -n "${qualification_subnet}" ]] || return 0
+  python3 - "${qualification_subnet}" <<'PY'
+import ipaddress
+import sys
+
+try:
+    network = ipaddress.ip_network(sys.argv[1], strict=True)
+    private_ranges = [ipaddress.ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+    if network.version != 4 or not 24 <= network.prefixlen <= 28:
+        raise ValueError
+    if not any(network.subnet_of(private) for private in private_ranges):
+        raise ValueError
+except ValueError:
+    raise SystemExit("KP_IMAGE_QUALIFICATION_SUBNET must be one canonical RFC1918 IPv4 /24 through /28 network") from None
+PY
 }
 
 require_docker_target_configuration() {
@@ -1084,9 +1103,19 @@ exercise_migration_entrypoint() {
     --entrypoint python "$(image_tag migration)" -c \
     'import alembic, dotenv, kp_database, kp_telemetry, psycopg' >/dev/null
 
-  docker_bounded network create \
-    --label "${qualification_label_key}=${run_id}" \
-    "${network_name}" >/dev/null
+  # On a shared engine the default address pools may already be exhausted.
+  # An explicit reviewed unused subnet avoids changing daemon settings or
+  # removing any preserved network. Docker refuses overlaps on this engine.
+  if [[ -n "${qualification_subnet}" ]]; then
+    docker_bounded network create \
+      --label "${qualification_label_key}=${run_id}" \
+      --subnet "${qualification_subnet}" \
+      "${network_name}" >/dev/null
+  else
+    docker_bounded network create \
+      --label "${qualification_label_key}=${run_id}" \
+      "${network_name}" >/dev/null
+  fi
   postgres="$(docker_bounded run --detach \
     --name "$(container_name postgres)" \
     --label "${qualification_label_key}=${run_id}" \
@@ -1285,6 +1314,7 @@ write_final_evidence() {
     "${evidence_dir}/source-before.json" \
     "${evidence_dir}/context.json" \
     "${evidence_dir}/source-after.json" \
+    "${qualification_subnet}" \
     "${phase_results[@]}" \
     --images "${image_records[@]}" \
     --scans "${scan_records[@]}" <<'PY'
@@ -1330,6 +1360,7 @@ from typing import Optional
     before_value,
     context_value,
     after_value,
+    qualification_subnet,
     *records,
 ) = sys.argv[1:]
 image_separator = records.index("--images")
@@ -1522,6 +1553,7 @@ document = {
         "root_dir": {"expected": expected_docker_root_dir, "actual": docker_root_dir},
     },
     "platform": {"expected": expected_platform, "docker_server": server_platform},
+    "network": {"requested_subnet": qualification_subnet or None},
     "scanner": {
         "name": "trivy",
         "version": scanner_version,
@@ -1682,6 +1714,7 @@ fi
 
 require_build_headroom
 require_timeout_configuration
+require_network_configuration
 require_docker_target_configuration
 initialize_evidence_directory
 trap finalize EXIT

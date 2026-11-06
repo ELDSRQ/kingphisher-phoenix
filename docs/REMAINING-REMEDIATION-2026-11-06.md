@@ -112,6 +112,18 @@ all five release images. It stopped on the separate mock image's stale PyJWT
 same complete hash-verification and no scanner exclusion. Rerun the complete
 gate, including runtime/migration entrypoints, for the final candidate.
 
+The next run passed all six scans, numeric-user checks, API startup and worker
+imports. Migration qualification stopped before creating its network because
+the shared engine had exhausted automatic address pools (35 preserved networks).
+The verifier now accepts optional `KP_IMAGE_QUALIFICATION_SUBNET`, validated as
+a canonical RFC1918 IPv4 /24 through /28 before Docker access and recorded in
+its evidence. Docker still rejects overlap with existing engine networks.
+For `.105`, read-only Docker IPAM and host-route inventories confirmed
+`10.254.248.0/28` is unused; this run uses that subnet for its uniquely labelled
+disposable test network. Existing networks and daemon configuration are left
+intact. For other Docker endpoints, review their host routes before supplying
+an override; no automatic subnet selection or cleanup of old networks occurs.
+
 **OS certificates.** The W2-02 wording came from the supplied handoff list; it
 was too broad for the current product. Developer ID signing/notarization applies
 when distributing a native macOS application; Windows package signing applies

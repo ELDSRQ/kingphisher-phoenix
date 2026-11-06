@@ -622,8 +622,10 @@ def test_image_verifier_rejects_symbolic_or_out_of_storage_evidence_parent_befor
     assert not (outside_parent / "evidence").exists()
 
 
-def test_image_verifier_binds_six_pinned_trivy_scans_into_qualification(tmp_path: Path) -> None:
+@pytest.mark.parametrize("network_subnet", ("", "10.254.248.0/28"))
+def test_image_verifier_binds_six_pinned_trivy_scans_into_qualification(tmp_path: Path, network_subnet: str) -> None:
     environment, docker_marker, _, source_root = _verifier_fake_environment(tmp_path, full_success=True)
+    environment["KP_IMAGE_QUALIFICATION_SUBNET"] = network_subnet
 
     result = _run_fake_verifier(source_root, environment)
 
@@ -683,6 +685,26 @@ def test_image_verifier_binds_six_pinned_trivy_scans_into_qualification(tmp_path
     }
     docker_invocations = docker_marker.read_text(encoding="utf-8").splitlines()
     assert sum(invocation.endswith("--format {{.Id}}") for invocation in docker_invocations) == 12
+    network_creates = [invocation for invocation in docker_invocations if invocation.startswith("network create ")]
+    assert len(network_creates) == 1
+    assert qualification["network"]["requested_subnet"] == (network_subnet or None)
+    if network_subnet:
+        assert f"--subnet {network_subnet}" in network_creates[0]
+    else:
+        assert "--subnet" not in network_creates[0]
+
+
+@pytest.mark.parametrize("subnet", ("10.0.0.1/28", "0.0.0.0/0", "203.0.113.0/24", "::/0", "10.0.0.0/8", "10.0.0.0/29"))
+def test_image_verifier_rejects_invalid_subnet_before_docker_access(tmp_path: Path, subnet: str) -> None:
+    environment, docker_marker, _, source_root = _verifier_fake_environment(tmp_path)
+    environment["KP_IMAGE_QUALIFICATION_SUBNET"] = subnet
+
+    result = _run_fake_verifier(source_root, environment)
+
+    assert result.returncode != 0
+    assert "KP_IMAGE_QUALIFICATION_SUBNET" in result.stderr
+    assert not docker_marker.exists()
+    assert not Path(environment["KP_IMAGE_QUALIFICATION_EVIDENCE_DIR"]).exists()
 
 
 def test_image_verifier_scan_failure_cannot_produce_passing_qualification(tmp_path: Path) -> None:
