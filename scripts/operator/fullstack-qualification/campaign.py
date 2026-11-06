@@ -280,9 +280,21 @@ class Campaigns:
                 return states
             if any(key in normalized for key in ("failed", "skipped")):
                 raise QualificationFailure("campaign contains failed or skipped assignments")
+            if self.delivery_dead_letters():
+                raise QualificationFailure("delivery exhausted retries while campaign assignments remain unresolved")
             self.evidence.remaining()
             time.sleep(0.25)
         raise QualificationFailure("campaign drain deadline exceeded")
+
+    def delivery_dead_letters(self) -> int:
+        """Read only this isolated run's delivery failure count; never replay."""
+        from kp_contracts.queue import JobQueue
+
+        queue = JobQueue(self.endpoints["redis"] + "?socket_timeout=2&socket_connect_timeout=2")
+        try:
+            return int(queue.queue_stats("deliver")["dead_letter"] or 0)
+        finally:
+            queue.close()
 
     def require_fault_observed(self, campaign: dict[str, Any], mode: str) -> None:
         deadline = time.monotonic() + self.evidence.remaining(15)

@@ -532,9 +532,9 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "external_gate",
-      "owner": "operator",
-      "next_action": "Qualify installation, upgrade, repair and reboot on supported clean hosts. OS publisher certificates apply only to distributed native signed packages; browser/server deployment does not require a controller signing identity."
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Execute the scoped clean-Ubuntu installation, repair, upgrade and reboot qualification on a new isolated VM after final source CI passes. Other supported clean-host evidence remains external. OS publisher certificates apply only to distributed native signed packages; browser/server deployment does not require a controller signing identity."
     },
     {
       "id": "W2-03",
@@ -1004,6 +1004,22 @@
       "status": "in_progress",
       "title": "Delivery must read active recipient exclusion selectors without exclusion mutation or private rationale access",
       "resolution": "Native smoke v4 SEND succeeded, then delivery exhausted retries. A read-only query under its actual login confirmed SQLSTATE 42501 on recipient_exclusions. Add migration 0058 and the four required selector columns; prove current/global/expired/revoked filtering and denial boundaries before another fresh smoke."
+    },
+    {
+      "id": "REG-015",
+      "parent": "W2-03",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Preserved development-runtime upgrade with real-data restore rehearsal before additive migration",
+      "resolution": "New explicit-phase coordinator preserves original source, environment, configuration and container identities. Pre-stop bounds, complete checkpoint, isolated restore/decryption/audit proof, Redis payload fences and captured cgroup checks require final independent review, CI and qualified-source execution. No normal runtime mutation has occurred."
+    },
+    {
+      "id": "REG-016",
+      "parent": "W2-02",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Actual clean Linux installation, repair, baseline upgrade and reboot qualification",
+      "resolution": "Reviewed bounded new-VM scope; private coordinator implementation in progress. Separate sequential task-owned Docker daemons preserve both installation datasets while retaining frozen Compose identity. No Azure VM resources created yet."
     }
   ],
   "evidence": {

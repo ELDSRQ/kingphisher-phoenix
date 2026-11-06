@@ -283,6 +283,20 @@ def test_drain_rejects_extra_queued_assignment_despite_expected_acceptances():
         campaigns.drain({"id": "synthetic", "label": "baseline", "size": 1})
 
 
+def test_drain_stops_immediately_after_delivery_exhausts_retries(monkeypatch):
+    campaigns = object.__new__(Campaigns)
+    campaigns.evidence = SimpleNamespace(profile=Profile(), remaining=lambda maximum=None: maximum or 1800)
+    campaigns.observe = lambda campaign: {"QUEUED": 3}
+    campaigns.delivery_dead_letters = lambda: 1
+
+    def unexpected_wait(seconds):
+        raise AssertionError("a dead-lettered delivery cannot make progress by waiting")
+
+    monkeypatch.setattr("campaign.time.sleep", unexpected_wait)
+    with pytest.raises(QualificationFailure, match="delivery exhausted retries"):
+        campaigns.drain({"id": "synthetic", "label": "baseline", "size": 3})
+
+
 @pytest.mark.parametrize("wrong_envelope", (False, True))
 def test_sink_headers_and_envelope_journal_must_both_match_exact_roster(tmp_path, wrong_envelope):
     campaigns = object.__new__(Campaigns)
