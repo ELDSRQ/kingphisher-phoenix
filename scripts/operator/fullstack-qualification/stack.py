@@ -306,6 +306,75 @@ class Stack:
         if record["Config"]["Labels"].get(LABEL) != self.evidence.run_id:
             raise QualificationFailure("resource ownership label mismatch")
 
+    def owned_restored_service(self, service: dict[str, Any], kind: str) -> dict[str, Any]:
+        """Validate exact target identity before restore or endpoint changes."""
+        expected = {"redis": (6379,), "mailpit": (1025, 8025)}.get(kind)
+        name = f"{self.network}-restored-{kind}"
+        if expected is None or service.get("name") != name or self.resources.get(name) is not service:
+            raise QualificationFailure("restarted service is not the recorded restore target")
+        identifier = service["id"]
+        self.owned(identifier)
+        records = json.loads(self.docker("inspect", identifier))
+        if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+            raise QualificationFailure("restarted service inspection is malformed")
+        record = records[0]
+        if (
+            record.get("Id") != identifier
+            or record.get("Name") != f"/{name}"
+            or (record.get("Config", {}).get("Labels") or {}).get(LABEL) != self.evidence.run_id
+        ):
+            raise QualificationFailure("restarted service identity or ownership changed")
+        if record.get("Config", {}).get("Image") != IMAGES[kind]:
+            raise QualificationFailure("restarted service image differs from the pinned restore image")
+        mounts = record.get("Mounts")
+        data_mounts = (
+            [mount for mount in mounts if isinstance(mount, dict) and mount.get("Destination") == "/data"]
+            if isinstance(mounts, list)
+            else []
+        )
+        if (
+            service.get("volume") != f"{name}-data"
+            or len(data_mounts) != 1
+            or data_mounts[0].get("Type") != "volume"
+            or data_mounts[0].get("Name") != service["volume"]
+        ):
+            raise QualificationFailure("restarted service data volume identity changed")
+        return record
+
+    def refresh_service_bindings(self, service: dict[str, Any], kind: str) -> None:
+        """Rebind a restarted restore target without replacing its identity."""
+        record = self.owned_restored_service(service, kind)
+        expected = (6379,) if kind == "redis" else (1025, 8025)
+        bindings = self.service_bindings(record, expected, kind)
+        before = {**service, "ports": dict(service["ports"])}
+        after = {**service, "ports": bindings}
+        sequence = getattr(self, "_binding_refresh_count", 0) + 1
+        receipt = f"restored-{kind}-post-restart-bindings-{sequence}.json"
+        self.evidence.json(
+            receipt,
+            {
+                "before": before,
+                "after": after,
+                "run_id": self.evidence.run_id,
+                "volume": service["volume"],
+                "image_reference": record["Config"]["Image"],
+                "image_id": record.get("Image"),
+            },
+        )
+        self.evidence.event(
+            "resource_bindings_refreshed",
+            kind=kind,
+            id=service["id"],
+            volume=service["volume"],
+            before_ports=before["ports"],
+            ports=bindings,
+            receipt=receipt,
+        )
+        # The registry and caller share this exact record; replace only ports
+        # after the new guarded receipt has been published successfully.
+        service["ports"] = bindings
+        self._binding_refresh_count = sequence
+
     def mutate(self, action: str, identifier: str, *args: str, input: bytes | None = None) -> bytes:
         self.owned(identifier)
         if action not in {"stop", "start", "exec", "cp"}:

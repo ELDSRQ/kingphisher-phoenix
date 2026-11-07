@@ -13,7 +13,7 @@ from typing import Any
 
 import redis
 from campaign import Campaigns
-from evidence import QualificationFailure, digest
+from evidence import QualificationFailure, digest, loopback_url
 from sqlalchemy import MetaData, Table, create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine
 from stack import Stack
@@ -48,6 +48,34 @@ def table_counts(engine: Engine) -> dict[str, int]:
             )
             for name in names
         }
+
+
+def restart_restored_service(stack: Stack, services: dict[str, Any], kind: str, snapshot: bytes) -> None:
+    """Restore only the fresh target, then rediscover Docker's dynamic ports."""
+    service = services[kind]
+    stack.owned_restored_service(service, kind)
+    identifier = service["id"]
+    stack.mutate("stop", identifier, "--time", "15")
+    copy_in(stack, identifier, snapshot)
+    stack.mutate("start", identifier)
+    stack.refresh_service_bindings(service, kind)
+
+
+def verify_restored_redis(stack: Stack, services: dict[str, Any], marker: str) -> None:
+    url = loopback_url(f"redis://127.0.0.1:{services['redis']['ports'][6379]}/0", {"redis"})
+    restored_cache = redis.Redis.from_url(url, socket_timeout=3, socket_connect_timeout=3)
+    deadline = time.monotonic() + stack.evidence.remaining(60)
+    try:
+        while time.monotonic() < deadline:
+            try:
+                if restored_cache.get("kp:qualification:acknowledged-sentinel") != marker.encode():
+                    raise QualificationFailure("acknowledged Redis sentinel missing")
+                return
+            except redis.RedisError:
+                time.sleep(0.25)
+        raise QualificationFailure("restored Redis readiness deadline exceeded")
+    finally:
+        restored_cache.close()
 
 
 def qualify_recovery(stack: Stack, source_services: dict[str, Any], campaigns: Campaigns) -> Campaigns:
@@ -189,10 +217,7 @@ def qualify_recovery(stack: Stack, source_services: dict[str, Any], campaigns: C
         maximum=180,
     )
     for kind in ("redis", "mailpit"):
-        identifier = target[kind]["id"]
-        stack.mutate("stop", identifier, "--time", "15")
-        copy_in(stack, identifier, snapshots[f"{kind}-data.tar"])
-        stack.mutate("start", identifier)
+        restart_restored_service(stack, target, kind, snapshots[f"{kind}-data.tar"])
     restored_url = stack.connection_urls(target)
     engine = create_engine(restored_url, connect_args={"connect_timeout": 3})
     if table_counts(engine) != manifest["table_counts"]:
@@ -201,18 +226,7 @@ def qualify_recovery(stack: Stack, source_services: dict[str, Any], campaigns: C
         if connection.scalar(text("SELECT id FROM qualification_recovery_sentinel")) != marker:
             raise QualificationFailure("acknowledged PostgreSQL sentinel missing")
     engine.dispose()
-    restored_cache = redis.Redis(host="127.0.0.1", port=target["redis"]["ports"][6379], socket_timeout=3)
-    redis_deadline = time.monotonic() + evidence.remaining(60)
-    while time.monotonic() < redis_deadline:
-        try:
-            if restored_cache.get("kp:qualification:acknowledged-sentinel") != marker.encode():
-                raise QualificationFailure("acknowledged Redis sentinel missing")
-            break
-        except redis.RedisError:
-            time.sleep(0.25)
-    else:
-        raise QualificationFailure("restored Redis readiness deadline exceeded")
-    restored_cache.close()
+    verify_restored_redis(stack, target, marker)
     anchor_target = evidence.root / "restored-anchor-evidence"
     anchor_target.mkdir(mode=0o700, exist_ok=False)
     with tarfile.open(fileobj=io.BytesIO(snapshots["anchor-data.tar"]), mode="r") as archive:

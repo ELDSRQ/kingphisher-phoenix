@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import subprocess
@@ -17,7 +18,212 @@ from campaign import Campaigns
 from evidence import Evidence, Profile, QualificationFailure, loopback_url, percentile
 from run import source_manifest
 from smtp_proxy import Handler, address
-from stack import Stack
+from stack import IMAGES, Stack
+
+
+@pytest.fixture
+def restarted_services(tmp_path, monkeypatch):
+    from kp_database.grants import RUNTIME_ROLES
+
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.setattr("stack.free_port", lambda: 33333)
+    evidence = Evidence(tmp_path / "run", "synthetic", Profile())
+    stack = Stack(evidence, root, "host", "engine")
+    stack.passwords = {workload: "synthetic-role-only" for workload in RUNTIME_ROLES}
+    services = {"postgres": {"id": "owned-pg", "ports": {5432: 35432}}}
+    records, mutations = {}, []
+    for kind, ports in (("redis", {6379: 36400}), ("mailpit", {1025: 36401, 8025: 36402})):
+        name = f"{stack.network}-restored-{kind}"
+        services[kind] = {"id": f"owned-{kind}", "name": name, "volume": f"{name}-data", "ports": ports}
+        stack.resources[name] = services[kind]
+        records[services[kind]["id"]] = {
+            "Id": services[kind]["id"],
+            "Name": f"/{name}",
+            "Config": {"Labels": {"kp.fullstack.qualification": "synthetic"}, "Image": IMAGES[kind]},
+            "Image": f"sha256:synthetic-{kind}",
+            "State": {"Running": True},
+            "Mounts": [{"Type": "volume", "Name": services[kind]["volume"], "Destination": "/data"}],
+            "NetworkSettings": {
+                "Ports": {
+                    f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(host)}] for port, host in ports.items()
+                }
+            },
+        }
+    initial = evidence.json("restored-resources.json", services).read_bytes()
+
+    def docker(*args, **kwargs):
+        if args[0] == "inspect":
+            return json.dumps([records[args[1]]]).encode()
+        mutations.append((args, kwargs))
+        if args[0] == "stop":
+            records[args[-1]]["State"]["Running"] = False
+        elif args[0] == "start":
+            record = records[args[1]]
+            record["State"]["Running"] = True
+            for bindings in record["NetworkSettings"]["Ports"].values():
+                bindings[0]["HostPort"] = str(int(bindings[0]["HostPort"]) + 100)
+        elif args[0] == "cp":
+            assert args[1] == "-" and kwargs["input"] == b"preserved synthetic snapshot"
+        else:
+            raise AssertionError(args)
+        return b""
+
+    monkeypatch.setattr(stack, "docker", docker)
+    return SimpleNamespace(stack=stack, services=services, records=records, mutations=mutations, initial=initial)
+
+
+def test_restarted_bindings_reach_cache_app_and_proxy_urls_without_replacing_resources(restarted_services, monkeypatch):
+    from recovery import restart_restored_service, verify_restored_redis
+
+    value = restarted_services
+    original = copy.deepcopy(value.services)
+    for kind in ("redis", "mailpit"):
+        restart_restored_service(value.stack, value.services, kind, b"preserved synthetic snapshot")
+    cache_urls, closed = [], []
+
+    class Cache:
+        def get(self, key):
+            assert key == "kp:qualification:acknowledged-sentinel"
+            return b"acknowledged"
+
+        def close(self):
+            closed.append(True)
+
+    def restored_cache(url, **kwargs):
+        cache_urls.append(url)
+        assert url == "redis://127.0.0.1:36500/0"  # old cached36400 must never be used
+        assert kwargs == {"socket_timeout": 3, "socket_connect_timeout": 3}
+        return Cache()
+
+    monkeypatch.setattr("recovery.redis.Redis.from_url", restored_cache)
+    verify_restored_redis(value.stack, value.services, "acknowledged")
+    assert cache_urls == ["redis://127.0.0.1:36500/0"] and closed == [True]
+    captured = {}
+    monkeypatch.setattr(value.stack, "spawn", lambda name, args, env: captured.setdefault(name, (args, env)))
+    endpoints = value.stack.start_applications(value.services, "restored")
+    assert endpoints["redis"] == "redis://127.0.0.1:36500/0"
+    assert endpoints["mailpit"] == "http://127.0.0.1:36502"
+    assert captured["restored-operator"][1]["OPERATOR_API_REDIS_URL"] == endpoints["redis"]
+    assert captured["restored-tracking"][1]["TRACKING_API_REDIS_URL"] == endpoints["redis"]
+    assert captured["restored-worker-delivery"][1]["KP_WORKER_REDIS_URL"] == endpoints["redis"]
+    assert captured["restored-worker-delivery"][1]["KP_WORKER_MAILPIT_API_URL"] == endpoints["mailpit"]
+    proxy = captured["restored-smtp"][0]
+    assert proxy[proxy.index("--upstream-port") + 1] == "36501"
+    for kind in ("redis", "mailpit"):
+        assert {key: value.services[kind][key] for key in ("id", "name", "volume")} == {
+            key: original[kind][key] for key in ("id", "name", "volume")
+        }
+        assert value.stack.resources[value.services[kind]["name"]] is value.services[kind]
+    assert (value.stack.evidence.root / "restored-resources.json").read_bytes() == value.initial
+    receipts = sorted(value.stack.evidence.root.glob("restored-*-post-restart-bindings-*.json"))
+    assert len(receipts) == 2
+    for receipt in receipts:
+        document = json.loads(receipt.read_text())
+        assert document["before"]["id"] == document["after"]["id"]
+        assert document["before"]["volume"] == document["after"]["volume"]
+        assert document["before"]["ports"] != document["after"]["ports"]
+    assert [args[0] for args, _ in value.mutations] == ["stop", "cp", "start", "stop", "cp", "start"]
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "missing",
+        "wildcard",
+        "ipv6",
+        "unexpected",
+        "wrong_id",
+        "wrong_label",
+        "wrong_volume",
+        "wrong_image",
+        "wrong_name",
+        "protected",
+        "stopped",
+        "missing_mailpit",
+    ],
+)
+def test_refresh_rejects_unsafe_or_changed_identity_without_fallback_or_manifest_rewrite(restarted_services, unsafe):
+    value = restarted_services
+    kind = "mailpit" if unsafe == "missing_mailpit" else "redis"
+    service = value.services[kind]
+    before = copy.deepcopy(service)
+    record = value.records[service["id"]]
+    if unsafe == "missing":
+        record["NetworkSettings"]["Ports"] = None
+    elif unsafe in {"wildcard", "ipv6"}:
+        record["NetworkSettings"]["Ports"]["6379/tcp"][0]["HostIp"] = "0.0.0.0" if unsafe == "wildcard" else "::1"  # noqa: S104 - rejected fixture
+    elif unsafe == "unexpected":
+        record["NetworkSettings"]["Ports"]["9999/tcp"] = [{"HostIp": "127.0.0.1", "HostPort": "36503"}]
+    elif unsafe == "wrong_id":
+        record["Id"] = "foreign-container"
+    elif unsafe == "wrong_label":
+        record["Config"]["Labels"]["kp.fullstack.qualification"] = "foreign-run"
+    elif unsafe == "wrong_volume":
+        record["Mounts"][0]["Name"] = "foreign-volume"
+    elif unsafe == "wrong_image":
+        record["Config"]["Image"] = "foreign:latest"
+    elif unsafe == "wrong_name":
+        record["Name"] = "/foreign-container"
+    elif unsafe == "protected":
+        record["NetworkSettings"]["Ports"]["6379/tcp"][0]["HostPort"] = "51459"
+    elif unsafe == "stopped":
+        record["State"]["Running"] = False
+    else:
+        del record["NetworkSettings"]["Ports"]["8025/tcp"]
+    with pytest.raises(QualificationFailure):
+        value.stack.refresh_service_bindings(service, kind)
+    assert service == before and value.mutations == []
+    assert not list(value.stack.evidence.root.glob("restored-*-post-restart-bindings-*.json"))
+    assert (value.stack.evidence.root / "restored-resources.json").read_bytes() == value.initial
+
+
+def test_old_cached_port_failure_is_closed_by_guarded_refresh(restarted_services, monkeypatch):
+    from recovery import verify_restored_redis
+
+    value = restarted_services
+    service = value.services["redis"]
+    value.stack.mutate("stop", service["id"], "--time", "15")
+    value.stack.mutate("start", service["id"])
+    assert service["ports"][6379] == 36400
+
+    def connect(url, **kwargs):
+        if url != "redis://127.0.0.1:36500/0":
+            raise AssertionError("stale endpoint cannot reach the restored Redis")
+        return SimpleNamespace(get=lambda _: b"acknowledged", close=lambda: None)
+
+    monkeypatch.setattr("recovery.redis.Redis.from_url", connect)
+    with pytest.raises(AssertionError, match="stale endpoint"):
+        verify_restored_redis(value.stack, value.services, "acknowledged")
+    value.stack.refresh_service_bindings(service, "redis")
+    verify_restored_redis(value.stack, value.services, "acknowledged")
+    assert service["ports"][6379] == 36500
+
+
+def test_restore_restart_rejects_unregistered_record_before_any_mutation(restarted_services):
+    from recovery import restart_restored_service
+
+    value = restarted_services
+    forged = {"redis": dict(value.services["redis"])}
+    with pytest.raises(QualificationFailure, match="recorded restore target"):
+        restart_restored_service(value.stack, forged, "redis", b"preserved synthetic snapshot")
+    assert value.mutations == []
+
+
+def test_each_restart_appends_a_new_binding_receipt_without_replacing_prior_evidence(restarted_services):
+    value = restarted_services
+    service = value.services["redis"]
+    receipts = []
+    for _ in range(2):
+        value.stack.mutate("stop", service["id"], "--time", "15")
+        value.stack.mutate("start", service["id"])
+        value.stack.refresh_service_bindings(service, "redis")
+        receipts.append(sorted(value.stack.evidence.root.glob("restored-redis-post-restart-bindings-*.json"))[-1])
+    assert receipts[0] != receipts[1]
+    first, second = (json.loads(path.read_text()) for path in receipts)
+    assert first["before"]["ports"] == {"6379": 36400} and first["after"]["ports"] == {"6379": 36500}
+    assert second["before"]["ports"] == {"6379": 36500} and second["after"]["ports"] == {"6379": 36600}
+    assert first["after"]["id"] == second["after"]["id"] == service["id"]
+    assert (value.stack.evidence.root / "restored-resources.json").read_bytes() == value.initial
 
 
 def test_evidence_is_exclusive_private_and_profile_is_declared_first(tmp_path):

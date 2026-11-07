@@ -138,3 +138,20 @@ recipient and signed live authorization gates run again. Both 147 focused and
 including durable three-call exhaustion, rollback, revocation and exact audit
 intent-to-signed-event projection. The complete native profile and final CI must
 now run against the repaired source before advancing the release.
+
+At892c651 all three CI jobs pass:4,325 hermetic,214 PostgreSQL,four Redis and
+fourteen browser tests. Native v8 also passes the SMTP retry and uncertainty
+cases and reaches full-state restore. It stops on cached endpoint metadata:
+Docker reallocates random loopback ports when the new Redis/Mailpit targets
+restart after their snapshot copy. Owned current-port readback verifies the
+Redis checkpoint sentinel and1,381 restored sink messages. Application and
+pending-work recovery are not yet qualified; the failure remains preserved.
+
+The endpoint repair now proves the exact recorded target/container label,
+pinned image and volume before copying, then refreshes validated loopback
+bindings and appends before/after receipts before updating shared metadata.
+The original resource manifest remains untouched. Both52 local and52 independent
+tests pass, including real cache/application/proxy URL consumers and unsafe
+metadata rejection. Strict mypy and Ruff pass. Baseline startup, data checks,
+snapshot bytes and all profile deadlines remain unchanged. A fresh full native
+run and current-source CI are the next release gates.
