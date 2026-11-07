@@ -26,7 +26,7 @@ from kp_dev_upgrade.core import Blocked, configuration, digest, private_bytes  #
 def fake_user_systemctl(tmp_path, monkeypatch):
     # A short synthetic pathname avoids AF_UNIX path limits. This is only an
     # owned socket inode: nothing listens on it or contacts a real user bus.
-    root = Path(tempfile.mkdtemp(prefix="kp-user-bus-", dir="/private/tmp")).resolve()
+    root = Path(tempfile.mkdtemp(prefix="kp-user-bus-", dir="/tmp")).resolve()
     runtime = root / str(os.getuid())
     runtime.mkdir(mode=0o700)
     endpoint = socket.socket(socket.AF_UNIX)
