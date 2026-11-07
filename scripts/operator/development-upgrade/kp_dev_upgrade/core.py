@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import platform
+import pwd
 import re
 import socket
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -29,6 +32,16 @@ ENGINE = "1e63b43c-027f-4c1b-954a-0c29ea867b33"
 OLD_REVISION = "cf659d57c5a2d8a9bf0a950ddb148bfb492b0fa1"
 OLD_SCHEMA = "0045_template_assets"
 LABEL = "kp.development.upgrade"
+USER_RUNTIME_ROOT = Path("/run/user")
+MAX_COMMAND_LOG_BYTES = 1024 * 1024
+UNIT_PROPERTIES = (
+    "--property=WorkingDirectory",
+    "--property=ActiveState",
+    "--property=MainPID",
+    "--property=DropInPaths",
+    "--property=FragmentPath",
+    "--property=ControlGroup",
+)
 CONTAINERS = {
     "postgres": "d971f78be5c553d8d7d3432321b9b6186375ceec49cdbefa7a3844a0f60f4f8c",
     "redis": "30467788f104f8c1bb988463b5b124bfc924efb3a9b30fa62297ada2c5843ddc",
@@ -99,6 +112,36 @@ def environment(config: dict[str, str] | None = None) -> dict[str, str]:
         "KP_DISABLE_DOTENV": "1",
         "PYTHONUNBUFFERED": "1",
     }
+
+
+def user_service_environment() -> dict[str, str]:
+    """Use only the reviewed login's standard, owned local user bus."""
+    uid = os.getuid()
+    if uid == 0 or os.geteuid() != uid:
+        raise Blocked("user_service_requires_unprivileged_login_identity")
+    account = pwd.getpwuid(uid)
+    if account.pw_name != "builder" or account.pw_dir != "/home/builder" or account.pw_uid != uid:
+        raise Blocked("user_service_login_is_not_reviewed_builder")
+    runtime = canonical(USER_RUNTIME_ROOT / str(uid))
+    bus = canonical(runtime / "bus")
+    try:
+        directory = runtime.stat()
+        endpoint = bus.stat()
+    except OSError:
+        raise Blocked("reviewed_user_runtime_or_bus_missing") from None
+    if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != uid or directory.st_mode & 0o077:
+        raise Blocked("reviewed_user_runtime_is_not_private_owned_directory")
+    if not stat.S_ISSOCK(endpoint.st_mode) or endpoint.st_uid != uid:
+        raise Blocked("reviewed_user_bus_is_not_owned_socket")
+    return environment(
+        {
+            "HOME": "/home/builder",
+            "USER": "builder",
+            "LOGNAME": "builder",
+            "XDG_RUNTIME_DIR": str(runtime),
+            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={bus}",
+        }
+    )
 
 
 def require_clean_connection_environment() -> None:
@@ -206,8 +249,46 @@ def configuration(path: Path) -> dict[str, str]:
 class Commands:
     """Capture output privately; only stable authored errors reach stdout."""
 
-    def __init__(self, log: Path | None = None):
+    def __init__(self, log: Path | None = None, *, preflight_log: Path | None = None):
         self.log = log
+        self.preflight_log = preflight_log
+        self._preflight_log_created = False
+
+    def _stderr(self, content: bytes) -> None:
+        if not content or self.log is None:
+            return
+        before_run = not self.log.parent.exists()
+        path = self.preflight_log if before_run else self.log
+        if path is None:
+            raise Blocked("private_preflight_command_log_not_configured")
+        canonical(path)
+        canonical(path.parent)
+        if not path.parent.is_dir():
+            raise Blocked("private_command_log_parent_missing")
+        flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_CREAT | os.O_APPEND
+        if before_run and not self._preflight_log_created:
+            flags |= os.O_EXCL
+        try:
+            descriptor = os.open(path, flags, 0o600)
+        except OSError:
+            raise Blocked("private_command_log_cannot_be_opened") from None
+        with os.fdopen(descriptor, "ab") as stream:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            info = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+            ):
+                raise Blocked("command_log_is_not_private_owned_regular_file")
+            if before_run:
+                self._preflight_log_created = True
+            remaining = MAX_COMMAND_LOG_BYTES - info.st_size
+            if remaining > 0:
+                marker = b"\n[diagnostics truncated at private log bound]\n"
+                value = content if len(content) <= remaining else content[: max(0, remaining - len(marker))] + marker
+                stream.write(value[:remaining])
 
     def run(
         self,
@@ -219,6 +300,16 @@ class Commands:
         cwd: Path | None = None,
         output: Path | None = None,
     ) -> bytes:
+        if args and Path(args[0]).name == "systemctl":
+            allowed = (
+                ["--user", "show", SERVICE, *UNIT_PROPERTIES],
+                ["--user", "stop", SERVICE],
+                ["--user", "start", SERVICE],
+                ["--user", "daemon-reload"],
+            )
+            if args[1:] not in allowed or env is not None:
+                raise Blocked("user_systemctl_command_or_environment_outside_reviewed_scope")
+            env = user_service_environment()
         stream = None
         if output is not None:
             stream = os.fdopen(os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "wb")
@@ -233,17 +324,12 @@ class Commands:
                 timeout=timeout,
                 check=False,
             )
-            if self.log is not None and result.stderr:
-                canonical(self.log)
-                if self.log.exists() and (not self.log.is_file() or self.log.stat().st_mode & 0o077):
-                    raise Blocked("command_log_is_not_private_regular_file")
-                fd = os.open(self.log, os.O_CREAT | os.O_APPEND | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-                with os.fdopen(fd, "ab") as log:
-                    log.write(result.stderr)
+            self._stderr(result.stderr)
             if result.returncode:
                 raise Blocked(f"command_failed_{Path(args[0]).name}")
             return result.stdout or b""
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            self._stderr(exc.stderr if isinstance(exc.stderr, bytes) else b"")
             raise Blocked(f"command_deadline_{Path(args[0]).name}") from None
         finally:
             if stream is not None:
@@ -259,12 +345,7 @@ class Commands:
                 "--user",
                 "show",
                 SERVICE,
-                "--property=WorkingDirectory",
-                "--property=ActiveState",
-                "--property=MainPID",
-                "--property=DropInPaths",
-                "--property=FragmentPath",
-                "--property=ControlGroup",
+                *UNIT_PROPERTIES,
             ]
         )
         return dict(line.split("=", 1) for line in value.decode().splitlines() if "=" in line)

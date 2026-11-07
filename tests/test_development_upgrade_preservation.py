@@ -5,9 +5,11 @@ from __future__ import annotations
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +20,184 @@ sys.path.insert(0, str(SCRIPT_ROOT))
 from kp_dev_upgrade import coordinator, core, preflight  # noqa: E402 - import the dedicated script package
 from kp_dev_upgrade.coordinator import Upgrade, archive_index, compare_redis_inventory, owned_port  # noqa: E402
 from kp_dev_upgrade.core import Blocked, configuration, digest, private_bytes  # noqa: E402
+
+
+@pytest.fixture
+def fake_user_systemctl(tmp_path, monkeypatch):
+    # A short synthetic pathname avoids AF_UNIX path limits. This is only an
+    # owned socket inode: nothing listens on it or contacts a real user bus.
+    root = Path(tempfile.mkdtemp(prefix="kp-user-bus-", dir="/private/tmp")).resolve()
+    runtime = root / str(os.getuid())
+    runtime.mkdir(mode=0o700)
+    endpoint = socket.socket(socket.AF_UNIX)
+    endpoint.bind(str(runtime / "bus"))
+    monkeypatch.setattr(core, "USER_RUNTIME_ROOT", root)
+    monkeypatch.setattr(
+        core.pwd,
+        "getpwuid",
+        lambda uid: SimpleNamespace(pw_name="builder", pw_dir="/home/builder", pw_uid=uid),
+    )
+    executable = tmp_path / "systemctl"
+    failure = tmp_path / "fail-fake-systemctl"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "keys = ('HOME','USER','LOGNAME','XDG_RUNTIME_DIR','DBUS_SESSION_BUS_ADDRESS')\n"
+        "print(json.dumps({'env':{key:os.environ.get(key) for key in keys},'args':sys.argv[1:]}))\n"
+        "sys.stderr.write('synthetic user-service diagnostic\\n')\n"
+        "if not os.environ.get('DBUS_SESSION_BUS_ADDRESS'): sys.exit(75)\n"
+        f"if pathlib.Path({str(failure)!r}).exists(): sys.exit(76)\n"
+    )
+    executable.chmod(0o700)
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/untrusted/ambient/bus")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/untrusted/ambient/runtime")
+    yield SimpleNamespace(root=root, runtime=runtime, executable=executable, failure=failure)
+    endpoint.close()
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (["show", core.SERVICE, *core.UNIT_PROPERTIES], ["stop", core.SERVICE], ["start", core.SERVICE], ["daemon-reload"]),
+)
+def test_user_service_subprocess_uses_owned_standard_bus_before_run_exists(tmp_path, fake_user_systemctl, operation):
+    args = [str(fake_user_systemctl.executable), "--user", *operation]
+    before = subprocess.run(  # noqa: S603 - locally authored harmless fixture executable
+        args, env=core.environment(), capture_output=True, check=False
+    )
+    assert before.returncode == 75  # Reproduces the clean-environment regression.
+    run = tmp_path / "not-created-run"
+    diagnostic = tmp_path / "private-preflight.log"
+    commands = core.Commands(run / "private-commands.log", preflight_log=diagnostic)
+    result = json.loads(commands.run(args))
+    assert result["args"] == ["--user", *operation]
+    assert result["env"] == {
+        "HOME": "/home/builder",
+        "USER": "builder",
+        "LOGNAME": "builder",
+        "XDG_RUNTIME_DIR": str(fake_user_systemctl.runtime),
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path={fake_user_systemctl.runtime / 'bus'}",
+    }
+    assert diagnostic.read_bytes() == b"synthetic user-service diagnostic\n"
+    assert diagnostic.stat().st_mode & 0o777 == 0o600
+    assert not run.exists()
+    assert "DBUS_SESSION_BUS_ADDRESS" not in core.environment()
+
+
+def test_failed_user_service_subprocess_keeps_original_error_and_private_preflight_stderr(
+    tmp_path, fake_user_systemctl
+):
+    fake_user_systemctl.failure.touch()
+    run = tmp_path / "not-created-run"
+    diagnostic = tmp_path / "private-preflight.log"
+    commands = core.Commands(run / "private-commands.log", preflight_log=diagnostic)
+    with pytest.raises(Blocked, match="^command_failed_systemctl$"):
+        commands.run([str(fake_user_systemctl.executable), "--user", "show", core.SERVICE, *core.UNIT_PROPERTIES])
+    assert diagnostic.read_bytes() == b"synthetic user-service diagnostic\n"
+    assert not run.exists()
+
+
+def test_command_stderr_switches_to_bounded_run_log_without_replacing_preflight(
+    tmp_path, fake_user_systemctl, monkeypatch
+):
+    run = tmp_path / "run"
+    diagnostic = tmp_path / "private-preflight.log"
+    commands = core.Commands(run / "private-commands.log", preflight_log=diagnostic)
+    args = [str(fake_user_systemctl.executable), "--user", "daemon-reload"]
+    commands.run(args)
+    original = diagnostic.read_bytes()
+    run.mkdir()
+    monkeypatch.setattr(core, "MAX_COMMAND_LOG_BYTES", 80)
+    for _ in range(5):
+        commands.run(args)
+    assert diagnostic.read_bytes() == original
+    assert (run / "private-commands.log").stat().st_size == 80
+    assert (run / "private-commands.log").stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("kind", ("existing", "symlink"))
+def test_preflight_log_cannot_overwrite_existing_assets(tmp_path, fake_user_systemctl, kind):
+    original = tmp_path / "original"
+    private_bytes(original, b"preserved diagnostic")
+    diagnostic = tmp_path / "private-preflight.log"
+    if kind == "existing":
+        private_bytes(diagnostic, b"preserved diagnostic")
+    else:
+        diagnostic.symlink_to(original)
+    commands = core.Commands(tmp_path / "absent/private-commands.log", preflight_log=diagnostic)
+    with pytest.raises(Blocked):
+        commands.run([str(fake_user_systemctl.executable), "--user", "daemon-reload"])
+    assert original.read_bytes() == b"preserved diagnostic"
+    assert diagnostic.read_bytes() == b"preserved diagnostic"
+    assert not (tmp_path / "absent").exists()
+
+
+@pytest.mark.parametrize(
+    "defect", ("wrong_user", "wrong_home", "privileged", "public_directory", "ordinary_file", "symlink")
+)
+def test_user_service_bus_rejects_unsupported_identity_or_endpoint(fake_user_systemctl, monkeypatch, defect):
+    if defect in {"wrong_user", "wrong_home"}:
+        monkeypatch.setattr(
+            core.pwd,
+            "getpwuid",
+            lambda uid: SimpleNamespace(
+                pw_name="other" if defect == "wrong_user" else "builder",
+                pw_dir="/other" if defect == "wrong_home" else "/home/builder",
+                pw_uid=uid,
+            ),
+        )
+    elif defect == "privileged":
+        monkeypatch.setattr(core.os, "geteuid", lambda: 0)
+    elif defect == "public_directory":
+        fake_user_systemctl.runtime.chmod(0o755)
+    else:
+        other = fake_user_systemctl.root / "other-runtime"
+        other.mkdir(mode=0o700)
+        if defect == "ordinary_file":
+            (other / "bus").write_bytes(b"not a bus")
+        else:
+            (other / "bus").symlink_to(fake_user_systemctl.runtime / "bus")
+        monkeypatch.setattr(core, "USER_RUNTIME_ROOT", fake_user_systemctl.root / "new-root")
+        new_root = core.USER_RUNTIME_ROOT
+        new_root.mkdir()
+        # Redirect the whole standard runtime to a different fixture subtree.
+        other.rename(new_root / str(os.getuid()))
+    with pytest.raises(Blocked):
+        core.user_service_environment()
+
+
+@pytest.mark.parametrize("target", ("runtime", "bus"))
+def test_user_service_rejects_runtime_or_socket_owned_by_another_uid(fake_user_systemctl, monkeypatch, target):
+    original = Path.stat
+    selected = fake_user_systemctl.runtime if target == "runtime" else fake_user_systemctl.runtime / "bus"
+
+    def foreign_owner(path, **kwargs):
+        info = original(path, **kwargs)
+        if path == selected:
+            return os.stat_result((*info[:4], info.st_uid + 1, *info[5:]))
+        return info
+
+    monkeypatch.setattr(Path, "stat", foreign_owner)
+    with pytest.raises(Blocked, match="private_owned_directory|owned_socket"):
+        core.user_service_environment()
+
+
+def test_user_service_rejects_other_service_or_explicit_environment(fake_user_systemctl):
+    commands = core.Commands()
+    with pytest.raises(Blocked, match="outside_reviewed_scope"):
+        commands.run([str(fake_user_systemctl.executable), "--user", "stop", "unrelated.service"])
+    with pytest.raises(Blocked, match="outside_reviewed_scope"):
+        commands.run(
+            [str(fake_user_systemctl.executable), "--user", "daemon-reload"],
+            env={"DBUS_SESSION_BUS_ADDRESS": "unix:path=/untrusted"},
+        )
+
+
+def test_upgrade_preflight_log_is_an_explicit_unique_sibling_and_creates_no_run(layout):
+    first = Upgrade(layout.run).commands.preflight_log
+    second = Upgrade(layout.run).commands.preflight_log
+    assert first != second and first.parent == second.parent == layout.run.parent
+    assert first.name.startswith(f"{layout.run.name}-preflight-")
+    assert not first.exists() and not second.exists() and not layout.run.exists()
 
 
 class PrivateFakeCommands:

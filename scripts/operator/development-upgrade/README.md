@@ -28,6 +28,18 @@ uses the manifest's dynamically validated Alembic head; it does not pin a stale
 schema revision. Gate booleans are an operator assertion linked to the final
 commit, not a substitute for the actual private gate receipts.
 
+The executed operator tool can have a separately reviewed commit when a repair
+changes only upgrade tooling. Keep the complete application manifest and
+`--source` bound to the qualified application release, including that release's
+unchanged coordinator copy. Invoke the repaired tool by its separate absolute
+path; do not overwrite files inside the qualified application source. Record
+the actual tool commit, every tool-file hash, interpreter, invocation, successful
+tool CI and read-only user-bus proof for each phase. Application migration,
+read/decryption probes, supervisor and static assets must still use the release
+paths checked by the plan. Tool-only CI is not application image or native-load
+qualification. Revalidate this separation if the repair changes application
+code, release copying, migration/probe selection or runtime bindings.
+
 Run each phase separately on `.105`, using an already available interpreter
 with this project's dependencies. The coordinator itself must be the reviewed
 version. Without `--execute` every invocation is a plan-only no-op, including
