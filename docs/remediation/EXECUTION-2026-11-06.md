@@ -24,7 +24,7 @@ No branch is committed or merged by an assignment owner. Dedicated test targets
 use task-owned databases and Redis namespaces; no normal database reset or queue
 flush is permitted.
 
-## Subsequent jobs
+## Historical Wave 1 subsequent jobs
 
 - Validate FU-1 Terraform connector completeness and remove unsafe out-of-band
   Foundry role-assignment deletion before any cloud workflow dispatch.
@@ -79,7 +79,7 @@ constitutes human acceptance or production GO.
 
 ## Wave 2 ownership and acceptance
 
-All work uses the isolated `codex/fullstack-qualification-20261106` worktree.
+Wave 2 used the isolated `codex/fullstack-qualification-20261106` worktree.
 The original dirty checkout and normal development runtime remain preserved.
 
 | Assignment | Exclusive components | Acceptance |
@@ -205,3 +205,42 @@ closure. All logs, exported requirements, fresh scanner caches and receipts are
 preserved in the private source-security-1794057244586575000 directory. Trivy
 retains its warning that Terraform input values are absent from static scanning;
 this does not replace provider plans or live qualification. No waiver is added.
+
+PR172 merges at 932fa07 with identical candidate d071221 tree. Candidate CI
+42376165491 and main CI42376518909 pass 4,355 hermetic,214 PostgreSQL,four Redis
+and fourteen browser tests; Ruff717/strict mypy224/lock pass. Fresh native v11
+also passes the complete profile:1,387 unique SMTP sink acceptances,zero missing
+acknowledged sentinels,RTO15.191s. API p95 is0.097517s; critical progress maximum
+is1.151584s. Delivery finishes70.073s into300s observation, leaving229.927s idle.
+Same-host synthetic scope and external-delivery/off-host limitations remain.
+
+The six native AMD64 final images pass all25 phases with no HIGH/CRITICAL or
+secret findings. Source/copied/after manifests agree on902 files and digest
+0542b533e23112ec91cd5ccf152304e5f87bc5c0c68fc5901ff3fcfc8aef3134.
+The fresh Trivy cache is frozen unchanged across all six scans. Staging workflow
+42376577698 passes its input guard and complete hosted qualification, then waits
+at the environment engineering gate while clean-Linux work is serialized.
+
+Clean-Linux v1 fails before requesting NIC/compute on an unsupported Allow for
+the AzurePlatformDNS tag; its group/NSG/two deny rules remain preserved. Private
+v2 uses fresh names and the exact platform DNS IP. Before execution, independent
+review catches Docker built-in null IPAM in the B-engine transition. Six real
+call-path failures reproduce; the strict canonical-built-in fix passes83 author
+and83 independent offline cases. Invalid/overlapping metadata blocks destructive
+transition steps. No earlier result is relabeled as a live install pass.
+
+Development PREPARE binds all902 qualified source files but safely refuses the
+existing DATABASE_URL_TEST/kingphisher_test alias as a runtime target. No run or
+release is created and no service is stopped. REG-026 distinguishes only this
+validated nonruntime alias from the strict execution configuration; original
+private environment bytes must remain intact. This repair and its current CI
+precede a new private-manifest/run attempt. Live checkpoint/rehearsal/cutover and
+clean-Linux completion remain unclaimed until actual receipts exist.
+
+Clean-Linux v2 creates the reviewed bare VM but stops before guest installation:
+Azure returns osDisk.diskSizeGB=64, while the coordinator expected diskSizeGb.
+The finally block verifies exact-VM deallocation within121.3 seconds; its VM,
+disk,NIC,NSG and logs remain retained. Private v3 corrects that response-key
+check under fresh resource names, preserving the64GiB assertion and all guards.
+The earlier staging workflow is cancelled before environment approval or apply
+so the replacement can bind the final REG-026 source.

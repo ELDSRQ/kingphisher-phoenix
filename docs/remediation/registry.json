@@ -337,11 +337,11 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate REG-025 literal migration-grant hardening and pass the full security gate and current-source CI; schema, revision and runtime grants stay unchanged.",
-      "completed_pr": 170,
-      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 172,
+      "completed_commit": "932fa07489fbf0e05f1ce296259db57a6ae46a8a"
     },
     {
       "id": "W3-03",
@@ -547,7 +547,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Execute the scoped clean-Ubuntu installation, repair, upgrade and reboot qualification on a new isolated VM after final source CI passes. Other supported clean-host evidence remains external. OS publisher certificates apply only to distributed native signed packages; browser/server deployment does not require a controller signing identity."
+      "next_action": "Complete clean-Linux qualification with reviewed private v3 after final merged CI. VMv2 was created but stopped before installation on Azure diskSizeGB metadata mismatch, then deallocated successfully; retain it and all earlier resources. Other supported clean-host proof remains external; publisher signing applies only to distributed native signed packages."
     },
     {
       "id": "W2-03",
@@ -588,7 +588,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Staging workflow42374390352 stopped at Bandit before cloud changes. Repair REG-025, run the full security gate, qualify final images and retry the guarded workflow. Retained runner22 is online/idle after its existing VM was started; preserve existing resources and roles."
+      "next_action": "Replace pre-apply cancelled staging run42376577698 with a guarded request for the final REG-026 source after CI/images/native gates. Preserve existing resources/roles and serialize VNet apply with clean-Linux work."
     },
     {
       "id": "W2-05",
@@ -1036,7 +1036,8 @@
       "owner": "agent",
       "status": "in_progress",
       "title": "Preserved development-runtime upgrade with real-data restore rehearsal before additive migration",
-      "resolution": "Independently reviewed explicit-phase coordinator and 59 preservation tests pass, including executable-mode preservation and integrity checks. Final CI/native/image gates precede qualified-source execution. No normal runtime mutation has occurred."
+      "resolution": "Independently reviewed explicit-phase coordinator and 59 preservation tests pass, including executable-mode preservation and integrity checks. Final CI/native/image gates precede qualified-source execution. No normal runtime mutation has occurred.",
+      "next_action": "Integrate REG-026 exact test-alias classification, then execute preserved development checkpoint, rehearsal, reviewed cutover and verification from a fresh qualified manifest; preserve original environment and every normal container identity."
     },
     {
       "id": "REG-016",
@@ -1044,7 +1045,8 @@
       "owner": "agent",
       "status": "in_progress",
       "title": "Actual clean Linux installation, repair, baseline upgrade and reboot qualification",
-      "resolution": "Private coordinator is implemented, independently reviewed and frozen with 51 offline tests passing. New isolated Azure VM execution requires final merged source and matching green CI. Sequential owned Docker engines, reboot identity proof and bounded deallocation preserve both installation datasets. No VM resources have been created."
+      "resolution": "Private coordinator is implemented, independently reviewed and frozen with 51 offline tests passing. New isolated Azure VM execution requires final merged source and matching green CI. Sequential owned Docker engines, reboot identity proof and bounded deallocation preserve both installation datasets. No VM resources have been created.",
+      "next_action": "Finish reviewed private v3 metadata regression and actual clean-Linux installation/repair/reboot/upgrade with final merged CI; verify bounded deallocation and retain all older VM/disk/evidence assets."
     },
     {
       "id": "REG-017",
@@ -1138,10 +1140,23 @@
       "id": "REG-025",
       "parent": "W3-02",
       "priority": "P2",
+      "owner": "none",
+      "status": "complete",
+      "title": "Replace formatted threat-library migration grants with fixed statements and reject unknown identifiers",
+      "resolution": "Staging security qualification stopped on Bandit1.9.4 B608 before cloud deployment. Existing callers use three fixed table names; literal statement pairs now make that boundary explicit and reject unknown/injection-like names before any SQL. Existing grants, PUBLIC revokes, conditional role existence, schema and revision are unchanged. Sixteen focused and independent tests, Ruff and mypy pass; the old Bandit failure is reproduced and the repaired migration passes without a suppression. Full security gate and final CI remain. PR172 merged932fa07 after full source security and required candidate/main CI pass. New nativev11 full profile and six-image25phase native gate also pass.",
+      "next_action": null,
+      "completed_pr": 172,
+      "completed_commit": "932fa07489fbf0e05f1ce296259db57a6ae46a8a"
+    },
+    {
+      "id": "REG-026",
+      "parent": "W2-03",
+      "priority": "P2",
       "owner": "agent",
       "status": "integration_pending",
-      "title": "Replace formatted threat-library migration grants with fixed statements and reject unknown identifiers",
-      "resolution": "Staging security qualification stopped on Bandit1.9.4 B608 before cloud deployment. Existing callers use three fixed table names; literal statement pairs now make that boundary explicit and reject unknown/injection-like names before any SQL. Existing grants, PUBLIC revokes, conditional role existence, schema and revision are unchanged. Sixteen focused and independent tests, Ruff and mypy pass; the old Bandit failure is reproduced and the repaired migration passes without a suppression. Full security gate and final CI remain."
+      "title": "Distinguish the preserved nonruntime test-database alias from strict runtime connection targets",
+      "resolution": "Actual PREPARE refused the existing DATABASE_URL_TEST/kingphisher_test alias before run/release creation or service stop. Preserve its private .env bytes, validate only that exact nonruntime alias against its bounded local test target, and exclude it from execution configuration. Every runtime alias and unknown test-like key must retain strict checks. No normal runtime mutation occurred.",
+      "next_action": "Integrate the narrow independently reviewed guard repair with regression/preservation tests and current CI, then retry preparation using a fresh private manifest/run namespace."
     }
   ],
   "evidence": {
@@ -1158,8 +1173,8 @@
     "static": "Ruff check/format clean; strict mypy219 sources clean; lock check resolved92 packages",
     "combined_hermetic": "hermetic-integration-v2.log:4184 passed,173 deselected,256.52s; no skips. New fullstack harness is a separate wave, not included in this result.",
     "adaptive_worker": "adaptive-role-effects-final.xml:9 passed62.66s; adaptive-discovery-postgres.xml:1 passed9.46s. Managed tick, operator create/read, replay, unauthorized actual-login denial and keyset wrap proved.",
-    "current_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42333004166",
-    "current_ci_result": "Merged fbbc690:4343 hermetic passed/265 deselected in203.65s;214 PostgreSQL passed/4394 deselected,1 retained upstream SQLAlchemy warning in97.90s;4 Redis passed in2.05s;14 browser passed in31.4s;Ruff716,strict mypy224,lock92. Full original logs retained privately. REG-025 followup eaedf77 requires its own current-source CI and complete security gate.",
+    "current_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42376518909",
+    "current_ci_result": "Merged932fa07 allgreen:4355hermetic in243.59s;214PG/4406deselected in127.37s;4Redis in3.30s;14browser in33.6s;Ruff717,strictmypy224,lock92. REG-026 followup needs its own current-source CI.",
     "merge": "PR171 merged at reviewed headb2ef25e5f91b006aad7c73d235ea15ba5a9de4b6; mainfbbc69020562e048bff25d22f69bab5d2e569a00, identical treefa1201b999797b334a9b07d6c5a30adb03a2005c.",
     "fullstack_code_review": "27 focused tests +Ruff/format +strict mypy6; independent code review closed all accounting, deadline, uncertainty andrestore issues. Frozen harnessfingerprintb920f9e6bf470748811d292f5666733eab79299677eb955796e894fcfe7eba18; native smoke staged with archive4b35215a464d69d102c2a6756f54b73ca9bfb0daee87aa2bc1501f9a40f7af2b.",
     "native_smoke_v1": "Failedbeforebootstrap:internalDockerbridgepublishedportsnull;all3nativecontainers/runs/evidencepreserved;qualifierguard/connectivityrepairindependentlyreviewed35tests.",
@@ -1195,6 +1210,13 @@
     "previous_ci_pr170": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42282621617",
     "previous_ci_result_pr170": "4158 hermetic passed,212 deselected;161 PostgreSQL passed,4209 deselected,1 retained upstream SQLAlchemy inspection warning;4 Redis passed,4366 deselected;14 browser passed;Ruff/format,strict mypy219 and lock passed. Linux excludes controller-only tests; controller combined run4184 passed before final focused additions.",
     "previous_merge_pr170": "PR170 merged at exact reviewed headfd97d3053a5144e00408e85c84562cdb8f898267; mainmergeacabf08ba7e551e8af849073197cf5c3648183f8.",
-    "reg025_security": "Tracked-only eaedf77 archive SHA256d4852df8c5774483a9163648f25d3a8135b9c5d750c34d2daa5cb01bfc2339d1: full Bandit1.9.4,Semgrep1.171.0,Trivy0.74.0 HIGH/CRITICAL vuln/secret/misconfig and pip-audit2.10.1 frozen hash-verified nondev closure all pass. Source-security-1794057244586575000 logs/requirements/caches/receipts preserved privately. Static Terraform absent-variable warning retained; no waivers. Current-source CI remains."
+    "reg025_security": "Tracked-only eaedf77 archive SHA256d4852df8c5774483a9163648f25d3a8135b9c5d750c34d2daa5cb01bfc2339d1: full Bandit1.9.4,Semgrep1.171.0,Trivy0.74.0 HIGH/CRITICAL vuln/secret/misconfig and pip-audit2.10.1 frozen hash-verified nondev closure all pass. Source-security-1794057244586575000 logs/requirements/caches/receipts preserved privately. Static Terraform absent-variable warning retained; no waivers. Current-source CI remains.",
+    "pr172_final_ci": "PR172 reviewed d071221 and merged932fa07489fbf0e05f1ce296259db57a6ae46a8a share tree29d165f93bb2263d257cd26722fd80aecca0f6f2. CandidateCI42376165491 and mainCI42376518909 allgreen:4355hermetic/214PG/4Redis/14browser,lint717,mypy224,lock92; retained SQLAlchemy warning. Full job logs preserved privately.",
+    "native_full_v11": "PASS current candidate d071221 (identical merged932fa07 tree), archive4b7fbd7ba8a134ac2937d0d132de6c4425074ddbae5b8eae510d9622649ea934.1387 unique sink acceptances;125/1250 baselines,300s observation/faults/fullstate recovery pass.0missing acknowledged sentinels;RTO15.191s. API173samples:p950.097517s,max3.396392s;critical288samples:max1.151584s.1250fullyaccepted70.073s into300s;229.927s idle. Same-host/quiescedsynthetic,offhostescrowfalse,recipientdeliveryunconfirmed. All assets preserved.",
+    "final_images_932fa07": "PASS nativeAMD64 six-image25phase gate at932fa07, source manifestsha256:0542b533e23112ec91cd5ccf152304e5f87bc5c0c68fc5901ff3fcfc8aef3134 (902files), original/copied/after identical. All images65532:65532;Trivy0.74.0 noHIGH/CRITICAL/secret findings, independent fresh candidatecache frozen acrosssix scans, DBNextUpdate2026-11-08T06:54:25Z. Workerfinal-images-v2-932fa07489fb/data/qualification/release-images/run-v2 evidence retained.",
+    "staging_current": "Run42376577698 exact932fa07: inputguard and full hosted qualification PASS. Cancelled before environment approval/deployment to replace with final REG-026 source. No app/Terraform apply occurred; logs and infrastructure retained. Replacement remains an engineering task, not human GO.",
+    "clean_linux_attempts": "Private v1 stopped before NIC/VM request when Azure rejected Allow on deny-only AzurePlatformDNS tag; new RG/NSG/2Deny rules preserved. Reviewed privatev2 uses fresh-v2names and exact168.63.129.16/32:53. Independent review also caught built-in nullIPAM before execution; narrow real-callpath fix passes83author+83independent tests. Original v1 bytes preserved. Live v2 result remains a separate gate.",
+    "development_prepare_v1": "Qualified all902 source files and emitted private manifest35ecd9f9f0faab320875704ce3c3c6737ff4a80566538548e6c0ded8956d948d. PREPARE failed database_target_is_not_normal_project on existing nonruntimeDATABASE_URL_TEST=kingphisher_test. Run/release did not exist afterward, normalservice/source/env/container identities untouched. Worker manifest and private controllerlog retained. REG-026 repairs exact classification; do not weaken runtime alias validation.",
+    "clean_linux_v2_metadata": "New private v2 VM created successfully with pinned Ubuntu image,D2s_v7,64GiB Standard_LRS,no publicIP/managedidentity. Coordinator expected diskSizeGb; actual VMshow uses diskSizeGB=64, causing KeyError before guest installation or shutdown-schedule step. Finally verified exact VMdeallocated within121.3s; no install pass claimed. BareVM/disk/NIC/NSG/logs remain retained. Private v3 fixes actual response key under fresh-v3 resource names and preserves every older asset."
   }
 }
