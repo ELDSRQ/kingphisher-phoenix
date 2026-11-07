@@ -249,6 +249,13 @@ class SmtpSender:
                 smtp = self._connect()
                 try:
                     smtp.send_message(message)
+                except (smtplib.SMTPResponseException, smtplib.SMTPRecipientsRefused):
+                    # These inherit OSError too, but retain protocol evidence
+                    # of rejection. The worker decides which phase is safe to
+                    # retry; a generic response does not prove DATA outcome.
+                    with contextlib.suppress(Exception):
+                        smtp.close()
+                    raise
                 except (smtplib.SMTPServerDisconnected, OSError) as exc:
                     with contextlib.suppress(Exception):
                         smtp.close()
@@ -259,6 +266,9 @@ class SmtpSender:
                 return DeliveryReceipt(message_id=message_id, provider_id=None)
         try:
             session.send_message(message)
+        except (smtplib.SMTPResponseException, smtplib.SMTPRecipientsRefused):
+            self._close_session()
+            raise
         except (smtplib.SMTPServerDisconnected, OSError) as exc:
             # A disconnect can happen after the relay accepted DATA. Retrying
             # the same message would be a blind duplicate. Drop the connection

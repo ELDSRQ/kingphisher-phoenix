@@ -509,7 +509,10 @@ def require_program_active_for_schedule(session: Session, campaign_id: uuid.UUID
             CampaignProgramOccurrence.campaign_program_id == CampaignProgram.campaign_program_id,
         )
         .where(CampaignProgramOccurrence.campaign_id == campaign_id)
-        .with_for_update(read=True)
+        # Pause/resume writes the program row, which is the serialization
+        # boundary. Occurrences are read-only bindings on this path; locking
+        # them too would require an unrelated occurrence UPDATE privilege.
+        .with_for_update(read=True, of=CampaignProgram)
     )
     if program is not None and program.state is dm.CampaignProgramState.PAUSED:
         raise ConflictError("campaign program is paused; resume it before scheduling this occurrence")

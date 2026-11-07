@@ -283,12 +283,18 @@ def _global_rate_limited(request: Request) -> None:
 
 def _resolve_active_token(raw_bearer: str, session: Session, verifier_key: bytes) -> TrackingToken | None:
     verifier = tracking_token_verifier(raw_bearer, verifier_key)
-    token = session.scalar(select(TrackingToken).where(TrackingToken.token_hash == verifier))
-    if token is None or token.status != dm.TokenStatus.ACTIVE:
-        return None
-    if token.expires_at and token.expires_at < datetime.now(UTC):
-        return None
-    return token
+    token = session.scalar(
+        select(TrackingToken).where(TrackingToken.token_hash == verifier).execution_options(populate_existing=True)
+    )
+    return token if _tracking_token_is_active(token) else None
+
+
+def _tracking_token_is_active(token: TrackingToken | None) -> bool:
+    return bool(
+        token is not None
+        and token.status == dm.TokenStatus.ACTIVE
+        and (token.expires_at is None or token.expires_at > datetime.now(UTC))
+    )
 
 
 def _tracking_verifier_key(request: Request) -> bytes:
@@ -313,11 +319,20 @@ def _training_verifier_key(request: Request) -> bytes:
 def _campaign_training_resource(session: Session, campaign_id: uuid.UUID) -> TrainingResource:
     """Return only the exact lesson selected and reviewed with the campaign."""
 
-    campaign = session.get(Campaign, campaign_id, with_for_update=True)
+    campaign = session.get(Campaign, campaign_id, with_for_update={"read": True}, populate_existing=True)
     if campaign is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+    if campaign.training_resource_id is not None:
+        # This is a read. Shared locks coexist with delivery's provider fence;
+        # exclusive locks here invert its final assignment outcome update.
+        session.get(
+            TrainingResource,
+            campaign.training_resource_id,
+            with_for_update={"read": True},
+            populate_existing=True,
+        )
     try:
-        return require_bound_training_resource(session, campaign)
+        return require_bound_training_resource(session, campaign, lock=False)
     except ConflictError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -366,13 +381,25 @@ def _token_matches_assignment(token: TrackingToken, recipient_assignment: Recipi
 def _lock_tracking_assignment(session: Session, token: TrackingToken) -> RecipientAssignment | None:
     """Acquire the assignment lock shared with project-before-purge retention."""
 
+    # Keep an immutable copy before the wait: populate_existing can refresh
+    # this same identity object in place after a token rotation commits.
+    expected_verifier = token.token_hash
     recipient_assignment = session.get(
         RecipientAssignment,
         token.recipient_assignment_id,
         with_for_update=True,
         populate_existing=True,
     )
-    if recipient_assignment is None or not _token_matches_assignment(token, recipient_assignment):
+    # A recall/token rotation can commit while this lock waits. Refresh the
+    # token rather than trusting the identity loaded before that wait.
+    refreshed = session.get(TrackingToken, token.token_id, populate_existing=True)
+    if (
+        recipient_assignment is None
+        or not _tracking_token_is_active(refreshed)
+        or refreshed is None
+        or not secrets.compare_digest(expected_verifier, refreshed.token_hash)
+        or not _token_matches_assignment(refreshed, recipient_assignment)
+    ):
         return None
     return recipient_assignment
 
@@ -466,6 +493,19 @@ def _resolve_training_assignment(
         # open, and quiz completion all serialize on one stable boundary.
         statement = statement.with_for_update(of=RecipientAssignment)
     training = session.scalar(statement)
+    if training is not None and for_update:
+        # The joined child can come from the snapshot taken before the parent
+        # lock waited. Re-read it after acquiring that stable boundary so a
+        # concurrent open/completion cannot overwrite its immutable timestamp.
+        training = session.get(TrainingAssignment, training.training_assignment_id, populate_existing=True)
+        if training is not None:
+            stored = (
+                training.training_token_hash
+                if purpose is TrainingBearerPurpose.OPEN
+                else training.training_completion_token_hash
+            )
+            if stored is None or not secrets.compare_digest(stored, verifier):
+                return None
     if (
         training is None
         or training.recipient_assignment_id is None
@@ -478,10 +518,10 @@ def _resolve_training_assignment(
         )
     ):
         return None
-    recipient_assignment = session.get(RecipientAssignment, training.recipient_assignment_id)
+    recipient_assignment = session.get(RecipientAssignment, training.recipient_assignment_id, populate_existing=True)
     if recipient_assignment is None or recipient_assignment.token_id is None:
         return None
-    token = session.get(TrackingToken, recipient_assignment.token_id)
+    token = session.get(TrackingToken, recipient_assignment.token_id, populate_existing=True)
     if (
         token is None
         or token.status != dm.TokenStatus.ACTIVE
@@ -646,6 +686,15 @@ def record_click(
     request: Request,
     session: Session = Depends(_session),
 ) -> Response:
+    token = _resolve_active_token(token_hash, session, _tracking_verifier_key(request))
+    if token is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
+
+    # Recall/scheduling orders Campaign before assignments. A shared read lock
+    # follows that order and remains compatible with in-flight provider reads.
+    campaign = session.get(Campaign, token.campaign_id, with_for_update={"read": True}, populate_existing=True)
+    if campaign is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
     token = _resolve_active_token(token_hash, session, _tracking_verifier_key(request))
     if token is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")

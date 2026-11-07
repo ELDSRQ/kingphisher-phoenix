@@ -395,6 +395,44 @@ def test_campaign_and_microsoft365_roles_have_only_their_runtime_permissions() -
     }
     assert _column_privileges(script, "mailbox", "recipient_assignments", "recipient_assignment_id") == {"UPDATE"}
     assert _column_privileges(script, "mailbox", "recipient_assignments", "state") == set()
+    for table in (
+        "ai_generation_providers",
+        "provider_config_generation",
+        "console_session_epoch",
+        "credential_rotations",
+        "training_cue_coverage",
+    ):
+        assert _table_privileges(script, "operator", table) == {"SELECT", "INSERT", "UPDATE"}
+        for workload in script.RUNTIME_ROLES.keys() - {"operator"}:
+            assert _table_privileges(script, workload, table) == set()
+    assert _table_privileges(script, "operator", "campaign_cue_coverage_exceptions") == {"SELECT", "INSERT"}
+    assert _table_privileges(script, "retention", "reply_mail_receipts") == {"DELETE"}
+    assert _column_privileges(script, "retention", "reply_mail_receipts", "reply_mail_receipt_id") == {"SELECT"}
+    assert _column_privileges(script, "retention", "reply_mail_receipts", "received_at") == {"SELECT"}
+    assert _column_privileges(script, "retention", "reply_mail_receipts", "external_id") == set()
+    assert _table_privileges(script, "delivery", "campaign_audience_manifest") == set()
+    for column in ("campaign_id", "recipient_id", "audience_version"):
+        assert _column_privileges(script, "delivery", "campaign_audience_manifest", column) == {"SELECT"}
+    assert _column_privileges(script, "delivery", "campaign_audience_manifest", "recipient_hash") == set()
+    assert _table_privileges(script, "delivery", "recipient_exclusions") == set()
+    for column in ("recipient_id", "revoked_at", "expires_at", "campaign_id"):
+        assert _column_privileges(script, "delivery", "recipient_exclusions", column) == {"SELECT"}
+    for column in ("reason", "revoke_reason", "created_by", "revoked_by", "recipient_exclusion_id", "created_at"):
+        assert _column_privileges(script, "delivery", "recipient_exclusions", column) == set()
+    assert _table_privileges(script, "delivery", "recipients") == {"SELECT"}
+    assert _column_privileges(script, "delivery", "recipients", "recipient_id") == {"UPDATE"}
+    for column in ("mailbox", "status", "display_name", "department"):
+        assert _column_privileges(script, "delivery", "recipients", column) == set()
+    for table, identity in (("rules_of_engagement", "roe_id"), ("training_resources", "training_resource_id")):
+        assert _table_privileges(script, "delivery", table) == {"SELECT"}
+        assert _column_privileges(script, "delivery", table, identity) == {"UPDATE"}
+    assert _column_privileges(script, "tracking", "campaigns", "campaign_id") == {"UPDATE"}
+    assert _column_privileges(script, "tracking", "training_resources", "training_resource_id") == {"UPDATE"}
+    for workload in ("tracking", "delivery"):
+        for column in ("content", "version", "approval_state", "requires_completion"):
+            assert _column_privileges(script, workload, "training_resources", column) == set()
+    for column in ("revoked_at", "target_domains", "signature", "window_end"):
+        assert _column_privileges(script, "delivery", "rules_of_engagement", column) == set()
     assert _column_privileges(script, "tracking", "campaigns", "training_resource_id") == set()
     for column in ("title", "state", "schedule_start", "schedule_end", "max_recipients"):
         assert _column_privileges(script, "tracking", "campaigns", column) == set()

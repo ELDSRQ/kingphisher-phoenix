@@ -30,11 +30,13 @@ from kp_database.models import AiGenerationProvider, ProviderConfigGeneration
 from kp_telemetry.errors import NotFoundError, ValidationError_
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from kp_operator_api import ai_providers as registry
 from kp_operator_api.auth import require_capability
 from kp_operator_api.console.env_store import _atomic_update_env, _env_path, _env_values, _reject_if_managed
+from kp_operator_api.console.private_lock import lock_path, locked_row, private_file_lock
 from kp_operator_api.console.runtime_status import _run_dir
 from kp_operator_api.deps import get_audit_store, get_session, get_settings
 
@@ -85,7 +87,10 @@ class ProviderSelectRequest(BaseModel):
 
 
 def _rows_by_provider(session: Session) -> dict[str, AiGenerationProvider]:
-    return {row.provider: row for row in session.scalars(select(AiGenerationProvider)).all()}
+    return {
+        row.provider: row
+        for row in session.scalars(select(AiGenerationProvider).execution_options(populate_existing=True)).all()
+    }
 
 
 def _active_provider(rows: dict[str, AiGenerationProvider]) -> str:
@@ -145,7 +150,21 @@ def _write_generation_marker(settings: Any, generation: int, provider: str) -> N
     This is the on-disk shadow of the committed DB generation. The stateless
     gateway reconciles its provider state file against it (see ``main.py``).
     """
-    _atomic_write_private(_generation_path(settings), {"generation": generation, "provider": provider})
+    if type(generation) is not int or generation < 0:
+        raise ProviderConfigApplyError("provider generation is invalid")
+    with private_file_lock(lock_path(settings, "provider-marker")):
+        path = _generation_path(settings)
+        if path.exists():
+            try:
+                current = _read_json_file(path)
+                floor = current["generation"]
+                if type(floor) is not int or floor < 0 or not isinstance(current.get("provider"), str):
+                    raise ValueError("invalid provider marker")
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise ProviderConfigApplyError("provider generation marker is invalid") from exc
+            if generation < floor or (generation == floor and provider != current["provider"]):
+                raise ProviderConfigApplyError("provider generation is stale")
+        _atomic_write_private(path, {"generation": generation, "provider": provider})
 
 
 def _read_json_file(path: Path) -> dict[str, Any]:
@@ -176,10 +195,12 @@ def _bump_generation(session: Session, provider: str) -> int:
     # Lock the singleton row so two concurrent selections cannot both read
     # generation N and both write N+1 (N1). The row is seeded by migration 0048,
     # so the create branch is only for a pre-seed/test session.
-    row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID, with_for_update=True)
-    if row is None:
-        row = ProviderConfigGeneration(id=_GENERATION_SINGLETON_ID, generation=0, applied_generation=0)
-        session.add(row)
+    row = locked_row(
+        session,
+        ProviderConfigGeneration,
+        _GENERATION_SINGLETON_ID,
+        {"id": _GENERATION_SINGLETON_ID, "generation": 0, "applied_generation": 0},
+    )
     row.generation = (row.generation or 0) + 1
     row.active_provider = provider
     return row.generation
@@ -187,8 +208,10 @@ def _bump_generation(session: Session, provider: str) -> int:
 
 def _mark_generation_applied(session: Session, generation: int) -> None:
     """Advance ``applied_generation`` to clear the blocked-drift state."""
-    row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID)
+    row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID, with_for_update=True, populate_existing=True)
     if row is not None:
+        if row.generation != generation:
+            raise ProviderConfigApplyError("provider generation changed before verification")
         row.applied_generation = generation
 
 
@@ -353,7 +376,7 @@ def list_ai_providers(
     # committed generation ahead of the applied one means a prior selection's
     # side effects did not fully apply (the gateway is failing closed) and the
     # provider must be reselected (W1-04 B2).
-    gen_row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID)
+    gen_row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID, populate_existing=True)
     committed = gen_row.generation if gen_row is not None else 0
     applied = gen_row.applied_generation if gen_row is not None else 0
     return {
@@ -377,9 +400,22 @@ def save_ai_provider(
 ) -> dict[str, Any]:
     """Save a provider's API key (encrypted), model id, and optional base-URL override."""
     _reject_if_managed(request, _MANAGED_MESSAGE)
+    with private_file_lock(lock_path(request.app.state.settings, "provider-operation")):
+        return _save_ai_provider_locked(provider, body, request, session, audit, principal)
+
+
+def _save_ai_provider_locked(
+    provider: str,
+    body: ProviderSaveRequest,
+    request: Request,
+    session: Session,
+    audit: AuditStore,
+    principal: Principal,
+) -> dict[str, Any]:
+    _reject_if_managed(request, _MANAGED_MESSAGE)
     if not registry.is_known_provider(provider):
         raise NotFoundError("unknown provider")
-    row = session.get(AiGenerationProvider, provider)
+    row = session.get(AiGenerationProvider, provider, with_for_update=True, populate_existing=True)
     if row is None:
         row = AiGenerationProvider(provider=provider, is_active=False)
         session.add(row)
@@ -413,6 +449,19 @@ def select_ai_provider(
     principal: Principal = Depends(require_capability(Capability.MANAGE_ROLES)),
 ) -> dict[str, Any]:
     """Make a provider the active generation model (or 'local'); repins + restarts."""
+    _reject_if_managed(request, _MANAGED_MESSAGE)
+    with private_file_lock(lock_path(request.app.state.settings, "provider-operation")):
+        return _select_ai_provider_locked(body, request, session, audit, settings, principal)
+
+
+def _select_ai_provider_locked(
+    body: ProviderSelectRequest,
+    request: Request,
+    session: Session,
+    audit: AuditStore,
+    settings: Any,
+    principal: Principal,
+) -> dict[str, Any]:
     _reject_if_managed(request, _MANAGED_MESSAGE)
     provider = body.provider.strip()
     if not registry.is_known_provider(provider):
@@ -508,8 +557,12 @@ def select_ai_provider(
             new_pin=new_pin,
             current_pin=current_pin,
         )
-    except ProviderConfigApplyError as exc:
-        gen_row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID)
+        _mark_generation_applied(session, generation)
+        session.commit()
+    except (ProviderConfigApplyError, SQLAlchemyError) as exc:
+        with contextlib.suppress(AttributeError, SQLAlchemyError):
+            session.rollback()
+        gen_row = session.get(ProviderConfigGeneration, _GENERATION_SINGLETON_ID, populate_existing=True)
         applied = gen_row.applied_generation if gen_row is not None else 0
         raise HTTPException(
             status_code=503,
@@ -523,9 +576,6 @@ def select_ai_provider(
                 "applied_generation": applied,
             },
         ) from exc
-    # All side effects verified: clear the blocked-drift state.
-    _mark_generation_applied(session, generation)
-    session.commit()
     return {
         "provider": provider,
         "active": True,

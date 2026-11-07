@@ -110,8 +110,19 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
             "threat_artifacts",
             "threat_bundle_imports",
             "retention_holds",
+            # Operator-owned provider selection, revocation state and reviewed
+            # cue mappings. No current path deletes these durable records.
+            "ai_generation_providers",
+            "provider_config_generation",
+            "console_session_epoch",
+            "credential_rotations",
+            "training_cue_coverage",
         ),
-        "SELECT, INSERT": ("campaign_program_occurrences", "campaign_program_adaptations"),
+        "SELECT, INSERT": (
+            "campaign_program_occurrences",
+            "campaign_program_adaptations",
+            "campaign_cue_coverage_exceptions",
+        ),
         # The console binds the durable launch review (create/re-create) and
         # reads canary membership; re-review deletes and re-inserts these rows.
         "SELECT, INSERT, DELETE": ("campaign_canary_recipients",),
@@ -133,9 +144,8 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "tracking": {
         "SELECT": ("tracking_tokens", "training_resources", "campaigns"),
-        # The first training assignment locks the campaign row and persists
-        # its immutable resource binding. The separate column grant below is
-        # the only campaign field tracking may change.
+        # First-click training resolution locks its exact campaign/lesson.
+        # Column UPDATE below permits locks without business-field writes.
         "SELECT, UPDATE": ("recipient_assignments",),
         "SELECT, INSERT": ("events",),
         "SELECT, INSERT, UPDATE": ("training_assignments",),
@@ -193,6 +203,7 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
         "SELECT, UPDATE": ("campaigns", "microsoft365_integration_states"),
         "SELECT, UPDATE, DELETE": ("recipient_assignments", "tracking_tokens"),
         "SELECT, DELETE": ("events", "training_assignments", "reported_mail_receipts"),
+        "DELETE": ("reply_mail_receipts",),
         "SELECT, INSERT": ("retention_actions",),
         "SELECT, INSERT, UPDATE, DELETE": ("awareness_ledger_entries",),
     },
@@ -272,7 +283,30 @@ TABLE_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
 WORKLOAD_COLUMN_GRANTS: dict[str, dict[str, dict[str, tuple[str, ...]]]] = {
     # Only needed for the existing program row lock. Draft insertion is solely
     # through the login-restricted definer, never a direct campaign INSERT.
-    "retention": {"UPDATE": {"campaign_programs": ("updated_at",)}},
+    "retention": {
+        "UPDATE": {"campaign_programs": ("updated_at",)},
+        "SELECT": {"reply_mail_receipts": ("reply_mail_receipt_id", "received_at")},
+    },
+    # Exact reviewed-roster join reads only the binding, never unrelated
+    # manifest metadata or any authority to alter a frozen roster.
+    "delivery": {
+        # The final pre-provider Recipient FOR SHARE serializes an operator's
+        # exclusion with an in-flight send. No mailbox/status writes needed.
+        "UPDATE": {
+            "recipients": ("recipient_id",),
+            "rules_of_engagement": ("roe_id",),
+            "training_resources": ("training_resource_id",),
+        },
+        "SELECT": {
+            "campaign_audience_manifest": ("campaign_id", "recipient_id", "audience_version"),
+            # Recheck live exclusions after publication, without disclosing
+            # encrypted reasons or the identities who set/revoked them.
+            "recipient_exclusions": ("recipient_id", "revoked_at", "expires_at", "campaign_id"),
+        },
+    },
+    "tracking": {
+        "UPDATE": {"campaigns": ("campaign_id",), "training_resources": ("training_resource_id",)},
+    },
     "mailbox": {"UPDATE": {"recipient_assignments": ("recipient_assignment_id",)}},
     "operator": {
         "SELECT": {

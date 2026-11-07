@@ -74,7 +74,7 @@ def factory():  # type: ignore[no-untyped-def]
     CipherText.configure_key(bytes.fromhex("17" * 32))
     engine = create_db_engine(url)
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0056_adaptive_draft_boundary"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0060_delivery_authority_locks"
     yield make_session_factory(engine)
     engine.dispose()
     CipherText._active_key_id, CipherText._active_key, CipherText._prior_keys = prior_keys

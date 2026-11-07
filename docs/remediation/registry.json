@@ -6,7 +6,7 @@
   "authorization": "User approved continued remediation and engineering actions until complete or no agent jobs remain. Human evidence/signatures must remain authentic.",
   "provenance": {
     "original_task_count": 29,
-    "recovery": "Recovered original task write and project-specific follow-up notes; verified PR146\u2013168 ancestry. Historical status is retained separately from current completion. Raw private recovery records remain in preserved qualification storage.",
+    "recovery": "Recovered original task write and project-specific follow-up notes; verified PR146–168 ancestry. Historical status is retained separately from current completion. Raw private recovery records remain in preserved qualification storage.",
     "prior_implementation_pr": 169,
     "canonical_path": "docs/remediation/registry.json"
   },
@@ -52,9 +52,11 @@
         "FU-12",
         "FU-13"
       ],
-      "status": "integration_pending",
+      "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "next_action": "Runtime grant and privacy repairs are implemented and independently reviewed. Run final exact-source CI and native recovery qualification before closing current acceptance.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W0-03",
@@ -122,9 +124,11 @@
         "FU-1",
         "FU-2"
       ],
-      "status": "integration_pending",
+      "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "next_action": "Migrations 0057–0060 and minimal actual-login effect proofs pass. Finish tracking concurrency repair, then final exact-source CI, native qualification and image gates.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W1-02",
@@ -171,9 +175,11 @@
         "FU-8",
         "FU-9"
       ],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W1-04",
@@ -190,9 +196,9 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "complete",
-      "owner": "none",
-      "next_action": null
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Provider generation and cross-process serialization repairs pass focused and actual-login tests. Complete final exact-source CI and qualification; no actual credentials are rotated."
     },
     {
       "id": "W1-05",
@@ -253,9 +259,9 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "complete",
-      "owner": "none",
-      "next_action": null
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Monotonic revocation and credential serialization repairs pass focused and actual-login tests. Complete final exact-source CI and qualification; actual credentials remain unchanged."
     },
     {
       "id": "W2-01",
@@ -277,9 +283,11 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W3-01",
@@ -321,9 +329,11 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W3-03",
@@ -367,9 +377,11 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W4-01",
@@ -394,9 +406,11 @@
         "FU-16",
         "FU-17"
       ],
-      "status": "integration_pending",
+      "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "next_action": "Actual tracking login now completes bound training, knowledge check and replay. Finish concurrent bearer/timestamp repair and final exact-source gates.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W4-02",
@@ -419,9 +433,9 @@
         "status_basis": "Historical recorded completion and verified merge ancestry; current-source behavior qualification is separate"
       },
       "followups": [],
-      "status": "complete",
-      "owner": "none",
-      "next_action": null
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Finish the proven training completion/open stale-snapshot repair and concurrent actual-login proofs, then final exact-source CI and qualification."
     },
     {
       "id": "W4-03",
@@ -444,9 +458,11 @@
         "FU-18",
         "FU-19"
       ],
-      "status": "integration_pending",
+      "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "next_action": "Scheduling repair and both pause/send lock orders pass; native reviewed-direct SEND now succeeds. Complete final exact-source CI and qualification.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W5-02",
@@ -469,9 +485,11 @@
       "followups": [
         "FU-3"
       ],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W5-03",
@@ -493,9 +511,11 @@
       "followups": [
         "FU-20"
       ],
-      "status": "integration_pending",
-      "owner": "agent",
-      "next_action": "Integrate independently reviewed repairs and pass current-source CI/role effects."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W2-02",
@@ -512,9 +532,9 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "external_gate",
-      "owner": "operator",
-      "next_action": "Qualify installation, upgrade, repair and reboot on supported clean hosts. OS publisher certificates apply only to distributed native signed packages; browser/server deployment does not require a controller signing identity."
+      "status": "in_progress",
+      "owner": "agent",
+      "next_action": "Execute the scoped clean-Ubuntu installation, repair, upgrade and reboot qualification on a new isolated VM after final source CI passes. Other supported clean-host evidence remains external. OS publisher certificates apply only to distributed native signed packages; browser/server deployment does not require a controller signing identity."
     },
     {
       "id": "W2-03",
@@ -533,7 +553,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Build and execute preserved isolated full-service restore with database, queue, files and keys. Report measured scope/timings; independent off-host secret recovery and business outage targets remain separate gates."
+      "next_action": "Execute the implemented isolated full-service restore and preserved real-data upgrade rehearsal. Report measured scope and timings; off-host secret recovery and business outage objectives remain separate gates."
     },
     {
       "id": "W2-04",
@@ -555,7 +575,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Integrate reviewed deployment guards and final CI/images, wake retained Azure staging runner and execute guarded staging workflow. Preserve tracked receipt subscription and all live role assignments."
+      "next_action": "Retained Azure runner is repaired and online. After final CI/native/image gates, dispatch guarded staging deployment and preserve existing roles and ACS receipt resources."
     },
     {
       "id": "W2-05",
@@ -596,7 +616,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Execute actual workers/outbox/provider-sink workload at125 and1250 synthetic recipients, including slow/error handling and bounded sustained load. Five-minute Redis component result alone is insufficient."
+      "next_action": "Run the implemented actual-worker profile: 125 and 1,250 synthetic recipients, 300-second burst observation, SMTP faults, queue isolation and recovery. Do not infer sustained throughput or long-term capacity from this bounded profile."
     },
     {
       "id": "W5-04",
@@ -612,9 +632,11 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "code_complete",
-      "owner": "agent",
-      "next_action": "PR169 implements the approved tenant retention hold with audited authorized set/clear and purge suspension. Preserve its documented policy; repeat current combined migration/role gates."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "W5-05",
@@ -665,26 +687,32 @@
     {
       "id": "FU-1",
       "parent": "W1-01",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "Terraform main.tf lacks reply endpoint/address and curation/report completeness preconditions; reported-mailbox alone is checked.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-2",
       "parent": "W1-01",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "grants.py:218 mailbox has SELECT-only recipient_assignments; reported_mail_jobs.py:180/193 uses FOR UPDATE; WORKLOAD_COLUMN_GRANTS empty; bootstrap test:423/468 pins undergrant.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-3",
       "parent": "W5-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "AI_HANDOFF.md:369 still calls keyed awareness ledger PII-free.",
-      "resolution": "Replace stale PII-free descriptions with keyed pseudonymous wording."
+      "resolution": "Replace stale PII-free descriptions with keyed pseudonymous wording.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-4",
@@ -697,74 +725,92 @@
     {
       "id": "FU-5",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "outbox.py:357 calls kp_reconcile_queue_outbox; no migration defines it. Next free slot after 0053 is 0054.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-6",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "queue.py:182 replay review-only policy remains denylist, allowing future topics by default.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-7",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "workers/config.py:236 allows reconcile window 2160h, equal to the 90-day dedup TTL.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-8",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "queue.py:437-471 renewal updates stored raw envelope; ack/reject compare caller exact _raw, vulnerable to lost renewal replies.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-9",
       "parent": "W1-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "outbox.py:309-314 logs review-required missing rows each reconciliation; default cadence 300s.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-10",
       "parent": "W0-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "privacy.py:114 returns before ledger purge for already tombstoned recipients; no backfill path.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-11",
       "parent": "W0-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "privacy.py:149 discards ledger purge count; erasure route audit has no purge count.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-12",
       "parent": "W0-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "test_privacy_erasure_receipts recreates metadata and tests owner sessions, without kp_operator role, wrong-version, multi-row and missing/malformed key assertions.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-13",
       "parent": "W0-02",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "Managed malformed-key tests cover export; managed delete/fulfill erasure fixture coverage unconfirmed, not a proved runtime defect.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-14",
@@ -777,18 +823,22 @@
     {
       "id": "FU-15",
       "parent": "W4-01",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "NULL coverage author skips separation check; unique mapping blocks reauthoring. Existing decision=rejected already withdraws reviewed coverage, so no-revoke claim partly stale.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-16",
       "parent": "W4-01",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "campaigns.py:1534 already row-locks coverage with_for_update=True. Historical no-lock assertion is stale; no fresh concurrency proof run.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-17",
@@ -801,26 +851,32 @@
     {
       "id": "FU-18",
       "parent": "W4-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "Program create supports generation_mode but no adaptations/iterations convenience routes or adaptive console controls exist.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-19",
       "parent": "W4-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "program_jobs discovery outside try, no created_by supplied; program_service propagates None, copies possibly stale schedule, silently stalls rejected/cancelled/expired prior iteration, and changes level metadata only.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "FU-20",
       "parent": "W5-03",
-      "status": "integration_pending",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "recovered_assessment": "Characterization suites omit listed edge cases. Deferred extractions are optional behavior-preserving refactors, not proved defects.",
-      "resolution": "Implemented and focused checks recorded; independent review/integration gate remains."
+      "resolution": "Integrated in PR170 after independent review and required CI; see evidence.",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     }
   ],
   "additional_items": [
@@ -828,64 +884,215 @@
       "id": "REG-001",
       "parent": "W3-04",
       "title": "AI evaluation endpoint classification, unknown-provider telemetry and baseline honesty",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-002",
       "parent": "W3-02",
       "title": "Concurrent threat artifact insert deduplication without outer transaction loss",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-003",
       "parent": "W2-01",
       "title": "Health session creation and authorization-query unavailable states",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-004",
       "parent": "W2-03",
       "title": "Preserve checkpoint archives and private partial captures on collision/failure",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-005",
       "parent": "W2-04",
       "title": "Preserve cloud roles and ACS receipt continuity; strict non-destructive plan guards",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-006",
       "parent": "W0-02",
       "title": "Serialize subject erasure with in-flight ledger projector",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-007",
       "parent": "W0-02",
       "title": "Actual-role bounded subject export without broad ledger outcome/receipt identifier access",
-      "status": "in_progress",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-008",
       "parent": "W4-03",
       "title": "Actual retention-role adaptive drafts through constrained database operation; cyclic discovery avoids oldest500 starvation",
-      "status": "integration_pending",
-      "owner": "agent"
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
     },
     {
       "id": "REG-009",
       "parent": "W1-03",
       "title": "Keyset reconciliation sweep reaches records beyond first batch under ongoing publications; changed-condition warnings",
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 170,
+      "completed_commit": "acabf08ba7e551e8af849073197cf5c3648183f8"
+    },
+    {
+      "id": "REG-010",
+      "parent": "W2-04",
+      "title": "Re-register retained Azure runner additively; preserve removed registration assets and separate new private home",
+      "status": "complete",
+      "owner": "none",
+      "evidence": "staging-runner-draft/result.md: GHrunner22 online/idle, newprivateHOME/service, oldassets preserved; no workflowdispatched"
+    },
+    {
+      "id": "REG-011",
+      "parent": "W4-03",
+      "title": "Standalone reviewed-direct SEND denied by joined program-occurrence FOR SHARE; lock only mutable program row without expanding grants",
       "status": "integration_pending",
-      "owner": "agent"
+      "owner": "agent",
+      "priority": "P0",
+      "evidence": "Native smokev2:allAPIsetup/reviews succeeded;SEND500;actualkp_operator deniedcampaign_program_occurrences UPDATErequiredforimplicitrowlock",
+      "resolution": "Narrow program-only shared lock and both pause/send order proofs pass under actual logins. Native smoke v6 now passes SEND and the complete training workflow. Final exact-source CI and qualification remain."
+    },
+    {
+      "id": "REG-012",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Complete canonical runtime grants for existing provider/session/cue workflows, delivery manifest reads and retention reply receipt purge",
+      "resolution": "Migration 0057 and six original/ten expanded actual-login effects pass. Grants remain minimal and no passwords were rotated. Final exact-source CI and qualification remain."
+    },
+    {
+      "id": "REG-013",
+      "parent": "W1-07",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Serialize credential and provider changes across processes; preserve monotonic revocation and configuration generations",
+      "resolution": "Four before-fix failures reproduced. Monotonic durable markers, complete credential/provider operation locks and refreshed conflict-safe counters are implemented and independently reviewed. 157 focused tests and ten actual-login PostgreSQL effects passed. Await integrated CI and current-source qualification; actual development credentials remain unchanged."
+    },
+    {
+      "id": "REG-014",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Delivery must read active recipient exclusion selectors without exclusion mutation or private rationale access",
+      "resolution": "Migration 0058 grants only four selector columns; actual-login filtering and denial proofs pass. Native v6 delivery succeeds. Per-recipient membership freshness and provider fencing are covered by REG-017; final source gates remain."
+    },
+    {
+      "id": "REG-015",
+      "parent": "W2-03",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Preserved development-runtime upgrade with real-data restore rehearsal before additive migration",
+      "resolution": "Independently reviewed explicit-phase coordinator and 59 preservation tests pass, including executable-mode preservation and integrity checks. Final CI/native/image gates precede qualified-source execution. No normal runtime mutation has occurred."
+    },
+    {
+      "id": "REG-016",
+      "parent": "W2-02",
+      "owner": "agent",
+      "status": "in_progress",
+      "title": "Actual clean Linux installation, repair, baseline upgrade and reboot qualification",
+      "resolution": "Private coordinator is implemented, independently reviewed and frozen with 51 offline tests passing. New isolated Azure VM execution requires final merged source and matching green CI. Sequential owned Docker engines, reboot identity proof and bounded deallocation preserve both installation datasets. No VM resources have been created."
+    },
+    {
+      "id": "REG-017",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Serialize each final provider boundary with recipient exclusion and erasure changes",
+      "resolution": "Committed recipient-first shared lock, fresh bounded membership query and final recipient-state refresh pass six actual-role concurrency effects, including both exclusion lock orders and claim-gap/mid-batch changes. Final exact-source CI and qualification remain."
+    },
+    {
+      "id": "REG-018",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Refresh and serialize live launch, training, approval and signed RoE authorization at every provider boundary",
+      "resolution": "Committed fresh final launch/approval/lesson/RoE checks and shared authority locks pass eight actual-role effects. A final clock check follows blocking gates; SPF/DNS is not repeated. Final exact-source CI and qualification remain."
+    },
+    {
+      "id": "REG-019",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Permit tracking's campaign/training row locks without mutable content or campaign authority",
+      "resolution": "Migration 0060 grants only identity-column locks. Five actual-login effects prove both original atomic failures and passing click/training/quiz/replay with denied mutable writes. Native smoke v6 passes. Final exact-source gates remain."
+    },
+    {
+      "id": "REG-020",
+      "parent": "W1-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Avoid tracking/provider assignment deadlocks and refresh bearer authorization after lock waits",
+      "resolution": "Compatible shared campaign/lesson reads, campaign-before-assignment ordering and post-wait token refresh are implemented and independently approved. An immutable pre-wait verifier copy is compared in constant time after refresh. Nine actual-role concurrency tests pass, including provider overlap, recall/expiry and ACTIVE same-row token rotation. Final exact-source CI and qualification remain."
+    },
+    {
+      "id": "REG-021",
+      "parent": "W4-02",
+      "priority": "P1",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Refresh training child state after its parent lock before idempotent completion or page-open updates",
+      "resolution": "The joined child is refreshed after acquiring the stable parent lock, with its purpose-specific stored verifier rechecked before use. Real concurrent tracking workers prove first open/completion timestamps and event counts remain immutable; rotating either child verifier during a wait returns 404 without new evidence. All nine actual-role tracking race tests and 52 local tests pass; independent review approved the exact source. Final integrated gates remain."
+    },
+    {
+      "id": "REG-022",
+      "parent": "W5-01",
+      "priority": "P0",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Preserve definite SMTP refusal evidence and durably bound retries without replaying uncertain sends",
+      "resolution": "Both SMTP transport paths now preserve structured refusals before OSError ambiguity handling. Only typed SMTP DATA4xx nonacceptance may schedule a retry: maximum three durable claims, stable attempt/Message-ID/correlation, exact generation/date/count marker and server-clock eligibility. Spacing is five/ten seconds between starts, including response time. Rejection audit and a singleton retry outbox intent commit atomically; original/stale/early jobs cannot reopen a claim. Every retry repeats recipient/live authorization gates. Unknown/disconnect/generic-phase/ACS outcomes never enter this retry policy;5xx stays failed. 147 focused tests, independent review and five actual-role SQL proofs pass. Operator reports show plain-language retry/refusal outcomes. Native v8 passed all SMTP fault cases and reached recovery; complete-source CI passed. Full qualification remains blocked by separate harness defect REG-023."
+    },
+    {
+      "id": "REG-023",
+      "parent": "W2-03",
+      "priority": "P1",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Refresh owned restore-target endpoint metadata after Docker reallocates random ports on restart",
+      "resolution": "The restore path now verifies exact recorded target identity, label, pinned image and data volume before copy/restart, then refreshes guarded loopback port bindings after restart. Shared runtime metadata reaches Redis sentinel checks, every application/worker cache URL, Mailpit API and SMTP proxy. New exclusive before/after receipts preserve the original manifest. 52 local and52 independent hermetic tests pass. Native v9 passed the endpoint and data checks and launched restored applications, then exposed the separate SMTP listener restart defect REG-024. Baseline startup methods, data bytes and profile/deadlines are unchanged. Complete service recovery still must pass."
+    },
+    {
+      "id": "REG-024",
+      "parent": "W2-03",
+      "priority": "P1",
+      "owner": "agent",
+      "status": "integration_pending",
+      "title": "Allow the owned SMTP qualification listener to restart after closed connections while rejecting active-listener replacement",
+      "resolution": "Native v9 restored data/endpoints but its SMTP proxy returned Address already in use when rebinding the same loopback endpoint after source quiescence. Enable SO_REUSEADDR on both fresh-run proxy generations and explicitly keep SO_REUSEPORT disabled. Two real loopback tests prove immediate same-port restart after server-active QUIT/EOF and refusal over a still-live listener. Source review, Ruff and strict mypy pass; readiness, ownership, URLs, data and deadlines are unchanged. Fresh full native qualification remains."
     }
   ],
   "evidence": {
@@ -901,6 +1108,35 @@
     "terraform_connectors": "terraform-connectors-v5.log:5 mocked provider plans passed; no Azure apply",
     "static": "Ruff check/format clean; strict mypy219 sources clean; lock check resolved92 packages",
     "combined_hermetic": "hermetic-integration-v2.log:4184 passed,173 deselected,256.52s; no skips. New fullstack harness is a separate wave, not included in this result.",
-    "adaptive_worker": "adaptive-role-effects-final.xml:9 passed62.66s; adaptive-discovery-postgres.xml:1 passed9.46s. Managed tick, operator create/read, replay, unauthorized actual-login denial and keyset wrap proved."
+    "adaptive_worker": "adaptive-role-effects-final.xml:9 passed62.66s; adaptive-discovery-postgres.xml:1 passed9.46s. Managed tick, operator create/read, replay, unauthorized actual-login denial and keyset wrap proved.",
+    "current_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42282621617",
+    "current_ci_result": "4158 hermetic passed,212 deselected;161 PostgreSQL passed,4209 deselected,1 retained upstream SQLAlchemy inspection warning;4 Redis passed,4366 deselected;14 browser passed;Ruff/format,strict mypy219 and lock passed. Linux excludes controller-only tests; controller combined run4184 passed before final focused additions.",
+    "merge": "PR170 merged at exact reviewed headfd97d3053a5144e00408e85c84562cdb8f898267; mainmergeacabf08ba7e551e8af849073197cf5c3648183f8.",
+    "fullstack_code_review": "27 focused tests +Ruff/format +strict mypy6; independent code review closed all accounting, deadline, uncertainty andrestore issues. Frozen harnessfingerprintb920f9e6bf470748811d292f5666733eab79299677eb955796e894fcfe7eba18; native smoke staged with archive4b35215a464d69d102c2a6756f54b73ca9bfb0daee87aa2bc1501f9a40f7af2b.",
+    "native_smoke_v1": "Failedbeforebootstrap:internalDockerbridgepublishedportsnull;all3nativecontainers/runs/evidencepreserved;qualifierguard/connectivityrepairindependentlyreviewed35tests.",
+    "native_smoke_v2": "Signed RoE, import, confirmation and both logical approvals passed against managed logins. SEND failed because joined FOR SHARE required unintended occurrence UPDATE. Four actual-login tests now prove the narrow lock fix and both pause/schedule concurrency orders. v2 processes quiesced; all data/evidence preserved.",
+    "runtime_feature_roles": "runtime-feature-role-effects.xml: six actual-login PostgreSQL effects passed in 40.012 seconds. Provider/session metadata, independent cue review and exceptions, bounded old reply-receipt purge, exact delivery roster reads, unrelated-role denial and additive migration without login changes are covered.",
+    "wave2_tools": "wave2-tools-focused.xml: all 80 isolated full-stack, Linux dependency and preserved-upgrade tooling tests passed. No normal service or database was changed by this suite.",
+    "auth_concurrency": "auth-races-before-semantic.xml: four genuine semantic failures before the repair. auth-races-final.xml: 157 tests passed. Expanded runtime-feature-role-effects.xml: ten actual-login PostgreSQL effects passed, including stale cached counters and concurrent absent-row initialization. Independent reviewer approved the frozen source; all credentials used were synthetic.",
+    "native_smoke_v3_staging": "Source extraction refused git archive tar.umask permissions before dependency/service startup. Partial archive/source/log preserved. Canonical Git executable modes and exclusive remote artifact publication were independently reviewed before v4.",
+    "native_smoke_v4": "Fresh native resources, source commit 2fb40216d33cb4cb3e2a0231a13c701e43754f60. SEND succeeded; delivery failed on missing recipient_exclusions selector access and exhausted retries. The 600-second drain refused qualification, all owned application processes quiesced, and all data/resources/evidence were preserved.",
+    "native_smoke_v5": "Fresh native resources, source b477dde257a171c19904878877deb57530c22130. All three synthetic messages reached SMTP sink acceptance, assignments became ACCEPTED, and report returned 200. Actual tracking click returned 503 at the training row-lock boundary. The run failed honestly at 18 seconds, quiesced every owned source process and preserved all resources/evidence. This does not qualify live authorization races or confirmed recipient delivery.",
+    "wave2_hermetic_baseline": "wave2-hermetic-v1.log: 4316 passed, 192 integration tests deselected, no skips in 267.23 seconds. Baseline includes committed auth/upgrade/qualifier and 0058 repairs; later worker boundary and 0059/0060 changes require final exact-source CI. make lint passed 703 files and make typecheck passed 222 sources.",
+    "authority_lock_roles": "tracking-authority-role-effects-v1.xml: five actual-login effects passed in 39.740 seconds. Both tracking undergrants reproduce atomic 503 failures before the new grants; complete click/training/quiz/replay then passes with exact idempotent events. Delivery RoE/lesson shared locks work while mutable content/authorization fields remain denied. Migration 0060 is committed at d77aacaee912a1cf9138f5ef8da67bf9a8524fe6.",
+    "recipient_provider_fences": "delivery-recipient-races-v3.xml: six actual-role effects passed in 44.968 seconds. Real exclusion endpoint and production claim/correlation/send loop prove both lock orders, claim-gap/mid-batch changes and status/deletion refresh. Synthetic provider receipt callbacks only; no external mail.",
+    "live_provider_authority": "delivery-live-authority-races-v1.xml: eight actual-role effects passed in 51.437 seconds, including signed positive authority, stale cached changes and both RoE/lesson mutation lock orders. Independent 56 focused tests passed with zero skips; final timing checks follow blocking launch/safety gates. Worker source independently approved and no actual credentials or normal runtime were changed.",
+    "evidence_path_correction": "Some early JUnit paths were reused while suites expanded, superseding their earlier raw XML. The six-test runtime-feature result is recorded in commit 2fb4021; the current raw report contains its expanded ten-test rerun. The four-test 0058 report was retained separately before expansion. Independent controller/agent reports and all failed native resources remain preserved. All subsequent runs require fresh unique evidence paths; no historical report is being reconstructed or represented as an original.",
+    "upgrade_executable_preservation": "upgrade-executable-before.xml reproduced a real helper PermissionError and two missing mode-drift refusals. upgrade-executable-after.xml: all 59 preservation tests passed. Strict mypy on seven sources, Ruff/format and independent review passed. Qualified executable files retain private mode 0700, other files 0600; later phases validate executable membership and mode integrity before runtime actions. No normal upgrade has been executed.",
+    "native_smoke_v6": "PASS at source 714fc8a08204a48452ffff8773d7fd449655a6f5; archive SHA-256 632f52c073cc41fb0c71769d39429286ad21c67851a5f6a658c988a784b67295. Three real SMTP sink acceptances, bound training/knowledge/replay and queue accounting passed; all owned source processes quiesced in 16.738 seconds and resources were preserved. This precedes the final tracking concurrency repair and is not the full load/recovery profile or confirmed recipient delivery.",
+    "tracking_concurrency": "tracking-delivery-races-root-1794007909.xml: nine actual-role PostgreSQL cases passed with zero skips in 62.690 seconds. Includes production provider overlap, campaign-before-assignment recall/expiry, pixel verifier rotation, concurrent first open/completion and purpose-specific verifier rotation after real lock waits. Separate ASGI portals model concurrent tracking workers. Earlier fixture failures and their unique XML files are preserved. Independent 52 local tests, exact three-file review, combined lint711 and strict mypy224 pass.",
+    "native_full_v7": "FAIL honestly at 340.401 seconds, source da81ec431dc4d9e61d7759125641246cfc7bde3c; archive2bd58b254bcba64318c7737ef7b4e5b82afad77b6e698a3d3b10c802602927bf. 125 and1250 baseline SMTP sink acceptances, 300-second observation and critical-role progress during the five-second SMTP stall passed. Explicit pre-DATA451 refusal became INDETERMINATE, exposing REG-022. Recovery was not reached. All source processes quiesced and all resources/evidence remain preserved.",
+    "pr171_ci_partial": "All three jobs PASS at source da81ec4: CI42311703147 hermetic4299 passed260 deselected;209PostgreSQL+4Redis passed;14 browser scenarios passed; lint711, strictmypy224, lock92 passed. Source requires new complete CI after REG-022 repair. Private full job logs preserved separately.",
+    "smtp_known_negative_repair": "smtp-negative-before.xml reproduced four real stdlib DATA451/550 classification failures while four ambiguity controls passed. smtp-retry-unit-final-v1.xml:147 tests passed; independent smtp-independent-review-1z3quump/focused.xml:147 passed with zero skips. Includes reminder/proof no-retry, post-acceptance ambiguity, whole-envelope refusals and failed QUIT after successful DATA. Independent production review approved jobs SHA-256f3b3ec85a2401f3f4c7e7f7611d390dfb414d0fa73c0407a67231d610a8f9c28 and SMTP2eb0e4c05ef8b4e1d7be1a6e4ba0bad21f0713dbaddc3274d9181cb77015f28c; no schema changes.",
+    "smtp_retry_role_effects": "delivery-smtp-retry-postgres-root-1794009583.xml:five actual NOINHERIT delivery-login tests passed with zero skips in78.583s. Proves durable singleton retry/audit intent, server-time and generation fences, stable correlation, exactly-once acceptance, persisted three-call exhaustion, atomic SQL failure rollback and recipient/RoE changes. Three durable audit intents must project to exactly three matching signed events through the real dispatcher within five seconds. Earlier caller-commit and immediate-projection fixture failures remain preserved. Final strict mypy224 and lint715 passed; root formatting preserved identical production AST.",
+    "native_full_v8": "FAIL honestly at420.038s, source892c6517e7afbb4ecc1ec736ff808013a9ba099e/archive061440bfb2d958eab4ba59cc5f5c9463e4100843376e7983a72b6c9a1d70bedb. Baseline load, observation, slow-provider isolation, typed451 retry and post-acceptance-disconnect uncertainty passed. Source processes quiesced; PostgreSQL restored with matching counts/sentinel. Restored Redis/Mailpit were healthy but random loopback ports changed after restart, exposing REG-023. Read-only current-port verification confirms matching Redis checkpoint sentinel and Mailpit total1381; pending-work/application recovery was not reached. All data/resources/evidence preserved.",
+    "pr171_ci_892c651": "All three jobs PASS at892c651: CI42315336221 hermetic4325 passed265 deselected in221.37s;214PostgreSQL+4Redis;14browser; lint715,strictmypy224,lock92. Full private job logs preserved with source in filenames. Fresh final CI will be required after the harness-only REG-023 repair.",
+    "restored_endpoint_refresh": "restored-port-refresh-unit-final.xml:52 passed. Independent port-refresh-independent-review-ahfptezj/focused.xml:52 passed with zero skips in1.634s. Guarded restart tests route changed ports through actual restored cache/app/proxy consumers, preserve original resource bytes and IDs/volumes, append receipts and reject changed/malformed/unsafe bindings. Strict mypy on the two changed sources and Ruff on all three files pass. Independent review approved stack271dbce03e4878e4c4c07d1cf88a33c88b8af587d0d44f897851200415ac0ca0/recoveryb56b60949502159772b6332bc4ad65d589248ce957ea1ffa4a4beab34815f15c/test8f51351496eaf5a3273f4a8e3c0ea3788830bc410d455f5af31fce4ee64f4750. Normal upgrade coordinator has no analogous Docker-restart assumption.",
+    "native_full_v9": "FAIL honestly at362.166s, source78feabc09a181954abfb4b38195324fe347f6279/archive1b29e4c95686ab9d8d27119a56cd3f3dc3947567ae01fcc39a99b261ace2e8be. Restored endpoint/data/sentinel/configuration checks passed and all six restored application processes launched. Restored SMTP proxy alone exited1 with Address already in use; the other five were terminated only by final quiescence. Source processes had already been removed from the active registry correctly. Readiness checks were retained; REG-024 repairs listener reuse. All resources/evidence preserved; complete recovery/RTO not qualified.",
+    "owned_proxy_tcp_restart": "proxy-tcp-restart-root-1794011501.xml:two actual loopback TCP cases passed with zero skips in0.072s. Tests actively close QUIT connections before client closure, immediately restart the same endpoint, forbid binding over a live listener and verify it remains usable; SO_REUSEPORT remains0. Independent source review, Ruff2 and strict mypyproxy pass. Frozen proxy7d68145d1dd066fb44b9468467d9c25b04159020a378e7a061f7fe21926ad799/test05516bf25224f09b938193a79a2c1f7ead18f619a0b5e1a0b6f906a472d56525. No real mail or upstream connection occurred."
   }
 }
