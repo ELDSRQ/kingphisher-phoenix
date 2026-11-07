@@ -142,6 +142,94 @@ def test_prepare_only_creates_versioned_copy_and_fresh_environment(layout):
     assert len(layout.commands.calls) == 1 and layout.commands.calls[0][1:3] == ["sync", "--frozen"]
 
 
+@pytest.mark.parametrize("alias", ("DATABASE_URL_TEST", "database_url_test"))
+def test_supported_test_alias_is_validated_without_entering_runtime_configuration(layout, alias):
+    env = layout.normal / ".env"
+    with env.open("a") as stream:
+        stream.write(f"\n{alias}=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test\n")
+    original = env.read_bytes()
+    cfg = configuration(env)
+    assert "DATABASE_URL_TEST" not in cfg
+    assert all(core.make_url(value).database == "kingphisher" for key, value in cfg.items() if "DATABASE_URL" in key)
+    assert env.read_bytes() == original
+    assert not layout.run.exists() and not layout.releases.exists() and layout.commands.calls == []
+
+
+def test_supported_test_alias_prepare_preserves_private_state_and_runtime_targets(layout, monkeypatch):
+    env = layout.normal / ".env"
+    with env.open("a") as stream:
+        stream.write("\nDATABASE_URL_TEST=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test\n")
+    originals = {path: path.read_bytes() for path in layout.normal.rglob("*") if path.is_file()}
+    cfg = configuration(env)
+    observed = []
+
+    def normal_only_preflight(values):
+        observed.append(dict(values))
+        assert values["DATABASE_URL"].endswith("/kingphisher") and "DATABASE_URL_TEST" not in values
+        return {"passed": True}
+
+    monkeypatch.setattr(coordinator, "bounds_preflight", normal_only_preflight)
+    prepare(layout)
+    source = Path(layout.upgrade.plan["source"])
+    assert observed == [cfg]
+    assert (source / ".env").read_bytes().startswith(originals[env])
+    assert all(path.read_bytes() == value for path, value in originals.items())
+    assert layout.unit.read_bytes() == b"original service"
+    assert len(layout.commands.calls) == 1 and layout.commands.calls[0][1] == "sync"
+    invocations = []
+
+    def capture_command(args, **kwargs):
+        invocations.append((args, kwargs))
+        runtime = kwargs["env"]
+        assert "DATABASE_URL_TEST" not in runtime and runtime["DATABASE_URL"].endswith("/kingphisher")
+        assert runtime["KP_DISABLE_DOTENV"] == "1"
+        if "--output" in args:
+            core.private_json(
+                Path(args[args.index("--output") + 1]),
+                {"passed": True, "module_path": str(source / "packages/database/src/kp_database/__init__.py")},
+            )
+        return b""
+
+    monkeypatch.setattr(layout.commands, "run", capture_command)
+    layout.upgrade._migrate(source, cfg)
+    assert layout.upgrade._probe(source / ".venv/bin/python", source, cfg, "synthetic-probe.json")["passed"]
+    assert len(invocations) == 2
+    assert all(path.read_bytes() == value for path, value in originals.items())
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "DATABASE_URL_TEST=postgresql://kingphisher:synthetic@outside.test:5432/kingphisher_test",
+        "DATABASE_URL_TEST=postgresql://kingphisher:synthetic@127.0.0.1:51459/kingphisher_test",
+        "DATABASE_URL_TEST=postgresql://other:synthetic@localhost:5432/kingphisher_test",
+        "DATABASE_URL_TEST=postgresql://kingphisher@localhost:5432/kingphisher_test",
+        "DATABASE_URL_TEST=postgresql://kingphisher:synthetic@localhost:5432/kingphisher",
+        "DATABASE_URL_TEST=postgresql://kingphisher:synthetic@localhost/kingphisher_test",
+        "DATABASE_URL_TEST=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test?host=outside.test",
+        "DATABASE_URL_TEST=sqlite:///kingphisher_test",
+        "DATABASE_URL_TEST=",
+        "DATABASE_URL_TEST=not-a-url",
+        "DATABASE_URL_TEST_EXTRA=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test",
+        "OPERATOR_API_DATABASE_URL_TEST=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test",
+        "KP_WORKER_DATABASE_URL_DELIVERY=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test",
+        "KP_WORKER_DATABASE_URL_RETENTION=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test",
+        "DATABASE_URL_TEST=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test\n"
+        "database_url_test=postgresql://kingphisher:synthetic@localhost:5432/kingphisher_test",
+    ],
+)
+def test_invalid_test_or_runtime_alias_blocks_prepare_before_writes_or_service_actions(layout, extra):
+    env = layout.normal / ".env"
+    with env.open("a") as stream:
+        stream.write("\n" + extra + "\n")
+    originals = {path: path.read_bytes() for path in layout.normal.rglob("*") if path.is_file()}
+    with pytest.raises(Blocked):
+        prepare(layout)
+    assert not layout.run.exists() and not layout.releases.exists() and layout.commands.calls == []
+    assert all(path.read_bytes() == value for path, value in originals.items())
+    assert layout.unit.read_bytes() == b"original service"
+
+
 def add_qualified_executable(layout):
     name = "scripts/qualified-helper.sh"
     helper = layout.source / name

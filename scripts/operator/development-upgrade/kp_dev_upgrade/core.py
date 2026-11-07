@@ -17,6 +17,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from dotenv import dotenv_values
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 NORMAL = Path("/home/builder/phishing-awareness-platform")
 RELEASES = Path("/home/builder/kp-runtime-releases")
@@ -106,6 +107,7 @@ def require_clean_connection_environment() -> None:
 
 
 def configuration(path: Path) -> dict[str, str]:
+    """Validate preserved configuration and return only runtime connection aliases."""
     require_clean_connection_environment()
     canonical(path)
     if not path.is_file() or path.stat().st_mode & 0o077:
@@ -133,6 +135,26 @@ def configuration(path: Path) -> dict[str, str]:
     if not required <= result.keys():
         raise Blocked("required_database_configuration_missing")
     for key in (key for key in result if "DATABASE_URL" in key):
+        if key == "DATABASE_URL_TEST":
+            # bootstrap_env.sh writes this non-runtime alias alongside normal
+            # connections. Validate its exact supported boundary; never treat
+            # arbitrary test-like names as exemptions from runtime validation.
+            try:
+                test_url = make_url(result[key])
+            except (ArgumentError, ValueError):
+                raise Blocked("test_database_target_is_not_supported") from None
+            if (
+                test_url.get_backend_name() != "postgresql"
+                or test_url.host not in {"127.0.0.1", "localhost", "::1"}
+                or test_url.port != 5432
+                or test_url.database != "kingphisher_test"
+                or test_url.username != "kingphisher"
+                or not test_url.password
+                or test_url.query
+                or any(character in test_url.password for character in "\r\n\0")
+            ):
+                raise Blocked("test_database_target_is_not_supported")
+            continue
         url = make_url(result[key])
         if url.get_backend_name() != "postgresql" or url.host not in {"127.0.0.1", "localhost", "::1"}:
             raise Blocked("database_target_is_not_normal_loopback")
@@ -144,6 +166,10 @@ def configuration(path: Path) -> dict[str, str]:
             or any(character in url.password for character in "\r\n\0")
         ):
             raise Blocked("database_target_is_not_normal_project")
+    # The original .env bytes are copied separately by prepare. Exclude the
+    # validated test alias from preflight/migration/probe execution environments
+    # and from rehearsal's runtime-connection retargeting.
+    result.pop("DATABASE_URL_TEST", None)
     if make_url(result["DATABASE_URL"]).username != "kingphisher":
         raise Blocked("migration_owner_identity_mismatch")
     if not {"REDIS_URL", "OPERATOR_API_REDIS_URL", "KP_WORKER_REDIS_URL"} <= result.keys():
