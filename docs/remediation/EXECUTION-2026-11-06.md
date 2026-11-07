@@ -244,3 +244,28 @@ disk,NIC,NSG and logs remain retained. Private v3 corrects that response-key
 check under fresh resource names, preserving the64GiB assertion and all guards.
 The earlier staging workflow is cancelled before environment approval or apply
 so the replacement can bind the final REG-026 source.
+
+PR173 merges at3512a41/tree234175ac with candidate d28e1fa. Candidate and
+merged-main CI pass4,373hermetic/214PostgreSQL/fourRedis/fourteenbrowser tests;
+full source security passes. Fresh native12 and imagev3 also pass. Native
+recovery RTO is18.975s with zero missing acknowledged sentinels; API p95 is
+0.094396s and critical progress maximum1.078834s. The300s observation contains
+207.064s idle after delivery. All synthetic/same-host/external-delivery limits
+remain. The six-image25phase digest is60c6ec481741cbb5833083a7eebd1ca3089b44d84fa4e47dfbb82306cfcda1cc.
+
+Actual read-only configuration validation now passes. PREPARE2 then exposes
+REG027 before run/release creation or service stop: clean command environments
+cannot reach the user systemd bus, and stderr logging under an absent run masks
+that error as FileNotFoundError. An inherited SSH query confirms the unchanged
+active project unit. Fix only the operator command/diagnostic paths, and bind
+that executed tool's separate revision, file hashes, interpreter, CI and real
+read-only bus proof. Independent review confirms application3512 can remain
+immutable: copying, migration, probes, supervisor and UI all bind the plan's
+qualified release paths; the application never imports this upgrade package.
+Do not invoke the old copied tool or claim tool-only changes passed new image
+qualification. The revised tool must be invoked externally and reviewed.
+
+Clean-Linux VMv3 has provisioning/shutdown identity proof, transferred verified
+source and completed bootstrap; installation is in progress. Staging workflow
+42388194717 passes its guard and full hosted release qualification, then waits
+at the authorized engineering environment gate while that VM trial is active.
