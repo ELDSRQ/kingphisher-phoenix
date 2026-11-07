@@ -286,6 +286,104 @@ def test_default_plan_does_not_read_request_or_touch_any_runtime(monkeypatch, ca
     assert "PLAN ONLY" in capsys.readouterr().out
 
 
+def dual_mount_engine_case(case):
+    """A PostgreSQL initializer bind plus data volume, as on the actual source."""
+    expected = copy.deepcopy(case.request["expected_containers"])
+    postgres = next(row for row in expected if row["service"] == "postgres")
+    postgres["mounts"] = [
+        {
+            "Type": "bind",
+            "Source": str(case.source / "infrastructure/containers/postgres-init"),
+            "Destination": "/docker-entrypoint-initdb.d",
+            "Mode": "ro",
+            "RW": False,
+            "Propagation": "rprivate",
+        },
+        {
+            "Type": "volume",
+            "Name": case.module.PROJECT + "_postgres_data",
+            "Driver": "local",
+            "Source": "/var/lib/docker/volumes/qualified-postgres/_data",
+            "Destination": "/var/lib/postgresql/data",
+            "Mode": "rw",
+            "RW": True,
+            "Propagation": "",
+        },
+    ]
+    actual = next(row for row in case.rows if row["Id"] == postgres["id"])
+    actual["Mounts"] = copy.deepcopy(postgres["mounts"])
+    return expected, postgres, actual
+
+
+def test_container_start_may_reorder_mounts_without_changing_any_identity(source_case):
+    case = source_case
+    expected, postgres, actual = dual_mount_engine_case(case)
+    first = case.module._engine(
+        expected, case.volumes, case.request["expected_engine"], case.request["deadline"], case.root
+    )
+    assert first["postgres"]["State"]["Running"] is False
+    case.module._docker(["start", postgres["id"]], case.request["deadline"], case.root)
+    actual["Mounts"].reverse()
+    second = case.module._engine(
+        expected, case.volumes, case.request["expected_engine"], case.request["deadline"], case.root
+    )
+    assert second["postgres"]["State"]["Running"] is True
+    assert case.starts == [postgres["id"]]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "source",
+        "destination",
+        "driver",
+        "name",
+        "mode",
+        "rw",
+        "propagation",
+        "type",
+        "missing",
+        "null",
+        "extra",
+        "duplicate",
+        "bool-number",
+    ],
+)
+def test_mount_reordering_never_hides_mount_identity_or_type_changes(source_case, mutation):
+    case = source_case
+    expected, _postgres, actual = dual_mount_engine_case(case)
+    actual["Mounts"].reverse()
+    volume, bind = actual["Mounts"]
+    fields = {
+        "source": "Source",
+        "destination": "Destination",
+        "driver": "Driver",
+        "name": "Name",
+        "mode": "Mode",
+        "rw": "RW",
+        "propagation": "Propagation",
+        "type": "Type",
+    }
+    if mutation in fields:
+        key = fields[mutation]
+        volume[key] = False if key == "RW" else "changed"
+    elif mutation == "missing":
+        del volume["Mode"]
+    elif mutation == "null":
+        bind["Name"] = None
+    elif mutation == "extra":
+        volume["UnknownMountAttribute"] = "changed"
+    elif mutation == "duplicate":
+        actual["Mounts"].append(copy.deepcopy(volume))
+    else:
+        bind["RW"] = 0
+    with pytest.raises(common.RecoveryError, match="a_container_identity_changed"):
+        case.module._engine(
+            expected, case.volumes, case.request["expected_engine"], case.request["deadline"], case.root
+        )
+    assert not case.starts
+
+
 @pytest.mark.parametrize(
     "vm_id",
     (

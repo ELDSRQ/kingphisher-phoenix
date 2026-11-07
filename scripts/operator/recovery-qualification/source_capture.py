@@ -294,6 +294,15 @@ def _quiescent(source: Path, deadline: float, evidence: Path) -> None:
             raise RecoveryError("process_identity_unreadable") from None
 
 
+def _mount_identity(value: Any) -> list[str]:
+    """Docker may reorder mounts; retain every field, type and duplicate."""
+    require(
+        isinstance(value, list) and all(isinstance(mount, dict) for mount in value),
+        "a_container_identity_changed",
+    )
+    return sorted(json.dumps(mount, sort_keys=True, separators=(",", ":")) for mount in value)
+
+
 def _engine(
     containers: list[dict[str, Any]],
     volumes: list[dict[str, Any]],
@@ -327,8 +336,9 @@ def _engine(
         require(
             all(
                 row.get(key) == expected_row[column]
-                for key, column in (("Image", "image"), ("Name", "name"), ("Created", "created"), ("Mounts", "mounts"))
+                for key, column in (("Image", "image"), ("Name", "name"), ("Created", "created"))
             )
+            and _mount_identity(row.get("Mounts")) == _mount_identity(expected_row["mounts"])
             and row["Config"]["Image"] == expected_row["image_reference"]
             and row["Config"]["Labels"].get("com.docker.compose.project") == PROJECT
             and row["Config"]["Labels"].get("com.docker.compose.service") == expected_row["service"],

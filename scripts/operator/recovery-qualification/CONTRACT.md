@@ -50,8 +50,16 @@ One authenticated age-encrypted deterministic tar.gz contains `manifest.json`,
 optional `state/docker-compose.override.yml`, and the complete `state/data/`
 regular files including recovery/key/witness/monotonic state. No source code,
 `.git`, `.venv`, symlinks, devices, or source private age identity is included.
-Do not blanket-exclude `data/run`: only normal application shutdown may remove
-its ephemeral PID files, and capture refuses ambiguous PID state.
+Do not blanket-exclude `data/run`. Capture never removes or ignores PID files
+and refuses ambiguous PID state. Normal application shutdown handles its own
+ephemeral markers. If a retained marker predates a later VM boot, a separate,
+independently reviewed maintenance operation may archive that exact marker by
+same-filesystem rename only after binding the host, source, original boot and
+marker metadata, proving its PID absent and rechecking all units, cgroups and
+source processes. Preserve its inode, bytes and metadata, record the move, retain
+the archive inside `data/recovery` for the complete backup, and rerun capture's
+unchanged canonical quiescence guard. This never permits deleting state, killing
+an unidentified process or treating a live or ambiguous marker as safe.
 
 `manifest.json` has `schema=kp.offhost-recovery.snapshot.v1`, `run_id`,
 `scope=synthetic-qualification`, `created_at`, `application` (bundle_commit,

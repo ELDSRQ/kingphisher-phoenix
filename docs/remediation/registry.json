@@ -547,7 +547,12 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Clean Linux v5 is executing against installer bundle790171d/mainCI42403025100 after111author+111independent preservation/permission tests. V4 reached the real installer but its private extractor masked public Git modes underumask077, making the PostgreSQL initializer unreadable; exact logs/modes and two before-fix regressions prove the harness fault. V2\u2013V4 VMs/disks/evidence remain preserved/deallocated. Current Linux/browser server needs no OS publisher certificate; native distributed packages and other clean-host matrix evidence remain scoped separately."
+      "next_action": "V5 passed all eight A stages against installer790171d/CI42403025100: bootstrap, clean install, browser, warm rerun, repair and reboot/relaunch. Its separate B engine rejected simultaneous bridge/bip before state import; an independently reviewed new configuration keeps the custom bridge and removes only bip. Finish actual baseline0056-to0060 upgrade/browser/data proof after off-host recovery, then verify deallocation/timer restoration. All earlier VM/disks/evidence remain preserved. Current Linux/browser delivery needs no OS publisher certificate.",
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "next_action": "Clean Linux v5 is executing against installer bundle790171d/mainCI42403025100 after111author+111independent preservation/permission tests. V4 reached the real installer but its private extractor masked public Git modes underumask077, making the PostgreSQL initializer unreadable; exact logs/modes and two before-fix regressions prove the harness fault. V2\u2013V4 VMs/disks/evidence remain preserved/deallocated. Current Linux/browser server needs no OS publisher certificate; native distributed packages and other clean-host matrix evidence remain scoped separately."
+      }
     },
     {
       "id": "W2-03",
@@ -566,7 +571,12 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "The preserved normal .105 checkpoint, isolated real-data restore/forward migration, reviewed cutover and all verification phases pass. Application3512a41/schema0060 is running with original source/env/venv/unit/data and all7normalcontainer/mount identities preserved. Full native12 same-host synthetic recovery measured zero missing acknowledged sentinels/RTO18.975s. Complete the separately reviewed synthetic off-host source/target tool and actual drill after cleanLinux passes; never export the normal real-data checkpoint. The existing development audit witness disagreement is tracked separately as REG-031."
+      "next_action": "The normal .105 preservation upgrade and same-host synthetic recovery passed; existing real-data checkpoint stays onworker. Public off-host tools379/CI42408247349 were reviewed and actual encrypted capture reached unchanged identity guards. Reviewed prior-boot PID archival passed without deletion and kept its inode/bytes in full backup scope. Capture then exposed Docker raw Mounts ordering variation; REG-032 repairs that guard before a new CI-bound retry. No encrypted off-host snapshot or fresh-target restoration has passed. The pre-existing development witness discontinuity has separate preserved isolated recovery evidence under REG-031.",
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "next_action": "The preserved normal .105 checkpoint, isolated real-data restore/forward migration, reviewed cutover and all verification phases pass. Application3512a41/schema0060 is running with original source/env/venv/unit/data and all7normalcontainer/mount identities preserved. Full native12 same-host synthetic recovery measured zero missing acknowledged sentinels/RTO18.975s. Complete the separately reviewed synthetic off-host source/target tool and actual drill after cleanLinux passes; never export the normal real-data checkpoint. The existing development audit witness disagreement is tracked separately as REG-031."
+      }
     },
     {
       "id": "W2-04",
@@ -1046,8 +1056,14 @@
       "owner": "agent",
       "status": "in_progress",
       "title": "Actual clean Linux installation, repair, baseline upgrade and reboot qualification",
-      "resolution": "Actual fresh v3 exposed missing Buildx, fixed by PR175. Actual v4 reached PostgreSQL startup and preserved private exact-unit diagnostics; readonly follow-up proves its own extractor created initializer directory/script700 underprivateumask, yielding Permission denied. A new v5 snapshot applies canonical644/755 only to new verified public Git code;111author+111independent checks pass including two actual umask call-path regressions. V5 is executing against790171d/greenmainCI; prior VMs/disks/evidence are retained and verified deallocated.",
-      "next_action": "Finish actual v5 cold-install/browser/warm-repair/reboot/A-B baseline upgrade proof, verify final deallocation and retain every resource/evidence file. No unexecuted phase or human acceptance may be marked passed."
+      "resolution": "V3 exposed missing Buildx, fixed by PR175. V4 exposed a private extractor masking public Git permissions; two actual umask regressions reproduce it. V5 canonical public-code permissions pass111author+111independent checks and all eight actual A bootstrap/install/browser/warm/repair/reboot stages. Separate B startup failed on mutually exclusive bridge/bip before importing state. The empty B root, old config/image archive and all five A proofs remain preserved. Every completed visit verified VM deallocation; diagnostic/preservation visits restored the original owned timer.",
+      "next_action": "After actual off-host restore and target deallocation, execute reviewed isolated B repair/baseline0056-to0060 upgrade/final browser/preservation proof, then verify deallocation/timer restoration. No unexecuted B or human phase is a pass.",
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "resolution": "Actual fresh v3 exposed missing Buildx, fixed by PR175. Actual v4 reached PostgreSQL startup and preserved private exact-unit diagnostics; readonly follow-up proves its own extractor created initializer directory/script700 underprivateumask, yielding Permission denied. A new v5 snapshot applies canonical644/755 only to new verified public Git code;111author+111independent checks pass including two actual umask call-path regressions. V5 is executing against790171d/greenmainCI; prior VMs/disks/evidence are retained and verified deallocated.",
+        "next_action": "Finish actual v5 cold-install/browser/warm-repair/reboot/A-B baseline upgrade proof, verify final deallocation and retain every resource/evidence file. No unexecuted phase or human acceptance may be marked passed."
+      }
     },
     {
       "id": "REG-017",
@@ -1191,8 +1207,14 @@
       "title": "Preserve canonical public Git file and directory permissions under a private qualification umask",
       "status": "in_progress",
       "owner": "agent",
-      "resolution": "V4 readonly exact-VM PostgreSQL diagnostics show init directory/script700 owned1000 and repeated Permission denied. Two real umask077 source-extraction tests fail on frozenv4; v5 explicitly fchmods only new verified source files644/755 and code directories755. Private .env/data/keys/archives/evidence retain600/700.111author+111independent tests pass; v5 live trial is running. All v4 assets and both diagnostic attempts are preserved/deallocated.",
-      "next_action": "Finish v5 actual trial before closing the live installation scope."
+      "resolution": "V4 exact PostgreSQL diagnostics show initializer directory/script700 and Permission denied. Two real umask077 extraction regressions fail on frozenV4; V5 sets only new public Git files644/755 and code directories755, retaining private config/data/keys/evidence600/700.111author+111independent tests and all eight actual V5 A install/repair/reboot stages pass; old failed assets are preserved/deallocated.",
+      "next_action": "Finish the separate actual B extraction/upgrade qualification before closing this live record.",
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "resolution": "V4 readonly exact-VM PostgreSQL diagnostics show init directory/script700 owned1000 and repeated Permission denied. Two real umask077 source-extraction tests fail on frozenv4; v5 explicitly fchmods only new verified source files644/755 and code directories755. Private .env/data/keys/archives/evidence retain600/700.111author+111independent tests pass; v5 live trial is running. All v4 assets and both diagnostic attempts are preserved/deallocated.",
+        "next_action": "Finish v5 actual trial before closing the live installation scope."
+      }
     },
     {
       "id": "REG-030",
@@ -1201,18 +1223,40 @@
       "title": "Qualify encrypted off-host synthetic recovery with independent retained-key retrieval and complete restored service",
       "status": "in_progress",
       "owner": "agent",
-      "resolution": "Separate source-capture/artifact/target-restore tools and bounded private orchestration are being implemented/reviewed. Original normal .105 checkpoint remains onworker. Source is an actually qualified isolated clean-trial A state, with exact engine/container/mount/volume/Git/proof bindings; failedv4 cannot supply it. New target has no source credentials; source must be deallocated first. Exclusive controller and authenticated blob ciphertext copies, target-local key, fresh-controller piped re-encryption, full PGglobals/Redis/config/key/file/audit/sentinel checks and real maintenance progress are required. Actual installed-age local proof passes wrong-key/tampering/no-overwrite and separate-target round trips. Independent review caught PAX metadata bounds and target preflight/volume guards; repair and re-review precede any live drill. No off-host target/storage/identity has been created.",
-      "next_action": "Finish review/CI/private bounded orchestration, capture only actually qualified synthetic A, and execute fresh-host restore with separate provision-inclusive/restore-only timing. Record actual zero-missing-sentinel scope without enterpriseSLA/continuousbackup/delivery/human claims."
+      "resolution": "Public tools379f5c5 passed independent review and CI42408247349:4669hermetic/214PostgreSQL/4Redis/14browser. Actual age roundtrip/rewrap/wrong-key/tamper/no-overwrite proofs pass. New private blob storage and a persistent controller identity exist; no identity is copied to source and normal real-data state remains on .105. Source V5 A has eight actual passed stages and exact engine/containers/mounts/volumes/Git proofs. After a safe missing-parent failure, reviewed prior-boot PID same-inode archival passed the unchanged canonical process guard, with original timer restored and source deallocated. New capture started only its exact PostgreSQL/Redis containers, then refused an order-sensitive identity check before database-state probes/sentinels/dumps/cipher. RAW read-only diagnosis proved identical complete mount descriptions with PostgreSQL order reversed4/24 times; source deallocation and timer restoration are verified. REG-032 repairs the comparison before a fresh CI-bound retry; no successful encrypted snapshot or target restore is claimed.",
+      "next_action": "Complete repair review/CI, then capture only qualified synthetic A into a new namespace; verify exclusive off-host/controller ciphertext and source deallocation before fresh target provisioning, retained-key retrieval/piped rewrap and complete state/service/maintenance restoration. Record separate restore/provision times and target deallocation; no enterprise SLA, continuous backup, recipient delivery or human GO is inferred.",
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "resolution": "Separate source-capture/artifact/target-restore tools and bounded private orchestration are being implemented/reviewed. Original normal .105 checkpoint remains onworker. Source is an actually qualified isolated clean-trial A state, with exact engine/container/mount/volume/Git/proof bindings; failedv4 cannot supply it. New target has no source credentials; source must be deallocated first. Exclusive controller and authenticated blob ciphertext copies, target-local key, fresh-controller piped re-encryption, full PGglobals/Redis/config/key/file/audit/sentinel checks and real maintenance progress are required. Actual installed-age local proof passes wrong-key/tampering/no-overwrite and separate-target round trips. Independent review caught PAX metadata bounds and target preflight/volume guards; repair and re-review precede any live drill. No off-host target/storage/identity has been created.",
+        "next_action": "Finish review/CI/private bounded orchestration, capture only actually qualified synthetic A, and execute fresh-host restore with separate provision-inclusive/restore-only timing. Record actual zero-missing-sentinel scope without enterpriseSLA/continuousbackup/delivery/human claims."
+      }
     },
     {
       "id": "REG-031",
       "parent": "W2-03",
       "priority": "P0",
       "title": "Preserve and reconcile the pre-existing development audit witness/chain disagreement",
-      "status": "in_progress",
+      "status": "external_gate",
+      "owner": "operator",
+      "resolution": "The current development chain verifies internally (0problems; observed head104717). Five unchanged September21 witness files at1/62/122/181/241 disagree with it; pre-upgrade failures and all failed jobs remain. Bounded local/worker metadata searches found a September21 19:14 checkpoint outside the original inventory. Its182430-byte dump matches its retained manifest SHA14d32bd156bb27370cd36692218a41d73c3d7d5371a27ff71498a5088272e40d. Independently reviewed31-test audit-table-only isolation actually restored3events and one head into a new network-none PostgreSQL container/volume: no old witness coordinate matches; higher four positions are absent. A fresh read-only current-chain check confirms its positions1/3 match that three-event checkpoint prefix. The new container is stopped/preserved and all normal containers/mounts, original files, witnesses and checkpoint pass preservation checks. This identifies a prior development-history discontinuity; it does not recover or authenticate the missing earlier history, and no historical signatures were claimed.",
+      "next_action": "Choose development audit continuity scope on .105: (recommended) preserve all current data and old evidence, record the explicit gap, and authorize a new private development witness directory/configuration-key change, bounded restart of the owned service/13native children, a declaring audit record and fresh maintenance anchor after independent review/testing; this permits forward anchoring without claiming old continuity or production GO. Alternatively provide a matching earlier backup/key location for read-only checking and isolated recovery before any history choice, or keep the continuity gate open with no config/history change. The choice is needed because engineering approval cannot establish historical authenticity and restoring the located three-event checkpoint would discard current work. New development epoch is recommended to retain verified current data and every historical artifact while declaring, rather than concealing, the gap. No unanswered question or elapsed time authorizes the change.",
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "resolution": "Readonly post-upgrade check found no successful anchor heartbeat and preserved audit-anchorDLQs1105 (1102atcheckpoint), with the same AuditAnchorReadBackError before and after cutover. Five retained create-only local witness records with signed_at timestamps on2026-09-21 atsequences1/62/122/181/241 disagree with the current signed chain at those positions; current chainhead104445/internal verification has0problems. No witness, chain, key or failedjob was deleted/replayed/replaced, and credentials were unchanged. Bounded names/metadata inventory of existingworkerdata/recovery andqualification roots found currentNov6/7 snapshots but no matchingSept21 history in that scope. This historical inconsistency is not manufactured as an upgrade regression or successful anchoring.",
+        "next_action": "Complete evidence reconciliation and inspect any known matching recovery history without altering either fork; if none is available, explain the exact canonical-history recovery versus explicitly recorded new-epoch options before any evidence-changing action. Engineering approval alone does not establish which historical chain is authentic."
+      }
+    },
+    {
+      "id": "REG-032",
+      "parent": "W2-03",
+      "priority": "P1",
       "owner": "agent",
-      "resolution": "Readonly post-upgrade check found no successful anchor heartbeat and preserved audit-anchorDLQs1105 (1102atcheckpoint), with the same AuditAnchorReadBackError before and after cutover. Five retained create-only local witness records with signed_at timestamps on2026-09-21 atsequences1/62/122/181/241 disagree with the current signed chain at those positions; current chainhead104445/internal verification has0problems. No witness, chain, key or failedjob was deleted/replayed/replaced, and credentials were unchanged. Bounded names/metadata inventory of existingworkerdata/recovery andqualification roots found currentNov6/7 snapshots but no matchingSept21 history in that scope. This historical inconsistency is not manufactured as an upgrade regression or successful anchoring.",
-      "next_action": "Complete evidence reconciliation and inspect any known matching recovery history without altering either fork; if none is available, explain the exact canonical-history recovery versus explicitly recorded new-epoch options before any evidence-changing action. Engineering approval alone does not establish which historical chain is authentic."
+      "status": "in_progress",
+      "title": "Compare complete Docker mount identities independently of raw inspection order",
+      "resolution": "Actual source379 capture passed initial identity and process guards, started only its exact PostgreSQL/Redis containers, then stopped at the second strict ordered Mounts comparison. Original source/data/proofs are preserved; VM deallocation is verified. A separately reviewed RAW read-only24-sample inspector found all6container scalar/full typed mount multisets identical, while PostgreSQL mount order reversed4/24 times. Formatted one-shot/24-sample observations did not reproduce the variation; they are retained separately. A new regression reproduces rejection on before/start/reversed-equivalent mounts against379. Repair serializes and sorts each complete mount dictionary without dropping fields/types/unknown attributes/counts/duplicates; all other identity/volume/image/label checks stay exact.236focused tests and strict mypy5 pass locally; independent review and fresh exact-source CI precede any retry.",
+      "next_action": "Finish independent review and new public-tool CI, bind the new tool commit/hashes in new exclusive capture/target/B-resume requests, then prove actual encrypted capture and complete off-host restoration before closing this item."
     }
   ],
   "evidence": {
@@ -1284,7 +1328,23 @@
     "staging3512": "PASS workflow42388194717,allguard/qualify/deployjobs; deployment7623447852; immutable image/SBOM/provenance/attestation/migrate/worker/ACSreceipt/cloudcompletion passed; artifact13581379690zipSHA256c00941a8c352c50084c44704b861c02805ce3bd4c97ce412ec599491502618e6. Engineering review authorized, humanGO false.",
     "installer790_CI": "PASS main42403025100 all3jobs:4447hermetic,214PostgreSQL,4Redis,14browser; Ruff/mypy224/lock92. Runtimecomponents remain byte-identical to qualified3512.",
     "normal_development_upgrade": "ALL5actualphasesPASS; normal .105 running3512/schema0060, thirteenchildren/exactUI/twoAPIs/audit/cipherverified; originalassets+7container/mountIDs unchanged; pre-existing witness fork REG031 separately retained.",
-    "staging_3512_prior_waiting_snapshot": "Workflow42388194717,requestkp-5fd36ecc374bca37207e63492a5b9ed9-1,qualified app3512a41: inputguard+complete hosted releasequalification PASS. Deployjob128452188157 waits at environment engineering gate while cleanLinuxVMv3 isactive; noapplyyet."
+    "staging_3512_prior_waiting_snapshot": "Workflow42388194717,requestkp-5fd36ecc374bca37207e63492a5b9ed9-1,qualified app3512a41: inputguard+complete hosted releasequalification PASS. Deployjob128452188157 waits at environment engineering gate while cleanLinuxVMv3 isactive; noapplyyet.",
+    "offhost_intermediate_20261107": {
+      "qualified_source_A_stages": 8,
+      "source_capture_prior_tool_commit": "379f5c5291fba4f31a4e98aa514e1bf7e14f2cbb",
+      "source_capture_prior_tool_CI": 42408247349,
+      "source_capture_prior_sha256": "7bf6a8687a1a18f5c226546ff90700310557c0804cf6a59471b4c77121418158",
+      "mount_guard_repair_sha256": "2b2b7cbd277adddaf1662fbdd670849dd605e77d7dcb3ec3a8cf06a614fcd231",
+      "raw_engine_inspector_sha256": "b2a8fea2f4480eb77638c0575f2c983d8154b53008121957287737bcba7a0849",
+      "raw_observation": "24samples;postgres4orderdifferences;all6scalar/fulltypedmountmultisetidentitiesequal;verifieddeallocation/fulltimerrestoration",
+      "source_capture_success": false,
+      "target_restore_executed": false,
+      "historical_partial_restore_helper_sha256": "83ebc38266a5bf17eb6ce87e5c30241edee7f164dfcf4b12c7f05b7fe4a538ca",
+      "historical_partial_result": "3audit_events/1head;oldwitnesscoordinatesnotmatched;normalstate/checkpoint/witnesspreserved;newcontainerstoppedandretained",
+      "historical_checkpoint_is_current_three_event_prefix": true,
+      "historical_signature_authentication": false,
+      "development_new_epoch_executed": false
+    }
   },
   "qualified_application": {
     "commit": "3512a4129262425999e6baaaaf0cc6a0b5f866e6",
