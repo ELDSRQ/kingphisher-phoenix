@@ -69,20 +69,54 @@ _QUARANTINE_STATE = postgresql.ENUM(
 )
 
 
-def _grant(table: str) -> None:
-    """Least-privilege grant mirroring kp_database.grants; no-op without the role."""
-    op.execute(f"REVOKE ALL ON {table} FROM PUBLIC")
-    op.execute(
-        f"""
+_TABLE_GRANTS = {
+    "source_policies": (
+        "REVOKE ALL ON source_policies FROM PUBLIC",
+        """
         DO $grant$
         BEGIN
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kp_operator') THEN
-                GRANT SELECT, INSERT, UPDATE ON {table} TO kp_operator;
+                GRANT SELECT, INSERT, UPDATE ON source_policies TO kp_operator;
             END IF;
         END
         $grant$;
+        """,
+    ),
+    "threat_artifacts": (
+        "REVOKE ALL ON threat_artifacts FROM PUBLIC",
         """
-    )
+        DO $grant$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kp_operator') THEN
+                GRANT SELECT, INSERT, UPDATE ON threat_artifacts TO kp_operator;
+            END IF;
+        END
+        $grant$;
+        """,
+    ),
+    "threat_bundle_imports": (
+        "REVOKE ALL ON threat_bundle_imports FROM PUBLIC",
+        """
+        DO $grant$
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kp_operator') THEN
+                GRANT SELECT, INSERT, UPDATE ON threat_bundle_imports TO kp_operator;
+            END IF;
+        END
+        $grant$;
+        """,
+    ),
+}
+
+
+def _grant(table: str) -> None:
+    """Run only fixed migration grants, rejecting unknown tables before SQL."""
+    try:
+        statements = _TABLE_GRANTS[table]
+    except KeyError:
+        raise ValueError("unsupported threat-library grant table") from None
+    for statement in statements:
+        op.execute(statement)
 
 
 def upgrade() -> None:
