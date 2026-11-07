@@ -164,3 +164,44 @@ reuse. Two real loopback tests prove immediate same-endpoint restart after
 QUIT/EOF and refusal to replace an active listener. Independent source review,
 Ruff and strict mypy pass. Readiness, ownership, URLs, data and deadlines remain
 unchanged; all failed-run assets remain preserved for inspection.
+
+On 2026-11-07 native full v10 passes at b2ef25e: 1,387 unique SMTP sink
+acceptances, both 125/1,250 baselines, 300-second observation, five-second
+provider stall, typed refusal retries and post-acceptance uncertainty all pass.
+The restored application verifies keys/configuration, audit, previous training,
+pending queue work and a new campaign. RTO is 75.323 seconds with zero missing
+acknowledged sentinels. This is a quiesced same-host synthetic checkpoint, not
+off-host custody, continuous backup SLA or confirmed external recipient delivery.
+The 1,250 sends finish 76.273 seconds into the observation, leaving 223.727
+seconds idle; this is not a constant-load or long-duration stability claim.
+All owned application processes quiesce and every resource remains preserved.
+
+PR171 merges at fbbc690 with the identical reviewed b2ef25e tree. Candidate
+and merged-main CI pass: 4,343 hermetic, 214 PostgreSQL, four Redis and fourteen
+browser tests; Ruff checks 716 files and strict mypy checks 224 sources.
+Merged-main workflow 42333004166 full job logs are preserved privately.
+
+Staging workflow 42374390352 passes its exact-source guard but fails security
+qualification on Bandit B608 in historical migration 0047. Deployment is skipped;
+no Terraform or application changes occur. REG-025 replaces the three known
+interpolated grant targets with literal statement pairs and rejects unknown
+identifiers before SQL. Sixteen focused and sixteen independent tests pass;
+schema, revision, role conditions and permissions are unchanged. No suppression
+or scanner exception is introduced. Complete source/dependency security checks
+and current-source CI must pass before retrying staging. The retained staging
+runner VM is started and registration22 is online/idle; old assets are preserved.
+
+The private image adapter v1 stops before clone/build because Docker's built-in
+host/none networks return null IPAM configuration. Its inputs and empty log are
+preserved. Reviewed v2 accepts null only for those canonical unaddressed networks
+and rejects unverifiable addressed networks; 56 author and 56 independent tests
+pass. The scanner refreshes only the new candidate cache before freezing it for
+all six image scans. A final exact-source image pass is still required.
+
+The complete security gate passes on tracked-only source eaedf77: Bandit1.9.4,
+Semgrep1.171.0, Trivy0.74.0 (vulnerability/secret/misconfiguration HIGH/CRITICAL)
+and pip-audit2.10.1 against the frozen hash-verified non-development dependency
+closure. All logs, exported requirements, fresh scanner caches and receipts are
+preserved in the private source-security-1794057244586575000 directory. Trivy
+retains its warning that Terraform input values are absent from static scanning;
+this does not replace provider plans or live qualification. No waiver is added.
