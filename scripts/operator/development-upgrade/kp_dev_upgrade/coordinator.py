@@ -263,7 +263,10 @@ class Upgrade:
             r"development-upgrade-[0-9]{8}T[0-9]{6}Z-[a-z0-9]{8,16}", self.run.name
         ):
             raise Blocked("run_path_is_outside_reviewed_namespace")
-        self.commands = commands or Commands(self.run / "private-commands.log")
+        self.commands = commands or Commands(
+            self.run / "private-commands.log",
+            preflight_log=RUNS / f"{self.run.name}-preflight-{time.time_ns()}-{secrets.token_hex(4)}.log",
+        )
 
     @property
     def plan(self) -> dict[str, Any]:
@@ -325,7 +328,8 @@ class Upgrade:
         return plan, cfg
 
     def prepare(self, source: Path, manifest: Path, manifest_hash: str, commit: str) -> None:
-        # All identity/source/config checks precede the first new file or directory.
+        # Only a private sibling diagnostic log may precede target validation;
+        # run/release creation still follows all identity/source/config checks.
         identity = self.commands.normal_identity()
         configuration(NORMAL / ".env")
         unit = self.commands.unit()

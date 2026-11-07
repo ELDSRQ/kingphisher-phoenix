@@ -588,7 +588,7 @@
       "followups": [],
       "status": "in_progress",
       "owner": "agent",
-      "next_action": "Replace pre-apply cancelled staging run42376577698 with a guarded request for the final REG-026 source after CI/images/native gates. Preserve existing resources/roles and serialize VNet apply with clean-Linux work."
+      "next_action": "Complete guarded app3512a41 staging workflow42388194717 after active cleanLinuxVMv3 finishes; engineering environment gate is already authorized. Preserve existing resources/roles and actual immutable-image attestation/worker/receipt checks."
     },
     {
       "id": "W2-05",
@@ -1152,11 +1152,23 @@
       "id": "REG-026",
       "parent": "W2-03",
       "priority": "P2",
-      "owner": "agent",
-      "status": "integration_pending",
+      "owner": "none",
+      "status": "complete",
       "title": "Distinguish the preserved nonruntime test-database alias from strict runtime connection targets",
-      "resolution": "Actual PREPARE refused the existing DATABASE_URL_TEST/kingphisher_test alias before run/release creation or service stop. Preserve its private .env bytes, validate only that exact nonruntime alias against its bounded local test target, and exclude it from execution configuration. Every runtime alias and unknown test-like key must retain strict checks. No normal runtime mutation occurred.",
-      "next_action": "Integrate the narrow independently reviewed guard repair with regression/preservation tests and current CI, then retry preparation using a fresh private manifest/run namespace."
+      "resolution": "Actual PREPARE refused the existing DATABASE_URL_TEST/kingphisher_test alias before run/release creation or service stop. Preserve its private .env bytes, validate only that exact nonruntime alias against its bounded local test target, and exclude it from execution configuration. Every runtime alias and unknown test-like key must retain strict checks. No normal runtime mutation occurred. PR173 merged3512a41 with identical reviewed d28e1fa tree;77author+77independent tests and real read-only configuration guard pass. Candidate/main CI, source security, full native12 and six-image25phase gate pass. Original private environment remains unchanged.",
+      "next_action": null,
+      "completed_pr": 173,
+      "completed_commit": "3512a4129262425999e6baaaaf0cc6a0b5f866e6"
+    },
+    {
+      "id": "REG-027",
+      "parent": "W2-03",
+      "priority": "P2",
+      "status": "in_progress",
+      "owner": "agent",
+      "title": "Bind upgrade commands to the reviewed user systemd bus and retain pre-run diagnostics",
+      "resolution": "Actual PREPARE2 wrote only its outside-run qualified manifest, then failed FileNotFoundError before run/release creation or service stop. Read-only diagnosis proves clean environment systemctl--user cannot find its bus, while inherited SSH query sees the unchanged active project unit; stderr logging under the not-yet-created run masks the original bus error. Repair only operator tooling; keep application3512a41 and its qualification immutable.",
+      "next_action": "Independently review the bounded owned user-bus environment and exclusive sibling preflight-log repair; pass tool CI and actual read-only bus proof, then invoke the separately pinned tool externally against qualified application3512a41."
     }
   ],
   "evidence": {
@@ -1173,8 +1185,8 @@
     "static": "Ruff check/format clean; strict mypy219 sources clean; lock check resolved92 packages",
     "combined_hermetic": "hermetic-integration-v2.log:4184 passed,173 deselected,256.52s; no skips. New fullstack harness is a separate wave, not included in this result.",
     "adaptive_worker": "adaptive-role-effects-final.xml:9 passed62.66s; adaptive-discovery-postgres.xml:1 passed9.46s. Managed tick, operator create/read, replay, unauthorized actual-login denial and keyset wrap proved.",
-    "current_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42376518909",
-    "current_ci_result": "Merged932fa07 allgreen:4355hermetic in243.59s;214PG/4406deselected in127.37s;4Redis in3.30s;14browser in33.6s;Ruff717,strictmypy224,lock92. REG-026 followup needs its own current-source CI.",
+    "current_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42388168837",
+    "current_ci_result": "Qualified application3512a41:4373hermetic/265deselected in254.48s;214PG/4424deselected in98.14s,1retained SQLAlchemy warning;4Redis in1.88s;14browser in30.9s;Ruff717,strictmypy224,lock92. REG027 is separately verified operator tooling.",
     "merge": "PR171 merged at reviewed headb2ef25e5f91b006aad7c73d235ea15ba5a9de4b6; mainfbbc69020562e048bff25d22f69bab5d2e569a00, identical treefa1201b999797b334a9b07d6c5a30adb03a2005c.",
     "fullstack_code_review": "27 focused tests +Ruff/format +strict mypy6; independent code review closed all accounting, deadline, uncertainty andrestore issues. Frozen harnessfingerprintb920f9e6bf470748811d292f5666733eab79299677eb955796e894fcfe7eba18; native smoke staged with archive4b35215a464d69d102c2a6756f54b73ca9bfb0daee87aa2bc1501f9a40f7af2b.",
     "native_smoke_v1": "Failedbeforebootstrap:internalDockerbridgepublishedportsnull;all3nativecontainers/runs/evidencepreserved;qualifierguard/connectivityrepairindependentlyreviewed35tests.",
@@ -1214,9 +1226,21 @@
     "pr172_final_ci": "PR172 reviewed d071221 and merged932fa07489fbf0e05f1ce296259db57a6ae46a8a share tree29d165f93bb2263d257cd26722fd80aecca0f6f2. CandidateCI42376165491 and mainCI42376518909 allgreen:4355hermetic/214PG/4Redis/14browser,lint717,mypy224,lock92; retained SQLAlchemy warning. Full job logs preserved privately.",
     "native_full_v11": "PASS current candidate d071221 (identical merged932fa07 tree), archive4b7fbd7ba8a134ac2937d0d132de6c4425074ddbae5b8eae510d9622649ea934.1387 unique sink acceptances;125/1250 baselines,300s observation/faults/fullstate recovery pass.0missing acknowledged sentinels;RTO15.191s. API173samples:p950.097517s,max3.396392s;critical288samples:max1.151584s.1250fullyaccepted70.073s into300s;229.927s idle. Same-host/quiescedsynthetic,offhostescrowfalse,recipientdeliveryunconfirmed. All assets preserved.",
     "final_images_932fa07": "PASS nativeAMD64 six-image25phase gate at932fa07, source manifestsha256:0542b533e23112ec91cd5ccf152304e5f87bc5c0c68fc5901ff3fcfc8aef3134 (902files), original/copied/after identical. All images65532:65532;Trivy0.74.0 noHIGH/CRITICAL/secret findings, independent fresh candidatecache frozen acrosssix scans, DBNextUpdate2026-11-08T06:54:25Z. Workerfinal-images-v2-932fa07489fb/data/qualification/release-images/run-v2 evidence retained.",
-    "staging_current": "Run42376577698 exact932fa07: inputguard and full hosted qualification PASS. Cancelled before environment approval/deployment to replace with final REG-026 source. No app/Terraform apply occurred; logs and infrastructure retained. Replacement remains an engineering task, not human GO.",
+    "staging_current": "Workflow42388194717,requestkp-5fd36ecc374bca37207e63492a5b9ed9-1,qualified app3512a41: inputguard+complete hosted releasequalification PASS. Deployjob128452188157 waits at environment engineering gate while cleanLinuxVMv3 isactive; noapplyyet.",
     "clean_linux_attempts": "Private v1 stopped before NIC/VM request when Azure rejected Allow on deny-only AzurePlatformDNS tag; new RG/NSG/2Deny rules preserved. Reviewed privatev2 uses fresh-v2names and exact168.63.129.16/32:53. Independent review also caught built-in nullIPAM before execution; narrow real-callpath fix passes83author+83independent tests. Original v1 bytes preserved. Live v2 result remains a separate gate.",
     "development_prepare_v1": "Qualified all902 source files and emitted private manifest35ecd9f9f0faab320875704ce3c3c6737ff4a80566538548e6c0ded8956d948d. PREPARE failed database_target_is_not_normal_project on existing nonruntimeDATABASE_URL_TEST=kingphisher_test. Run/release did not exist afterward, normalservice/source/env/container identities untouched. Worker manifest and private controllerlog retained. REG-026 repairs exact classification; do not weaken runtime alias validation.",
-    "clean_linux_v2_metadata": "New private v2 VM created successfully with pinned Ubuntu image,D2s_v7,64GiB Standard_LRS,no publicIP/managedidentity. Coordinator expected diskSizeGb; actual VMshow uses diskSizeGB=64, causing KeyError before guest installation or shutdown-schedule step. Finally verified exact VMdeallocated within121.3s; no install pass claimed. BareVM/disk/NIC/NSG/logs remain retained. Private v3 fixes actual response key under fresh-v3 resource names and preserves every older asset."
+    "clean_linux_v2_metadata": "New private v2 VM created successfully with pinned Ubuntu image,D2s_v7,64GiB Standard_LRS,no publicIP/managedidentity. Coordinator expected diskSizeGb; actual VMshow uses diskSizeGB=64, causing KeyError before guest installation or shutdown-schedule step. Finally verified exact VMdeallocated within121.3s; no install pass claimed. BareVM/disk/NIC/NSG/logs remain retained. Private v3 fixes actual response key under fresh-v3 resource names and preserves every older asset.",
+    "pr173_final_ci": "Reviewed d28e1fa188c0bbc4e9d62a44817e66382c21ecaf and merged3512a4129262425999e6baaaaf0cc6a0b5f866e6 share tree234175ac5025a59802731369bf3901e4af1064f9. Candidate42387615833 and main42388168837 allgreen; full original logs preserved privately.77independent preservation tests and actual read-only .105configuration guard pass.",
+    "native_full_v12": "PASS complete profile atd28e1fa, identical application3512tree, archive1a31734bf91a20d22a05ccdd747c433e68b847ed07ebd9ff1ff96bdd37413598.1387unique sink acceptances;0missing acknowledged sentinels;RTO18.975s. API173samples:p950.094396s,max2.817773s;critical288samples:max1.078834s.1250delivery completes92.936s into300s observation,207.064s idle. Fullfault/recovery pass; same-host/quiescedsynthetic scope,offhostescrowfalse,recipientdeliveryunconfirmed.",
+    "final_images_3512a41": "PASS nativeAMD64 siximages/all25phases at3512a41;902-file source/copied/after digestsha256:60c6ec481741cbb5833083a7eebd1ca3089b44d84fa4e47dfbb82306cfcda1cc unchanged. Trivy0.74.0 noHIGH/CRITICAL/secret findings with frozen fresh candidatecache. Evidencefinal-images-v3-3512a4129262/data/qualification/release-images/run-v3 preserved onworker.",
+    "development_prepare_v2": "Outside-run manifest1928119b23c2aa1b193e7190272b51af275b41d1f2fde2faa8477d7ab7904f27 binds902 app3512files/native12/image3/mainCI. PREPARE2 failed FileNotFoundError before run/release/servicechanges. Actualread-only systemd diagnostic reports cleanenvcommand_failed_systemctl/No medium found; inheritedSSHprojectunit isactive. Workerprivatepreflight-systemd-diagnostic-v1.stderr andcontrollerdevelopment-prepare-v2-1794066860558736000.log preserved. REG027 corrects operator execution/diagnostic paths.",
+    "separate_operator_tool_model": "Independent review confirms coordinator need not live in release source. App source/manifest3512staysimmutable; external reviewedtoolmustbind itsownSHA/hash/interpreter/invocation/CI/busproof. _source/_migrate/_probe/cutover continue using qualified3512files and validate database modulepath. rg shows no kp_dev_upgrade import in application packages/APIs/supervisor. Existingpreparev2wrapper cannot be reused unchanged because it invokes appcopytool; new external invocation required."
+  },
+  "qualified_application": {
+    "commit": "3512a4129262425999e6baaaaf0cc6a0b5f866e6",
+    "tree": "234175ac5025a59802731369bf3901e4af1064f9",
+    "ci_run": 42388168837,
+    "source_manifest_digest": "sha256:60c6ec481741cbb5833083a7eebd1ca3089b44d84fa4e47dfbb82306cfcda1cc",
+    "operator_tool_boundary": "REG027 may use a separately reviewed and CI-verified external coordinator; application source/venv/migration/probe/supervisor/static files remain bound to this immutable release. Record actual tool commit/hashes/interpreter/invocation separately; no new application-image qualification is claimed for tool-only changes."
   }
 }
