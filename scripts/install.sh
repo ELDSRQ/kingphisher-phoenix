@@ -9,7 +9,7 @@
 #
 # Supported platforms:
 #   - macOS (arm64/x86_64): Homebrew, Docker via Colima, uv >= 0.11, Python 3.13
-#   - Linux (Debian/Ubuntu): apt, docker.io + compose plugin, uv >= 0.11, Python 3.13
+#   - Linux (Debian/Ubuntu): apt, Docker + Compose/Buildx plugins, uv >= 0.11, Python 3.13
 #
 # Usage:
 #   ./scripts/install.sh            # full install + start
@@ -147,8 +147,13 @@ docker_compose_ready() {
     && bounded "$DOCKER_TIMEOUT_SECONDS" docker compose version >/dev/null 2>&1
 }
 
+docker_buildx_ready() {
+  command_exists docker \
+    && bounded "$DOCKER_TIMEOUT_SECONDS" docker buildx version >/dev/null 2>&1
+}
+
 if [ "$SKIP_DEPS" -eq 0 ] \
-  && { ! docker_ready || { [ "$OS" = linux ] && ! docker_compose_ready; }; }; then
+  && { ! docker_ready || { [ "$OS" = linux ] && { ! docker_compose_ready || ! docker_buildx_ready; }; }; }; then
   case "$OS" in
     macos)
       step "installing Docker via Homebrew + Colima"
@@ -175,21 +180,38 @@ if [ "$SKIP_DEPS" -eq 0 ] \
       $SUDO apt-get update
       # Ubuntu Noble supplies docker-compose-v2; upstream Docker sources use
       # docker-compose-plugin. Select only configured, trusted package sources.
-      compose_package="$(linux_compose_package)" \
-        || die "Docker Compose v2 is unavailable in the configured apt sources. Install a trusted docker-compose-plugin or docker-compose-v2 package, then re-run. No repositories were added or project services changed."
+      docker_cli_packages=()
+      if ! docker_compose_ready; then
+        compose_package="$(linux_compose_package)" \
+          || die "Docker Compose v2 is unavailable in the configured apt sources. Install a trusted docker-compose-plugin or docker-compose-v2 package, then re-run. No repositories were added or project services changed."
+        docker_cli_packages+=("$compose_package")
+      fi
+      if ! docker_buildx_ready; then
+        buildx_package="$(linux_buildx_package)" \
+          || die "Docker Buildx is unavailable in the configured apt sources. Install a trusted docker-buildx-plugin or docker-buildx package, then re-run. No repositories were added or project services changed."
+        docker_cli_packages+=("$buildx_package")
+      fi
       if docker_ready; then
-        # A working daemon needs only its missing CLI plugin repaired. Do not
+        # A working daemon needs only its missing CLI plugins repaired. Do not
         # replace its engine provider with the distribution's docker.io.
-        $SUDO apt-get --no-remove install -y "$compose_package" \
-          || die "Compose dependency repair could not preserve installed packages. Repair the trusted matching Compose package and re-run; no engine replacement is permitted."
+        if [ "${#docker_cli_packages[@]}" -gt 0 ]; then
+          linux_cli_apt_plan_is_safe "$SUDO" "${docker_cli_packages[@]}" \
+            || die "The CLI-only APT plan could not prove engine/runtime preservation. Repair trusted matching Compose/Buildx prerequisites without changing the existing Docker provider, then re-run. No dependency install or project lifecycle operation was attempted."
+          $SUDO apt-get --no-remove install -y "${docker_cli_packages[@]}" \
+            || die "Docker CLI dependency repair could not preserve installed packages. Repair the trusted matching Compose/Buildx package and re-run; no engine replacement is permitted."
+        fi
       else
         if linux_docker_engine_present; then
-          $SUDO apt-get --no-remove install -y "$compose_package" \
-            || die "Compose dependency repair could not preserve installed packages. Repair the trusted matching Compose package and re-run; no engine replacement is permitted."
+          if [ "${#docker_cli_packages[@]}" -gt 0 ]; then
+            linux_cli_apt_plan_is_safe "$SUDO" "${docker_cli_packages[@]}" \
+              || die "The CLI-only APT plan could not prove engine/runtime preservation. Repair trusted matching Compose/Buildx prerequisites without changing the existing Docker provider, then re-run. No dependency install or project lifecycle operation was attempted."
+            $SUDO apt-get --no-remove install -y "${docker_cli_packages[@]}" \
+              || die "Docker CLI dependency repair could not preserve installed packages. Repair the trusted matching Compose/Buildx package and re-run; no engine replacement is permitted."
+          fi
           $SUDO systemctl start docker \
             || die "The installed Docker engine could not start. Restore its existing service and re-run; its provider was preserved."
         else
-          $SUDO apt-get --no-remove install -y docker.io "$compose_package" \
+          $SUDO apt-get --no-remove install -y docker.io "${docker_cli_packages[@]}" \
             || die "Docker dependency installation could not preserve installed packages. Repair trusted prerequisites and re-run; no packages may be removed."
           $SUDO systemctl enable --now docker
           if [ "$(id -u)" -ne 0 ]; then
@@ -231,6 +253,14 @@ else
     || die "Docker Compose v2 could not run. Install or repair the trusted Compose plugin, then re-run without --skip-deps. No project lifecycle operation has run."
 fi
 ok "docker compose present"
+if [ -n "$DOCKER_WRAP" ]; then
+  bounded "$DOCKER_TIMEOUT_SECONDS" sg docker -c "docker buildx version" >/dev/null 2>&1 \
+    || die "Docker Buildx could not run. Install or repair the trusted Buildx plugin, then re-run without --skip-deps. No project lifecycle operation has run."
+else
+  docker_buildx_ready \
+    || die "Docker Buildx could not run. Install or repair the trusted Buildx plugin, then re-run without --skip-deps. No project lifecycle operation has run."
+fi
+ok "docker buildx present"
 
 # Validate recovery-sensitive values and inspect for preserved volumes before
 # dependency synchronization changes the regenerable Python environment.
