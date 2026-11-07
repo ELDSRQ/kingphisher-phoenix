@@ -1,6 +1,8 @@
 # Isolated full-stack qualification plan
 
-Status: proposed for root review; no stack has been started by this plan.
+Historical design plan. The implementation is under active native qualification;
+current results and preserved failures are recorded in the
+[remediation registry](../../../docs/remediation/registry.json).
 
 ## Scope and claims
 

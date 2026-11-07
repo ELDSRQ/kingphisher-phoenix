@@ -28,7 +28,10 @@ def address(command: str) -> str:
 
 class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    # Recovery reuses this owned loopback endpoint after QUIT actively closes
+    # connections. Reclaim TIME_WAIT sockets, never another live listener.
+    allow_reuse_address = True
+    allow_reuse_port = False
 
     def __init__(self, endpoint: tuple[str, int], upstream_port: int, control: Path, journal: Path) -> None:
         self.upstream_port, self.control, self.journal = upstream_port, control, journal

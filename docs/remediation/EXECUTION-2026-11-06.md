@@ -155,3 +155,12 @@ tests pass, including real cache/application/proxy URL consumers and unsafe
 metadata rejection. Strict mypy and Ruff pass. Baseline startup, data checks,
 snapshot bytes and all profile deadlines remain unchanged. A fresh full native
 run and current-source CI are the next release gates.
+
+Native v9 passes the restored port/data/configuration checks and launches the
+restored process group, then its SMTP proxy alone exits with `Address already
+in use`. The readiness gate correctly refuses qualification. The repair enables
+closed-connection address reuse while explicitly disabling multi-listener port
+reuse. Two real loopback tests prove immediate same-endpoint restart after
+QUIT/EOF and refusal to replace an active listener. Independent source review,
+Ruff and strict mypy pass. Readiness, ownership, URLs, data and deadlines remain
+unchanged; all failed-run assets remain preserved for inspection.
