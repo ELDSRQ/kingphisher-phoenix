@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-07",
+  "updated": "2026-11-08",
   "baseline": "db55667aeb9950e98297b54a3ad91af1d26a5017",
   "repository": "ELDSRQ/kingphisher-phoenix",
   "authorization": "User approved continued remediation and engineering actions until complete or no agent jobs remain. Human evidence/signatures must remain authentic.",
@@ -545,14 +545,15 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "in_progress",
-      "owner": "agent",
-      "next_action": "V5 passed all eight A stages against installer790171d/CI42403025100: bootstrap, clean install, browser, warm rerun, repair and reboot/relaunch. Its separate B engine rejected simultaneous bridge/bip before state import; an independently reviewed new configuration keeps the custom bridge and removes only bip. Finish actual baseline0056-to0060 upgrade/browser/data proof after off-host recovery, then verify deallocation/timer restoration. All earlier VM/disks/evidence remain preserved. Current Linux/browser delivery needs no OS publisher certificate.",
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
       "historical_379_record": {
         "status": "in_progress",
         "owner": "agent",
         "next_action": "Clean Linux v5 is executing against installer bundle790171d/mainCI42403025100 after111author+111independent preservation/permission tests. V4 reached the real installer but its private extractor masked public Git modes underumask077, making the PostgreSQL initializer unreadable; exact logs/modes and two before-fix regressions prove the harness fault. V2–V4 VMs/disks/evidence remain preserved/deallocated. Current Linux/browser server needs no OS publisher certificate; native distributed packages and other clean-host matrix evidence remain scoped separately."
-      }
+      },
+      "resolution": "All eight original clean-Linux A stages passed against installer 790171d / CI 42403025100: bootstrap, installation, first browser, warm rerun, repair and reboot with installer-mediated relaunch. Actual separate B preparation, baseline acabf08/schema0056, upgrade to 790171d/schema0060, final browser and key/volume/audit proof all passed in resume-v5-v5. Verified final source deallocation and complete original shutdown-schedule restoration. Private containerd is explicitly confined to B; original engine ID, directory, images, all failed VMs/disks/evidence and A assets retained. Linux/browser delivery needs no OS publisher certificate; automatic startup and other native-package matrices are separate scopes."
     },
     {
       "id": "W2-03",
@@ -569,14 +570,15 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "in_progress",
-      "owner": "agent",
-      "next_action": "Finish exact-source CI for REG033 target UV environment repair, then explicitly qualify an additive installation continuation of the preserved fully restored target after rechecking complete pre-startup state. Never re-restore/overwrite initialized data or weaken fresh-target guards. Complete actual runtime/maintenance proof and deallocation before source B trial. No full offhost service success or humanGO yet.",
+      "status": "external_gate",
+      "owner": "operator",
+      "next_action": "Choose development audit continuity scope on .105: (recommended) preserve all current data and old evidence, record the explicit gap, and authorize a new private development witness directory/configuration-key change, bounded restart of the owned service/13native children, a declaring audit record and fresh maintenance anchor after independent review/testing; this permits forward anchoring without claiming old continuity or production GO. Alternatively provide a matching earlier backup/key location for read-only checking and isolated recovery before any history choice, or keep the continuity gate open with no config/history change. The choice is needed because engineering approval cannot establish historical authenticity and restoring the located three-event checkpoint would discard current work. New development epoch is recommended to retain verified current data and every historical artifact while declaring, rather than concealing, the gap. No unanswered question or elapsed time authorizes the change.",
       "historical_379_record": {
         "status": "in_progress",
         "owner": "agent",
         "next_action": "The preserved normal .105 checkpoint, isolated real-data restore/forward migration, reviewed cutover and all verification phases pass. Application3512a41/schema0060 is running with original source/env/venv/unit/data and all7normalcontainer/mount identities preserved. Full native12 same-host synthetic recovery measured zero missing acknowledged sentinels/RTO18.975s. Complete the separately reviewed synthetic off-host source/target tool and actual drill after cleanLinux passes; never export the normal real-data checkpoint. The existing development audit witness disagreement is tracked separately as REG-031."
-      }
+      },
+      "resolution": "Encrypted synthetic off-host engineering proof is complete: REG-030, REG-032 and REG-033. Zero missing acknowledged sentinels; restore 117.036 seconds, provisioning-inclusive 608.913 seconds; full protected state, APIs/UI, 13 children and actual maintenance with fresh anchor passed. Source off before target and successful target off after proof. Normal .105 upgrade/rehearsal is separately qualified. Pre-existing normal development historical witness authenticity remains externally gated by REG-031; it is not resolved by the synthetic drill."
     },
     {
       "id": "W2-04",
@@ -1053,11 +1055,11 @@
     {
       "id": "REG-016",
       "parent": "W2-02",
-      "owner": "agent",
-      "status": "in_progress",
+      "owner": "none",
+      "status": "complete",
       "title": "Actual clean Linux installation, repair, baseline upgrade and reboot qualification",
-      "resolution": "V3 exposed missing Buildx, fixed by PR175. V4 exposed a private extractor masking public Git permissions; two actual umask regressions reproduce it. V5 canonical public-code permissions pass111author+111independent checks and all eight actual A bootstrap/install/browser/warm/repair/reboot stages. Separate B startup failed on mutually exclusive bridge/bip before importing state. The empty B root, old config/image archive and all five A proofs remain preserved. Every completed visit verified VM deallocation; diagnostic/preservation visits restored the original owned timer.",
-      "next_action": "After actual off-host restore and target deallocation, execute reviewed isolated B repair/baseline0056-to0060 upgrade/final browser/preservation proof, then verify deallocation/timer restoration. No unexecuted B or human phase is a pass.",
+      "resolution": "All eight original clean-Linux A stages passed against installer 790171d / CI 42403025100: bootstrap, installation, first browser, warm rerun, repair and reboot with installer-mediated relaunch. Actual separate B preparation, baseline acabf08/schema0056, upgrade to 790171d/schema0060, final browser and key/volume/audit proof all passed in resume-v5-v5. Verified final source deallocation and complete original shutdown-schedule restoration. Private containerd is explicitly confined to B; original engine ID, directory, images, all failed VMs/disks/evidence and A assets retained. Linux/browser delivery needs no OS publisher certificate; automatic startup and other native-package matrices are separate scopes. Continuation helper ea8a6ca2 / request 0568975c, 100 local tests and read-only live preflight passed before actual execution. New B receipts explicitly do not relabel historical A proofs as newly executed.",
+      "next_action": null,
       "historical_379_record": {
         "status": "in_progress",
         "owner": "agent",
@@ -1205,10 +1207,10 @@
       "parent": "W2-02",
       "priority": "P1",
       "title": "Preserve canonical public Git file and directory permissions under a private qualification umask",
-      "status": "in_progress",
-      "owner": "agent",
-      "resolution": "V4 exact PostgreSQL diagnostics show initializer directory/script700 and Permission denied. Two real umask077 extraction regressions fail on frozenV4; V5 sets only new public Git files644/755 and code directories755, retaining private config/data/keys/evidence600/700.111author+111independent tests and all eight actual V5 A install/repair/reboot stages pass; old failed assets are preserved/deallocated.",
-      "next_action": "Finish the separate actual B extraction/upgrade qualification before closing this live record.",
+      "status": "complete",
+      "owner": "none",
+      "resolution": "The private umask fault was reproduced by two real extraction regressions. Reviewed v5 extraction restores canonical modes only on new verified public Git code, retaining private configuration, keys and evidence modes. 111 author and 111 prior independent tests, all eight actual A stages, and the actual B baseline and upgraded extraction/install/browser/preservation phases passed. All old failed assets remain preserved; source finally verified deallocated with complete original schedule restored.",
+      "next_action": null,
       "historical_379_record": {
         "status": "in_progress",
         "owner": "agent",
@@ -1221,10 +1223,10 @@
       "parent": "W2-03",
       "priority": "P1",
       "title": "Qualify encrypted off-host synthetic recovery with independent retained-key retrieval and complete restored service",
-      "status": "in_progress",
-      "owner": "agent",
-      "resolution": "Public tools379f5c5 passed independent review and CI42408247349:4669hermetic/214PostgreSQL/4Redis/14browser. Actual age roundtrip/rewrap/wrong-key/tamper/no-overwrite proofs pass. New private blob storage and a persistent controller identity exist; no identity is copied to source and normal real-data state remains on .105. Source V5 A has eight actual passed stages and exact engine/containers/mounts/volumes/Git proofs. After a safe missing-parent failure, reviewed prior-boot PID same-inode archival passed the unchanged canonical process guard, with original timer restored and source deallocated. New capture started only its exact PostgreSQL/Redis containers, then refused an order-sensitive identity check before database-state probes/sentinels/dumps/cipher. RAW read-only diagnosis proved identical complete mount descriptions with PostgreSQL order reversed4/24 times; source deallocation and timer restoration are verified. REG-032 repairs the comparison before a fresh CI-bound retry; no successful encrypted snapshot or target restore is claimed. Continuation: fac9a0e exact CI42416805378 passed; actual capture-v4 succeeded with five original A proofs, full identity/state guards and reviewed mount comparison. Cipher032a1fd4f4131a6692ed46b9cf4164457df6714813e598ecfb0108b654126d79 matches conditional offhost upload and exclusive persistent controller retrieval. Source VMv5 is verified deallocated and complete prior timer restored. Temporary controller files were absent; explicit recovered-stage/current-VM attestation records missing historic receipt bodies without fabricating them. Target-v1 stopped before compute on quota. Regional quota10to12 now approved; source remains deallocated while a separately pinned unrestricted D2as_v7 target-v2 provisions. No target restore pass yet. Actual target-v2 completed bootstrap, fresh-controller retained-key piped rewrap and full pre-startup PG/Redis/files/key/audit/sentinel/maintenance proof, then failed installer_unit_failed. Exact owned target deallocation and diagnostic prior-timer restoration verified; all partial assets retained. Diagnostic reports qualifiedUVexists but UVabsentfrominstallPATH;2real-shell regressions reproduce. REG033 repairs only target invocation environment before a freshCI-bound, preservation-safe continuation.",
-      "next_action": "Complete repair review/CI, then capture only qualified synthetic A into a new namespace; verify exclusive off-host/controller ciphertext and source deallocation before fresh target provisioning, retained-key retrieval/piped rewrap and complete state/service/maintenance restoration. Record separate restore/provision times and target deallocation; no enterprise SLA, continuous backup, recipient delivery or human GO is inferred.",
+      "status": "complete",
+      "owner": "none",
+      "resolution": "Actual capture-v4 and fresh target-v3 passed. Sourcefac9a0e/CI42416805378; targetccddc099/CI42432407730. Cipher032a1fd4f4131a6692ed46b9cf4164457df6714813e598ecfb0108b654126d79 matches source encryption, conditional offhost upload and exclusive persistent controller retrieval. Source verifiedOFF before target. Fresh-controller retained-key piped rewrap, target-local key, full PG/globals/Redis/files/config/purposekeys/audit/sentinel state and actual install/verifier/API/exactUI/13nativechildren passed. Zero missing acknowledged sentinels; actual maintenance consumed with fresh anchor heartbeat. Restore-only117.036s; provision-inclusive608.913s. TargetVMphysicalv2 verifieddeallocated; all prior failed targets/disks/state retained. Synthetic quiesced scope only; no continuousbackup/enterpriseSLA/recipientdelivery/humanGO. Normal realdata checkpoint never exported.",
+      "next_action": null,
       "historical_379_record": {
         "status": "in_progress",
         "owner": "agent",
@@ -1252,26 +1254,26 @@
       "id": "REG-032",
       "parent": "W2-03",
       "priority": "P1",
-      "owner": "agent",
-      "status": "in_progress",
+      "owner": "none",
+      "status": "complete",
       "title": "Compare complete Docker mount identities independently of raw inspection order",
-      "resolution": "Actual source379 capture passed initial identity and process guards, started only its exact PostgreSQL/Redis containers, then stopped at the second strict ordered Mounts comparison. Original source/data/proofs are preserved; VM deallocation is verified. A separately reviewed RAW read-only24-sample inspector found all6container scalar/full typed mount multisets identical, while PostgreSQL mount order reversed4/24 times. Formatted one-shot/24-sample observations did not reproduce the variation; they are retained separately. A new regression reproduces rejection on before/start/reversed-equivalent mounts against379. Repair serializes and sorts each complete mount dictionary without dropping fields/types/unknown attributes/counts/duplicates; all other identity/volume/image/label checks stay exact.236focused tests and strict mypy5 pass locally; independent review and fresh exact-source CI precede any retry. Continuation: exact public fac9a0e CI42416805378 succeeded and236focused tests pass. Actual source capture-v4 completed both mount/engine checks, snapshot/encryption/upload and controller retrieval; source deallocation/full prior timer restoration verified. Separate complete target recovery remains open under REG030.",
-      "next_action": "Complete actual target restoration and retained-key/data/service proof under REG030; then reconcile this repair with its executed CI/source-capture evidence."
+      "resolution": "Complete typed mount dictionaries are canonicalized and sorted without dropping fields, normalizing value types or losing duplicate counts. Actual raw24-sample diagnosis proved order-only variation4/24. Two actual source capture identity checks passed with fac9a0e/CI42416805378; complete fresh-target restoration passed with ccddc099/CI42432407730. All engine/container/image/label/volume guards remain exact;238focused tests and strictmypy5 pass.",
+      "next_action": null
     },
     {
       "id": "REG-033",
       "parent": "W2-03",
       "priority": "P1",
       "title": "Use the separately pinned bootstrap uv for target installation and worker startup",
-      "status": "in_progress",
-      "owner": "agent",
-      "resolution": "Actual target-v2 restore passed every pre-startup data check but installer unit failed. Evidence-only exact-target diagnostic confirms tools/uv-venv/bin/uv exists while install PATH cannot resolve uv; prior timer/deallocation verified. Two actual shell invocations through the real Target constructor fail on absent or unqualified ambient uv before the repair. PATH now places the hash-pinned bootstrap tools directory before the app venv/inherited PATH; original source/config/data/fresh-target guards are unchanged. Focused tests and new exact-source CI bind the repair before live continuation.",
-      "next_action": "Run exact-source CI; bind a separately reviewed no-clobber maintenance continuation to the existing restored-state proof/current VM/engine/Git/assets. Reverify all restored data before installation; run actual installer/verifier/runtime/maintenance checks and verify deallocation. No overwrite/reset/re-restore of existing data."
+      "status": "complete",
+      "owner": "none",
+      "resolution": "Actual failed target proved pinned bootstrapUVexists but absent from installerPATH. Two real-shell regressions through actualTarget constructor fail before repair for missingUV/ambientwrongUV. Target PATH now puts qualifiedbootstraptools first.238focused+strictmypy5+lint/format and exactccddc099CI42432407730(all3jobs)pass. Actual NEW target-v3/physicalVMv2 completed datarestore/installer/verifier/readiness/exactUI/13children/auditprefix/realmaintenance+freshanchor. Verifieddeallocated; old initializedfailedtarget/data/key/disk retained. No fresh-target guard bypass or overwrite.",
+      "next_action": null
     }
   ],
   "evidence": {
     "prior_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42255462847",
-    "current_local_root": "/private/tmp/kp-registry-completion-20261106-3lkIJ1",
+    "current_local_root": "/Users/edierks/projects/codex-test/phishing-awareness-platform/data/qualification/resume-20261107",
     "privacy_role_effects": "privacy-role-effects-v3.xml:6 actual-role PostgreSQL effects including projector/erasure interleaving",
     "adaptive": "6 migrated PostgreSQL +14 Chromium/WCAG2.2 scenarios; adaptive-postgres-v3.xml",
     "queue": "257 focused +2 real Redis; queue-followups-completion.json",
@@ -1362,14 +1364,48 @@
       "source_cipher_sha256": "032a1fd4f4131a6692ed46b9cf4164457df6714813e598ecfb0108b654126d79",
       "source_deallocated": true,
       "source_prior_timer_restored": true,
-      "target_restore_passed": false,
-      "target_phase": "Target-v2 all pre-startup data checks passed; installer_unit_failed. Diagnostic confirms qualifiedUVexists but PATHmisses it. BothVMs verifiedOFF; prior diagnostic timer restored. New UVPATH fix needs exact CI and explicit preservation-safe continuation.",
+      "target_restore_passed": true,
+      "target_phase": "Fresh target-v3 onphysicalVMv2 PASS after bootstrapUVPATH fix; oldfailedphysicalVMv1 andallassetsretained. SourceOFFbeforetarget. Actualinstall/verifier/API/exactUI/13children/auditprefix/realmaintenance+freshanchorPASS; targetverifiedOFF.",
       "original_temporary_receipt_bodies_available": false,
       "persistent_evidence": "data/qualification/resume-20261107/",
-      "regional_quota_request": "fb31a632-a332-44ad-b837-19ea11537ee8",
-      "regional_quota_limit": 12,
+      "regional_quota_request": "775fde42-d79c-46dd-84cd-4e71b85946be",
+      "regional_quota_limit": 14,
       "target_hardware": "Standard_D2as_v7 / StandardDasv7Family,2vCPU/8GiB,unrestricted",
-      "target_prestartup_data_proof_passed": true
+      "target_prestartup_data_proof_passed": true,
+      "target_tools_commit": "ccddc0994cd1be4d0c0736e42b67c31beed1aa9a",
+      "target_tools_CI": 42432407730,
+      "restore_only_rto_seconds": 117.036,
+      "provision_inclusive_rto_seconds": 608.9133009910583,
+      "missing_acknowledged_sentinels": 0,
+      "target_deallocated": true,
+      "source_receipt_sha256": "08dd8b32bc3e9157cb362f99f750b42c963fd15715f6fb854fdd35027d54838d",
+      "target_qualification_sha256": "892e5164e7e9b5fb31be8478afee88dff208329674162caac7ee9ce6fd0e3bfb"
+    },
+    "persistent_resume": "data/qualification/resume-20261107/; latest ACTIVE-STATE version and retained capture-v4, target-v3 and resume-v5-v5 actual passing evidence. Public target tools ccddc099 / CI42432407730; all failed assets preserved.",
+    "historical_temporary_local_root": "/private/tmp/kp-registry-completion-20261106-3lkIJ1",
+    "clean_linux_upgrade_20261108": {
+      "passed": true,
+      "actual_phases": [
+        "prepare",
+        "baseline",
+        "upgrade",
+        "final-browser",
+        "final-proof"
+      ],
+      "baseline_commit": "acabf08ba7e551e8af849073197cf5c3648183f8",
+      "baseline_schema": "0056_adaptive_draft_boundary",
+      "target_commit": "790171d97c205682febbf22a9c7db05d45be67a3",
+      "target_schema": "0060_delivery_authority_locks",
+      "sequential_private_daemon_namespace": true,
+      "volume_key_audit_preservation": true,
+      "source_deallocated": true,
+      "complete_original_schedule_restored": true,
+      "helper_sha256": "ea8a6ca2e582e91dd2f6c702371094f5dc37e6a625b104301544e2731979d27f",
+      "request_sha256": "0568975cab60a7703c866adf1166aa04e2d5eb04a8afa41e923be8a09ca248d3",
+      "qualification_sha256": "6da05413116d34521fe48a505c56ed4507ed95ec9e834401f9226875ddf57c87",
+      "human_acceptance": false,
+      "automatic_startup_without_installer_relaunch": false,
+      "original_A_proofs_relabelled_as_new": false
     }
   },
   "qualified_application": {

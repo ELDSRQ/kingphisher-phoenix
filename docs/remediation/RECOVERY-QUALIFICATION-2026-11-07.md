@@ -1,167 +1,109 @@
 # Current recovery and installation qualification
 
+## Completed encrypted off-host recovery
 
-## Persistent continuation — encrypted source capture completed
+The actual synthetic off-host drill passed on November 8. Source capture-v4
+used public recovery tools `fac9a0e` and successful exact CI `42416805378`.
+Fresh target-v3 used `ccddc0994cd1be4d0c0736e42b67c31beed1aa9a` and successful
+exact CI `42432407730`; all three CI jobs passed. The four source/reader modules
+are identical across those commits. Only the target invocation environment changed.
 
-Exact recovery-tool commit `fac9a0e` passed CI `42416805378` and 236 focused
-checks. Actual capture-v4 completed the five original on-host A proofs, full
-Git/engine/container/mount/volume/quiescence checks, synthetic protected-state
-capture, on-source encryption, conditional off-host upload and independently
-retained controller retrieval. Cipher SHA-256 is
-`032a1fd4f4131a6692ed46b9cf4164457df6714813e598ecfb0108b654126d79`.
-Source VMv5 was verified deallocated and its complete previous timer restored.
+The source passed five original on-host A proofs and exact Git, engine, six
+container, complete typed mount, volume and quiescence checks. It captured
+synthetic PostgreSQL/globals, Redis, complete files, protected configuration and
+keys, audit state, acknowledged sentinels and one actual maintenance job.
+On-source encryption, conditional off-host upload and exclusive persistent
+controller retrieval agree on ciphertext SHA-256:
 
-The old temporary controller copies are absent. New persistent work under
-`data/qualification/resume-20261107/` explicitly records reconstructed historical
-stage evidence and newly observed source VM/disk identity; original temporary
-receipt bodies were not fabricated. The source age identity remained on the
-controller. Original normal development and retired rollback assets remain intact.
+`032a1fd4f4131a6692ed46b9cf4164457df6714813e598ecfb0108b654126d79`
 
-Target-v1 stopped before compute on regional/Dsv7 quota10/10. The Dsv7 increase
-was rejected; a separate regional increase to12 succeeded. An explicitly pinned
-unrestricted `Standard_D2as_v7` / Dasv7 target uses190 passing controller/cloud
-checks. Actual target-v2 provisioned and completed bootstrap, fresh-process piped rewrap
-and all pre-startup data checks, then failed at its installer unit. Target and
-source are verified deallocated; the diagnostic's complete prior timer was
-restored. Its qualified uv exists outside the inherited install PATH. Two
-real-shell constructor regressions reproduce absent/ambient-uv selection;
-the fix puts the pinned bootstrap uv directory first. Fresh exact-source CI and
-a preservation-safe installation continuation remain required. No complete
-service recovery, recovery timing or B upgrade pass is claimed here. Later historical
-"capture has not passed" statements below describe prior attempts only.
+The source was verified deallocated before target provisioning. The fresh target
+generated its own key; a fresh controller process retrieved the retained identity
+and piped re-encryption without plaintext on controller disk. Complete restored
+state checks, real installation and verification, both APIs, exact UI, thirteen
+native children, audit prefix and actual maintenance consumption with a fresh
+anchor heartbeat passed. No acknowledged sentinel was missing.
 
-See [the continuation handoff](../SESSION-HANDOFF-2026-11-07.md) for persistent
-paths and remaining work. Update this section and the registry from actual final
-receipts before publication.
+| Observed scope | Actual elapsed time |
+| --- | ---: |
+| Restore only | 117.036 seconds |
+| Including fresh provisioning | 608.913 seconds |
 
-The application runtime is frozen at `3512a41`, with successful required CI,
-a complete native load/fault/recovery profile and six native AMD64 image gates.
-Installer bundle `790171d` changes installer/operator tooling only; runtime files
-remain byte-identical. Recovery tools have a separate reviewed source/CI/hash
-binding. The [registry](registry.json) distinguishes completed work from live
-qualification and authentic human acceptance.
+The successful target is `vm-kp-offhost-20261107-3lkij1-v2` in its matching task
+resource group. `target-v3/qualification.json` and `target-v3/deallocated.json`
+retain the actual proof and verified final deallocation. Private evidence lives
+under `data/qualification/resume-20261107/recovered/offhost-reviewed-v1/`.
 
-## Completed engineering evidence
+These results cover a quiesced synthetic dataset. Continuous backup, enterprise
+escrow or outage SLA, recipient delivery and human acceptance were not exercised.
+The normal real-data `.105` checkpoint stayed on its worker. Its separately
+qualified runtime remains application `3512a41` / schema `0060`.
 
-- Staging workflow `42388194717` passed guard, qualification and deployment.
-  Immutable images/SBOM/provenance/attestation, migration, workers, authenticated
-  ACS receipt activation and cloud-completion checks passed. Deployment `7623447852`;
-  evidence artifact `13581379690`. This is engineering completion, without human GO.
-  After checking the runner was idle and no workflow was queued or in progress,
-  its VM was returned to verified deallocated state. Its registration, disks,
-  work and evidence remain preserved.
-- The preserved normal .105 upgrade completed prepare/checkpoint/rehearse/
-  reviewed-cutover/verify. It runs `3512a41` / schema `0060` with both APIs, exact UI,
-  thirteen native children and audit/cipher verification. Original source,
-  environment, venv, unit, data and seven container/mount identities are retained.
-  Real-data restoration proved original table counts, old/new decryption, Redis
-  and audit integrity in the isolated rehearsal, including after its forward
-  migration, before live cutover. No failed jobs were replayed.
-- Native v12 measured zero missing acknowledged sentinels and **18.975 seconds**
-  recovery time for its quiesced same-host synthetic dataset. Its 300-second
-  observation included 92.936 seconds of delivery acceptance and 207.064 seconds
-  idle. It exercised 125/1,250-message profiles, a five-second SMTP stall, bounded
-  retry and ambiguous acceptance handling; no recipient delivery was inferred.
-  These measurements are
-  neither continuous-load/long-term soak evidence nor an enterprise outage SLA.
+## Repairs and retained failed attempts
 
-## Actual clean Linux trials
+The first capture refused nondeterministically ordered raw Docker mounts. A
+24-sample read-only diagnostic found PostgreSQL mount order reversed four times
+while all full typed fields, values, counts and duplicates were identical. The
+repair sorts canonical complete mount dictionaries and preserves every identity
+guard. The actual successful source capture exercised both identity checks.
 
-V3 exposed missing Buildx; PR175 fixes trusted plugin installation and protects
-existing engine/runtime providers by validating the exact APT dependency plan.
-156 author and 156 independent focused tests pass; merged-main CI `42403025100`
-passes 4,447 hermetic, 214 PostgreSQL, 4 Redis and 14 browser tests.
+The first provisioned target passed all pre-startup restored-state checks, then
+failed installation because the separately pinned bootstrap uv was absent from
+the invocation PATH. Two real-shell regression cases reproduce missing uv and
+selection of an unqualified ambient uv. The repair puts the qualified bootstrap
+uv directory first. All 238 focused tests, strict mypy for five modules and
+lint/format passed before exact CI and the actual successful fresh-target drill.
+The initialized failed target, disk, key, restored state and diagnostics remain
+preserved and deallocated. Fresh-target refusal guards were not bypassed.
 
-V4 progressed through the real installer to PostgreSQL readiness. Its private
-source extractor ran under `umask 077`, making public Git code `0600/0700`. Exact VM
-diagnostics show the initializer directory/script `0700` and repeated Permission
-denied inside PostgreSQL. This is a qualification-harness fault. Two actual umask
-tests reproduce it. The independently reviewed v5 harness restores canonical
-Git `0644/0755` file modes and `0755` code directories only in its new source trees;
-configuration, keys, archives and evidence retain private permissions. 111 author
-and 111 independent checks pass.
+Quota blocked the first preflight before compute. The Dsv7-family increase was
+unavailable; regional quota increases from 10 to 12 and then 14 succeeded. A
+separately pinned unrestricted `Standard_D2as_v7` target supplies two native AMD64
+vCPUs and 8 GiB. Every earlier VM and disk remains preserved. Deallocated VMs
+continue to count against quota, as documented by
+[Microsoft](https://learn.microsoft.com/en-us/azure/virtual-machines/quotas).
 
-V5 actually passed bootstrap, clean install, first browser, warm rerun, repair,
-reboot checkpoint, VM reboot and reboot relaunch. Its separate B-engine upgrade
-phase failed before loading state: Docker rejects simultaneous `bridge` and `bip`
-configuration. Read-only diagnosis verified the B data root was still empty and
-preserved the original configuration, image archive and five authenticated A
-proofs. A separately reviewed repair keeps the existing custom bridge and removes
-only the conflicting `bip` setting in a new configuration. Actual B baseline,
-migration and final browser/data proof remain unexecuted. The source VM remains
-verified deallocated after each visit; the original shutdown timer is restored
-after bounded diagnostic visits.
+Original temporary source provisioning receipt bodies are unavailable. Explicit
+recovered-stage/current-VM attestation binds the recorded eight actual A stages
+and Azure VM UUID/time/disk; it does not fabricate missing historical receipts.
+Actual capture still required the five original on-host proofs and exact assets.
+The controller identity remains private mode `0600` and was never sent to source.
 
-All earlier VMs/disks/evidence remain preserved and verified deallocated after
-their trials/diagnostics. No unexecuted install, reboot or upgrade phase is a pass.
-OS publisher certificates apply to distributed native signed packages; the
-current Linux server/browser installation does not require such a certificate.
+## Clean Linux installation and upgrade
 
-## Off-host recovery work
+V3 exposed missing Buildx; PR175 fixed trusted plugin installation with bounded
+APT transaction checks. V4 exposed private-umask masking of public Git permissions;
+two actual extraction regressions reproduced it. The reviewed v5 extractor sets
+only new verified public code to canonical modes and retains private state modes.
+All eight actual v5 A bootstrap/install/browser/warm/repair/reboot stages passed
+against installer `790171d` and exact main CI `42403025100`.
 
-The [operator tools](../../scripts/operator/recovery-qualification/README.md)
-capture complete synthetic state from an actually qualified isolated source A,
-encrypt it to a retained controller identity, and restore onto a new target after
-source deallocation. The target generates its own identity; a fresh controller
-process retrieves the retained key and pipes re-encryption without plaintext on
-controller disk. The normal real-data .105 checkpoint stays on the worker.
+The separate B daemon initially rejected simultaneous `bridge` and `bip`, before
+importing state. A new configuration removed only `bip` and preserved the bridge.
+A later preparation attempt reached a live daemon but correctly failed the
+private-containerd guard: the Ubuntu Docker package selected the system socket
+`/run/containerd/containerd.sock`. Retained journal evidence proves that selection;
+B remained unselected with no baseline or upgraded source imported.
 
-Capture/restore bind exact Git, host, engine, container, mount, volume, schema,
-configuration/key, audit, file and Redis state, plus acknowledged sentinels and
-one actual maintenance job. Restore gates the actual installer and installation
-verification on complete data proof, then checks readiness, exact UI, thirteen
-children, audit prefix and real maintenance progress. Provisioning-inclusive and
-restore-only times are reported separately. No continuous-backup schedule,
-enterprise escrow/SLA, recipient delivery or human acceptance is inferred.
+The tested v5 continuation preserves the initialized B directory and engine ID,
+checks it has no containers or named volumes, and explicitly configures private
+containerd metadata, runtime and socket paths within B. This follows the
+[containerd configuration contract](https://raw.githubusercontent.com/containerd/containerd/main/docs/man/containerd-config.toml.5.md).
+All 100 continuation tests pass, including the actual unchanged isolation guard,
+state-drift refusal, no overwrite and final deallocation behavior. Read-only live
+preflight and all five actual phases passed in `resume-v5-v5/`: prepare, baseline,
+upgrade, final browser and final proof. The baseline `0056_adaptive_draft_boundary`
+at `acabf08` upgraded to `0060_delivery_authority_locks` at installer `790171d`.
+Final real browser login and volume, key and audit preservation passed. Final
+qualification verifies source deallocation and complete original timer restoration.
+These new B receipts do not relabel original A proofs as newly executed A stages.
+The earlier A reboot proof covers installer-mediated relaunch; automatic startup
+without that relaunch remains outside the qualified scope.
 
-Actual age 1.3.1 synthetic local proofs pass full round trips, separate-target key
-re-encryption, wrong-key/tampering rejection and no overwrite. Independent review
-caught metadata-size limits and restore target/volume guards before live use;
-fixes and repeat review precede code CI and any off-host drill. Candidate `379f5c5`
-has successful exact-source CI `42408247349`: 4,669 hermetic, 214 PostgreSQL,
-4 Redis and 14 browser tests. That is the prior tool binding; the mount-comparison
-repair below requires fresh exact-source CI before another live capture. Every
-attempt binds its five public recovery modules to its recorded tool commit,
-successful CI and individual file hashes.
-
-The new task-owned private Azure artifact store and a persistent controller age
-identity now exist. The identity stays on the controller with mode `0600`; it is
-never copied to the source. Capture has not yet passed. The first attempt timed
-out while starting the source VM. The next reached the unchanged quiescence
-guard and refused one retained PID marker before starting data services or
-writing sentinels. Subsequent read-only inspection proved that marker referred
-to an absent process and predated both inspected boots. A reviewed archival
-attempt stopped before moving it because the clean-install fixture had no
-`data/recovery` parent. A separately reviewed retry created only that missing
-private parent after all safety checks, then archived the one exact marker by
-same-filesystem rename. Its inode, bytes and metadata remain preserved inside
-the complete backup scope. The unchanged canonical quiescence guard passed;
-no file was deleted or process signalled. Source deallocation and restoration
-of the full original shutdown timer were verified.
-
-The next capture passed its initial identities, started only its two exact
-PostgreSQL/Redis containers, and stopped at the second identity check before
-database-state probes, sentinels, dumps or ciphertext. A reviewed read-only diagnostic using
-the same **raw Docker JSON** path observed PostgreSQL's two mount descriptions
-reversed in **4 of 24** samples. All six containers' scalar identities and every
-typed mount field, count and duplicate remained equal. Separate formatted
-observations did not reproduce the variation and are retained as such. The
-source was again verified deallocated; the original timer was restored after
-each diagnostic visit.
-
-The repair compares sorted canonical JSON for every complete mount dictionary.
-It drops no field, normalizes no value type and preserves duplicate multiplicity.
-Engine, image, container, label and volume guards remain exact. A regression
-reproduces the old failure before the fix; fourteen new cases cover equivalent
-ordering and changed/missing/null/extra fields, counts and boolean/number types.
-All **236** focused tests pass in author and independent runs, as do strict mypy
-for five modules and lint/format. `REG-032` tracks fresh CI and the actual retry.
-No encrypted source snapshot or successful separate-host restoration is claimed.
-
-The fresh target VM has not yet been provisioned. Its reviewed bootstrap and
-controller will run only after actual encrypted capture, retained-cipher hash
-verification and source deallocation. Source B upgrade follows successful target
-restore and deallocation so it cannot assist the off-host recovery proof.
+The source VM is verified deallocated and its complete original shutdown schedule
+restored after each completed bounded visit. Earlier failed assets and evidence
+are retained. The current Linux/browser installation requires no OS publisher
+certificate; other native-package matrices remain separate scopes.
 
 ## Preserved development witness disagreement
 
