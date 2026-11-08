@@ -135,24 +135,22 @@ continuous history is claimed. Globals, credentials, current database and keys
 were excluded. The new test container is stopped and retained; all original
 containers/mounts, checkpoint files and witnesses passed preservation checks.
 
-`REG-031` therefore requires an explicit development-history scope choice, not
-another assumed successful recovery. The recommendation is to retain today's
-verified data and every older artifact, record the discontinuity explicitly,
-and begin a new **development** anchoring epoch. That choice authorizes a new
-private witness directory, one active configuration-key change, a bounded
-restart of the owned development service and its thirteen native children, a
-declaring audit record and a fresh maintenance anchor after independent review
-and testing. It preserves old failed jobs without replay and supplies no
-production/RSA GO or recovered historical continuity.
+On November 8 the user explicitly authorized the recommended development path.
+Actual execution completed: the current data and all old artifacts are retained,
+a signed record declares the gap, and a new private development witness directory
+is active. The original active environment inode is checkpointed; only its local
+anchor-directory value changed. The owned service and all thirteen children were
+restarted and verified with both APIs, exact UI, ciphertext and business counts.
+The new witness at sequence 106881 matches the signed chain and a fresh heartbeat
+was observed at 15:35:51 UTC. All five old witnesses, the September checkpoint,
+old chain prefix, seven containers/full mounts and all 1,131 dead letters are
+unchanged. The complete pre-change recovery point stays on the worker.
 
-The alternatives are to provide a matching earlier backup/key location for
-read-only inspection and an isolated recovery before choosing history, or keep
-the continuity gate open without changing active configuration or history. The
-choice is needed because engineering approval cannot establish historical
-authenticity, and restoring the located three-event checkpoint would discard
-current work. A documented new epoch is recommended to retain that work while
-declaring the gap. No epoch change has been executed and an unanswered question
-does not authorize it.
+The [actual epoch report](DEVELOPMENT-AUDIT-EPOCH-2026-11-08.md) records the user
+instruction, pinned operator, 54 guard tests, signed declaration, checkpoint,
+new witness and final preservation proof. REG-031 and W2-03 engineering scope are
+complete. The missing earlier history remains unauthenticated; this declared new
+start supplies no recovered historical continuity or production/human GO.
 
 ## Human evidence remains separate
 

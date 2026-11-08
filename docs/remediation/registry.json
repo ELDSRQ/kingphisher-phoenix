@@ -570,15 +570,15 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "external_gate",
-      "owner": "operator",
-      "next_action": "Choose development audit continuity scope on .105: (recommended) preserve all current data and old evidence, record the explicit gap, and authorize a new private development witness directory/configuration-key change, bounded restart of the owned service/13native children, a declaring audit record and fresh maintenance anchor after independent review/testing; this permits forward anchoring without claiming old continuity or production GO. Alternatively provide a matching earlier backup/key location for read-only checking and isolated recovery before any history choice, or keep the continuity gate open with no config/history change. The choice is needed because engineering approval cannot establish historical authenticity and restoring the located three-event checkpoint would discard current work. New development epoch is recommended to retain verified current data and every historical artifact while declaring, rather than concealing, the gap. No unanswered question or elapsed time authorizes the change.",
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
       "historical_379_record": {
         "status": "in_progress",
         "owner": "agent",
         "next_action": "The preserved normal .105 checkpoint, isolated real-data restore/forward migration, reviewed cutover and all verification phases pass. Application3512a41/schema0060 is running with original source/env/venv/unit/data and all7normalcontainer/mount identities preserved. Full native12 same-host synthetic recovery measured zero missing acknowledged sentinels/RTO18.975s. Complete the separately reviewed synthetic off-host source/target tool and actual drill after cleanLinux passes; never export the normal real-data checkpoint. The existing development audit witness disagreement is tracked separately as REG-031."
       },
-      "resolution": "Encrypted synthetic off-host engineering proof is complete: REG-030, REG-032 and REG-033. Zero missing acknowledged sentinels; restore 117.036 seconds, provisioning-inclusive 608.913 seconds; full protected state, APIs/UI, 13 children and actual maintenance with fresh anchor passed. Source off before target and successful target off after proof. Normal .105 upgrade/rehearsal is separately qualified. Pre-existing normal development historical witness authenticity remains externally gated by REG-031; it is not resolved by the synthetic drill."
+      "resolution": "Development backup/restore engineering is complete within the recorded scope: preserved real-data upgrade/rehearsal, measured same-host synthetic recovery and actual encrypted off-host recovery with zero missing acknowledged sentinels (restore117.036s/provision608.913s), complete service/maintenance proof and source/target deallocation. REG031 is completed through the explicitly owner-authorized, declared development epoch with a new matching witness and fresh heartbeat, preserving current data and every older artifact; missing earlier history remains unauthenticated. Current .105 service/API/UI/13children/cipher/counts/old witness/checkpoint/DLQ preservation passes. Continuous backup/enterprise SLA and authentic human acceptance remain separate unproven scopes, not implied by these results."
     },
     {
       "id": "W2-04",
@@ -1239,10 +1239,10 @@
       "parent": "W2-03",
       "priority": "P0",
       "title": "Preserve and reconcile the pre-existing development audit witness/chain disagreement",
-      "status": "external_gate",
-      "owner": "operator",
-      "resolution": "The current development chain verifies internally (0problems; observed head104717). Five unchanged September21 witness files at1/62/122/181/241 disagree with it; pre-upgrade failures and all failed jobs remain. Bounded local/worker metadata searches found a September21 19:14 checkpoint outside the original inventory. Its182430-byte dump matches its retained manifest SHA14d32bd156bb27370cd36692218a41d73c3d7d5371a27ff71498a5088272e40d. Independently reviewed31-test audit-table-only isolation actually restored3events and one head into a new network-none PostgreSQL container/volume: no old witness coordinate matches; higher four positions are absent. A fresh read-only current-chain check confirms its positions1/3 match that three-event checkpoint prefix. The new container is stopped/preserved and all normal containers/mounts, original files, witnesses and checkpoint pass preservation checks. This identifies a prior development-history discontinuity; it does not recover or authenticate the missing earlier history, and no historical signatures were claimed.",
-      "next_action": "Choose development audit continuity scope on .105: (recommended) preserve all current data and old evidence, record the explicit gap, and authorize a new private development witness directory/configuration-key change, bounded restart of the owned service/13native children, a declaring audit record and fresh maintenance anchor after independent review/testing; this permits forward anchoring without claiming old continuity or production GO. Alternatively provide a matching earlier backup/key location for read-only checking and isolated recovery before any history choice, or keep the continuity gate open with no config/history change. The choice is needed because engineering approval cannot establish historical authenticity and restoring the located three-event checkpoint would discard current work. New development epoch is recommended to retain verified current data and every historical artifact while declaring, rather than concealing, the gap. No unanswered question or elapsed time authorizes the change.",
+      "status": "complete",
+      "owner": "none",
+      "resolution": "User explicitly authorized the recommended development path on November8. Actual audit-epoch-20261108-v3 completed: new private pre-change PG/globals/157617-key native Redis/full-data/config/unit/drop-in/Compose checkpoint stays on .105; original active environment inode retained. Signed gap declaration event 64bc3a1d-f2c5-4eda-9b92-33bed99b04ec at sequence106879 binds continuity manifest f81137c3b903a47171e23c57c8ee13227c70cabbeb0d4f697087ee498a461b0b. Only local-anchor directory configuration changed; owned service restarted and 13 native children/API readiness/exact UI/ciphertext/business-table counts verified. One new maintenance job consumed; witness106881 matches the current signed chain and heartbeat15:35:51UTC observed. Current chain and old prefix verify. All5 historical witnesses and September checkpoint, seven containers/full typed mounts and1131 old dead-letter records across11topics are preserved. 54 guard tests/Ruff and real read-only binary snapshot passed before live work. Failed v1/v2 attempts and partial checkpoints retained; v2 recovered original service/configuration before mutation. Final task fallback timer disarmed with unit/evidence retained. Current application3512/schema0060 and all other configuration values remain unchanged. The explicitly accepted historical gap is not recovered or authenticated; no old-job replay or production/human GO is claimed.",
+      "next_action": null,
       "historical_379_record": {
         "status": "in_progress",
         "owner": "agent",
@@ -1355,7 +1355,8 @@
       "historical_partial_result": "3audit_events/1head;oldwitnesscoordinatesnotmatched;normalstate/checkpoint/witnesspreserved;newcontainerstoppedandretained",
       "historical_checkpoint_is_current_three_event_prefix": true,
       "historical_signature_authentication": false,
-      "development_new_epoch_executed": false
+      "development_new_epoch_executed": false,
+      "status_basis": "Historical snapshot before the explicit November8 owner authorization; current development epoch result is recorded in development_audit_epoch_20261108."
     },
     "continuation_20261107_persistent_capture": {
       "public_tools_commit": "fac9a0e1ec981e3cb83585f4047752de8b6729a5",
@@ -1406,6 +1407,37 @@
       "human_acceptance": false,
       "automatic_startup_without_installer_relaunch": false,
       "original_A_proofs_relabelled_as_new": false
+    },
+    "development_audit_epoch_20261108": {
+      "passed": true,
+      "user_instruction": "Action recommended path",
+      "application": "3512a4129262425999e6baaaaf0cc6a0b5f866e6",
+      "schema": "0060_delivery_authority_locks",
+      "development_only": true,
+      "configuration_key": "KP_WORKER_AUDIT_ANCHOR_LOCAL_DIR",
+      "old_environment_sha256": "0a6c86aad0011262d880c216af89adc2e0434ebf6d3816fd6c81a7db05d2abe5",
+      "current_environment_sha256": "08d5aa174ca62c9a92b25a5170ef8a33a1e1a49c5206430be0a5896d46c262a0",
+      "continuity_manifest_sha256": "f81137c3b903a47171e23c57c8ee13227c70cabbeb0d4f697087ee498a461b0b",
+      "declaration_audit_event_id": "64bc3a1d-f2c5-4eda-9b92-33bed99b04ec",
+      "declaration_sequence": 106879,
+      "new_witness_sequence": 106881,
+      "new_witness_sha256": "5feb1fca9a147d737d2fe6d17586ce5533c4333c6c099410c2713c0bd85e8563",
+      "fresh_heartbeat": "2026-11-08T15:35:51.051947+00:00",
+      "checkpoint_redis_keys": 157617,
+      "old_dead_letters_preserved": 1131,
+      "old_witness_count_preserved": 5,
+      "all_eleven_topics_checked": true,
+      "native_children": 13,
+      "api_ui_cipher_business_counts_verified": true,
+      "original_environment_inode_retained": true,
+      "private_checkpoint_on_worker": true,
+      "old_history_unchanged": true,
+      "historical_continuity_recovered": false,
+      "fallback_disarmed": true,
+      "guard_tests": 54,
+      "private_helper_sha256": "7d5686625dbce8e01571f188e25afc6b47a2fb03e73f127b95c4366b461783f3",
+      "final_controller_receipt_sha256": "f40e71dddc25d353712a554bafdb9b9f80bab57df73f6dc16daf2e4e230bb7a8",
+      "production_go": false
     }
   },
   "qualified_application": {
@@ -1413,6 +1445,14 @@
     "tree": "234175ac5025a59802731369bf3901e4af1064f9",
     "ci_run": 42388168837,
     "source_manifest_digest": "sha256:60c6ec481741cbb5833083a7eebd1ca3089b44d84fa4e47dfbb82306cfcda1cc",
-    "operator_tool_boundary": "REG027 may use a separately reviewed and CI-verified external coordinator; application source/venv/migration/probe/supervisor/static files remain bound to this immutable release. Record actual tool commit/hashes/interpreter/invocation separately; no new application-image qualification is claimed for tool-only changes."
+    "operator_tool_boundary": "REG027 may use a separately reviewed and CI-verified external coordinator; application source/venv/migration/probe/supervisor/static files remain bound to this immutable release. Record actual tool commit/hashes/interpreter/invocation separately; no new application-image qualification is claimed for tool-only changes.",
+    "development_configuration_epoch": {
+      "date": "2026-11-08",
+      "manifest_sha256": "f81137c3b903a47171e23c57c8ee13227c70cabbeb0d4f697087ee498a461b0b",
+      "current_private_environment_sha256": "08d5aa174ca62c9a92b25a5170ef8a33a1e1a49c5206430be0a5896d46c262a0",
+      "only_changed_key": "KP_WORKER_AUDIT_ANCHOR_LOCAL_DIR",
+      "code_files_and_schema_unchanged": true,
+      "original_upgrade_plan_retained_unchanged": true
+    }
   }
 }
