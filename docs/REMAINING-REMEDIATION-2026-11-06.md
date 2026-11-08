@@ -1,5 +1,14 @@
 # Remaining remediation — 2026-11-06
 
+This is the preserved November 6 work record. Its status table, source references,
+measurements and deployment observations describe that run, not current readiness.
+Use the [canonical registry](remediation/registry.json) and
+[November 7 qualification report](remediation/RECOVERY-QUALIFICATION-2026-11-07.md)
+for current status. Subsequent work qualified the deployed 3512a41 runtime,
+completed staging and the preservation upgrade of the normal `.105` service,
+and executed a bounded native workload/fault/recovery profile. Clean Linux
+upgrade and separate-host recovery qualification continue under those records.
+
 Work continues from GitHub `main` at `fb273050be63653284978c593cd9b31776016f7d`
 on branch `codex/remaining-remediation-20261106`. The original controller
 checkout and `.105` source are both at `cf659d5`; they and the controller's
@@ -175,7 +184,7 @@ in upstream 2.0.57. This is an inspection-library limitation, not failed schema
 comparison or failed enforcement; the warning is retained rather than hidden,
 and the intentional legacy-row constraint is not weakened or validated blindly.
 
-## External observations
+## Historical external observations from this run
 
 Azure staging's runner VM is **deallocated**. The latest recorded successful
 Azure deployment run is [36421139411](https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/36421139411),
@@ -183,7 +192,7 @@ created 2026-09-28 at source `633c3913d9b6b335271a4ef1343de9dafd8cc05d`.
 Its existence does not qualify the current source. Management-plane Running
 states do not prove provider delivery, application health or human acceptance.
 
-Staging currently reports these image digests:
+At that November 6 observation, staging reported these image digests:
 
 | App | Digest |
 | --- | --- |

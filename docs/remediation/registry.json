@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated": "2026-11-07",
+  "updated": "2026-11-08",
   "baseline": "db55667aeb9950e98297b54a3ad91af1d26a5017",
   "repository": "ELDSRQ/kingphisher-phoenix",
   "authorization": "User approved continued remediation and engineering actions until complete or no agent jobs remain. Human evidence/signatures must remain authentic.",
@@ -545,9 +545,15 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "in_progress",
-      "owner": "agent",
-      "next_action": "Complete clean-Linux qualification with reviewed private v3 after final merged CI. VMv2 was created but stopped before installation on Azure diskSizeGB metadata mismatch, then deallocated successfully; retain it and all earlier resources. Other supported clean-host proof remains external; publisher signing applies only to distributed native signed packages."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "next_action": "Clean Linux v5 is executing against installer bundle790171d/mainCI42403025100 after111author+111independent preservation/permission tests. V4 reached the real installer but its private extractor masked public Git modes underumask077, making the PostgreSQL initializer unreadable; exact logs/modes and two before-fix regressions prove the harness fault. V2–V4 VMs/disks/evidence remain preserved/deallocated. Current Linux/browser server needs no OS publisher certificate; native distributed packages and other clean-host matrix evidence remain scoped separately."
+      },
+      "resolution": "All eight original clean-Linux A stages passed against installer 790171d / CI 42403025100: bootstrap, installation, first browser, warm rerun, repair and reboot with installer-mediated relaunch. Actual separate B preparation, baseline acabf08/schema0056, upgrade to 790171d/schema0060, final browser and key/volume/audit proof all passed in resume-v5-v5. Verified final source deallocation and complete original shutdown-schedule restoration. Private containerd is explicitly confined to B; original engine ID, directory, images, all failed VMs/disks/evidence and A assets retained. Linux/browser delivery needs no OS publisher certificate; automatic startup and other native-package matrices are separate scopes."
     },
     {
       "id": "W2-03",
@@ -564,9 +570,15 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "in_progress",
-      "owner": "agent",
-      "next_action": "Native quiesced same-host synthetic recovery passed with zero missing acknowledged sentinels and RTO75.323s. Complete the preserved real-data development checkpoint/rehearsal/upgrade after final security/image gates. This evidence does not establish off-host key custody or a production outage SLA."
+      "status": "external_gate",
+      "owner": "operator",
+      "next_action": "Choose development audit continuity scope on .105: (recommended) preserve all current data and old evidence, record the explicit gap, and authorize a new private development witness directory/configuration-key change, bounded restart of the owned service/13native children, a declaring audit record and fresh maintenance anchor after independent review/testing; this permits forward anchoring without claiming old continuity or production GO. Alternatively provide a matching earlier backup/key location for read-only checking and isolated recovery before any history choice, or keep the continuity gate open with no config/history change. The choice is needed because engineering approval cannot establish historical authenticity and restoring the located three-event checkpoint would discard current work. New development epoch is recommended to retain verified current data and every historical artifact while declaring, rather than concealing, the gap. No unanswered question or elapsed time authorizes the change.",
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "next_action": "The preserved normal .105 checkpoint, isolated real-data restore/forward migration, reviewed cutover and all verification phases pass. Application3512a41/schema0060 is running with original source/env/venv/unit/data and all7normalcontainer/mount identities preserved. Full native12 same-host synthetic recovery measured zero missing acknowledged sentinels/RTO18.975s. Complete the separately reviewed synthetic off-host source/target tool and actual drill after cleanLinux passes; never export the normal real-data checkpoint. The existing development audit witness disagreement is tracked separately as REG-031."
+      },
+      "resolution": "Encrypted synthetic off-host engineering proof is complete: REG-030, REG-032 and REG-033. Zero missing acknowledged sentinels; restore 117.036 seconds, provisioning-inclusive 608.913 seconds; full protected state, APIs/UI, 13 children and actual maintenance with fresh anchor passed. Source off before target and successful target off after proof. Normal .105 upgrade/rehearsal is separately qualified. Pre-existing normal development historical witness authenticity remains externally gated by REG-031; it is not resolved by the synthetic drill."
     },
     {
       "id": "W2-04",
@@ -586,9 +598,10 @@
         "status": "parked"
       },
       "followups": [],
-      "status": "in_progress",
-      "owner": "agent",
-      "next_action": "Complete guarded app3512a41 staging workflow42388194717 after active cleanLinuxVMv3 finishes; engineering environment gate is already authorized. Preserve existing resources/roles and actual immutable-image attestation/worker/receipt checks."
+      "status": "complete",
+      "owner": "none",
+      "next_action": null,
+      "current_acceptance": "Application3512a41 staging workflow42388194717 passed every guard, qualification and deployment job. Engineering environment review used existing user authorization. Immutable ACR images/SBOM/provenance/attestation, migration, worker qualification, authenticated ACS receipt activation and cloud-completion evidence all passed. Deployment7623447852; evidence artifact13581379690 SHA256c00941a8c352c50084c44704b861c02805ce3bd4c97ce412ec599491502618e6. This is engineering staging completion; no human/pilot/broad-use GO or real campaign authorization is implied."
     },
     {
       "id": "W2-05",
@@ -1033,20 +1046,26 @@
     {
       "id": "REG-015",
       "parent": "W2-03",
-      "owner": "agent",
-      "status": "in_progress",
+      "owner": "none",
+      "status": "complete",
       "title": "Preserved development-runtime upgrade with real-data restore rehearsal before additive migration",
-      "resolution": "Independently reviewed explicit-phase coordinator and 59 preservation tests pass, including executable-mode preservation and integrity checks. Final CI/native/image gates precede qualified-source execution. No normal runtime mutation has occurred.",
-      "next_action": "Integrate REG-026 exact test-alias classification, then execute preserved development checkpoint, rehearsal, reviewed cutover and verification from a fresh qualified manifest; preserve original environment and every normal container identity."
+      "resolution": "Actual explicit prepare/checkpoint/rehearse/cutover/verify all pass on .105. Application3512a41/schema0060 is running; original source/privateenv/venv/unit/data and7normalcontainer+mount identities remain preserved.46original table counts, audit integrity, old/new ciphertext and Redis restoration proved in isolated rehearsal before cutover. Both APIreadiness/exactUI/13nativechildren and live audit/cipher verification pass. Actual checkpoint SHA256bb1e637f5c75ca04e555cd95cdccee893f75f176ffe90902799aa0b03d891014; rehearsal SHA256c0da69dbdbe274b302d9c6a31cacc09009b09c420caeaf6f1a2477f7ef990a06. Historical failed jobs are retained, never replayed. Pre-existing witness disagreement REG-031 remains an operational limitation; no automatic DBrollback or new business send was exercised.",
+      "next_action": null
     },
     {
       "id": "REG-016",
       "parent": "W2-02",
-      "owner": "agent",
-      "status": "in_progress",
+      "owner": "none",
+      "status": "complete",
       "title": "Actual clean Linux installation, repair, baseline upgrade and reboot qualification",
-      "resolution": "Private coordinator is implemented, independently reviewed and frozen with 51 offline tests passing. New isolated Azure VM execution requires final merged source and matching green CI. Sequential owned Docker engines, reboot identity proof and bounded deallocation preserve both installation datasets. No VM resources have been created.",
-      "next_action": "Finish reviewed private v3 metadata regression and actual clean-Linux installation/repair/reboot/upgrade with final merged CI; verify bounded deallocation and retain all older VM/disk/evidence assets."
+      "resolution": "All eight original clean-Linux A stages passed against installer 790171d / CI 42403025100: bootstrap, installation, first browser, warm rerun, repair and reboot with installer-mediated relaunch. Actual separate B preparation, baseline acabf08/schema0056, upgrade to 790171d/schema0060, final browser and key/volume/audit proof all passed in resume-v5-v5. Verified final source deallocation and complete original shutdown-schedule restoration. Private containerd is explicitly confined to B; original engine ID, directory, images, all failed VMs/disks/evidence and A assets retained. Linux/browser delivery needs no OS publisher certificate; automatic startup and other native-package matrices are separate scopes. Continuation helper ea8a6ca2 / request 0568975c, 100 local tests and read-only live preflight passed before actual execution. New B receipts explicitly do not relabel historical A proofs as newly executed.",
+      "next_action": null,
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "resolution": "Actual fresh v3 exposed missing Buildx, fixed by PR175. Actual v4 reached PostgreSQL startup and preserved private exact-unit diagnostics; readonly follow-up proves its own extractor created initializer directory/script700 underprivateumask, yielding Permission denied. A new v5 snapshot applies canonical644/755 only to new verified public Git code;111author+111independent checks pass including two actual umask call-path regressions. V5 is executing against790171d/greenmainCI; prior VMs/disks/evidence are retained and verified deallocated.",
+        "next_action": "Finish actual v5 cold-install/browser/warm-repair/reboot/A-B baseline upgrade proof, verify final deallocation and retain every resource/evidence file. No unexecuted phase or human acceptance may be marked passed."
+      }
     },
     {
       "id": "REG-017",
@@ -1164,16 +1183,97 @@
       "id": "REG-027",
       "parent": "W2-03",
       "priority": "P2",
-      "status": "in_progress",
-      "owner": "agent",
+      "status": "complete",
+      "owner": "none",
       "title": "Bind upgrade commands to the reviewed user systemd bus and retain pre-run diagnostics",
-      "resolution": "Actual PREPARE2 wrote only its outside-run qualified manifest, then failed FileNotFoundError before run/release creation or service stop. Read-only diagnosis proves clean environment systemctl--user cannot find its bus, while inherited SSH query sees the unchanged active project unit; stderr logging under the not-yet-created run masks the original bus error. Repair only operator tooling; keep application3512a41 and its qualification immutable.",
-      "next_action": "Independently review the bounded owned user-bus environment and exclusive sibling preflight-log repair; pass tool CI and actual read-only bus proof, then invoke the separately pinned tool externally against qualified application3512a41."
+      "resolution": "Separately pinned external operator96a05ebe/CI42390483438 passed95author+95independent checks and actual readonly owned-user-bus proof. Actual prepare/checkpoint/rehearse/cutover/verify all pass against immutable application3512a41. Four exact systemctl-user command shapes receive the owned builder bus environment; general execution env remains clean. Exclusive private preflight/run diagnostics preserve original errors. The application runtime/native/images are bound to3512a41; this operator-only change claims no new runtime-image qualification.",
+      "next_action": null,
+      "completed_pr": 174,
+      "completed_commit": "2834ba0f724d884ab66a57d892f0cb06b582add8"
+    },
+    {
+      "id": "REG-028",
+      "parent": "W2-02",
+      "priority": "P1",
+      "title": "Install required Buildx and Compose plugins while preserving existing Docker engine/runtime providers",
+      "status": "complete",
+      "owner": "none",
+      "completed_pr": 175,
+      "completed_commit": "790171d97c205682febbf22a9c7db05d45be67a3",
+      "resolution": "Actual fresh Linux v3 proved Buildx absent despite healthy Docker/Compose. Trusted APT selection now checks each required CLI plugin. Both CLI-only repair paths validate bounded C-locale APT simulation of the exact plugin transaction and reject engine/runtime Inst/Conf, removals, malformed/unknown/failed plans. Explicit fresh local-engine installation remains authorized; every real install uses--no-remove and adds no repositories/fallback.156author+156independent focused tests plus ShellCheck/Ruff/format pass; candidate and mergedmainCI42403025100 pass4447hermetic/214PostgreSQL/4Redis/14browser,mypy224/lock92. V4 actually progressed past this boundary; its later failure was the separate private-harness mode fault."
+    },
+    {
+      "id": "REG-029",
+      "parent": "W2-02",
+      "priority": "P1",
+      "title": "Preserve canonical public Git file and directory permissions under a private qualification umask",
+      "status": "complete",
+      "owner": "none",
+      "resolution": "The private umask fault was reproduced by two real extraction regressions. Reviewed v5 extraction restores canonical modes only on new verified public Git code, retaining private configuration, keys and evidence modes. 111 author and 111 prior independent tests, all eight actual A stages, and the actual B baseline and upgraded extraction/install/browser/preservation phases passed. All old failed assets remain preserved; source finally verified deallocated with complete original schedule restored.",
+      "next_action": null,
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "resolution": "V4 readonly exact-VM PostgreSQL diagnostics show init directory/script700 owned1000 and repeated Permission denied. Two real umask077 source-extraction tests fail on frozenv4; v5 explicitly fchmods only new verified source files644/755 and code directories755. Private .env/data/keys/archives/evidence retain600/700.111author+111independent tests pass; v5 live trial is running. All v4 assets and both diagnostic attempts are preserved/deallocated.",
+        "next_action": "Finish v5 actual trial before closing the live installation scope."
+      }
+    },
+    {
+      "id": "REG-030",
+      "parent": "W2-03",
+      "priority": "P1",
+      "title": "Qualify encrypted off-host synthetic recovery with independent retained-key retrieval and complete restored service",
+      "status": "complete",
+      "owner": "none",
+      "resolution": "Actual capture-v4 and fresh target-v3 passed. Sourcefac9a0e/CI42416805378; targetccddc099/CI42432407730. Cipher032a1fd4f4131a6692ed46b9cf4164457df6714813e598ecfb0108b654126d79 matches source encryption, conditional offhost upload and exclusive persistent controller retrieval. Source verifiedOFF before target. Fresh-controller retained-key piped rewrap, target-local key, full PG/globals/Redis/files/config/purposekeys/audit/sentinel state and actual install/verifier/API/exactUI/13nativechildren passed. Zero missing acknowledged sentinels; actual maintenance consumed with fresh anchor heartbeat. Restore-only117.036s; provision-inclusive608.913s. TargetVMphysicalv2 verifieddeallocated; all prior failed targets/disks/state retained. Synthetic quiesced scope only; no continuousbackup/enterpriseSLA/recipientdelivery/humanGO. Normal realdata checkpoint never exported.",
+      "next_action": null,
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "resolution": "Separate source-capture/artifact/target-restore tools and bounded private orchestration are being implemented/reviewed. Original normal .105 checkpoint remains onworker. Source is an actually qualified isolated clean-trial A state, with exact engine/container/mount/volume/Git/proof bindings; failedv4 cannot supply it. New target has no source credentials; source must be deallocated first. Exclusive controller and authenticated blob ciphertext copies, target-local key, fresh-controller piped re-encryption, full PGglobals/Redis/config/key/file/audit/sentinel checks and real maintenance progress are required. Actual installed-age local proof passes wrong-key/tampering/no-overwrite and separate-target round trips. Independent review caught PAX metadata bounds and target preflight/volume guards; repair and re-review precede any live drill. No off-host target/storage/identity has been created.",
+        "next_action": "Finish review/CI/private bounded orchestration, capture only actually qualified synthetic A, and execute fresh-host restore with separate provision-inclusive/restore-only timing. Record actual zero-missing-sentinel scope without enterpriseSLA/continuousbackup/delivery/human claims."
+      }
+    },
+    {
+      "id": "REG-031",
+      "parent": "W2-03",
+      "priority": "P0",
+      "title": "Preserve and reconcile the pre-existing development audit witness/chain disagreement",
+      "status": "external_gate",
+      "owner": "operator",
+      "resolution": "The current development chain verifies internally (0problems; observed head104717). Five unchanged September21 witness files at1/62/122/181/241 disagree with it; pre-upgrade failures and all failed jobs remain. Bounded local/worker metadata searches found a September21 19:14 checkpoint outside the original inventory. Its182430-byte dump matches its retained manifest SHA14d32bd156bb27370cd36692218a41d73c3d7d5371a27ff71498a5088272e40d. Independently reviewed31-test audit-table-only isolation actually restored3events and one head into a new network-none PostgreSQL container/volume: no old witness coordinate matches; higher four positions are absent. A fresh read-only current-chain check confirms its positions1/3 match that three-event checkpoint prefix. The new container is stopped/preserved and all normal containers/mounts, original files, witnesses and checkpoint pass preservation checks. This identifies a prior development-history discontinuity; it does not recover or authenticate the missing earlier history, and no historical signatures were claimed.",
+      "next_action": "Choose development audit continuity scope on .105: (recommended) preserve all current data and old evidence, record the explicit gap, and authorize a new private development witness directory/configuration-key change, bounded restart of the owned service/13native children, a declaring audit record and fresh maintenance anchor after independent review/testing; this permits forward anchoring without claiming old continuity or production GO. Alternatively provide a matching earlier backup/key location for read-only checking and isolated recovery before any history choice, or keep the continuity gate open with no config/history change. The choice is needed because engineering approval cannot establish historical authenticity and restoring the located three-event checkpoint would discard current work. New development epoch is recommended to retain verified current data and every historical artifact while declaring, rather than concealing, the gap. No unanswered question or elapsed time authorizes the change.",
+      "historical_379_record": {
+        "status": "in_progress",
+        "owner": "agent",
+        "resolution": "Readonly post-upgrade check found no successful anchor heartbeat and preserved audit-anchorDLQs1105 (1102atcheckpoint), with the same AuditAnchorReadBackError before and after cutover. Five retained create-only local witness records with signed_at timestamps on2026-09-21 atsequences1/62/122/181/241 disagree with the current signed chain at those positions; current chainhead104445/internal verification has0problems. No witness, chain, key or failedjob was deleted/replayed/replaced, and credentials were unchanged. Bounded names/metadata inventory of existingworkerdata/recovery andqualification roots found currentNov6/7 snapshots but no matchingSept21 history in that scope. This historical inconsistency is not manufactured as an upgrade regression or successful anchoring.",
+        "next_action": "Complete evidence reconciliation and inspect any known matching recovery history without altering either fork; if none is available, explain the exact canonical-history recovery versus explicitly recorded new-epoch options before any evidence-changing action. Engineering approval alone does not establish which historical chain is authentic."
+      }
+    },
+    {
+      "id": "REG-032",
+      "parent": "W2-03",
+      "priority": "P1",
+      "owner": "none",
+      "status": "complete",
+      "title": "Compare complete Docker mount identities independently of raw inspection order",
+      "resolution": "Complete typed mount dictionaries are canonicalized and sorted without dropping fields, normalizing value types or losing duplicate counts. Actual raw24-sample diagnosis proved order-only variation4/24. Two actual source capture identity checks passed with fac9a0e/CI42416805378; complete fresh-target restoration passed with ccddc099/CI42432407730. All engine/container/image/label/volume guards remain exact;238focused tests and strictmypy5 pass.",
+      "next_action": null
+    },
+    {
+      "id": "REG-033",
+      "parent": "W2-03",
+      "priority": "P1",
+      "title": "Use the separately pinned bootstrap uv for target installation and worker startup",
+      "status": "complete",
+      "owner": "none",
+      "resolution": "Actual failed target proved pinned bootstrapUVexists but absent from installerPATH. Two real-shell regressions through actualTarget constructor fail before repair for missingUV/ambientwrongUV. Target PATH now puts qualifiedbootstraptools first.238focused+strictmypy5+lint/format and exactccddc099CI42432407730(all3jobs)pass. Actual NEW target-v3/physicalVMv2 completed datarestore/installer/verifier/readiness/exactUI/13children/auditprefix/realmaintenance+freshanchor. Verifieddeallocated; old initializedfailedtarget/data/key/disk retained. No fresh-target guard bypass or overwrite.",
+      "next_action": null
     }
   ],
   "evidence": {
     "prior_ci": "https://github.com/ELDSRQ/kingphisher-phoenix/actions/runs/42255462847",
-    "current_local_root": "/private/tmp/kp-registry-completion-20261106-3lkIJ1",
+    "current_local_root": "/Users/edierks/projects/codex-test/phishing-awareness-platform/data/qualification/resume-20261107",
     "privacy_role_effects": "privacy-role-effects-v3.xml:6 actual-role PostgreSQL effects including projector/erasure interleaving",
     "adaptive": "6 migrated PostgreSQL +14 Chromium/WCAG2.2 scenarios; adaptive-postgres-v3.xml",
     "queue": "257 focused +2 real Redis; queue-followups-completion.json",
@@ -1226,7 +1326,7 @@
     "pr172_final_ci": "PR172 reviewed d071221 and merged932fa07489fbf0e05f1ce296259db57a6ae46a8a share tree29d165f93bb2263d257cd26722fd80aecca0f6f2. CandidateCI42376165491 and mainCI42376518909 allgreen:4355hermetic/214PG/4Redis/14browser,lint717,mypy224,lock92; retained SQLAlchemy warning. Full job logs preserved privately.",
     "native_full_v11": "PASS current candidate d071221 (identical merged932fa07 tree), archive4b7fbd7ba8a134ac2937d0d132de6c4425074ddbae5b8eae510d9622649ea934.1387 unique sink acceptances;125/1250 baselines,300s observation/faults/fullstate recovery pass.0missing acknowledged sentinels;RTO15.191s. API173samples:p950.097517s,max3.396392s;critical288samples:max1.151584s.1250fullyaccepted70.073s into300s;229.927s idle. Same-host/quiescedsynthetic,offhostescrowfalse,recipientdeliveryunconfirmed. All assets preserved.",
     "final_images_932fa07": "PASS nativeAMD64 six-image25phase gate at932fa07, source manifestsha256:0542b533e23112ec91cd5ccf152304e5f87bc5c0c68fc5901ff3fcfc8aef3134 (902files), original/copied/after identical. All images65532:65532;Trivy0.74.0 noHIGH/CRITICAL/secret findings, independent fresh candidatecache frozen acrosssix scans, DBNextUpdate2026-11-08T06:54:25Z. Workerfinal-images-v2-932fa07489fb/data/qualification/release-images/run-v2 evidence retained.",
-    "staging_current": "Workflow42388194717,requestkp-5fd36ecc374bca37207e63492a5b9ed9-1,qualified app3512a41: inputguard+complete hosted releasequalification PASS. Deployjob128452188157 waits at environment engineering gate while cleanLinuxVMv3 isactive; noapplyyet.",
+    "staging_current": "PASS workflow42388194717,allguard/qualify/deployjobs; deployment7623447852; immutable image/SBOM/provenance/attestation/migrate/worker/ACSreceipt/cloudcompletion passed; artifact13581379690zipSHA256c00941a8c352c50084c44704b861c02805ce3bd4c97ce412ec599491502618e6. Engineering review authorized, humanGO false.",
     "clean_linux_attempts": "Private v1 stopped before NIC/VM request when Azure rejected Allow on deny-only AzurePlatformDNS tag; new RG/NSG/2Deny rules preserved. Reviewed privatev2 uses fresh-v2names and exact168.63.129.16/32:53. Independent review also caught built-in nullIPAM before execution; narrow real-callpath fix passes83author+83independent tests. Original v1 bytes preserved. Live v2 result remains a separate gate.",
     "development_prepare_v1": "Qualified all902 source files and emitted private manifest35ecd9f9f0faab320875704ce3c3c6737ff4a80566538548e6c0ded8956d948d. PREPARE failed database_target_is_not_normal_project on existing nonruntimeDATABASE_URL_TEST=kingphisher_test. Run/release did not exist afterward, normalservice/source/env/container identities untouched. Worker manifest and private controllerlog retained. REG-026 repairs exact classification; do not weaken runtime alias validation.",
     "clean_linux_v2_metadata": "New private v2 VM created successfully with pinned Ubuntu image,D2s_v7,64GiB Standard_LRS,no publicIP/managedidentity. Coordinator expected diskSizeGb; actual VMshow uses diskSizeGB=64, causing KeyError before guest installation or shutdown-schedule step. Finally verified exact VMdeallocated within121.3s; no install pass claimed. BareVM/disk/NIC/NSG/logs remain retained. Private v3 fixes actual response key under fresh-v3 resource names and preserves every older asset.",
@@ -1234,7 +1334,79 @@
     "native_full_v12": "PASS complete profile atd28e1fa, identical application3512tree, archive1a31734bf91a20d22a05ccdd747c433e68b847ed07ebd9ff1ff96bdd37413598.1387unique sink acceptances;0missing acknowledged sentinels;RTO18.975s. API173samples:p950.094396s,max2.817773s;critical288samples:max1.078834s.1250delivery completes92.936s into300s observation,207.064s idle. Fullfault/recovery pass; same-host/quiescedsynthetic scope,offhostescrowfalse,recipientdeliveryunconfirmed.",
     "final_images_3512a41": "PASS nativeAMD64 siximages/all25phases at3512a41;902-file source/copied/after digestsha256:60c6ec481741cbb5833083a7eebd1ca3089b44d84fa4e47dfbb82306cfcda1cc unchanged. Trivy0.74.0 noHIGH/CRITICAL/secret findings with frozen fresh candidatecache. Evidencefinal-images-v3-3512a4129262/data/qualification/release-images/run-v3 preserved onworker.",
     "development_prepare_v2": "Outside-run manifest1928119b23c2aa1b193e7190272b51af275b41d1f2fde2faa8477d7ab7904f27 binds902 app3512files/native12/image3/mainCI. PREPARE2 failed FileNotFoundError before run/release/servicechanges. Actualread-only systemd diagnostic reports cleanenvcommand_failed_systemctl/No medium found; inheritedSSHprojectunit isactive. Workerprivatepreflight-systemd-diagnostic-v1.stderr andcontrollerdevelopment-prepare-v2-1794066860558736000.log preserved. REG027 corrects operator execution/diagnostic paths.",
-    "separate_operator_tool_model": "Independent review confirms coordinator need not live in release source. App source/manifest3512staysimmutable; external reviewedtoolmustbind itsownSHA/hash/interpreter/invocation/CI/busproof. _source/_migrate/_probe/cutover continue using qualified3512files and validate database modulepath. rg shows no kp_dev_upgrade import in application packages/APIs/supervisor. Existingpreparev2wrapper cannot be reused unchanged because it invokes appcopytool; new external invocation required."
+    "separate_operator_tool_model": "Independent review confirms coordinator need not live in release source. App source/manifest3512staysimmutable; external reviewedtoolmustbind itsownSHA/hash/interpreter/invocation/CI/busproof. _source/_migrate/_probe/cutover continue using qualified3512files and validate database modulepath. rg shows no kp_dev_upgrade import in application packages/APIs/supervisor. Existingpreparev2wrapper cannot be reused unchanged because it invokes appcopytool; new external invocation required.",
+    "application3512_native12": "PASS complete profile:1387uniqueSMTPsinkacceptances,125/1250baselines,300s observation,92.936sacceptances+207.064sidle,5sstall/typed451boundedretry/postacceptdisconnectuncertainty,priortraining/pendingwork/newcampaign/audit/files/config/keys recover; zero missing acknowledged sentinels, RTO18.974559176s,APIp950.094396358s/criticalmax1.078833424s. Quiesced same-host synthetic scope; recipient delivery and long-term constant load unproven.",
+    "application3512_images3": "PASS six nativeAMD64 images/all25phases,902trackedfiles,source digestsha256:60c6ec481741cbb5833083a7eebd1ca3089b44d84fa4e47dfbb82306cfcda1cc unchanged original/copied/after; Trivy0.74 noHIGH/CRITICAL/secret; frozenrefreshedcache,nonroot65532.",
+    "staging3512": "PASS workflow42388194717,allguard/qualify/deployjobs; deployment7623447852; immutable image/SBOM/provenance/attestation/migrate/worker/ACSreceipt/cloudcompletion passed; artifact13581379690zipSHA256c00941a8c352c50084c44704b861c02805ce3bd4c97ce412ec599491502618e6. Engineering review authorized, humanGO false.",
+    "installer790_CI": "PASS main42403025100 all3jobs:4447hermetic,214PostgreSQL,4Redis,14browser; Ruff/mypy224/lock92. Runtimecomponents remain byte-identical to qualified3512.",
+    "normal_development_upgrade": "ALL5actualphasesPASS; normal .105 running3512/schema0060, thirteenchildren/exactUI/twoAPIs/audit/cipherverified; originalassets+7container/mountIDs unchanged; pre-existing witness fork REG031 separately retained.",
+    "staging_3512_prior_waiting_snapshot": "Workflow42388194717,requestkp-5fd36ecc374bca37207e63492a5b9ed9-1,qualified app3512a41: inputguard+complete hosted releasequalification PASS. Deployjob128452188157 waits at environment engineering gate while cleanLinuxVMv3 isactive; noapplyyet.",
+    "offhost_intermediate_20261107": {
+      "qualified_source_A_stages": 8,
+      "source_capture_prior_tool_commit": "379f5c5291fba4f31a4e98aa514e1bf7e14f2cbb",
+      "source_capture_prior_tool_CI": 42408247349,
+      "source_capture_prior_sha256": "7bf6a8687a1a18f5c226546ff90700310557c0804cf6a59471b4c77121418158",
+      "mount_guard_repair_sha256": "2b2b7cbd277adddaf1662fbdd670849dd605e77d7dcb3ec3a8cf06a614fcd231",
+      "raw_engine_inspector_sha256": "b2a8fea2f4480eb77638c0575f2c983d8154b53008121957287737bcba7a0849",
+      "raw_observation": "24samples;postgres4orderdifferences;all6scalar/fulltypedmountmultisetidentitiesequal;verifieddeallocation/fulltimerrestoration",
+      "source_capture_success": false,
+      "target_restore_executed": false,
+      "historical_partial_restore_helper_sha256": "83ebc38266a5bf17eb6ce87e5c30241edee7f164dfcf4b12c7f05b7fe4a538ca",
+      "historical_partial_result": "3audit_events/1head;oldwitnesscoordinatesnotmatched;normalstate/checkpoint/witnesspreserved;newcontainerstoppedandretained",
+      "historical_checkpoint_is_current_three_event_prefix": true,
+      "historical_signature_authentication": false,
+      "development_new_epoch_executed": false
+    },
+    "continuation_20261107_persistent_capture": {
+      "public_tools_commit": "fac9a0e1ec981e3cb83585f4047752de8b6729a5",
+      "public_tools_CI": 42416805378,
+      "source_capture_passed": true,
+      "source_cipher_sha256": "032a1fd4f4131a6692ed46b9cf4164457df6714813e598ecfb0108b654126d79",
+      "source_deallocated": true,
+      "source_prior_timer_restored": true,
+      "target_restore_passed": true,
+      "target_phase": "Fresh target-v3 onphysicalVMv2 PASS after bootstrapUVPATH fix; oldfailedphysicalVMv1 andallassetsretained. SourceOFFbeforetarget. Actualinstall/verifier/API/exactUI/13children/auditprefix/realmaintenance+freshanchorPASS; targetverifiedOFF.",
+      "original_temporary_receipt_bodies_available": false,
+      "persistent_evidence": "data/qualification/resume-20261107/",
+      "regional_quota_request": "775fde42-d79c-46dd-84cd-4e71b85946be",
+      "regional_quota_limit": 14,
+      "target_hardware": "Standard_D2as_v7 / StandardDasv7Family,2vCPU/8GiB,unrestricted",
+      "target_prestartup_data_proof_passed": true,
+      "target_tools_commit": "ccddc0994cd1be4d0c0736e42b67c31beed1aa9a",
+      "target_tools_CI": 42432407730,
+      "restore_only_rto_seconds": 117.036,
+      "provision_inclusive_rto_seconds": 608.9133009910583,
+      "missing_acknowledged_sentinels": 0,
+      "target_deallocated": true,
+      "source_receipt_sha256": "08dd8b32bc3e9157cb362f99f750b42c963fd15715f6fb854fdd35027d54838d",
+      "target_qualification_sha256": "892e5164e7e9b5fb31be8478afee88dff208329674162caac7ee9ce6fd0e3bfb"
+    },
+    "persistent_resume": "data/qualification/resume-20261107/; latest ACTIVE-STATE version and retained capture-v4, target-v3 and resume-v5-v5 actual passing evidence. Public target tools ccddc099 / CI42432407730; all failed assets preserved.",
+    "historical_temporary_local_root": "/private/tmp/kp-registry-completion-20261106-3lkIJ1",
+    "clean_linux_upgrade_20261108": {
+      "passed": true,
+      "actual_phases": [
+        "prepare",
+        "baseline",
+        "upgrade",
+        "final-browser",
+        "final-proof"
+      ],
+      "baseline_commit": "acabf08ba7e551e8af849073197cf5c3648183f8",
+      "baseline_schema": "0056_adaptive_draft_boundary",
+      "target_commit": "790171d97c205682febbf22a9c7db05d45be67a3",
+      "target_schema": "0060_delivery_authority_locks",
+      "sequential_private_daemon_namespace": true,
+      "volume_key_audit_preservation": true,
+      "source_deallocated": true,
+      "complete_original_schedule_restored": true,
+      "helper_sha256": "ea8a6ca2e582e91dd2f6c702371094f5dc37e6a625b104301544e2731979d27f",
+      "request_sha256": "0568975cab60a7703c866adf1166aa04e2d5eb04a8afa41e923be8a09ca248d3",
+      "qualification_sha256": "6da05413116d34521fe48a505c56ed4507ed95ec9e834401f9226875ddf57c87",
+      "human_acceptance": false,
+      "automatic_startup_without_installer_relaunch": false,
+      "original_A_proofs_relabelled_as_new": false
+    }
   },
   "qualified_application": {
     "commit": "3512a4129262425999e6baaaaf0cc6a0b5f866e6",
