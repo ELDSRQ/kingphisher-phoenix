@@ -228,7 +228,13 @@ class Target:
                 "USER": self.user.pw_name,
                 "LOGNAME": self.user.pw_name,
                 "COMPOSE_PROJECT_NAME": PROJECT,
-                "PATH": str(self.root / ".venv/bin") + ":" + os.environ.get("PATH", "/usr/bin:/bin"),
+                # Bootstrap installs its hash-pinned uv here; a direct Python
+                # invocation does not activate that separate tools environment.
+                "PATH": str(self.root.parent / "tools/uv-venv/bin")
+                + ":"
+                + str(self.root / ".venv/bin")
+                + ":"
+                + os.environ.get("PATH", "/usr/bin:/bin"),
             }
         )
         attestation = request["source_deallocated"]

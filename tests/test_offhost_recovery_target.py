@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -75,6 +76,46 @@ def bare_target(tmp_path):
         }
     }
     return value
+
+
+@pytest.mark.parametrize("ambient_uv", [False, True])
+def test_actual_target_environment_resolves_the_pinned_bootstrap_uv(tmp_path, monkeypatch, ambient_uv):
+    root, manifest = source_tree(tmp_path)
+    home = directory(tmp_path / "app-home")
+    app_uid = os.geteuid() or 1000
+    if os.geteuid() == 0:
+        os.chown(home, app_uid, os.getegid())
+    user = SimpleNamespace(pw_name="kpqual", pw_uid=app_uid, pw_gid=os.getegid(), pw_dir=str(home))
+    monkeypatch.setattr(target.pwd, "getpwnam", lambda name: user)
+    qualified = tmp_path / "tools/uv-venv/bin/uv"
+    qualified.parent.mkdir(mode=0o700, parents=True)
+    qualified.write_text("#!/bin/sh\nprintf 'uv 0.12.7\\n'\n")
+    qualified.chmod(0o755)
+    ambient = directory(tmp_path / "ambient-bin")
+    if ambient_uv:
+        (ambient / "uv").write_text("#!/bin/sh\nprintf 'unqualified ambient executable\\n'\n")
+        (ambient / "uv").chmod(0o755)
+    monkeypatch.setenv("PATH", str(ambient))
+    request = {
+        "schema": target.TARGET_REQUEST_SCHEMA,
+        "scope": "synthetic-qualification",
+        "deadline": time.time() + 300,
+        "source_root": str(root),
+        "output": str(tmp_path / "evidence"),
+        "application": {"runtime_commit": target.RUNTIME_COMMIT, "bundle_commit": "a" * 40},
+        "run_id": "actual-uv-invocation",
+        "expected_engine": {"socket": target.SOCKET},
+        "app_user": "kpqual",
+        "source_deallocated": {"verified": True, "receipt_sha256": "b" * 64},
+        "source_git_manifest": manifest,
+    }
+    value = target.Target(request)
+    invoked = subprocess.run(
+        ["/bin/sh", "-c", "uv --version"], env=value.env, capture_output=True, timeout=5, check=False
+    )
+    assert invoked.returncode == 0, invoked.stderr
+    assert invoked.stdout == b"uv 0.12.7\n"
+    assert value.env["PATH"].split(":")[0] == str(qualified.parent)
 
 
 def test_default_cli_plan_does_not_read_request_or_call_commands(monkeypatch, capsys):

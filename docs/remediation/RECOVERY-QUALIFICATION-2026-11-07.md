@@ -1,5 +1,39 @@
 # Current recovery and installation qualification
 
+
+## Persistent continuation — encrypted source capture completed
+
+Exact recovery-tool commit `fac9a0e` passed CI `42416805378` and 236 focused
+checks. Actual capture-v4 completed the five original on-host A proofs, full
+Git/engine/container/mount/volume/quiescence checks, synthetic protected-state
+capture, on-source encryption, conditional off-host upload and independently
+retained controller retrieval. Cipher SHA-256 is
+`032a1fd4f4131a6692ed46b9cf4164457df6714813e598ecfb0108b654126d79`.
+Source VMv5 was verified deallocated and its complete previous timer restored.
+
+The old temporary controller copies are absent. New persistent work under
+`data/qualification/resume-20261107/` explicitly records reconstructed historical
+stage evidence and newly observed source VM/disk identity; original temporary
+receipt bodies were not fabricated. The source age identity remained on the
+controller. Original normal development and retired rollback assets remain intact.
+
+Target-v1 stopped before compute on regional/Dsv7 quota10/10. The Dsv7 increase
+was rejected; a separate regional increase to12 succeeded. An explicitly pinned
+unrestricted `Standard_D2as_v7` / Dasv7 target uses190 passing controller/cloud
+checks. Actual target-v2 provisioned and completed bootstrap, fresh-process piped rewrap
+and all pre-startup data checks, then failed at its installer unit. Target and
+source are verified deallocated; the diagnostic's complete prior timer was
+restored. Its qualified uv exists outside the inherited install PATH. Two
+real-shell constructor regressions reproduce absent/ambient-uv selection;
+the fix puts the pinned bootstrap uv directory first. Fresh exact-source CI and
+a preservation-safe installation continuation remain required. No complete
+service recovery, recovery timing or B upgrade pass is claimed here. Later historical
+"capture has not passed" statements below describe prior attempts only.
+
+See [the continuation handoff](../SESSION-HANDOFF-2026-11-07.md) for persistent
+paths and remaining work. Update this section and the registry from actual final
+receipts before publication.
+
 The application runtime is frozen at `3512a41`, with successful required CI,
 a complete native load/fault/recovery profile and six native AMD64 image gates.
 Installer bundle `790171d` changes installer/operator tooling only; runtime files
