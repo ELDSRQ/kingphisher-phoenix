@@ -112,25 +112,32 @@ Preserve root UX changes, `.venv`, normal `.105` runtime, data, every failed
 VM/disk/evidence artifact and retired `.140` assets. Do not rerun fresh phases
 over initialized state or delete/reset/re-restore it.
 
-## Development history and human evidence
+## Completed development anchoring epoch and human evidence
 
-REG-031 requires an explicit development-history scope choice. Five preserved
-September 21 witnesses disagree with today's internally valid audit chain.
-The found three-event checkpoint matches today's lineage but does not recover
-the missing earlier history; engineering approval cannot establish authenticity.
-Recommend retaining current data and every old artifact, declaring the gap, and
-starting a new development anchoring epoch. That choice authorizes a new private
-witness directory, one active configuration-key change, a bounded restart of the
-owned `.105` development service and thirteen children, a declaring audit event
-and a fresh maintenance anchor after review/testing. It authorizes no old-file
-deletion, failed-job replay, recovered-continuity claim or production GO.
-Alternatives are another matching backup/key location for read-only inspection
-and isolated recovery, or leaving the continuity gate open with no active
-configuration/history change. The async question has no recorded answer in this
-continuation; no new epoch has executed.
+The user instructed “Action recommended path” on November 8. The recommended
+new development anchoring epoch has completed; that history-scope choice is
+answered and must not be requested again. Read the
+[actual epoch report](remediation/DEVELOPMENT-AUDIT-EPOCH-2026-11-08.md) and latest
+`data/qualification/audit-epoch-20261108/STATE-v*.json`.
 
-On-prem D6 requires one independent human driver plus manual keyboard/screen-reader
-and email/training review. Pilot/broad-use GO needs authentic human acceptance
-and signatures. A second production account is not required by that D6 scope.
-Password rotation stays deferred until completed-build human signoff.
-Production/RSA remains NO-GO.
+The new private pre-change checkpoint remains on .105. A signed declaration
+records the accepted gap; only the active release's local-anchor directory key
+changed. Original configuration inode/bytes, five September witnesses/checkpoint,
+old audit prefix, all seven containers/mounts and 1,131 old dead letters are
+preserved. One new maintenance job produced a matching witness at sequence106881
+and a successful anchor heartbeat at 15:35:51UTC. Both APIs, exact UI, thirteen
+native children, ciphertext and business-table counts verified. The task's
+fallback timer was disarmed after final verification, retaining its definitions
+and evidence. Original failed attempts and partial checkpoints remain preserved.
+
+Application3512/schema0060 and every other configuration value remain unchanged.
+Do not edit the old immutable upgrade plan to hide its expected configuration
+hash difference: bind the current accepted environment through the epoch manifest
+and final receipt. The checkpoint precedes the epoch switch and retains its
+known old witness disagreement. No post-epoch restore or recovered/authenticated
+missing earlier history is claimed. Registry REG031/W2-03 engineering is complete.
+
+On-prem D6 still requires one independent human driver plus manual keyboard,
+screen-reader and email/training review. Pilot/broad-use GO requires authentic
+human acceptance and signatures. Password rotation remains deferred until
+completed-build human signoff. Production/RSA remains NO-GO.
